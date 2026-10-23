@@ -5,7 +5,7 @@ import { orderedPactspiritNodes, pactspiritEffectsAtLevel, pactspiritLevel } fro
 import { pactspiritTreesSs13 } from "./data/pacts/pactspirit-trees-ss13.js";
 import { kismetCatalogSs13 } from "./data/pacts/kismet-catalog-ss13.js";
 import { kismetAffixesWithRolls } from "./kismet-crafting.js";
-import { microFateEffectScale, scaleKismetAffix } from "./kismet-effects.js";
+import { dualKismetCopies, kismetSlotApplies, microFateEffectScale, scaleKismetAffix } from "./kismet-effects.js";
 import { fateExtraSlots } from "./fate-slot-unlocks.js";
 import { rareBaseForItem } from "./rare-base-lookup.js";
 import { legendaryGearSs13 } from "./data/gear/legendary-gear-ss13.generated.js";
@@ -13,6 +13,7 @@ import { defaultBaseForItem } from "./data/gear/corrosion-implicits-ss13.js";
 import { namedGearAffixLines } from "./named-gear-affixes.js";
 import { MAX_BLOCK_CHANCE_PERCENT } from "./game-attribute-defaults.js";
 import { withoutSlateCoreName } from "./granted-core-lines.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 
 const oneHandedWeaponTypes = new Set(["Claw", "Dagger", "One-Handed Sword", "One-Handed Hammer", "One-Handed Axe", "Wand", "Rod", "Scepter", "Cane", "Pistol"]);
 function isOneHandedWeapon(item) {
@@ -87,9 +88,11 @@ export function calculateBlock({ equipment, talents = [], slates = [], memories,
     }
     for (const core of panel.activeCores || []) add(core.description, `Core talent: ${core.name}`);
   }
-  for (const slate of slates) for (const text of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) add(withoutSlateCoreName(text), slate.name);
+  for (const slate of slates) for (const text of slateTalentLines(slate)) add(withoutSlateCoreName(text), slate.name);
   for (const line of [...(memories?.lines || []), ...(memories?.unsupported || [])]) add(line.text, line.source);
   if (pactState.kismetSlotMode) {
+    // A Dual Kismet adds its lines once, with 2 or more copies on the page (src/kismet-effects.js dualKismetCopies).
+    const dualCopies = dualKismetCopies(pactState);
     for (const spirit of pactState.selectedSpirits || []) {
       if (!spirit || pactState.activeSpirits?.[spirit] === false) continue;
       const nodes = orderedPactspiritNodes(pactspiritTreesSs13[spirit]);
@@ -102,7 +105,7 @@ export function calculateBlock({ equipment, talents = [], slates = [], memories,
           const entry = kismetCatalogSs13.find(entry => entry.name === slot.name);
           // A Micro Fate in a spirit with Star Trail carries its boosted value (src/kismet-effects.js; pact badge audit 2026-10-13).
           const { scale } = microFateEffectScale(pactState, slotKey);
-          if (entry) for (const text of kismetAffixesWithRolls(entry, slot.rolls)) add(scaleKismetAffix(text, scale), `${spirit} · ${slot.name}`);
+          if (entry && kismetSlotApplies(pactState, slotKey, dualCopies)) for (const text of kismetAffixesWithRolls(entry, slot.rolls)) add(scaleKismetAffix(text, scale), `${spirit} · ${slot.name}`);
         } else if (node.ring === "outer") {
           for (const text of pactspiritEffectsAtLevel(spirit, pactspiritLevel(spirit, pactState.spiritLevels))) add(text, spirit);
         } else add(node.effect, `${spirit} · ${node.name || node.ring}`);
@@ -111,7 +114,7 @@ export function calculateBlock({ equipment, talents = [], slates = [], memories,
         for (const extra of fateExtraSlots(spirit, pactState.fateUnlocks?.[spirit])) {
           const slot = pactState.kismetSlots?.[extra.key];
           const entry = slot && kismetCatalogSs13.find(entry => entry.name === slot.name);
-          if (entry) for (const text of kismetAffixesWithRolls(entry, slot.rolls)) add(text, `${spirit} · ${slot.name}`);
+          if (entry && kismetSlotApplies(pactState, extra.key, dualCopies)) for (const text of kismetAffixesWithRolls(entry, slot.rolls)) add(text, `${spirit} · ${slot.name}`);
         }
       }
     }

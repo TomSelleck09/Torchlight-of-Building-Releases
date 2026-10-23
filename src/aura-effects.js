@@ -69,6 +69,28 @@ export function auraSupportEffects(supports, { auraCount, nearbyElite = false, a
 
 const SUPPORT_SMC_LINE = /^([+-]?\d+(?:\.\d+)?)% (additional )?Sealed Mana Compensation(?: for the supported skill)?\.?$/i;
 
+// Named-Aura Sealed Mana Compensation (gear affix batch D, 2026-10-22): "+X% Sealed Mana Compensation for Energy Fortress" (game affix
+// 629779904: attr 1304 mod 3 on the Aura's own tag 6101407) and "-X% additional Fearless / Spell Amplification / Precise Projectiles
+// Sealed Mana Compensation" (732444 / 752220224 / 972167104: mod 4 on tags 6101400 / 6101406 / 6101409). The tag is the Aura family's,
+// which its Precise: form carries too (src/data/skills/support-eligibility-ss13.generated.js), so the line reaches both. Deep Pain's
+// additional line keeps its own gear stat (src/engine.js deepPainCompensationPercents).
+export const NAMED_AURA_SMC_LOCAL = /^\+?([+-]?\d+(?:\.\d+)?)% Sealed Mana Compensation for (?!the supported skill$|(?:Focus|Spirit Magus) Skills$)([A-Z][\w':]*(?: [A-Z][\w':]*)*)$/;
+export const NAMED_AURA_SMC_ADDITIONAL = /^([+-]?\d+(?:\.\d+)?)% additional (?!Deep Pain )([A-Z][\w':]*(?: [A-Z][\w':]*)*) Sealed Mana Compensation$/;
+/** { [Aura family name]: { local: [{ source, text, percent }], additional: [...] } } from the build's lines. */
+export function namedAuraSealedManaCompensation(modifierTexts = []) {
+  const out = {};
+  for (const line of modifierTexts) {
+    const text = normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim();
+    const local = text.match(NAMED_AURA_SMC_LOCAL), additional = !local && text.match(NAMED_AURA_SMC_ADDITIONAL);
+    const match = local || additional;
+    if (!match) continue;
+    const family = match[2].replace(/^Precise: /, "");
+    const entry = out[family] ??= { local: [], additional: [] };
+    (local ? entry.local : entry.additional).push({ source: line.source, text, percent: Number(match[1]) * (line.multiplier ?? 1) });
+  }
+  return out;
+}
+
 /**
  * The Sealed Mana Compensation lines an Aura's own supports add to that Aura: "X% Sealed Mana Compensation for the supported
  * skill" (Restrain, Precise Restrain, Malleable −15, Selfishness / Selfless / Safety in Numbers −12, Disciplined +35) and

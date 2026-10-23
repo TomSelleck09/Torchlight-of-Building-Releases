@@ -19,7 +19,9 @@ import { normalizePercentageText } from "./percentage-text.js";
 import { auraScalingSs13 } from "./data/skills/aura-scaling-ss13.js";
 import { bodyReaders } from "./line-effects.js";
 
-export const AURA_GAINED_EFFECT = /^((?:Precise: )?[A-Za-z' -]+?) gains an additional effect:\s*(.+)$/i;
+// "… gains an additional base effect:" (Nether King Ultimate "Precise: Fearless gains an additional base effect: +5% chance to deal
+// Double Damage"; slates audit 2026-10-22) is the same reading.
+export const AURA_GAINED_EFFECT = /^((?:Precise: )?[A-Za-z' -]+?) gains an additional (?:base )?effect:\s*(.+)$/i;
 
 // Aura names: the 40 "Activates the Aura" skills of the game's aura tables, plus Flame Focus (its values come from TLIDB text).
 const AURA_NAMES = new Set([...Object.keys(auraScalingSs13), "Flame Focus", "Precise: Flame Focus"]);

@@ -6,6 +6,7 @@ import { legendaryPlaceholderPoolsSs13 } from "./data/gear/legendary-placeholder
 import { namedGearAffixLines } from "./named-gear-affixes.js";
 import { beltBlendsSs13 } from "./data/gear/belt-blends-ss13.generated.js";
 import { inlineKeywordParts } from "./inline-keywords.js";
+import { coreTalentDescriptionLines } from "./core-talent-keywords.js";
 
 // Belt blends whose text starts with their bracketed name: normalized text -> name.
 const normalizeLines = (text) => String(text || "").split("\n").map((line) => line.replace(/(\d)\s+%/g, "$1%").replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
@@ -88,6 +89,11 @@ export function keywordRollParts(text) {
   // the name is the keyword and every line, the first without its bracket, is an effect line. Only a blend's own text matches.
   const blendName = beltBlendKeywords.get(normalizeLines(text));
   if (blendName) return { keyword: blendName, effect: [lines[0].trim().slice(blendName.length + 2).trim(), ...lines.slice(1).map((line) => line.trim())].filter(Boolean), rest: [], named: true };
+  // A core talent named on its own line (a Pedigree of Gods slot, a captured belt blend saved as "Poisoned Relief",
+  // src/core-talent-keywords.js): the name is the keyword and its effect is the core's description (`description`: these
+  // lines describe the core rather than being the line's own clauses, so the tooltip gives them no per-line badge).
+  const coreLines = coreTalentDescriptionLines(keyword);
+  if (coreLines.length) return { keyword, effect: coreLines, rest: lines.slice(1), named: true, description: true };
   // An inline keyword (src/inline-keywords.js: Eternity's "… stack(s) of Eternal Morale on defeat …"): the keyword sits mid-line,
   // so the line keeps its text around it (`inline`), and each effect line carries the keyword's own badge (`statuses`).
   const inline = inlineKeywordParts(text);

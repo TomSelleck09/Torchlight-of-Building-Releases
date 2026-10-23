@@ -153,7 +153,9 @@ export function splitJoinedClauses(text) {
     cuts.push(index);
   }
   if (!cuts.length) return [text];
-  return [0, ...cuts].map((start, i) => tokens.slice(start, cuts[i] ?? tokens.length).join(" "));
+  // A clause cut after its sentence's full stop ("+74% Gear Attack Speed. -10% additional Attack Damage", a T0+ craft affix) drops
+  // the stop, so its reader matches it (gear affix audit 2026-10-22: the kept "." left the Attack Speed half unread).
+  return [0, ...cuts].map((start, i) => { const part = tokens.slice(start, cuts[i] ?? tokens.length).join(" "); return i < cuts.length ? part.replace(/\.$/, "") : part; });
 }
 
 /** A scripted item row as the lines it holds ([text] when no module splits it). */
@@ -203,21 +205,28 @@ export function averageRotatingBuffs(row) {
 
 const GRANT = /^(?:The )?Main Skill is supported by (?:a )?Lv\. (\d+) ([\w' :()-]+?)\.?$/i;
 // "You have a Lv. 20 Precise Cruelty." / "You have a Lv. 27 Precise: Radical Order" (Lone Walker's Boots, the chosen roll of its
-// "<You have a random Lv. 20 Precise Bonus Damage Aura>" line). Lines with a condition ("… when at Full Mana", Phantom) do not match.
-const PRECISE_AURA_GRANT = /^You have a Lv\. (\d+) Precise:? ([A-Za-z' -]+?)\.?$/i;
+// "<You have a random Lv. 20 Precise Bonus Damage Aura>" line). Legendary audit batch 2 (2026-10-22): plain Auras too ("You have a
+// Lv. 20 Charged Flames", Scorching Tempo; "You have a Lv. 20 Steadfast", Illusory Chimera) and the Full Mana conditions ("You have
+// a Lv. 20 Deep Pain when at Full Mana", Phantom; "You have a Lv. 30 Spell Amplification when not at Full Mana", Compensatory Life):
+// `condition` "fullMana" / "notFullMana", settled by src/planner.js against the Aura ledger's Mana. The caller keeps the names the
+// skill catalog tags Aura ("You have Lv. 20 Swiftness Dew and Resistance Dew" names Elixirs and has no "a").
+const AURA_GRANT = /^You have a Lv\. (\d+) (?:(Precise):? )?([A-Za-z' -]+?)( when (not )?at Full Mana)?\.?$/i;
 
-/** Precise Auras item lines grant: [{ name: "Precise: X", level, source, text }]. */
+/** Auras item lines grant: [{ name: "Precise: X" | "X", level, source, text, condition: null | "fullMana" | "notFullMana" }]. */
 export function grantedPreciseAuras(modifierTexts = []) {
   const out = [];
   for (const line of modifierTexts) {
     const text = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim();
-    const match = text.match(PRECISE_AURA_GRANT);
-    if (match) out.push({ name: `Precise: ${match[2].trim()}`, level: Number(match[1]), source: line.source, text });
+    const match = text.match(AURA_GRANT);
+    if (match) out.push({ name: match[2] ? `Precise: ${match[3].trim()}` : match[3].trim(), level: Number(match[1]), source: line.source, text, condition: match[4] ? (match[5] ? "notFullMana" : "fullMana") : null });
   }
   return out;
 }
 
 const SINGLE_RING_GRANT = /^If only 1 Ring is equipped, the Main Skill is supported by (?:a )?Lv\. (\d+) ([\w' :()-]+?)\.?$/i;
+export const PASSIVE_GRANT = /^All Passive Skill slots are supported by (?:a )?Lv\. (\d+) ([\w' :()-]+?)\.?$/i;
+export const TAG_GRANT = /^(Demolisher|Warcry|Spell|Attack|Projectile|Melee|Area|Channeled|Sentry|Terra|Focus|Combo|Mobility|Summon) Skills are supported by (?:a )?Lv\. (\d+) ([\w' :()-]+?)\.?$/i;
+export const PASSIVE_ROWS_GRANT =/^The (first|last) (\d+) Passive Skill slots are supported by (?:a )?Lv\. (\d+) ([\w' :()-]+?)\.?$/i;
 
 /**
  * Supports item lines grant to the Main Skill: [{ name, level, source, text, active, reason }].
@@ -232,7 +241,19 @@ export function grantedMainSkillSupports(modifierTexts = [], equipment = null, d
     let match = text.match(SINGLE_RING_GRANT);
     if (match) { out.push({ name: match[2].trim(), level: Number(match[1]), source: line.source, text, active: rings === 1, reason: rings === 1 ? "only 1 Ring equipped" : `${rings} Rings equipped` }); continue; }
     match = text.match(GRANT);
-    if (match) out.push({ name: match[2].trim(), level: Number(match[1]), source: line.source, text, active: true, reason: "item grant" });
+    if (match) { out.push({ name: match[2].trim(), level: Number(match[1]), source: line.source, text, active: true, reason: "item grant" }); continue; }
+    // "All Passive Skill slots are supported by Lv. 30 Precise: Restrain" (TOWER sequence; gear affix batch C, 2026-10-22): the
+    // support joins every Passive (Aura-slot) skill at its fixed level. "Precise: Restrain" is the catalog's "Precise Restrain".
+    match = text.match(PASSIVE_GRANT);
+    if (match) { out.push({ name: match[2].trim().replace(/^Precise: (?=Restrain$)/, "Precise "), level: Number(match[1]), source: line.source, text, active: true, reason: "item grant", target: "passive" }); continue; }
+    // Headless Crown (legendary audit batch 2, 2026-10-22): "The first 2 Passive Skill slots are supported by Lv. 30 Precise: Restrain",
+    // "The last 2 Passive Skill slots are supported by Lv. 30 Precise: Concentrated": the Aura-slot rows 1–N or the last N of the 4.
+    // Skills of a tag (legendary audit batch 2): "Demolisher Skills are supported by Lv. 25 Quick Return." (Furious Man's Body), "Warcry
+    // Skills are supported by Lv. 20 Gladiator's Roar." (Steel's Lament, corroded): every active setup carrying the tag takes it.
+    match = text.match(TAG_GRANT);
+    if (match) { out.push({ name: match[3].trim(), level: Number(match[2]), source: line.source, text, active: true, reason: "item grant", target: "tag", tag: match[1] }); continue; }
+    match = text.match(PASSIVE_ROWS_GRANT);
+    if (match) out.push({ name: match[4].trim().replace(/^Precise: (?=Restrain$)/, "Precise "), level: Number(match[3]), source: line.source, text, active: true, reason: "item grant", target: "passive", rows: { [match[1].toLowerCase()]: Number(match[2]) } });
   }
   return out;
 }

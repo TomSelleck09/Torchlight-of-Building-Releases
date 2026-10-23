@@ -5,6 +5,7 @@ import { orderedPactspiritNodes, pactspiritEffectsAtLevel, pactspiritLevel } fro
 import { prismAreaBounds, prismNodeAffixes } from "./prism-crafting.js";
 import { withoutSlateCoreName } from "./granted-core-lines.js";
 import { equipmentSlots } from "./data/gear/crafting-catalog-ss13.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 
 export function calculateCurseLimit({ equipment, talents = [], slates = [], talentState = {}, pactState = {}, setups = [], conditions = {} }) {
   const sources = [];
@@ -43,7 +44,7 @@ export function calculateCurseLimit({ equipment, talents = [], slates = [], tale
       }
     }
   }
-  for (const slate of slates) for (const text of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) add(withoutSlateCoreName(text), slate.name);
+  for (const slate of slates) for (const text of slateTalentLines(slate)) add(withoutSlateCoreName(text), slate.name);
   for (const line of activeKismetEffects(pactState)) add(line.text, line.source);
   for (const spirit of pactState.selectedSpirits || []) {
     if (!spirit || pactState.activeSpirits?.[spirit] === false) continue;
@@ -55,9 +56,11 @@ export function calculateCurseLimit({ equipment, talents = [], slates = [], tale
   // Every curse skill on the board takes a curse slot (core audit B2 / B4, 2026-10-18). A curse skill is an enabled setup with
   // the curse role or the Curse tag (supports such as Deepened Curse carry the tag too and are left out).
   // Order (user-confirmed 2026-10-19, first in, first out by placement): curse skills take the slots in skill bar order, the
-  // first curse on the bar slot 1, the next slot 2, up to the limit; Scorch has no priority. `setups` arrives in bar order
-  // (src/planner.js curseBarOrder). A curse past the limit is not applied and does not set "Cursed". Gear, pact and other
-  // triggered curses then fill the slots left (src/build-mechanics.js). A curse whose toggle is off takes no slot.
+  // first curse on the bar slot 1, the next slot 2; Scorch has no priority. `setups` arrives in bar order (src/planner.js
+  // curseBarOrder). Gear, pact and other triggered curses then take the slots left (src/build-mechanics.js). A curse whose toggle
+  // is off takes no slot. The limit never stops a curse (user decision 2026-10-21, replacing the 2026-10-19 "not applied"): every
+  // curse applies in the calculation, and those past the limit (`overLimit`, slot order) only carry the warning; the slot order
+  // is kept for that display.
   const curseNames = [];
   for (const setup of setups) {
     if (!isCurseSkill(setup) || setup.enabled === false || curseNames.includes(setup.name)) continue;
@@ -65,7 +68,7 @@ export function calculateCurseLimit({ equipment, talents = [], slates = [], tale
     if (toggle && conditions[toggle] === false) continue;
     curseNames.push(setup.name);
   }
-  return { maximum, sources, active: curseNames.slice(0, maximum), excluded: curseNames.slice(maximum) };
+  return { maximum, sources, active: curseNames, overLimit: curseNames.slice(maximum) };
 }
 
 /** Setups in skill bar order (the board rows as displayed, trait grants included), then any other setup in saved order. */
@@ -84,23 +87,24 @@ export function triggeredCurseRank(curse) {
 }
 
 /**
- * The curse slots of a planner result: the applied curses in slot order (skill bar curses, then triggered curses), the
- * ones left out by the limit, with the reason text the skill bar, gear and tooltips show, and the triggered curses that
- * duplicate one already applied (no slot; user decision 2026-10-19), each with its own reason and `duplicateOf`.
+ * The curse slots of a planner result: every applied curse in slot order (skill bar curses, then triggered curses), the ones
+ * past the limit (`overLimit`: applied all the same, user decision 2026-10-21) with the warning the skill bar, gear and tooltips
+ * show (`warning`), and the triggered curses that duplicate one already applied (no slot, not applied; user decision
+ * 2026-10-19), each with its own reason and `duplicateOf`.
  */
 export function curseSlotSummary(planner) {
   const limit = planner?.curseLimit;
   if (!limit) return null;
   const curses = planner?.mechanics?.curses || {};
-  const applied = [...(limit.active || []).map((name) => ({ name, kind: "skill", source: name })), ...(curses.active || []).map((curse) => ({ name: curse.name, kind: "trigger", source: curse.source }))];
-  const leftOut = [...(limit.excluded || []).map((name) => ({ name, kind: "skill", source: name })), ...(curses.dropped || []).map((curse) => ({ name: curse.name, kind: "trigger", source: curse.source, text: curse.text }))];
+  const applied = [...(limit.active || []).map((name) => ({ name, kind: "skill", source: name })), ...(curses.active || []).map((curse) => ({ name: curse.name, kind: "trigger", source: curse.source, text: curse.text }))];
+  const overLimit = applied.slice(limit.maximum);
   const duplicates = (curses.duplicates || []).map((curse) => ({ name: curse.name, kind: "trigger", source: curse.source, text: curse.text, duplicateOf: curse.duplicateOf, reason: curse.reason }));
-  return { maximum: limit.maximum, applied, leftOut, duplicates, reason: curseLimitReason(limit.maximum, applied.map((curse) => curse.name)) };
+  return { maximum: limit.maximum, applied, overLimit, duplicates, warning: overLimit.length ? curseOverLimitWarning(limit.maximum, applied.map((curse) => curse.name)) : "" };
 }
 
-/** "curse limit reached (N/N slots used by A, B)" */
-export function curseLimitReason(maximum, appliedNames) {
-  return `curse limit reached (${appliedNames.length}/${maximum} slots used by ${appliedNames.join(", ") || "none"})`;
+/** "Over the curse limit (3/2 slots: A, B, C): counted anyway" (user decision 2026-10-21: every curse applies). */
+export function curseOverLimitWarning(maximum, curseNames) {
+  return `Over the curse limit (${curseNames.length}/${maximum} slots: ${curseNames.join(", ") || "none"}): counted anyway`;
 }
 
 // The curse skills with their own combat-condition toggle (src/planner.js conditions).

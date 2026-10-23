@@ -46,7 +46,8 @@ const ELEMENTAL = ["Fire", "Cold", "Lightning"];
 const round = (value) => Math.round(value * 10000) / 10000;
 const sum = (lines) => lines.reduce((total, line) => total + line.value, 0);
 const product = (lines) => lines.reduce((factor, line) => factor * (1 + line.value / 100), 1);
-const clean = (text) => String(text || "").replace(/\s*%/g, "%").replace(/\+\s+/g, "+").replace(/\s+/g, " ").trim();
+// A detached closing full stop (Lady's Tears: "… dealt by Ultimate .", legendary audit batch 2) is dropped.
+const clean = (text) => String(text || "").replace(/\s*%/g, "%").replace(/\+\s+/g, "+").replace(/\s+/g, " ").trim().replace(/ \.$/, "");
 
 const PATTERNS = [
   [new RegExp(`^${NUM}% Minion Damage$`, "i"), (m) => ({ kind: "increased", value: number(m[1]) })],
@@ -69,6 +70,8 @@ const PATTERNS = [
   [new RegExp(`^${NUM}% additional damage for Minions summoned by the supported skill$`, "i"), (m) => ({ kind: "additional", value: number(m[1]) })],
   // Spirit Magus skill lines (minion family "spirit-magus" only; the engine drops them for other Minions).
   [new RegExp(`^${NUM}% additional Spirit Magus Skill Damage$`, "i"), (m) => ({ kind: "additional", value: number(m[1]), spiritMagus: true })],
+  // Synthetic Troop Minions only (Machine Lord "+800% additional Synthetic Troop Minion Damage"; legendary audit batch 8).
+  [new RegExp(`^${NUM}% additional Synthetic Troop Minion Damage$`, "i"), (m) => ({ kind: "additional", value: number(m[1]), troop: true })],
   [new RegExp(`^${NUM}% Spirit Magus Skill Damage$`, "i"), (m) => ({ kind: "increased", value: number(m[1]), spiritMagus: true })],
   // Gear-pact batch chunk 4: "Spirit Magi" wordings of the same Minion stats (Spirit Magus family only).
   [new RegExp(`^${NUM}% additional Spirit Magi Damage$`, "i"), (m) => ({ kind: "additional", value: number(m[1]), spiritMagus: true })],
@@ -84,6 +87,13 @@ const PATTERNS = [
   [new RegExp(`^${NUM} Critical Strike Rating for Minions$`, "i"), (m) => ({ kind: "critRating", value: number(m[1]), flat: true })],
   [new RegExp(`^${NUM}% (additional )?Critical Strike Rating for Minions$`, "i"), (m) => ({ kind: "critRating", value: number(m[1]), additional: Boolean(m[2]) })],
   [new RegExp(`^${NUM}% (additional )?Critical Strike Damage for Minions$`, "i"), (m) => ({ kind: "critDamage", value: number(m[1]), additional: Boolean(m[2]) })],
+  // The kismet wordings of the same Minion crit stats (kismet / pact audit 2026-10-21: Micro / Medium Fate: Critical Strike Rating's
+  // "+(24–30)% Minion Critical Strike Rating", Critical Strike Damage's "+(12–15)% Minion Critical Strike Damage", Kismet: Screw's
+  // "+(100–120) Minion Critical Strike Rating"; game affix_class 13183117 "$+P1$% Minion Critical Strike Rating"). They read Not
+  // modeled before.
+  [new RegExp(`^${NUM}% (additional )?Minion Critical Strike Rating$`, "i"), (m) => ({ kind: "critRating", value: number(m[1]), additional: Boolean(m[2]) })],
+  [new RegExp(`^${NUM}% (additional )?Minion Critical Strike Damage$`, "i"), (m) => ({ kind: "critDamage", value: number(m[1]), additional: Boolean(m[2]) })],
+  [new RegExp(`^${NUM} Minion Critical Strike Rating$`, "i"), (m) => ({ kind: "critRating", value: number(m[1]), flat: true })],
   // "+X% additional Max / Min Damage for Minions" (2026-10-14): the Minion hit's upper / lower roll (Minion-named lines only,
   // rule 1001011821; a plain "additional Max Damage" line stays the player's).
   [new RegExp(`^${NUM}% additional (?:${TYPE} )?(Max|Min) (?:${TYPE} )?Damage for (?:you and your )?Minions$`, "i"), (m) => ({ kind: /^max$/i.test(m[3]) ? "maxDamage" : "minDamage", value: number(m[1]), type: (m[2] || m[4]) ? (m[2] || m[4])[0].toUpperCase() + (m[2] || m[4]).slice(1).toLowerCase() : undefined })],
@@ -98,9 +108,52 @@ const PATTERNS = [
   [new RegExp(`^Minions' Multistrikes deal ${NUM}% increasing damage$`, "i"), (m) => ({ kind: "multistrikeIncrement", value: number(m[1]) })],
   [new RegExp(`^The damage of Minion Multistrikes increments by an additional ${NUM}%$`, "i"), (m) => ({ kind: "multistrikeIncrementAdditional", value: number(m[1]) })],
   [new RegExp(`^${NUM}% ${TYPE} Penetration for Minions$`, "i"), (m) => ({ kind: "penetration", value: number(m[1]), types: m[2] === "Elemental" ? ELEMENTAL : [m[2]] })],
+  // Gear affix audit 2026-10-22 (research/gear-affixes-audit-2026-10-22.md): gear wordings of the same Minion stats.
+  // "+X% Minion <Type> Damage" (Rod / Necklace craft suffixes, game affix_class "$+P1$% Minion Elemental Damage"): increased, typed
+  // like "+X% <Type> Damage for Minions". "+X% Minion <Type> Penetration" (TOWER Sequences) and "+X% Elemental and Erosion
+  // Resistance Penetration for Minions" (base, craft and corrosion affixes): Minion penetration of those types.
+  [new RegExp(`^${NUM}% Minion ${TYPE} Damage$`, "i"), (m) => ({ kind: "increased", value: number(m[1]), type: m[2] })],
+  [new RegExp(`^${NUM}% Minion ${TYPE} Penetration$`, "i"), (m) => ({ kind: "penetration", value: number(m[1]), types: m[2] === "Elemental" ? ELEMENTAL : [m[2]] })],
+  [new RegExp(`^${NUM}% Elemental and Erosion Resistance Penetration for Minions$`, "i"), (m) => ({ kind: "penetration", value: number(m[1]), types: [...ELEMENTAL, "Erosion"] })],
+  // "+X% chance for Minions to deal Double Damage" (Boots / Spirit Ring craft suffixes): the player's Double Damage rule (src/double-damage.js:
+  // per hit, × 2 at the summed chance, capped at 100%) on the Minions' hits (provisional: open question gear-minion-double-damage).
+  [new RegExp(`^${NUM}% chance for Minions to deal Double Damage$`, "i"), (m) => ({ kind: "doubleDamage", value: number(m[1]) })],
+  // Pantheon's Elegy rolls (legendary audit batch 8): "+18% chance for Synthetic Troop Minions to deal Double Damage" (troops only) and
+  // "When Synthetic Troop minions deal Double Damage, they deal Triple Damage instead" (their Double Damage is ×3; provisional).
+  [new RegExp(`^${NUM}% chance for Synthetic Troop Minions to deal Double Damage$`, "i"), (m) => ({ kind: "doubleDamage", value: number(m[1]), troop: true })],
+  [/^When Synthetic Troop minions deal Double Damage, they deal Triple Damage instead$/i, () => ({ kind: "tripleDamage", value: 1, troop: true })],
+  // "Minions gain Lucky upon a Critical Strike" (Vorax gloves; gear affix batch A): Lucky crit checks and added rolls (calculateMinion).
+  [/^Minions gain Lucky upon a Critical Strike$/i, () => ({ kind: "lucky", value: 1 })],
+  // Warden's Breastpin's roll (legendary audit batch 8): "Your Minions can only deal Elemental / Erosion / Physical Damage": a Minion
+  // skill row of another type deals 0 (each row has one type here; the player's Extremity-style rule for the Minions, provisional).
+  [/^Your Minions can only deal (Elemental|Erosion|Physical|Fire|Cold|Lightning) Damage$/i, (m) => ({ kind: "onlyType", value: 1, types: /^Elemental$/i.test(m[1]) ? ELEMENTAL : [m[1][0].toUpperCase() + m[1].slice(1).toLowerCase()] })],
+  // Spirit Magus skill-role lines (Tin Staff / Rod craft prefixes): "+X% additional Spirit Magus Enhanced Skill Damage and Ailment
+  // Damage dealt by Enhanced Skills" reaches the Enhanced Skill's hits, the Ultimate one the Ultimate (out of the cycle unless Full
+  // Bloom). Minion ailments are not modeled, so the ailment half reaches nothing.
+  [new RegExp(`^${NUM}% additional Spirit Magus (Enhanced Skill|Ultimate) Damage and Ailment Damage dealt by (?:Enhanced Skills|Ultimate) ?\\.?$`, "i"), (m) => ({ kind: "additional", value: number(m[1]), spiritMagus: true, skillRole: /ultimate/i.test(m[2]) ? "ultimate" : "enhanced" })],
   [new RegExp(`^Minion Damage penetrates ${NUM}% Elemental Resistance$`, "i"), (m) => ({ kind: "penetration", value: number(m[1]), types: ELEMENTAL })],
   [new RegExp(`^Adds ${NUM}\\s*[–-]\\s*${NUM} (Physical|Fire|Cold|Lightning|Erosion) Damage to (?:your and your Minions['’] Attacks and Spells|Minions)$`, "i"), (m) => ({ kind: "added", min: number(m[1]), max: number(m[2]), type: m[3] })]
 ];
+
+/**
+ * The Minions a profile keeps out, for "… when you have N Minion(s)" lines (gear affix batch A, 2026-10-22): a Synthetic Troop or
+ * Module summon its max (base + "Max Synthetic Troop Quantity +N" / "+N to Max Summonable Synthetic Troops", within the cap lines;
+ * one per summon + Rally with "troopMaxMinions" off), any other Minion its count at the summon level. Hero extras are left out.
+ */
+export function minionCountOut(profile, level = 20, modifierTexts = [], { troopMaxMinions = true } = {}) {
+  const resolved = typeof profile === "string" ? MINION_PROFILES[profile] : profile;
+  if (!resolved) return 0;
+  const values = (pattern) => modifierTexts.flatMap((line) => { const match = clean(line.text).match(pattern); return match ? [Number(match[1] ?? match[2]) * (line.multiplier ?? 1)] : []; });
+  if (!TROOP_FAMILY.has(resolved.family)) return resolved.count?.at(Math.max(1, Math.floor(level || 20))) ?? 1;
+  const rally = values(/^Synthetic Troop Minions summoned at a time \+?(\d+)$/i).reduce((total, value) => total + value, 0);
+  if (!troopMaxMinions) return 1 + rally;
+  const base = resolved.family === "module" ? (resolved.count?.max ?? 1) : (resolved.count?.at(Math.max(1, Math.floor(level || 20))) ?? 1);
+  const raise = values(TROOP_RAISE).reduce((total, value) => total + value, 0);
+  const caps = [...values(/^The Max Minion Quantity for each Synthetic Troop Skill is (\d+)\b/i), ...values(/^The number of Max Synthetic Troops In Map is fixed at (\d+)$/i)];
+  return Math.max(1, Math.min(base + raise, ...caps));
+}
+// "Max Synthetic Troop Quantity +N" and the craft wording "+N to Max Summonable Synthetic Troops" (gear affix batch A, 2026-10-22).
+const TROOP_RAISE = /^(?:Max Synthetic Troop Quantity \+?(\d+)|\+(\d+) to Max Summonable Synthetic Troops)$/i;
 
 /** Minion-named modifier line → { kind, ... } or null (anything else, including conditional Minion lines). */
 export function classifyMinionLine(text) {
@@ -113,6 +166,7 @@ export function classifyMinionLine(text) {
 }
 
 // Spirit Magus Growth / Enhanced-chance lines (catalog wordings; a trait or kismet text may hold several lines).
+const GROWTH_ON_MINION_CRIT = /^Gains (\d+(?:\.\d+)?) Growth for [\d.]+ ?s when Minions land a Critical Strike, up to (\d+(?:\.\d+)?) ?\.?$/i;
 const GROWTH_INITIAL = /^\+?(\d+(?:\.\d+)?) initial Growth for Spirit Magi$/i;
 const GROWTH_PER = /^For every (\d+) Growth a Spirit Magus has, it deals \+(\d+(?:\.\d+)?)% additional damage(?:, up to \+(\d+(?:\.\d+)?)% additional damage)?$/i;
 const GROWTH_PER_100 = /^For every 100 Growth a Spirit Magus has, it deals \+(\d+(?:\.\d+)?)% additional damage and ([+-]?\d+(?:\.\d+)?)% additional Attack and Cast Speed$/i;
@@ -162,6 +216,9 @@ export function spiritMagusState(lines = [], { extraGrowth = 0 } = {}) {
       else if ((match = text.match(CIRCLE_DAMAGE))) circleDamage.push({ ...entry, per: number(match[1]), percent: number(match[2]) * multiplier });
       else if ((match = text.match(EMPOWER_EFFECT))) empowerEffect.push({ ...entry, value: number(match[1]) * multiplier, additional: Boolean(match[2]) });
       else if ((match = text.match(GROWTH_INITIAL))) initial.push({ ...entry, value: number(match[1]) * multiplier });
+      // Call of Souls (legendary audit batch 8): "Gains 5 Growth for 25 s when Minions land a Critical Strike, up to 50": the Spirit
+      // Magi crit far more often than every 25 s (base Minion crit rating 150), so the cap is held (provisional).
+      else if ((match = text.match(GROWTH_ON_MINION_CRIT))) initial.push({ ...entry, value: number(match[2]) * multiplier });
       else if ((match = text.match(GROWTH_PER))) perGrowth.push({ ...entry, per: number(match[1]), percent: number(match[2]) * multiplier, cap: match[3] != null ? number(match[3]) * multiplier : null });
       else if ((match = text.match(GROWTH_PER_100))) per100.push({ ...entry, percent: number(match[1]) * multiplier, speedPercent: number(match[2]) * multiplier });
       else if ((match = text.match(ENHANCED_CHANCE))) chance.push({ ...entry, value: number(match[1]) * multiplier });
@@ -305,7 +362,7 @@ function combineBuffs(active, skillType) {
  *   by src/planner.js minionHeroTraits): { readTexts, layers (static Minion layers: Overload, Nourishing Spring Rain's Growth,
  *   Unstoppable Wave …), overloadRamp, extraCount, nourish (Growing Breeze extras), troopNourish, vigilant, selfDestruct, magiCount }.
  */
-export function calculateMinion({ profile, level = 20, modifierTexts = [], traitLines = [], target = {}, timelineSeconds = 60, setups = [], windows = [5, 20], extraTaken = [], traitSkill = "cooldown", extraCritOnly = [], handledTexts = null, extraLines = [], bond = null, summonCastSpeed = null, heroTraits = null } = {}) {
+export function calculateMinion({ profile, level = 20, modifierTexts = [], traitLines = [], target = {}, timelineSeconds = 60, setups = [], windows = [5, 20], extraTaken = [], traitSkill = "cooldown", extraCritOnly = [], handledTexts = null, extraLines = [], bond = null, summonCastSpeed = null, heroTraits = null, prebuilt = true, troopMaxMinions = true, moduleMaxMinions = true } = {}) {
   const resolved = typeof profile === "string" ? MINION_PROFILES[profile] : profile;
   if (!resolved) return null;
   const capped = Math.max(1, Math.min(MINION_BASE_DAMAGE_FROZEN_LEVEL, Math.floor(level || 20)));
@@ -318,7 +375,7 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
   const isSpiritMagus = resolved.family === "spirit-magus";
 
   // Minion lines from the build and the hero's traits; other Minion-mentioning lines are listed as not read.
-  const lines = { increased: [], additional: [], speed: [], critRating: [], critDamage: [], penetration: [], armourPenetration: [], added: [], unread: [], support: [], maxDamage: [], minDamage: [], multistrikeChance: [], multistrikeIncrement: [], multistrikeIncrementAdditional: [], inactive: [] };
+  const lines = { tripleDamage: [], onlyType: [], increased: [], additional: [], speed: [], critRating: [], critDamage: [], penetration: [], armourPenetration: [], added: [], unread: [], support: [], maxDamage: [], minDamage: [], multistrikeChance: [], multistrikeIncrement: [], multistrikeIncrementAdditional: [], doubleDamage: [], lucky: [], inactive: [] };
   // Conditional lines the shared resolver reads (src/line-effects.js: an active one reaches this model as a derived plain line, an
   // inactive one keeps its reason on the badge) are not "unread" here, nor are the originals of derived copies (core audit B7).
   const handled = new Set([...[...(handledTexts || [])].map(clean), ...modifierTexts.filter((line) => line.derivedFrom).map((line) => clean(line.derivedFrom)), ...[...(bond?.readTexts || [])].map(clean), ...[...(heroTraits?.readTexts || [])].map(clean)]);
@@ -326,8 +383,9 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     const parsed = classifyMinionLine(line.text);
     const entry = { source: line.source, text: clean(line.text), origin: line.origin || "gear" };
     const multiplier = line.multiplier ?? 1;
-    if (!parsed) { if (/\bMinions?\b/i.test(line.text) && !handled.has(clean(line.text)) &&!/Minion Max Life|Minion Movement|Minion Life|Minion Energy Shield|Minion Armou?r|Minion Evasion|Skill Area for Minions|Duration for Minions|avoid damage|Aggressiveness|Max Minion|Minion Quantity|Summonable/i.test(line.text)) lines.unread.push(entry); continue; }
+    if (!parsed) { if (/\bMinions?\b/i.test(line.text) && !handled.has(clean(line.text)) &&!/Minion Max Life|Minion Movement|Minion Life|Minion Energy Shield|Minion Armou?r|Minion Evasion|Skill Area for Minions|Duration for Minions|avoid damage|Aggressiveness|Max Minion|Minion Quantity|Summonable|Minion Damage per stack of any Blessing/i.test(line.text)) lines.unread.push(entry); continue; }
     if (parsed.spiritMagus && !isSpiritMagus) continue;
+    if (parsed.troop && !TROOP_FAMILY.has(resolved.family)) continue;
     if (parsed.kind === "added") lines.added.push({ ...entry, type: parsed.type, min: parsed.min * multiplier, max: parsed.max * multiplier });
     else if (parsed.kind === "penetration") lines.penetration.push({ ...entry, value: parsed.value * multiplier, types: parsed.types });
     else lines[parsed.kind].push({ ...entry, ...parsed, value: parsed.value * multiplier });
@@ -409,17 +467,39 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     heroTraitState.merging = { receivedPercent: round(received), growth: magus?.growth ?? 100, applied: [...new Set(applied)], origins: (merging.origins || []).map((origin) => origin.magus) };
   }
 
-  // Rally ("Synthetic Troop Minions summoned at a time +N"): each cast summons N more, Module summons included, up to the skill's
-  // max quantity (user-supplied 2026-10-19, Google AI Mode answer, not tested in game). A Synthetic Troop summon's published
-  // maximum is already counted from the first cast; a Module's maximum is a placeholder in the game text, so its one assumed
-  // Minion becomes 1 + N (provisional; open question core-rally-module-count).
-  const rallyLines = resolved.family === "module" ? modifierTexts.flatMap((line) => { const match = clean(line.text).match(/^Synthetic Troop Minions summoned at a time \+?(\d+)$/i); return match ? [{ source: line.source, value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }) : [];
+  // Rally ("Synthetic Troop Minions summoned at a time +N"): each cast (or automatic summon) brings N more, up to the skill's max
+  // quantity (user-supplied 2026-10-19, Google AI Mode answer, not tested in game). With own buffs pre-built the max is out from
+  // the start, so Rally only speeds the cold-start ramp, or adds N with "troopMaxMinions" off.
+  const rallyLines = TROOP_FAMILY.has(resolved.family) ? modifierTexts.flatMap((line) => { const match = clean(line.text).match(/^Synthetic Troop Minions summoned at a time \+?(\d+)$/i); return match ? [{ source: line.source, value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }) : [];
   const rallyExtra = rallyLines.reduce((total, line) => total + line.value, 0);
   // Socialite (Iris – Growing Breeze, B6): +N Max Summonable Spirit Magi for this Magus skill, within the map cap (planner).
   const heroExtraCount = Math.max(0, Math.floor(Number(heroTraits?.extraCount) || 0));
-  const count = (resolved.count?.at(effectiveLevel) ?? 1) + rallyExtra + heroExtraCount;
+  // Synthetic Troop Minions (modules: user-supplied 2026-10-21, Google AI Mode answer, not an in-game test; Synthetic Troop summons:
+  // user decision 2026-10-21, same rules). Base max: a module 4 (TLIDB SS14 Module pages agree); a Synthetic Troop summon its text's
+  // "This skill summons up to N Minions" at its level (Machine Guard, Spider Tank 4; Grim Phantom 2 / 3 / 4 by level). No Minion
+  // has a duration (the skill stops summoning at its max), so the sustained figure holds the max (best case). One per cast (+ Rally);
+  // Grim Phantom summons one every 1 s by itself. "Max Synthetic Troop Quantity +N" raises the max; "The Max Minion Quantity for
+  // each Synthetic Troop Skill is N" and "The number of Max Synthetic Troops In Map is fixed at N" cap it. The combat condition
+  // "troopMaxMinions" (saved "moduleMaxMinions" still read) off reads one Minion per summon (+ Rally); the Huge Ember Lv.20 reference
+  // run had one out.
+  const lineValues = (pattern, scaled = false) => modifierTexts.flatMap((line) => { const match = clean(line.text).match(pattern); return match ? [{ source: line.source, text: clean(line.text), value: Number(match[1]) * (scaled ? (line.multiplier ?? 1) : 1) }] : []; });
+  const troopCount = TROOP_FAMILY.has(resolved.family) ? (() => {
+    const perCast = 1 + rallyExtra;
+    if (!(troopMaxMinions && moduleMaxMinions)) return { max: perCast, perCast, base: perCast, raise: [], caps: [], off: true };
+    const base = resolved.family === "module" ? (resolved.count?.max ?? 1) : (resolved.count?.at(effectiveLevel) ?? 1);
+    const raise = modifierTexts.flatMap((line) => { const match = clean(line.text).match(TROOP_RAISE); return match ? [{ source: line.source, text: clean(line.text), value: Number(match[1] ?? match[2]) * (line.multiplier ?? 1) }] : []; });
+    const caps = [...lineValues(/^The Max Minion Quantity for each Synthetic Troop Skill is (\d+)\b/i), ...lineValues(/^The number of Max Synthetic Troops In Map is fixed at (\d+)$/i)];
+    return { max: Math.max(1, Math.min(base + sum(raise), ...caps.map((line) => line.value))), perCast, base, raise, caps, off: false };
+  })() : null;
+  const count = troopCount ? troopCount.max : (resolved.count?.at(effectiveLevel) ?? 1) + rallyExtra + heroExtraCount;
   if (heroExtraCount) { heroTraitState.extraCount = heroExtraCount; assumptions.push({ id: `magusCount:${resolved.key}`, value: count, text: `${resolved.summon}: ${count} Spirit Magi (${heroTraits.extraCountSource || "Socialite"}: +${heroExtraCount} Max Summonable Spirit Magi within the map cap; provisional).` }); }
-  if (resolved.count?.assumed) assumptions.push({ id: `minionCount:${resolved.key}`, value: count, text: `${resolved.summon}: ${resolved.count.source}${rallyExtra ? `; + ${rallyExtra} from ${rallyLines.map((line) => line.source).join(", ")} ("Synthetic Troop Minions summoned at a time", Module summons included: user-supplied 2026-10-19, provisional; the Module's max quantity is not in the data)` : ""}.` });
+  if (troopCount) assumptions.push({ id: `minionCount:${resolved.key}`, value: count, text: `${resolved.summon}: ${count} ${resolved.minion}${count === 1 ? "" : "s"} out${troopCount.off ? ` (combat condition "troopMaxMinions" off: one per summon${rallyExtra ? ` + ${rallyExtra} (Rally)` : ""})` : ` (base ${troopCount.base}: ${resolved.count?.source}${troopCount.raise.length ? `; + ${sum(troopCount.raise)} from ${troopCount.raise.map((line) => line.source).join(", ")}` : ""}${troopCount.caps.length ? `; capped at ${Math.min(...troopCount.caps.map((line) => line.value))} by ${troopCount.caps.map((line) => line.source).join(", ")}` : ""}; ${troopCount.perCast} per ${resolved.autoSummonSeconds ? `automatic summon (every ${resolved.autoSummonSeconds} s)` : "cast"}${rallyExtra ? " with Rally" : ""}; best case: all out before engaging${prebuilt ? "" : ", ramping here (own buffs not pre-built)"}; flip with the combat condition "troopMaxMinions")`}.` });
+  else if (resolved.count?.assumed) assumptions.push({ id: `minionCount:${resolved.key}`, value: count, text: `${resolved.summon}: ${resolved.count.source}.` });
+  // Contained Mind (legendary audit batch 8): "The Max Minion Quantity for each Synthetic Troop Skill is 1, but +50% additional
+  // Synthetic Troop Minion Damage for each Synthetic Troop Minion (multiplies)": the cap above, and (1 + X%)^(troops out) on the
+  // troop's own hits (provisional: "for each Synthetic Troop Minion" read as those this skill keeps out).
+  const containedMind = troopCount ? modifierTexts.flatMap((line) => { const match = clean(line.text).match(/^The Max Minion Quantity for each Synthetic Troop Skill is \d+, but \+?(\d+(?:\.\d+)?)% additional Synthetic Troop Minion Damage for each Synthetic Troop Minion \(multiplies\)$/i); return match ? [{ source: line.source, text: `${clean(line.text)} (${count} out)`, value: ((1 + Number(match[1]) * (line.multiplier ?? 1) / 100) ** count - 1) * 100, origin: "gear" }] : []; }) : [];
+  lines.additional.push(...containedMind);
   const perMinionAdditional = resolved.perMinionAdditionalPercent ? [{ source: `${resolved.summon}: per Minion summoned`, text: `+${resolved.perMinionAdditionalPercent}% additional damage for every ${resolved.minion} summoned (${count} summoned)`, value: resolved.perMinionAdditionalPercent * count, origin: "skill" }] : [];
   const levelLine = effectiveLevel > 20 ? [{ source: `${resolved.summon} level ${effectiveLevel}`, text: `+${round((levelFactor - 1) * 100)}% additional damage (TLIDB Skill Level: +10%/level 21–30, +8%/level 31+; applies to the skill and its Minions, rule 1001000822)`, value: (levelFactor - 1) * 100, origin: "skill" }] : [];
 
@@ -434,7 +514,11 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
   // (flat rating, "+X% Critical Strike Rating" of the Magus's rating, crit damage).
   const baseCritRating = 500, baseCritDamage = 150;
   const critRating = (buff) => (baseCritRating + sum(lines.critRating.filter((line) => line.flat)) + (buff?.critRating || 0)) * Math.max(0, 1 + (sum(lines.critRating.filter((line) => !line.flat && !line.additional)) + (buff?.critRatingPercent || 0)) / 100) * product(lines.critRating.filter((line) => !line.flat && line.additional));
-  const critChance = (buff) => Math.min(100, Math.max(0, critRating(buff)) / 100) / 100;
+  // "Minions gain Lucky upon a Critical Strike" (gear affix batch A, 2026-10-22): Lucky (game keyword 116: "performs a random check
+  // or random roll twice and picks the result that benefits you the most"), held once the Minions crit (they crit far more often than
+  // the buff lasts; provisional). Crit check: 1 − (1 − c)²; added flat rolls: the better of two (see rollAverage).
+  const luckyCrit = lines.lucky.length > 0;
+  const critChance = (buff) => { const base = Math.min(100, Math.max(0, critRating(buff)) / 100) / 100; return luckyCrit && base > 0 ? 1 - (1 - base) ** 2 : base; };
   const critDamage = (buff) => Math.max(100, (baseCritDamage + sum(lines.critDamage.filter((line) => !line.additional)) + (buff?.critDamagePercent || 0)) * product(lines.critDamage.filter((line) => line.additional)) * (buff?.critDamageFactor ?? 1)) / 100;
   // Enemy crit-taken debuffs on the crit share (the Marked dummy, src/mark-effect.js; 2026-10-14): Minion hits take them too.
   const critOnlyFactor = product(extraCritOnly);
@@ -473,7 +557,7 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
   const sdInput = heroTraits?.selfDestruct?.pressed && TROOP_FAMILY.has(resolved.family) ? heroTraits.selfDestruct : null;
   let sdPlan = null;
   if (sdInput) {
-    const perCast = (resolved.family === "module" ? (resolved.count?.at(effectiveLevel) ?? 1) : 1) + rallyExtra + sdInput.extraPerCast;
+    const perCast = 1 + rallyExtra + sdInput.extraPerCast;
     const maxAlive = count + sdInput.extraPerCast;
     const summonScaled = skillTimingSs13[resolved.summon]?.speedType === "cast-speed" || resolved.family === "synthetic-troop";
     const summonSeconds = (resolved.summonCastSeconds ?? 1) / (summonScaled && summonCastSpeed?.factor ? summonCastSpeed.factor : 1);
@@ -526,7 +610,8 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     const stageBonus = entry.stageBonus ? entry.stageBonus(stage) : null;
     const stageAdditional = stageBonus?.additionalPercent ? [{ source: `${entry.name}: Stage ${stage}`, text: stageBonus.text, value: stageBonus.additionalPercent, origin: "skill" }] : [];
     const skillTags = new Set(entry.tags || []);
-    const additional = [...lines.additional.filter((line) => typeApplies(line.type, types) && (!line.skillTag || skillTags.has(line.skillTag))), ...levelLine, ...perMinionAdditional, ...(entry.extraAdditional || []).map((line) => ({ ...line, origin: "skill" })), ...stageAdditional];
+    const additional = [...lines.additional.filter((line) => typeApplies(line.type, types) && (!line.skillTag || skillTags.has(line.skillTag)) && (!line.skillRole || line.skillRole === entry.role)), ...levelLine, ...perMinionAdditional, ...(entry.extraAdditional || []).map((line) => ({ ...line, origin: "skill" })), ...stageAdditional];
+    if (lines.onlyType.length && !lines.onlyType.some((line) => line.types.includes(entry.type))) additional.push({ source: lines.onlyType[0].source, text: `${lines.onlyType[0].text}: this ${entry.type} row deals 0`, value: -100, origin: "gear" });
     const penetration = lines.penetration.filter((line) => line.types.includes(entry.type));
     const increasedFactor = Math.max(0, 1 + sum(increased) / 100);
     const additionalFactor = product(additional);
@@ -549,10 +634,15 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     const minOnly = lines.minDamage.filter((line) => typeApplies(line.type, types));
     const maxFactor = product(maxOnly), minFactor = Math.max(0, product(minOnly));
     const addedMin = added.reduce((total, line) => total + line.min * line.effectiveness / 100, 0), addedMax = added.reduce((total, line) => total + line.max * line.effectiveness / 100, 0);
-    const rollAverage = maxOnly.length || minOnly.length ? ((base + addedMin) * minFactor + (base + addedMax) * maxFactor) / 2 : base + addedAverage;
+    // Lucky (gear affix batch A): the added flat roll is the better of two, min + 2/3 (max − min).
+    const luckyAdded = luckyCrit ? added.reduce((total, line) => total + (line.max - line.min) / 6 * line.effectiveness / 100, 0) : 0;
+    const rollAverage = (maxOnly.length || minOnly.length ? ((base + addedMin) * minFactor + (base + addedMax) * maxFactor) / 2 : base + addedAverage) + luckyAdded;
     // `extraFlat`: added flat damage of a per-stack effect (Nature's Party's Rock Magus, B6), at the skill's added-damage effectiveness.
     const beforeTargetNoCrit = (buff, extraAdditionalPercent = 0, extraFlat = 0) => (rollAverage + extraFlat * addedEffectiveness / 100) * increasedFactor * additionalFactor * (buff?.additionalFactor ?? 1) * (1 + extraAdditionalPercent / 100);
-    const perHit = (buff, extraAdditionalPercent = 0, extraFlat = 0) => beforeTargetNoCrit(buff, extraAdditionalPercent, extraFlat) * critFactor(buff) * taken.factor * armourFactor * resistanceFactor;
+    // Minion Double Damage (gear affix audit 2026-10-22): hits only, × (1 + min(100, Σ chance) / 100) as for the player's hits.
+    const doubleChance = entry.kind === "hit" && !entry.buffOnly ? Math.min(100, Math.max(0, sum(lines.doubleDamage))) : 0;
+    const doubleFactor = 1 + doubleChance / 100 * (lines.tripleDamage.length ? 2 : 1);
+    const perHit = (buff, extraAdditionalPercent = 0, extraFlat = 0) => beforeTargetNoCrit(buff, extraAdditionalPercent, extraFlat) * critFactor(buff) * doubleFactor * taken.factor * armourFactor * resistanceFactor;
     const timing = entry.timing;
     const speed = timing?.speedType === "attack-speed" ? attackSpeedFactor : timing?.speedType === "cast-speed" ? castSpeedFactor : 1;
     // Minion Multistrike (core audit B7): an Attack-tagged hit skill with Minion Multistrike chance repeats like the player's
@@ -567,7 +657,7 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     const ownBuff = selfBuff ? combineBuffs([{ ...selfBuff, skill: entry.name }], entry.type) : null;
     return {
       name: entry.name, role: entry.role, kind: entry.kind, groupId: entry.groupId, type: entry.type, baseType: entry.baseType, converted: Boolean(entry.conversion), conversion: entry.conversion,
-      buffOnly: Boolean(entry.buffOnly), percent, addedEffectiveness, base, added, addedAverage, maxOnly, minOnly, maxFactor, minFactor, rollAverage, increased, additional, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, increasedFactor, additionalFactor, taken: taken.lines, takenFactor: taken.factor, armourFactor, resistancePercent, penetrationPercent, resistanceFactor,
+      buffOnly: Boolean(entry.buffOnly), doubleDamageChancePercent: doubleChance, doubleDamageFactor: doubleFactor, percent, addedEffectiveness, base, added, addedAverage, maxOnly, minOnly, maxFactor, minFactor, rollAverage, increased, additional, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, increasedFactor, additionalFactor, taken: taken.lines, takenFactor: taken.factor, armourFactor, resistancePercent, penetrationPercent, resistanceFactor,
       // A Multistrike sequence per use: the strikes' summed damage (each strike `hitsPerUse` hits).
       hitsPerUse: (stageBonus?.hitsPerUse ?? entry.hitsPerUse ?? 1) * (multistrike?.damagePerCycle ?? 1), multistrike: multistrike ? { ...multistrike, chancePercent: msChance, incrementPercent: msIncrement, incrementAdditionalPercent: msIncrementAdditional, strikesPerUse: 1 + multistrike.expectedExtraAttacks } : null, tags: [...skillTags], hitsBasis: entry.basis, hitsNote: entry.note, persistentSeconds: entry.persistentSeconds || null,
       selfBuff, timing, useTimeSeconds: timing?.useTime ?? null, effectiveUseTimeSeconds: useTime, cooldownSeconds: timing?.cooldown || 0, speedFactor: speed,
@@ -834,6 +924,16 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     }
   }
   events.sort((a, b) => a.time - b.time);
+  // Synthetic Troop ramp (own buffs not pre-built): one summon (+ Rally) per max(summon cast, its cooldown) from the first one (a
+  // module: 4 s cooldown; Machine Guard / Spider Tank: none (Split cooldown 0); Grim Phantom: one every 1 s by itself), so the
+  // 5 s / 20 s windows see fewer Minions; the steady window (from 20 s) is at the max.
+  if (troopCount && !prebuilt && !sdPlan?.chosen && count > troopCount.perCast) {
+    const interval = resolved.autoSummonSeconds || Math.max(summonCast, resolved.family === "module" ? resolved.summonCooldownSeconds || 0 : skillTimingSs13[resolved.summon]?.cooldown || 0);
+    const outAt = (at) => Math.min(count, troopCount.perCast * (1 + Math.floor(Math.max(0, at - summonCast) / interval + 1e-9)));
+    for (const event of events) event.damage *= outAt(event.time) / count;
+    troopCount.rampIntervalSeconds = interval;
+    troopCount.fullAt = summonCast + Math.ceil(count / troopCount.perCast - 1) * interval;
+  }
   const windowAverage = (seconds) => events.filter((event) => event.time < seconds).reduce((total, event) => total + event.damage, 0) / seconds;
   const steadyFrom = 20, steadyTo = horizon;
   const steadyDps = events.filter((event) => event.time >= steadyFrom && event.time < steadyTo).reduce((total, event) => total + event.damage, 0) / (steadyTo - steadyFrom);
@@ -848,9 +948,9 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
   const usedSkills = perSkill.filter((item) => item.inCycle && !item.buffOnly && item.percent > 0);
   for (const key of ["increased", "additional"]) {
     lines[key] = lines[key].filter((line) => {
-      if (!line.type && !line.skillTag) return true;
+      if (!line.type && !line.skillTag && !line.skillRole) return true;
       if (usedSkills.some((item) => (item[key] || []).includes(line))) return true;
-      lines.inactive.push({ ...line, reason: line.skillTag ? `no ${line.skillTag} skill of the ${resolved.minion} in its cycle` : `the ${resolved.minion} deals no ${line.type} damage` });
+      lines.inactive.push({ ...line, reason: line.skillRole ? `no ${line.skillRole === "ultimate" ? "Ultimate" : "Enhanced Skill"} of the ${resolved.minion} in its cycle` : line.skillTag ? `no ${line.skillTag} skill of the ${resolved.minion} in its cycle` : `the ${resolved.minion} deals no ${line.type} damage` });
       return false;
     });
   }
@@ -900,10 +1000,10 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     key, minionKey: resolved.key, name: resolved.minion, summon: resolved.summon, family: resolved.family, level: effectiveLevel, baseLevel: capped,
     setupKeys: setups.map((setup) => setup.setupKey), setupNames: setups.map((setup) => setup.name),
     baseDamage, baseDamageSource: resolved.family === "module" ? "shared Minion table; Lv.1 = 10 and Lv.20 = 300 confirmed in game on module tooltips (2026-10-11)" : "TLIDB summon Minion table (damage column)", levelFactor,
-    count, countSource: resolved.count?.source || null,
+    count, countSource: resolved.count?.source || null, troopCount: troopCount ? { max: troopCount.max, base: troopCount.base, perCast: troopCount.perCast, off: troopCount.off, raisedBy: troopCount.raise, cappedBy: troopCount.caps, rampIntervalSeconds: troopCount.rampIntervalSeconds ?? null, fullAtSeconds: troopCount.fullAt ?? null } : null,
     magus: magus ? { growth: magus.growth, stage: magus.stage, enhancedChancePercent: magus.enhancedChancePercent, fixedChance: magus.fixedChance, growthRule: magus.growthRule, chanceRule: magus.chanceRule, sources: magus.sources, fullBloom: Boolean(fullBloomEntries.length), nourishment,
       initialGrowthMatters: magus.initialGrowthMatters, circle: magus.circle, ultimateSpeed: magus.ultimateSpeed, empowerEffect: { ...magus.empowerEffect, applied: magus.empowerEffect.factor !== 1 && skills.some((item) => item.selfBuff?.empowerEffectFactor) } } : null,
-    lines: { increased: lines.increased, additional: lines.additional, speed: lines.speed, critRating: lines.critRating, critDamage: lines.critDamage, penetration: lines.penetration, armourPenetration: lines.armourPenetration, added: lines.added, unread: lines.unread, inactive: lines.inactive, trait: traitLinesUsed, support: lines.support, ...(multistrikes ? { multistrikeChance: lines.multistrikeChance, multistrikeIncrement: lines.multistrikeIncrement, multistrikeIncrementAdditional: lines.multistrikeIncrementAdditional } : {}), ...(lines.maxDamage.length ? { maxDamage: lines.maxDamage } : {}), ...(lines.minDamage.length ? { minDamage: lines.minDamage } : {}) },
+    lines: { increased: lines.increased, additional: lines.additional, speed: lines.speed, critRating: lines.critRating, critDamage: lines.critDamage, penetration: lines.penetration, armourPenetration: lines.armourPenetration, added: lines.added, doubleDamage: lines.doubleDamage, lucky: lines.lucky, unread: lines.unread, inactive: lines.inactive, trait: traitLinesUsed, support: lines.support, ...(multistrikes ? { multistrikeChance: lines.multistrikeChance, multistrikeIncrement: lines.multistrikeIncrement, multistrikeIncrementAdditional: lines.multistrikeIncrementAdditional } : {}), ...(lines.maxDamage.length ? { maxDamage: lines.maxDamage } : {}), ...(lines.minDamage.length ? { minDamage: lines.minDamage } : {}) },
     speeds: { attackSpeedFactor, castSpeedFactor },
     crit: { rating: critRating(null), chancePercent: critChance(null) * 100, damagePercent: critDamage(null) * 100, factor: critFactor(null), baseRating: baseCritRating, baseDamagePercent: baseCritDamage, ...(extraCritOnly.length ? { critOnlyFactor, critOnlySources: extraCritOnly } : {}) },
     skills: perSkill, cycle, events: events.filter((event) => event.time < timelineSeconds),

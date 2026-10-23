@@ -46,7 +46,9 @@ const AILMENT_TAGS = { Ignite: ["ignite"], Trauma: ["trauma"], Wilt: ["wilt"], A
 // (every modeled damage source is an active skill: provisional, Exemption Thunderhell); "and" joins damage types
 // ("Elemental and Erosion Damage").
 // "Focus Skill" / "Combo Skill" (residual batch A-2): the summed Focus / Combo Damage Enhancement line (src/line-effects.js).
-const SKILL_TOKENS = ["Active Skill", "Fire Skill", "Cold Skill", "Lightning Skill", "Erosion Skill", "Physical Skill", "Spell Skill", "Attack Skill", "Melee Skill", "Terra Skill", "Projectile Skill", "Area Skill", "Focus Skill", "Combo Skill"];
+// "Barrage Skill" (legendary audit batch 2, 2026-10-22: Stellar Vestment of Eminence's "+20% additional damage for Barrage Skills"):
+// skills carrying the Barrage tag; "… for Focus Skills" (Mortal's Reverie) reads as the "Focus Skill" scope.
+const SKILL_TOKENS = ["Active Skill", "Fire Skill", "Cold Skill", "Lightning Skill", "Erosion Skill", "Physical Skill", "Spell Skill", "Attack Skill", "Melee Skill", "Terra Skill", "Projectile Skill", "Area Skill", "Focus Skill", "Combo Skill", "Barrage Skill", "Mobility Skill", "Demolisher Skill"];
 const TOKENS = [...SKILL_TOKENS, "and", "Elemental Ailment", "Damaging Ailment", "Channeled Skill", "Main Skill", "Fire", "Cold", "Lightning", "Erosion", "Physical", "Elemental", "Spell", "Attack", "Melee", "Projectile", "Ranged", "Horizontal", "Area", "Channeled", "Beam", "Sentry", "Minion", "Ignite", "Trauma", "Wilt", "Ailment", "Hit"];
 
 function parseScope(phrase) {
@@ -75,7 +77,7 @@ function parseScope(phrase) {
 export function classifyDamageLine(text) {
   let clean = normalizePercentageText(String(text || "")).replace(/\s+/g, " ").replace(/^\+ (?=\d)/, "+").replace(/\.$/, "").trim();
   // "… Damage for Attack Skills" / "… Damage dealt by Spell Skills" (gear-pact batch chunk 2) read as "Attack Skill … Damage".
-  const suffix = clean.match(/^([+-]?\d+(?:\.\d+)?% (?:additional )?)(.*?)([Dd]amage) (?:for|dealt by) (Attack|Spell|Melee|Projectile|Area|Fire|Cold|Lightning|Erosion|Physical|Terra) Skills$/);
+  const suffix = clean.match(/^([+-]?\d+(?:\.\d+)?% (?:additional )?)(.*?)([Dd]amage) (?:for|dealt by) (Attack|Spell|Melee|Projectile|Area|Fire|Cold|Lightning|Erosion|Physical|Terra|Barrage|Focus|Mobility) Skills$/);
   // (Ailment wordings keep their own readers: "Ailment Damage dealt by Area Skills" needs the inflicting skill's tag.)
   if (suffix && !/Ailment|Ignite|Trauma|Wilt/i.test(suffix[2])) clean = `${suffix[1]}${suffix[4]} Skill ${suffix[2]}${suffix[3]}`;
   // "+X% additional Ailment Damage dealt by attacks" (Great Strength; game affix 938444: attr 3604 mod 4 on Ignite, Wilt and

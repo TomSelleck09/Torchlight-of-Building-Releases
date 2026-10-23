@@ -54,7 +54,7 @@ export function collectEnemyAilments({ setups = [], activeNames = new Set(), mod
   for (const key of ["ignite", "trauma", "wilt"]) {
     const typed = collectAilmentTypedSources(key, modifierTexts);
     const chance = typed.chance.reduce((sum, line) => sum + line.value, 0) + genericChance + (key === "ignite" ? Number(auraChance?.ignite) || 0 : 0);
-    if (mainActive && typed.base.length && chance > 0) add(key[0].toUpperCase() + key.slice(1), true, typed.base[0].source, "Base damage and chance to inflict");
+    if (mainActive && (typed.base.length || typed.flatBase.length) && chance > 0) add(key[0].toUpperCase() + key.slice(1), true, (typed.base[0] || typed.flatBase[0]).source, "Base damage and chance to inflict");
   }
   for (const setup of setups) {
     if (!activeNames.has(setup.name)) continue;
@@ -74,8 +74,12 @@ export function collectEnemyAilments({ setups = [], activeNames = new Set(), mod
     const match = text.match(/^Inflicts (Frostbite|Numbed) when this skill deals damage$/im);
     if (match) add(match[1][0].toUpperCase() + match[1].slice(1).toLowerCase(), false, `${setup.name}: skill text`, `${setup.name}: "${match[0]}"`);
   }
+  // Chaotic Ending's roll (legendary audit batch 8): "Critical Strikes are guaranteed to inflict Numbed": Numbed while the Main Skill
+  // hits (it crits; provisional: the crit chance is not checked here).
+  for (const line of modifierTexts) if (mainActive && /^Critical Strikes are guaranteed to inflict Numbed\.?$/i.test(normalizePercentageText(String(line.text)).trim())) add("Numbed", false, line.source, "Inflicted by Critical Strikes");
   for (const line of modifierTexts) {
-    const match = normalizePercentageText(line.text).match(/^Inflicts (Frostbite|Numbed) (?:on hit|when dealing (?:Hit )?(\w+) Damage)$/i);
+    // ("Inflicts Frostbites when dealing Cold Damage", Chaotic Ending's roll, is the same line.)
+    const match = normalizePercentageText(line.text).match(/^Inflicts (Frostbite|Numbed)s? (?:on hit|when dealing (?:Hit )?(\w+) Damage)$/i);
     if (!match || !mainActive) continue;
     // A typed wording ("when dealing Hit Lightning Damage") needs an active hitting skill (the main skill or another
     // applier) that deals that type, the same rule as the support path above.
@@ -83,6 +87,17 @@ export function collectEnemyAilments({ setups = [], activeNames = new Set(), mod
     if (!type) { add(match[1], false, line.source, "Inflicted on hit"); continue; }
     const dealer = setups.find((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.name === mainName || applierNames.includes(setup.name)) && dealsHitDamage(setup, type, modifierTexts));
     if (dealer) add(match[1], false, line.source, `${dealer.name} deals Hit ${type} Damage`);
+  }
+  // The revived Numbed family (TLIDB Memory Revival; game affix 16227245): "Every 10 time(s) Lightning Damage is dealt, inflicts N
+  // stack(s) of Numbed on enemies within 10 m nearby. Interval: 0.5 s". An active hitting skill (the main skill or another applier)
+  // that deals Lightning Damage keeps the dummy Numbed; the dummy stands within 10 m (src/dummy-target.js). Revived affix census
+  // 2026-10-21 (provisional: hit damage only; the stacks per trigger and the Interval are not counted, the dummy is held at the
+  // 10-stack cap like every Numbed source).
+  for (const line of modifierTexts) {
+    const match = normalizePercentageText(String(line.text)).trim().match(/^Every \d+ time\(s\) (Lightning) Damage is dealt, inflicts \d+ stack\(s\) of Numbed on enemies within (\d+(?:\.\d+)?) ?m nearby\. Interval: [\d.]+ ?s$/i);
+    if (!match || !mainActive) continue;
+    const dealer = setups.find((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.name === mainName || applierNames.includes(setup.name)) && dealsHitDamage(setup, "Lightning", modifierTexts));
+    if (dealer) add("Numbed", false, line.source, `${dealer.name} deals Lightning Damage (every 10 instances inflict Numbed; the dummy is within ${match[2]} m)`);
   }
   // Freeze (TLIDB keyword 707 / manual): "When a unit's Frostbite Rating exceeds 100, it becomes Frozen"; the build's
   // inflicted rating is 10 + Max Frostbite Rating lines (user-confirmed 2026-10-18: Frozen at 100 or higher), capped at 120 (src/combat-states.js; provisional reading).
@@ -99,6 +114,9 @@ export function collectEnemyAilments({ setups = [], activeNames = new Set(), mod
     const text = normalizePercentageText(String(line.text)).trim();
     if (/^Inflicts Frostbite on nearby enemies$/i.test(text)) add("Frostbite", false, line.source, "Frostbite on Nearby enemies (within 6 m)");
     if (/^Inflicts Paralysis, Blind, Weaken, Slow, Taunt, and Frostbite on hit$/i.test(text) && mainActive) add("Frostbite", false, line.source, "Inflicted on hit");
+    // Discord of the Second Will (lunar-phase revived memory affix; src/combat-states.js discordCrowdControl): its crowd control
+    // rotation (not Freeze or Knockback) includes Frostbite (keyword 742), held like the other types (provisional).
+    if (/^When dealing damage, inflicts a random crowd control effect \(except Freeze and Knockback\), prioritizing effects that have not yet been inflicted\. Interval: [\d.]+ ?s$/i.test(text) && mainActive) add("Frostbite", false, line.source, "Discord of the Second Will's crowd control rotation (one type per second, a missing type first; provisional)");
   }
   // The follower's skills (src/follower-model.js FOLLOWER_MARKERS, 2026-10-17): "The Follower inflicts <Ailment> on the dummy" —
   // the dummy carries an ailment the follower inflicts whoever deals the main damage (provisional: the follower casts at its

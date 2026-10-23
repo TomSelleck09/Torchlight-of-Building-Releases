@@ -15,6 +15,8 @@
 //   third slot with Vendetta" puts a Lv. 20 Vendetta in Active slot 3 by the same rule; Swift Stalk's "Replace Vendetta with
 //   Endless Vendetta" makes it Endless Vendetta. The game equips one copy of a skill, so a Vendetta / Endless Vendetta the user
 //   placed in another slot is left out of the calculation like the replaced skill (provisional).
+// - 2026-10-21 (user decision): the grants come from data (src/data/heroes/trait-granted-skills.generated.js, game grant texts +
+//   trait catalog); trait skills are never pickable (src/trait-granted-skills.js), and every one is held once like Vendetta.
 //
 // A granted skill takes no energy itself and is not counted as a skill setup. It takes supports like other skills (2026-10-15
 // user answer): the user adds them on its row; they are stored under the granted skill's own key `trait:<skill>` (customSupports,
@@ -28,22 +30,21 @@ import { skillBoardRows } from "./skill-board-slots.js";
 import { supportCanSupportSkill } from "./support-compatibility.js";
 import { supportSlotsForSetup } from "./support-slot-transfer.js";
 import { tlidbSupportCatalogSs13 } from "./data/catalogs/tlidb-ss13.js";
+import { traitSkillGrants, traitSkillSwaps } from "./data/heroes/trait-granted-skills.generated.js";
+import { TRAIT_GRANTED_SKILL_NAMES, traitSkillFamily, traitSkillSupportsKey } from "./trait-granted-skills.js";
 
 export const YOUGA_ULTIMATE_ONE_ID = "youga-the-ultimate-one";
 export const TRAIT_SKILL_LEVEL = 20;
-// Active Skill slots are board rows 0–4: the second / third / fourth slot is row 1 / 2 / 3.
-export const TRAIT_SLOT_GRANTS = Object.freeze({
-  "Spacetime Dictator": Object.freeze({ row: 1, skill: "Stasis Vault" }),
-  "Spacetime Conqueror": Object.freeze({ row: 2, skill: "Supreme Descent" }),
-  "Spacetime Overlord": Object.freeze({ row: 3, skill: "Selves of All Realms" }),
-  "Replace the skill in the third slot with Vendetta": Object.freeze({ row: 2, skill: "Vendetta" })
-});
+// Active Skill slots are board rows 0–4: the second / third / fourth slot is row 1 / 2 / 3. The grants and swaps come from the
+// game's grant texts and the trait catalog (src/data/heroes/trait-granted-skills.generated.js, scripts/build-trait-granted-skills.mjs):
+// trait line → { row, skill } (Youga's picks carry the keyword as their line, Erika's the grant text).
+export const TRAIT_SLOT_GRANTS = Object.freeze(Object.fromEntries(traitSkillGrants.map((grant) => [grant.traitLine, Object.freeze({ row: grant.row, skill: grant.skill })])));
 // Lines that change a granted skill into another (Swift Stalk).
-export const TRAIT_SLOT_SKILL_REPLACEMENTS = Object.freeze({
-  "Replace Vendetta with Endless Vendetta": Object.freeze({ from: "Vendetta", to: "Endless Vendetta" })
-});
-// Skills the game equips once: a user copy elsewhere on the board is left out while the grant holds one of them.
-const ONE_COPY = Object.freeze({ Vendetta: ["Vendetta", "Endless Vendetta"], "Endless Vendetta": ["Vendetta", "Endless Vendetta"] });
+export const TRAIT_SLOT_SKILL_REPLACEMENTS = Object.freeze(Object.fromEntries(traitSkillSwaps.map((swap) => [swap.text, Object.freeze({ from: swap.from, to: swap.to })])));
+// Skills the game equips once: a user copy of a granted skill (or of the skill a swap makes of it) elsewhere on the board is left
+// out while the grant holds one of them. Saved boards no longer hold such copies (src/trait-granted-skills.js
+// migrateTraitGrantedSetups; the picker never offers them), so this only guards a state handed in directly.
+const ONE_COPY = Object.freeze(Object.fromEntries(TRAIT_GRANTED_SKILL_NAMES.map((name) => [name, Object.freeze(traitSkillFamily(name))])));
 // icon: TLIDB has no Clockwork Core icon of its own (its keyword page, https://tlidb.com/en/Clockwork_Core, fetched 2026-10-15,
 // shows only the trait skills and Youga's traits); the socket shows the base trait that grants it, I Am the Ultimate One
 // (TLIDB UI_Nanfashi301, already local; also src/data/assets/tli-art.js supports).
@@ -92,7 +93,9 @@ function grantedSkillSetup(grant, catalogSkill, replaced, resolveSupports, profi
   const setup = {
     ...(catalogSkill || { tags: [], role: "empower" }),
     name: grant.skill,
-    setupKey: `trait:${grant.skill}`,
+    // One supports key per granted slot (user decision 2026-10-21): a swapped skill (Endless Vendetta) reads the key of the skill
+    // it replaces (trait:Vendetta), so the slot's supports carry over both ways (src/trait-granted-skills.js traitSkillSupportsKey).
+    setupKey: traitSkillSupportsKey(grant.skill),
     granted: true,
     grantSource: grant.trait,
     grantText: grant.keyword,

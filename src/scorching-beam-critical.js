@@ -80,6 +80,11 @@ function scopedCritDamageLines(modifierTexts, main) {
 // `castsPerSecond` is the hit-event rate the recent-strike stacks count (the beam's cast rate; a skill hit's deduped
 // hits/s, src/skill-hit-model.js strikeHitsPerUse). `strikeCritChancePercent` overrides the crit chance those strikes roll
 // (an attack's weapon crit chance); it defaults to this model's spell crit chance.
+/** "Guaranteed to land Critical Strikes" on the player (a gear / Dirge line; a Follower skill's own "This skill is …" is not it). */
+export const GUARANTEED_CRIT_LINE = /^Guaranteed to land Critical Strikes$/i;
+export const CRIT_NO_EXTRA_DAMAGE_LINE = /^Critical Strikes cannot deal additional damage$/i;
+export const hasGuaranteedCrit = (modifierTexts = []) => modifierTexts.some((line) => GUARANTEED_CRIT_LINE.test(String(line?.text ?? "").trim()) && !["follower", "minion"].includes(line?.origin));
+
 export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modifierTexts = [], fireResistanceTotalPercent = 0, castsPerSecond = 0, targetHasAilment = false, strikeCritChancePercent = null } = {}) {
   const baseline = selenaScorchingBeamStrippedBaseline.damage;
   const baseRating = baseline.spellCriticalStrikeChancePercent * 100;
@@ -113,7 +118,9 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
     match = text.match(/^([+-]?\d+(?:\.\d+)?)% additional (?:Spell |Attack and Spell )?Critical Strike Rating$/i);
     if (match) { lineCrit.additionalFactor = (lineCrit.additionalFactor ?? 1) * Math.max(0, 1 + Number(match[1]) * (line.multiplier ?? 1) / 100); continue; }
     // Flat rating from a derived line (Origin of Fire: "+115 Attack and Spell Critical Strike Rating"; residual batch A2-origin).
-    match = text.match(/^\+(\d+(?:\.\d+)?) (?:Attack and )?Spell Critical Strike Rating$/i);
+    // A plain "+N Critical Strike Rating" body (the revived Frostbitten Critical Strike Rating family; "… when Unarmed") is the
+    // general rating, which Spells take too.
+    match = text.match(/^\+(\d+(?:\.\d+)?) (?:(?:Attack and )?Spell )?Critical Strike Rating$/i);
     if (match) { lineCrit.flat = (lineCrit.flat || 0) + Number(match[1]) * (line.multiplier ?? 1); continue; }
     match = text.match(/^([+-]?\d+(?:\.\d+)?)% (Spell )?Critical Strike Damage$/i);
     if (match) lineCrit.damage.push({ source: line.source, value: Number(match[1]) * (line.multiplier ?? 1), text: line.derivedFrom || text, ...(match[2] ? { spellOnly: true } : {}) });
@@ -143,7 +150,15 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
   // Lucky Critical Strike (manual "Lucky & Unlucky": rolled twice, the more favourable kept): 1 − (1 − p)².
   const luckyCrit = modifierTexts.some((line) => !line.lineEffect && /^Lucky Critical Strike$/i.test(String(line.text).trim()));
   const unluckyChance = Math.min(100, rating / 100);
-  const criticalChancePercent = luckyCrit ? (1 - (1 - unluckyChance / 100) ** 2) * 100 : unluckyChance;
+  // "Guaranteed to land Critical Strikes" (Pantheon's Elegy: God of War's Dirge; game affix 937538880, node 107 label 3001120, a
+  // flag): every hit crits (legendary audit batch 1, 2026-10-22). Crit never reaches ailments or Reaps (user-confirmed), so only
+  // the hit share changes. Whether it overrides a "-100% Critical Strike Rating" line (Genius Battlegear) is not sourced: it does
+  // here (provisional, open question legendary-guaranteed-crit).
+  const guaranteedCrit = hasGuaranteedCrit(modifierTexts);
+  // "Critical Strikes cannot deal additional damage" (Silent Aria; legendary audit batch 1): the hit engines give a crit no extra damage
+  // (crit damage and crit-only lines); the crit damage figures below stay as the panel shows them (Instant Smash reads them).
+  const critNoExtraDamage = modifierTexts.some((line) => CRIT_NO_EXTRA_DAMAGE_LINE.test(String(line?.text ?? "").trim()) && !["follower", "minion"].includes(line?.origin));
+  const criticalChancePercent = guaranteedCrit ? 100 : luckyCrit ? (1 - (1 - unluckyChance / 100) ** 2) * 100 : unluckyChance;
   // Per-group breakdown for display; the sum is unchanged.
   const increasedCriticalDamageSources = [
     { source: "Gear", value: value(gear, "criticalStrikeDamagePercent:increased") },
@@ -197,5 +212,5 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
     // Build-wide "+X% additional damage on [<Tag>] Critical Strike" lines (src/crit-only-lines.js; residual batch A-2).
     ...critOnlyLinesFor(modifierTexts, main?.tags || [])];
   const critOnlyFactor = critOnlySources.reduce((factor, line) => factor * (1 + line.value / 100), 1);
-  return { taggedCrit: tagged, critOnlyFactor, critOnlySources, spellOnlyCriticalDamagePercent, luckyCrit, lineCrit, baseRating, flatRating, increasedRatingPercent, rating, criticalChancePercent, baseCriticalDamagePercent: baseline.spellCriticalStrikeDamagePercent, increasedCriticalDamageSources, criticalDamagePercent, fireResistanceCriticalDamagePercent, fireResistanceSources, combatCriticalDamagePercent, conditionalSources, critsPerSecond, nonCritsPerSecond };
+  return { guaranteedCrit, critNoExtraDamage, taggedCrit: tagged, critOnlyFactor, critOnlySources, spellOnlyCriticalDamagePercent, luckyCrit, lineCrit, baseRating, flatRating, increasedRatingPercent, rating, criticalChancePercent, baseCriticalDamagePercent: baseline.spellCriticalStrikeDamagePercent, increasedCriticalDamageSources, criticalDamagePercent, fireResistanceCriticalDamagePercent, fireResistanceSources, combatCriticalDamagePercent, conditionalSources, critsPerSecond, nonCritsPerSecond };
 }

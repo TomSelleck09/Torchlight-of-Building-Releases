@@ -1,9 +1,16 @@
 import { effectiveGearModifierTexts } from "./engine.js";
 import { allSkillEffectsSs13 } from "./data/skills/all-skill-effects-ss13.generated.js";
 import { withoutSlateCoreName } from "./granted-core-lines.js";
+import { slateTalentLines } from "./nether-king-authority.js";
+
+export const FIXED_BLUR_RATING = /^Has (\d+(?:\.\d+)?) points? (?:\(s\) )?of fixed Blur Rating$/i;
 
 export function parseBlurSource(text, source, { slot, hasReaping = false, inflictsWilt = true } = {}) {
   const line = String(text).trim();
+  // "Has 120 points of fixed Blur Rating" (Pantheon's Elegy: Goddess of Deception's Dirge; legendary audit batch 1, 2026-10-22): Blur
+  // held at that Rating (src/blur-effects.js FIXED_BLUR_RATING). A conditional wording (the prism's "When activating 2 Legendary
+  // Medium Talent within the area, Has …") is not this line.
+  if (FIXED_BLUR_RATING.test(line)) return { source, text: line, trigger: "Fixed Blur Rating", available: true, reason: "Blur held at a fixed Rating" };
   if (!/\b(?:gain(?:s)?|grant(?:s)?|regain(?:s)?|has)\s+Blur\b/i.test(line)) return null;
   // Gaining rating, refreshing an existing buff, and Blur Effect are not grants.
   if (/\bBlur (?:Rating|Effect|gains)\b|Refreshes Blur/i.test(line)) return null;
@@ -35,7 +42,7 @@ export function collectBlurSources({ equipment, talents = [], slates = [], setup
   };
   for (const item of equipment?.candidateItems || []) for (const text of effectiveGearModifierTexts(item)) add(text, item.name, item.slot);
   for (const panel of talents) for (const node of panel.allocatedNodes || []) if (node.rank > 0 && !node.replacedBy && (node.inverseEffectMultiplier ?? 1) > 0) add(node.description, `${panel.name} · talent (${node.coordinate})`);
-  for (const slate of slates) for (const text of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) add(withoutSlateCoreName(text), slate.name);
+  for (const slate of slates) for (const text of slateTalentLines(slate)) add(withoutSlateCoreName(text), slate.name);
   for (const setup of setups) if (setup.enabled && activeNames.has(setup.name)) for (const text of allSkillEffectsSs13[setup.name] || []) add(text, `Skill: ${setup.name}`);
   return result;
 }

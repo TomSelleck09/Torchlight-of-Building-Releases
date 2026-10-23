@@ -130,6 +130,21 @@ function baseHeroMemoryLineCoverage(model, memoryId, text, equipped = true) {
   return combineStatuses(statuses);
 }
 
+// Badge of a regular revived affix (a TLIDB family with tiers) or a lunar-phase one that is not hero-exclusive, from its lines'
+// clause badges (revived affix census 2026-10-21; before, the tooltip read "Not modeled" for every one of them, read or not). Null
+// for the base-slot affixes (the tooltip's "Enables base slot") and for a memory without a revived affix.
+function commonRevivedAffixCoverage(planner, memory) {
+  const name = normalizeRevivedAffix(memory?.revivedAffix || "");
+  if (!name || /Base Trait Slot$|^Artificial Moon/.test(name)) return null;
+  const hero = planner?.state?.hero || {};
+  if (!Object.values(hero.equippedMemoryIds || {}).includes(memory.id)) return { status: "Not equipped", reason: "" };
+  if (!revivedAffixCounts(hero, memory)) return { status: "Inactive", reason: "Only one revived memory counts: another equipped revived memory comes first (slot order)" };
+  const lines = revivedFamilyText(memory, hero).split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  const model = planner?.heroMemories || { lines: [], intakeOnly: [] };
+  return { status: combineStatuses(lines.map((line) => heroMemoryLineCoverage(model, memory.id, line, true))), reason: "" };
+}
+
 // Badge of a hero-exclusive revived affix (hero trait audit B1, Q-H11 provisional; src/hero-exclusive-revivals.js), or null
 // when the memory's revived affix is not hero-exclusive (the app keeps its own badge: Ceaseless Tide, Cat's Night Safari,
 // Base Trait Slot). Inactive with the reason when the selected loadout is another or another revived memory counts; else
@@ -155,7 +170,7 @@ export function revivedAffixLineCoverage(planner, memory, line) {
 export function revivedAffixCoverage(planner, memory) {
   const hero = planner?.state?.hero || {};
   const state = exclusiveRevivalState(hero, memory);
-  if (!state) return null;
+  if (!state) return commonRevivedAffixCoverage(planner, memory);
   const equipped = Object.values(hero.equippedMemoryIds || {}).includes(memory.id);
   if (!equipped) return { status: "Not equipped", reason: "" };
   if (!state.applies) return { status: "Inactive", reason: state.reason };

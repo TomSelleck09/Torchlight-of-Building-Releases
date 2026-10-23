@@ -5,6 +5,7 @@ import { normalizePercentageText } from "./percentage-text.js";
 import { ailmentStateNames } from "./enemy-ailments.js";
 import { withoutSlateCoreName } from "./granted-core-lines.js";
 import { applyTheaCapRules } from "./thea-traits.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 
 export const blessingNames = ["Tenacity", "Focus", "Agility"];
 
@@ -41,7 +42,9 @@ export function parseBlessingModifier(text) {
   const raw = normalizePercentageText(String(text)).replace(/^\[[^\]]+\]\s*/, "").trim();
   // Talent copies carry "Class: Legendary Medium Talent:" prefixes; anchored rules read the tail.
   const clean = raw.replace(/^.*:\s*/, "").trim();
-  let match = clean.match(/^([+-]\d+) (?:to )?Max (Tenacity|Focus|Agility) Blessing Stacks$/i);
+  let match = clean.match(/^Own (\d+) additional stacks? of (Tenacity|Focus|Agility) Blessing$/i);
+  if (match) return { kind: "own", name: match[2], value: Number(match[1]) };
+  match = clean.match(/^([+-]\d+) (?:to )?Max (Tenacity|Focus|Agility) Blessing Stacks$/i);
   if (match) return { kind: "cap", name: match[2], value: Number(match[1]) };
   match = raw.match(/Changes the base effect of all Blessings to: \+([\d.]+)% additional damage and -([\d.]+)% additional damage taken/i);
   if (match) return { kind: "baseReplace", names: [...blessingNames], additionalDamagePerStack: Number(match[1]), damageTakenPerStack: -Number(match[2]), text: raw };
@@ -60,6 +63,10 @@ export function parseBlessingModifier(text) {
   if (match) return { kind: "effect", names: namesIn(match[3]), value: signed(match[1]), additional: Boolean(match[2]), text: clean };
   match = clean.match(/^([+-][\d.]+)% damage per stack of any Blessing$/i);
   if (match) return { kind: "perStack", names: [...blessingNames], bucket: "increased", value: signed(match[1]), text: clean };
+  // "+8% damage and Minion Damage per stack of any Blessing" (Vorax Neck; gear affix audit 2026-10-22): the same increased damage
+  // per held stack for the player, and as "+X% Minion Damage" for the Minions (`minionLines`, read by src/minion-damage-model.js).
+  match = clean.match(/^([+-][\d.]+)% damage and Minion Damage per stack of any Blessing$/i);
+  if (match) return { kind: "perStack", names: [...blessingNames], bucket: "increased", value: signed(match[1]), text: clean, minion: true };
   match = clean.match(/^([+-][\d.]+)% additional damage per stack of Blessing \(multiplies\)$/i);
   if (match) return { kind: "perStack", names: [...blessingNames], bucket: "multiplies", value: signed(match[1]), text: clean };
   // "+X% [additional] [<scope>] Damage per stack of <Blessing> [owned]" (Bunch: "+3% additional Spell Damage per stack of
@@ -70,6 +77,19 @@ export function parseBlessingModifier(text) {
   match = clean.match(/^([+-][\d.]+)% (?:additional )?(?:[A-Za-z]+ )?damage per stack of (Tenacity|Focus|Agility) Blessing(?: owned)?$/i);
   if (match) return { kind: "lineEffect", names: namesIn(`${match[2]} Blessing`), text: clean };
   if (/(?:Unable to|Cannot) gain/i.test(raw)) return null;
+  // "20% chance to gain a stack of a random Blessing when Minions deal damage" (Vorax boots; gear affix batch A, 2026-10-22): a gain
+  // source of each Blessing while a modeled Minion hits (it hits far more often than a Blessing lasts; provisional).
+  if (/^\+?[\d.]+% chance to gain a stack of a random Blessing when Minions deal damage$/i.test(clean)) return { kind: "gain", name: blessingNames[0], names: [...blessingNames], text: clean };
+  // Legendary audit batch 7 (2026-10-22): a random / any Blessing on damage (Illusory Chimera "Gains 1 stack of random Blessing upon
+  // dealing damage. Interval: 1 s"; Grace Boots corroded "+30% for Non-Critical Strikes to grant 1 stack of any Blessing"): a gain
+  // source of each Blessing while the build hits (one stack per second or more is far more often than a Blessing lasts; provisional).
+  // (Read on `raw`: "Interval: 1 s" carries a colon that `clean` would strip from.)
+  if (/^Gains \d+ stacks? of random Blessing upon dealing damage\. Interval: [\d.]+ ?s$/i.test(raw) || /^\+?[\d.]+ ?% for Non-Critical Strikes to grant \d+ stacks? of any Blessing$/i.test(raw)) return { kind: "gain", name: blessingNames[0], names: [...blessingNames], text: raw };
+  // Immolating World: "Bonuses to Max Stacks of Tenacity Blessing also apply to Focus Blessing".
+  if (/^Bonuses to Max Stacks of Tenacity Blessing also apply to Focus Blessing$/i.test(raw)) return { kind: "capShare", from: "Tenacity", to: "Focus", text: raw };
+  // "Gains 1 stack(s) of all Blessings when casting an Elixir Skill" (Belt base affix; gear affix batch D): every Blessing.
+  match = clean.match(/^Gains (\d+) stack\(s\) of all Blessings when casting an Elixir Skill$/i);
+  if (match) return { kind: "gain", name: blessingNames[0], names: [...blessingNames], text: clean };
   match = raw.match(new RegExp(`\\b(?:gain(?:s)?|grant(?:s)?) (?:max stacks of |\\d+ stacks?(?:\\(s\\))? of |a stack(?: of)? )?${NAME_LIST}`, "i"));
   if (match && !/Nearby enemies|Minions/i.test(raw)) {
     const names = namesIn(match[1]);
@@ -102,6 +122,9 @@ function gainCondition(line, context) {
   // holds the stacks (src/tangle-model.js).
   if (/when Tangle casts a skill|generating Tangle/i.test(line)) return tangleCasts ? [true, "A Tangle Skill on the skill board: its activated Tangle casts the Spell at its casting interval"] : [false, "No Tangle Skill (a Spell with Spell Tangle, Activation Medium: Tangle or Manifold Entanglement)"];
   if (/when using a Non-Main Skill/i.test(line)) return canUseNonMain ? [true, "Active non-main skill available"] : [false, "No active non-main skill"];
+  // Gear affix batches A / D (2026-10-22): Minion damage and Elixir casts as gain events.
+  if (/when Minions deal damage/i.test(line)) return context.minionsDealDamage ? [true, "A modeled Minion hits the dummy far more often than a Blessing lasts (provisional)"] : [false, "No modeled Minion"];
+  if (/when casting an Elixir Skill/i.test(line)) return context.elixirCasts ? [true, "An Elixir Skill on the skill board is cast during the fight (src/elixir-model.js; provisional)"] : [false, "No Elixir Skill on the skill board"];
   if (/Barrier/i.test(line)) { const available = barrierSources.some(source => source.available); return [available, available ? barrierSources.map(source => source.source).join(", ") : "No verified Barrier source"]; }
   if (/Reap/i.test(line)) return hasReaping ? [true, "Active Reaping source"] : [false, "No active Reaping source"];
   // Gains after being hit ("After taking a hit, gains … every 0.25 s"): the training dummy never attacks, but by the user's
@@ -109,6 +132,7 @@ function gainCondition(line, context) {
   // switched by the Blocked recently condition and listed in the recount assumptions. Checked before the timed-gain rule.
   if (HIT_GAIN.test(line)) return hitRecently ? [true, "Hit recently (best-case assumption: blocking and being hit are common in maps and against bosses; the training dummy itself never attacks; condition 'Hit or blocked recently')"] : [false, "Hit recently is off (condition 'Hit or blocked recently')"];
   if (/Block/i.test(line)) return block?.recentlyActive ? [true, "Blocked recently enabled; block chance available"] : [false, "Requires blocking"];
+  if (/Non-Critical Strikes|upon dealing damage/i.test(line)) return canHit ? [true, "Active hit skill"] : [false, "No active hit skill"];
   if (/Critical Strike/i.test(line)) return canCrit ? [true, "Critical strikes available"] : [false, "No modeled critical chance"];
   if (/on hit|hitting an enemy|inflicting damage|Non-Critical Strikes/i.test(line)) return canHit ? [true, "Active hit skill"] : [false, "No active hit skill"];
   if (movementGainPattern.test(line)) return moving ? [true, "Moving (assumed: movement is constant, so max stacks)"] : [false, "Standing still"];
@@ -126,13 +150,14 @@ const statusKeys = (text) => {
   return [...new Set([clean, clean.replace(/^\[[^\]]+\]\s*/, ""), colon > 0 ? clean.slice(colon + 2) : clean])];
 };
 
-export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, pactState = {}, equipment, talents = [], slates = [], talentState = {}, barrierSources = [], hasReaping = false, canUseNonMain = false, block, canHit = false, canCrit = false, moving = false, enemyAilments = [], igniteOnTarget = false, spellHitActive = true, extraLines = [], hitRecently = true, stackUsers = new Set(), stackUserTexts = [], stackOverrides = {} , fillShare = 0, fillSource = null, capRules = null} = {}) {
-  const result = Object.fromEntries(blessingNames.map(name => [name, { name, baseMax: 4, maxStacks: 4, stacks: 0, capSources: [], gainSources: [], effectSources: [], unsupported: [] }]));
-  const replacements = [], eachMaxSources = [], perStackLines = [];
-  const context = { canUseNonMain, barrierSources, hasReaping, block, canCrit, canHit, moving, enemyAilments, igniteOnTarget, hitRecently, mobilityUsed, tangleCasts };
+export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, minionsDealDamage = false, elixirCasts = false, pactState = {}, equipment, talents = [], slates = [], talentState = {}, barrierSources = [], hasReaping = false, canUseNonMain = false, block, canHit = false, canCrit = false, moving = false, enemyAilments = [], igniteOnTarget = false, spellHitActive = true, extraLines = [], hitRecently = true, stackUsers = new Set(), stackUserTexts = [], stackOverrides = {} , fillShare = 0, fillSource = null, capRules = null} = {}) {
+  const result = Object.fromEntries(blessingNames.map(name => [name, { name, baseMax: 4, maxStacks: 4, stacks: 0, ownStacks: 0, ownSources: [], capSources: [], gainSources: [], effectSources: [], unsupported: [] }]));
+  const replacements = [], eachMaxSources = [], perStackLines = [], capShares = [];
+  const context = { canUseNonMain, barrierSources, hasReaping, block, canCrit, canHit, moving, enemyAilments, igniteOnTarget, hitRecently, mobilityUsed, tangleCasts, minionsDealDamage, elixirCasts };
   const add = (text, source, multiplier = 1) => {
     if (multiplier <= 0) return;
-    for (const clause of String(text || "").split(/\s*\|\s*|\s+·\s+|\r?\n/)) {
+    // Arminius Guillotine's catalog row joins its two lines ("… +8% additional damage Own 1 additional stacks of Tenacity Blessing").
+    for (const clause of String(text || "").split(/\s*\|\s*|\s+·\s+|\r?\n|\s+(?=Own \d+ additional stacks? of )/)) {
       const parsed = parseBlessingModifier(clause);
       if (!parsed) {
         for (const name of blessingNames) if (clause.includes(`${name} Blessing`)) result[name].unsupported.push({ source, text: clause });
@@ -142,12 +167,18 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
       if (parsed.kind === "baseChange") { const target = result[blessingNames.find((name) => name.toLowerCase() === parsed.name.toLowerCase())]; target.baseChange = { ...parsed, source }; continue; }
       if (parsed.kind === "eachMax") { eachMaxSources.push({ ...parsed, source }); continue; }
       if (parsed.kind === "lineEffect") continue;
+      if (parsed.kind === "capShare") { capShares.push({ ...parsed, source }); continue; }
       if (parsed.kind === "perStack") { perStackLines.push({ ...parsed, value: parsed.value * multiplier, source, clause }); continue; }
       if (parsed.kind === "effect") {
         for (const name of parsed.names) result[name].effectSources.push({ source, text: clause, value: parsed.value * multiplier, additional: parsed.additional });
         continue;
       }
       const blessing = result[blessingNames.find(name => name.toLowerCase() === parsed.name.toLowerCase())];
+      if (parsed.kind === "own") {
+        const value = Math.trunc(parsed.value * multiplier);
+        if (value) { blessing.ownStacks += value; blessing.ownSources.push({ source, text: clause, value }); }
+        continue;
+      }
       if (parsed.kind === "cap") {
         const value = Math.trunc(parsed.value * multiplier);
         if (!value) continue;
@@ -185,7 +216,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
       }
     }
   }
-  for (const slate of slates) for (const text of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) add(withoutSlateCoreName(text), slate.name);
+  for (const slate of slates) for (const text of slateTalentLines(slate)) add(withoutSlateCoreName(text), slate.name);
   for (const line of activeKismetEffects(pactState)) add(line.text, line.source);
   // Conditional Blessing lines the shared resolver made active (src/line-effects.js; e.g. Deceiver's Might "+1 to Max
   // Focus Blessing Stacks if you have landed a Critical Strike or Reaped in the last 8s").
@@ -198,6 +229,8 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
   // Divine Grace replaces every Blessing's base effect. "Max stacks of each Blessing: 4" is a hard cap
   // (user-confirmed in game, 2026-10-10): "+N Max <Blessing> Stacks" lines do not raise it while Divine
   // Grace is present, so those lines are kept in capSources but marked as overridden.
+  // Immolating World: the Tenacity Max Stacks bonuses also raise Focus (legendary audit batch 7; the bonuses, not the base 4).
+  for (const share of capShares) { const bonus = result[share.from].capSources.reduce((sum, line) => sum + line.value, 0); if (bonus) { result[share.to].maxStacks += bonus; result[share.to].capSources.push({ source: share.source, text: `${share.text} (+${bonus})`, value: bonus }); } }
   const replacement = replacements[0] || null;
   const eachMax = replacement ? eachMaxSources[0]?.value : undefined;
   for (const blessing of Object.values(result)) {
@@ -212,6 +245,10 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
     const convertedGain = convert && blessing.name === convert.to && result[convert.from].gainSources.some(source => source.available);
     blessing.stacks = convert && blessing.name === convert.from ? 0 : !cannotGain && (blessing.gainSources.some(source => source.available) || convertedGain) ? blessing.maxStacks : 0;
     if (convert && blessing.name === convert.from) blessing.convertedTo = convert.to;
+    // "Own N additional stacks of <Blessing>" (Arminius Guillotine; game affix 107853: node 621 adds N stacks of the Blessing's buff
+    // 340 for as long as the item is worn): held whether or not a gain source exists, on top of the gained stacks and the max
+    // (legendary audit 2026-10-22, provisional: open question legendary-own-blessing-stacks).
+    if (blessing.ownStacks > 0 && !(convert && blessing.name === convert.from)) { blessing.maxStacks += blessing.ownStacks; blessing.stacks += blessing.ownStacks; }
     // Miraculous Gain (Miraculous Touch; src/elixir-model.js miraculousGainState, user-supplied 2026-10-19): the Blessings sit at max
     // for `fillShare` of the time; the time-averaged stacks fill the gap to max by that share.
     if (fillShare > 0 && !cannotGain && blessing.stacks < blessing.maxStacks) { blessing.miraculousGain = { share: fillShare, from: blessing.stacks, source: fillSource }; blessing.stacks += (blessing.maxStacks - blessing.stacks) * fillShare; }
@@ -232,7 +269,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
     // The changed base effect: % of Max Mana as added Physical per stack (src/planner.js turns it into an added-flat line).
     blessing.addedPhysicalPercentOfMaxMana = blessing.baseChange && !replacement ? blessing.stacks * (blessing.baseChange.addedPhysicalPercentOfMaxMana || 0) * blessing.effectMultiplier : 0;
   }
-  const damageSources = [], increasedSources = [];
+  const damageSources = [], increasedSources = [], minionLines = [];
   for (const blessing of Object.values(result)) if (blessing.additionalDamagePercent) damageSources.push({ source: `${blessing.name} Blessing${replacement ? " (Divine Grace)" : ""}`, value: blessing.additionalDamagePercent });
   for (const line of perStackLines) {
     const stacks = line.names.reduce((sum, name) => sum + result[name].stacks, 0);
@@ -241,6 +278,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
     const label = `${line.source}: ${line.value}% × ${stacks} Blessing stacks`;
     // Spell-scoped per-stack lines reach Spell hits only (the beam hit ledger); the Ignite ledger skips `skillTags` lines.
     if (line.skillTags) { if (spellHitActive) damageSources.push({ source: label, value: line.value * stacks, text: line.text, skillTags: line.skillTags, hitOnly: true }); continue; }
+    if (line.minion) minionLines.push({ kind: "increased", source: label, text: `+${Math.round(line.value * stacks * 10000) / 10000}% Minion Damage (${line.text}: ${stacks} Blessing stacks)`, value: line.value * stacks });
     if (line.bucket === "increased") increasedSources.push({ source: label, value: line.value * stacks, text: line.text });
     else if (line.bucket === "additional") damageSources.push({ source: label, value: line.value * stacks, text: line.text });
     else damageSources.push({ source: `${label} (multiplies)`, value: ((1 + line.value / 100) ** stacks - 1) * 100, text: line.text });
@@ -260,6 +298,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
     // (Stacks a consumption core spends still feed it: the gain line counts while the stacks were held before consumption.)
     for (const line of blessing.gainSources) mark(line.text, line.available && (blessing.stacks || blessing.heldBeforeConsumption) ? (stacksUsed || blessing.consumedBy ? "In calc" : "No DPS effect") : /not on the dummy/.test(line.condition) ? "Not on dummy" : "Inactive");
     for (const line of blessing.capSources) mark(line.text, !blessing.stacks || line.overriddenBy ? "Inactive" : stacksUsed ? "In calc" : "No DPS effect");
+    for (const line of blessing.ownSources) mark(line.text, stacksUsed ? "In calc" : "No DPS effect");
     for (const line of blessing.effectSources) mark(line.text, blessing.stacks && (blessing.baseEffect.additionalDamagePerStack || blessing.baseEffect.attackAndCastSpeedPerStack) ? "In calc" : "Inactive");
     // "Unable to gain Agility Blessing" (Varagon Shroud; gear uniques round 2): the stacks are held at 0 above. It changes damage
     // only where a gain source would have held stacks that something uses; otherwise there is nothing to remove.
@@ -268,6 +307,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
     }
   }
   for (const line of perStackLines) mark(line.clause, line.stacks && (!line.skillTags || spellHitActive) ? "In calc" : "Inactive");
+  for (const share of capShares) mark(share.text, result[share.to].stacks > 0 && result[share.from].capSources.some((line) => line.value) ? "In calc" : "Inactive");
   // A changed base effect that is additional damage per stack (Sacrifice): In calc while the Blessing holds stacks (Divine Grace
   // replaces every base effect, so the change then does nothing).
   for (const blessing of Object.values(result)) if (blessing.baseChange?.additionalDamagePerStack) mark(blessing.baseChange.text, blessing.stacks && !replacement ? "In calc" : "Inactive");
@@ -278,7 +318,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
   for (const line of eachMaxSources) mark(line.text, replacement && anyStacks && Object.values(result).some((blessing) => blessing.capSources.length || blessing.baseMax !== 4) ? "In calc" : replacement && anyStacks ? "No DPS effect" : "Inactive");
   const tenacity = result.Tenacity;
   return {
-    entries: Object.values(result), damageSources, increasedSources, lineStatus, thea: theaRules,
+    entries: Object.values(result), damageSources, increasedSources, minionLines, lineStatus, thea: theaRules,
     divineGrace: replacement ? { source: replacement.source, additionalDamagePerStack: replacement.additionalDamagePerStack, damageTakenPerStack: replacement.damageTakenPerStack, maxStacks: eachMax ?? null } : null,
     movementStacks: Object.values(result).some(blessing => blessing.stacks && blessing.gainSources.some(source => source.movement && source.available)),
     castSpeedPercent: result.Agility.attackAndCastSpeedPercent,

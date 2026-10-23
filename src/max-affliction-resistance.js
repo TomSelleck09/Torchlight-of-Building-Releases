@@ -51,3 +51,42 @@ export function maxAfflictionWindowScale(info, seconds) {
   const steady = at(info.steadyFraction);
   return steady > 0 ? at(windowMaxAfflictionFraction(info, seconds)) / steady : 1;
 }
+
+// The damage types "All Resistance" writes (affix 371197: 5101 / 5102 / 5103 / 5401 = Fire, Cold, Lightning and Erosion
+// Resistance). Physical has no resistance (Trauma and Physical DoTs take no change).
+export const ALL_RESISTANCE_TYPES = new Set(["Fire", "Cold", "Lightning", "Erosion"]);
+
+/**
+ * The max-Affliction reduction on a generic DoT (Wilt, a skill's own DoT, a non-beam Ignite; user decision 2026-10-21): the
+ * same time-share treatment as the Ignite path. `info` = { reductionPercent, firstMaxSeconds, steadyFraction }. Data only (no
+ * functions, so planner results stay comparable):
+ * - steadyFactor: the resistance factor the DoT's steady figure uses (time share at max Affliction);
+ * - windowScale: { 0, 5, 20 } the clean-dummy window's factor ÷ the steady one (maxAfflictionLayerWindowScale for other lengths);
+ * - fullScale: the factor at max Affliction ÷ the steady one (a full-Affliction Reap settles the DoT at that moment);
+ * - recount: the dummy recount's ratios (ratioAtNone / ratioAtFull relative to the steady factor).
+ * Negative resistance is allowed, as on the Ignite path (theoretical-damage.js clamps only the factor at 0).
+ */
+export function maxAfflictionResistanceLayer({ resistancePercent = 0, penetrationPercent = 0, info = null } = {}) {
+  const plain = resistanceFactor(resistancePercent, penetrationPercent);
+  if (!info || !info.reductionPercent || !(info.steadyFraction > 0) || !Number.isFinite(info.firstMaxSeconds)) {
+    return { active: false, steadyFactor: plain, windowScale: { 0: 1, 5: 1, 20: 1 }, fullScale: 1, recount: null, steadyFraction: 0 };
+  }
+  const layer = { active: true, resistancePercent, penetrationPercent, reductionPercent: info.reductionPercent, steadyFraction: info.steadyFraction, firstMaxSeconds: info.firstMaxSeconds };
+  const at = (fraction) => averagedResistanceFactor({ resistancePercent, penetrationPercent, reductionPercent: info.reductionPercent, fraction });
+  const steady = at(info.steadyFraction);
+  return {
+    ...layer,
+    steadyFactor: steady,
+    windowScale: Object.fromEntries([0, 5, 20].map((seconds) => [seconds, maxAfflictionLayerWindowScale(layer, seconds)])),
+    fullScale: steady > 0 ? at(1) / steady : 1,
+    recount: steady > 0 ? { firstMaxSeconds: info.firstMaxSeconds, steadyFraction: info.steadyFraction, ratioAtNone: at(0) / steady, ratioAtFull: at(1) / steady } : null
+  };
+}
+
+/** A window of `seconds` (0 = steady) on the clean dummy: its resistance factor ÷ the steady one, for a maxAfflictionResistanceLayer. */
+export function maxAfflictionLayerWindowScale(layer, seconds) {
+  if (!layer?.active) return 1;
+  const at = (fraction) => averagedResistanceFactor({ resistancePercent: layer.resistancePercent, penetrationPercent: layer.penetrationPercent, reductionPercent: layer.reductionPercent, fraction });
+  const steady = at(layer.steadyFraction);
+  return steady > 0 ? at(windowMaxAfflictionFraction(layer, seconds)) / steady : 1;
+}

@@ -744,7 +744,7 @@ body.unified-planner .fate-slot-dialog>[data-clear-fate-slots]:hover{border-colo
 .planner-tooltip.pact-tooltip .pact-tooltip-rewards{display:grid;gap:6px;margin:8px 14px 13px;padding:0;list-style:none}
 .planner-tooltip.pact-tooltip .pact-tooltip-rewards li{padding-left:10px;border-left:2px solid #c57833;color:#eee5d9;font-size:.75rem;line-height:1.4}
 .planner-tooltip.pact-tooltip footer{padding:9px 14px;border-top:1px solid #4a392c;color:#aaa095;font-size:.65rem}
-.pact-kismet-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:0 12px 12px}
+.pact-kismet-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 12px 12px}
 .pact-kismet-group{display:flex;align-items:center;min-height:46px;padding:10px 14px;border:1px solid #293342;border-radius:8px;background:#151b23}
 .pact-kismet-group h3{margin:0;color:#c8d1dc;font-size:.83rem;white-space:nowrap}
 .pact-kismet-group h3 strong{color:#f9ca65}.pact-kismet-group h3 strong span{color:#8c99a8}
@@ -770,6 +770,11 @@ body.unified-planner .fate-slot-dialog>[data-clear-fate-slots]:hover{border-colo
 .pact-tree-node.has-kismet[data-kismet-node]{cursor:grab;touch-action:none;user-select:none}
 .pact-tree-node.kismet-drag-source{opacity:.45;cursor:grabbing}
 .pact-tree-node.kismet-drop-target{box-shadow:0 0 0 3px #f9ca65,0 0 16px rgba(249,202,101,.55)}
+/* The game's pact page limits (src/pact-limits.js): a node past the Pact Point budget is greyed and not allocatable; a saved page past
+   a limit keeps its extra nodes / kismets with the curse-limit red outline (not counted). */
+.pact-tree-node.pact-limit-blocked{cursor:not-allowed}.pact-tree-node.pact-limit-blocked>img{opacity:.2;filter:grayscale(1)}
+.pact-tree-node.pact-over-limit{outline:3px solid #e33349;outline-offset:1px;box-shadow:0 0 0 1px rgba(0,0,0,.6),0 0 12px 2px rgba(227,51,73,.75)}
+.pact-kismet-group h3 strong.over-limit{color:#ff7d7d}
 .kismet-drag-ghost{position:fixed;z-index:1000;display:grid;place-items:center;padding:2px;border:2px solid #d6a448;border-radius:50%;background:#171d25;box-shadow:0 8px 24px #000b,0 0 12px rgba(249,202,101,.35);pointer-events:none}
 .kismet-drag-ghost img{width:100%;height:100%;object-fit:contain}
 .kismet-drag-ghost b{display:none;position:absolute;right:-7px;bottom:-7px;width:18px;height:18px;place-items:center;border:1px solid #a67736;border-radius:50%;color:#241708;background:#f9ca65;font:900 14px/1 Arial,sans-serif}
@@ -1011,6 +1016,7 @@ body.unified-planner .talent-node.legendary-node.selected{border-color:#ff9a3d;b
 .slate-legendary-detail .slate-legendary-selection{display:flex;align-items:center;gap:14px;min-height:76px;padding:10px 14px;border:1px solid #29313d;border-radius:8px;background:#1b2231}.slate-legendary-selection>img{width:64px;height:64px;padding:5px;border:1px solid #75451e;border-radius:7px;object-fit:contain;background:#151a22}.slate-legendary-selection>div{flex:1;min-width:0}.slate-legendary-selection strong,.slate-legendary-selection small{display:block}.slate-legendary-selection strong{color:#ff8b32}.slate-legendary-selection small{margin-top:5px;color:#9ca8b8;font-size:.7rem}.slate-legendary-detail .slate-affix-row .slate-readonly{margin:0}.slate-legendary-detail .slate-craft-card{background:#21170f;border-color:#67482e;border-bottom-color:#ff7818;color:#ff8b32}.slate-legendary-detail .slate-craft-card .slate-craft-affix-preview{color:#e9dfd4}.slate-legendary-detail .slate-craft-card .slate-craft-affix-preview li span{margin:0;max-height:none;overflow:visible;white-space:normal}
 .sparks-preview-direction{display:flex;align-items:center;gap:9px;margin:8px 0 10px}.sparks-preview-arrow{display:grid;place-items:center;flex:none;width:32px;height:32px;border:1px solid #f1a537;border-radius:50%;color:#ffe6a1;background:radial-gradient(circle at 35% 30%,#8b5520,#3b2512);box-shadow:0 0 11px #df89294d;font:700 1.35rem/1 Arial,sans-serif}.slate-legendary-detail .sparks-preview-direction strong{color:#ffd18a;font:700 .76rem/1.2 Arial,sans-serif}
 .slate-legendary-detail .slate-affix-row>.slate-readonly{display:block;line-height:1.4}
+.slate-legendary-detail .slate-shape-options>button{padding:4px}
 
 /* Keep tier chips beside the first line of their affix text in previews and tooltips. */
 .hero-memory-preview .memory-affix-row>span,
@@ -3006,6 +3012,9 @@ body.unified-planner #kismet-crafter>footer button:hover:not(:disabled){filter:n
 body.unified-planner #kismet-crafter>footer [data-confirm-kismet]{border-color:#c58b38;color:#241707;background:linear-gradient(180deg,#fff0b0,#f9ca65 43%,#df9230)}
 body.unified-planner #kismet-crafter>footer [data-confirm-kismet]:hover:not(:disabled){color:#241707;background:linear-gradient(180deg,#fff5c7,#ffd47e 43%,#e8a641)}
 body.unified-planner #kismet-crafter>footer [data-clear-kismet-slot]{border-color:#906044;color:#f1c2a5;background:linear-gradient(180deg,#493126,#251d1b)}
+/* The game's Destiny install limit reached (src/pact-limits.js): Confirm greyed, the reason in the curse-limit note red. */
+#kismet-preview p.curse-limit-note{margin:0 0 10px;color:#ff7d7d;font-style:normal}
+.kismet-crafter-dialog>footer button:disabled,body.unified-planner #kismet-crafter>footer [data-confirm-kismet]:disabled{opacity:.45;cursor:not-allowed;filter:grayscale(1)}
 
 /* Shared red artwork for Ultimate Hero Memories and Vorax gear. */
 body.unified-planner .hero-memory-item[class*="memory-rarity-"]{border-left:3px solid var(--memory-accent)}

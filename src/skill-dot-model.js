@@ -1,3 +1,4 @@
+import { maxAfflictionLayerWindowScale } from "./max-affliction-resistance.js";
 import { skillLevelDamageMultiplier } from "./engine.js";
 import { supportEffectsFor } from "./support-effects.js";
 import { expectedStrongestApplication, windowAverageStrongest } from "./ailment-model.js";
@@ -154,7 +155,7 @@ function spellLines(profile, modifierTexts, auraEntries) {
  * @param {boolean} [p.triggered] an Activation Medium triggers the skill (src/trigger-interval.js): triggered-only lines apply
  * @param {object} [p.lucky] the build's Lucky state (src/lucky-damage.js readLuckyDamage, via src/combat-states.js)
  */
-export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTexts = [], shared, auraEntries = [], castsPerSecond = 0, crit = {}, aim = null, sustainedWindowSeconds = 20, extraAdditional = [], triggered = false, lucky = null }) {
+export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTexts = [], shared, auraEntries = [], castsPerSecond = 0, firstApplicationSeconds = null, crit = {}, aim = null, sustainedWindowSeconds = 20, extraAdditional = [], triggered = false, lucky = null }) {
   // A buff for the character's "other skills" (Ice Bond's Euphoria, src/empower-effects.js) skips the skill that grants it.
   const ownKey = setup?.setupKey || setup?.instanceId;
   const modifierTexts = allModifierTexts.filter((line) => !line.exceptSetupKey || line.exceptSetupKey !== ownKey);
@@ -226,7 +227,10 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
   const additionalAfflictionEffectFactor = (shared?.additionalAfflictionEffectFactor ?? 1) * product(supports.additionalAffliction.map((line) => line.value));
   // Damage per point of Affliction: config_attributes 5724 default 0.01 (2026-10-17 game attribute data).
   const afflictionFactor = (rating) => 1 + Math.max(0, Math.min(100, rating)) * AFFLICTION_DAMAGE_PER_POINT * (1 + afflictionEffectPercent / 100) * additionalAfflictionEffectFactor;
-  const resistanceFactor = Math.max(0, 1 - ((shared?.targetResistancePercent || 0) - (shared?.penetrationPercent || 0)) / 100);
+  // "−X% All Resistance when the enemy has max Affliction" (user decision 2026-10-21; src/ailment-shared.js): time share at max.
+  const maxAfflictionResistance = shared?.maxAfflictionResistance?.active ? shared.maxAfflictionResistance : null;
+  const resistanceFactor = maxAfflictionResistance ? maxAfflictionResistance.steadyFactor : Math.max(0, 1 - ((shared?.targetResistancePercent || 0) - (shared?.penetrationPercent || 0)) / 100);
+  const windowResistance = (seconds) => maxAfflictionResistance ? maxAfflictionLayerWindowScale(maxAfflictionResistance, seconds) : 1;
   const takenFactor = product(taken.map((line) => line.value));
   const townFactor = (1 + increasedPercent / 100) * product(townAdditional.map((line) => line.value)) * afflictionFactor(shared?.townAfflictionRating ?? 0);
   const combatFactor = (1 + increasedPercent / 100) * product(combatAdditional.map((line) => line.value)) * afflictionFactor(combatRating) * takenFactor * resistanceFactor;
@@ -238,13 +242,18 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
   // Terra) is active duration × applications/s of the time; a channeled beam refreshing every use, or a DoT Terra recast
   // whenever a Terra Charge is available (at least every 2 s), keeps it at 1.
   const uptime = Math.min(1, durationSeconds * castsPerSecond);
-  const window = (seconds) => windowAverageStrongest({ ...roll, seconds, applicationsPerSecond: castsPerSecond }) * combatFactor * uptime;
+  // firstApplicationSeconds (src/planner.js dotFirstApplication; user decision 2026-10-22): a triggered recast ready at engagement
+  // applies at that time and then at its rate; null keeps the first application one interval in.
+  const window = (seconds) => windowAverageStrongest({ ...roll, seconds, applicationsPerSecond: castsPerSecond, firstApplicationSeconds }) * combatFactor * uptime * windowResistance(seconds);
   const key = `skill:${setup?.setupKey || setup?.instanceId || profile.name}`;
   return {
     key, name: profile.name, damageType, skillDot: true, setupKey: setup?.setupKey, profile, typeRestriction, randomRoll,
-    level, base, chancePercent: 100, rawChancePercent: 100, durationSeconds, stackLimit: 1, applicationsPerSecond: castsPerSecond,
+    level, base, chancePercent: 100, rawChancePercent: 100, durationSeconds, stackLimit: 1, applicationsPerSecond: castsPerSecond, firstApplicationSeconds: Number.isFinite(firstApplicationSeconds) && firstApplicationSeconds >= 0 ? firstApplicationSeconds : null,
     town: { perBaseFactor: townFactor, minimumDps: base.min * townFactor, maximumDps: base.max * townFactor },
     fullAfflictionScale: combatRating > 0 ? afflictionFactor(100) / afflictionFactor(combatRating) : 1,
+    fullAfflictionResistanceScale: maxAfflictionResistance ? maxAfflictionResistance.fullScale : 1,
+    maxAfflictionWindowScale: { 0: 1, 5: windowResistance(5), 20: windowResistance(20) },
+    maxAfflictionResistance: maxAfflictionResistance ? { reductionPercent: maxAfflictionResistance.reductionPercent, steadyFraction: maxAfflictionResistance.steadyFraction, firstMaxSeconds: maxAfflictionResistance.firstMaxSeconds, recount: maxAfflictionResistance.recount, sources: shared.maxAfflictionResistanceSources || [] } : null,
     afflictionPerPoint: (afflictionFactor(100) - 1) / 100,
     afflictionPerSecond: supports.afflictionPerSecond.reduce((sum, line) => sum + line.value, 0),
     builtInReaping: profile.builtInReaping ? { ...profile.builtInReaping } : null,

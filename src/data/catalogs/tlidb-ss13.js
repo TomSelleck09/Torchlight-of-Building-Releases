@@ -5,6 +5,7 @@
 // CDN artwork, saved under src/assets/tli/catalog/.
 import { allSkillEffectsSs13 } from "../skills/all-skill-effects-ss13.generated.js";
 import { tlidbSkillCatalogGenerated, tlidbSupportCatalogGenerated } from "./tlidb-skills-generated.js";
+import { minionSkillOwnersSs13 } from "../skills/minion-skill-owners-ss13.generated.js";
 
 // Hand-kept skill fields (by skill name).
 const skillCatalogOverrides = {
@@ -18,7 +19,10 @@ const supportCatalogOverrides = {};
 
 const merge = (entries, overrides) => entries.map((entry) => ({ ...entry, ...(overrides[entry.name] || {}) }));
 
-export const tlidbSkillCatalogSs13 = merge(tlidbSkillCatalogGenerated, skillCatalogOverrides);
+// The Modularization module summons ("Module: Goblin Priest", …) are player skills the TLIDB skill list leaves out; their entries
+// come from the game files and their TLIDB pages (scripts/build-minion-skill-owners.mjs, 2026-10-21).
+const minionOwnerEntries = minionSkillOwnersSs13.map((owner) => owner.catalogEntry).filter(Boolean);
+export const tlidbSkillCatalogSs13 = merge([...tlidbSkillCatalogGenerated, ...minionOwnerEntries], skillCatalogOverrides);
 for (const entry of tlidbSkillCatalogSs13) entry.effects ??= allSkillEffectsSs13[entry.name] || [];
 
 export const tlidbSupportCatalogSs13 = merge(tlidbSupportCatalogGenerated, supportCatalogOverrides);

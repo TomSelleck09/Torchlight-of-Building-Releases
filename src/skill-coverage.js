@@ -3,7 +3,6 @@ import { supportClauseSummary, resolveSupportEffects } from "./support-effects.j
 import { aegisOfFireState, AEGIS_OF_FIRE } from "./aegis-of-fire.js";
 import { isFireOnlyLedgerLine } from "./ailment-shared.js";
 import { curseTakenEffect, NO_DUMMY_EFFECT_CURSES } from "./curse-effects.js";
-import { curseSlotSummary } from "./curse-limit.js";
 import { tlidbSkillCatalogSs13, tlidbSupportCatalogSs13 } from "./data/catalogs/tlidb-ss13.js";
 import { installedSupportRejected, supportRuleText } from "./support-compatibility.js";
 
@@ -266,13 +265,13 @@ function yougaCoreCoverage(planner) {
 function classifySkill(planner, skillName, setup) {
   const role = setup?.role;
   if (NON_DAMAGE_SKILLS[skillName]) return result("No DPS effect", NON_DAMAGE_SKILLS[skillName]);
-  if (setup && planner?.activation?.activeNames && !planner.activation.activeNames.has(skillName)) return result("Inactive", "not active in the current Energy allocation");
+  if (setup && planner?.activation?.activeNames && !planner.activation.activeNames.has(skillName)) return result("Inactive", "switched off on the board");
   if (UNSUSTAINED_SKILLS[skillName]) return result("Not modeled", UNSUSTAINED_SKILLS[skillName]);
   const youga = yougaSkillCoverage(planner, skillName);
   if (youga) return youga;
   if (UNMODELED_SKILLS[skillName]) return result("Not modeled", UNMODELED_SKILLS[skillName]);
-  // A curse skill past the curse limit (skill bar order, user-confirmed 2026-10-19; src/curse-limit.js) is not applied.
-  if ((planner?.curseLimit?.excluded || []).some((entry) => (entry?.name ?? entry) === skillName)) return result("Inactive", curseSlotSummary(planner).reason);
+  // A curse skill past the curse limit applies all the same (user decision 2026-10-21; src/curse-limit.js): no Inactive badge,
+  // the skill bar and tooltip carry the warning.
   if (role === "empower" && skillName === "Aim") {
     const aim = planner?.aim;
     if (!aim?.active) return result("Inactive", "Aim is turned off in combat conditions");

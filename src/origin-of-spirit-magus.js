@@ -85,3 +85,21 @@ export function resolveOrigins({ summons = [], modifierTexts = [] } = {}) {
   }
   return { origins, derived, effectFactor: factor, effectSources: sources };
 }
+
+// Radical Evolution Theory (lunar-phase revived memory affixes, game affixes 500204100–500204400; revived affix census 2026-10-21):
+// "40% of the final bonus applied to Origin of Spirit Magus Effect is also applied to <Aura>'s Aura Effect bonus". The final bonus
+// is read as the Origin effect multiplier minus one (the summed "+X%" lines times the "additional" ones, originEffectFactor), and
+// the share joins that Aura's own Aura Effect like a "+X% <Aura> Aura Effect" line, which raises the Precise: version too
+// (src/engine.js namedAuraEffectPercents; provisional, open question revived-radical-evolution).
+export const RADICAL_EVOLUTION = /^(\d+(?:\.\d+)?)% of the final bonus applied to Origin of Spirit Magus Effect is also applied to (.+?)'s Aura Effect bonus$/i;
+/** [{ aura, percent, sharePercent, bonusPercent, source, text }] for the build's Radical Evolution Theory lines. */
+export function radicalEvolutionAuraEffects(modifierTexts = []) {
+  const bonusPercent = round((originEffectFactor(modifierTexts).factor - 1) * 100);
+  return modifierTexts.flatMap((line) => {
+    if (line.origin === "derived" || line.lineEffect) return [];
+    const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(RADICAL_EVOLUTION);
+    if (!match) return [];
+    const sharePercent = Number(match[1]) * (line.multiplier ?? 1);
+    return [{ aura: match[2], sharePercent, bonusPercent, percent: round(sharePercent / 100 * bonusPercent), source: line.source, text: line.text }];
+  });
+}

@@ -16,6 +16,7 @@
 // Pure module: reads the planner result and the state, never recomputes damage.
 
 import { isExclusiveRevival } from "./hero-exclusive-revivals.js";
+import { allProfessionTalentCatalogueSs13 } from "./data/talents/all-profession-trees-ss13.generated.js";
 
 const names = (list, pick = (item) => item?.name) => (list || []).map(pick).filter(Boolean);
 const count = (list, name) => list.filter((item) => item === name).length;
@@ -31,6 +32,8 @@ export function openQuestionContext(planner, state = planner?.state) {
   const setupByKey = new Map(setups.map((setup) => [setup.setupKey, setup]));
   return {
     heroId: state?.hero?.selectedHeroId || "",
+    // The pact page limits (src/pact-limits.js), for the Pact Point budget question.
+    pactLimits: planner?.pactLimits || null,
     setups,
     setupNames: new Set(setups.map((setup) => setup.name)),
     supports: new Set(setups.flatMap(supportsOf)),
@@ -47,6 +50,7 @@ export function openQuestionContext(planner, state = planner?.state) {
     ailments: planner?.ailments || {},
     enemyAilments: new Set(names(planner?.mechanics?.enemyAilments?.types)),
     lineState: planner?.lineEffects?.state || {},
+    state: state || {},
     planner: planner || {}
   };
 }
@@ -72,6 +76,18 @@ const hasFollowerAffix = (ctx, name) => followerAffixes(ctx).some((item) => item
 // Hero trait audit 2026-10-19 (research/hero-traits-audit-2026-10-19.md, batch B1): Bing's sixth rank (Q-H2) and the
 // hero-exclusive revived affixes (Q-H11). The equipped memories with a hero-exclusive revival (src/hero-exclusive-revivals.js).
 const HERO_TRAIT_AUDIT = "research/hero-traits-audit-2026-10-19.md";
+const SLATE_IMPORT = "research/slate-shape-import-2026-10-19.md";
+// Slates the build got from "Import from game" (src/game-log-import.js ids game-log-slate-N).
+const importedSlates = (ctx) => (ctx.state?.slates?.inventory || []).filter((slate) => /^game-log-slate-\d+$/.test(String(slate?.id || "")));
+const importedSlateNamed = (ctx, names) => importedSlates(ctx).some((slate) => names.includes(slate.template || slate.name));
+// A selected tree with more than 30 nodes whose nodes past the log's cut (column-major order) are all at max rank and whose
+// core is selected: the shape the importer's core-threshold fill leaves (src/game-log-import.js resolveTalents).
+const cutTreeFilled = (ctx) => (ctx.state?.talents?.selectedTrees || []).some((tree) => {
+  const nodes = allProfessionTalentCatalogueSs13[tree]?.nodes || [];
+  if (nodes.length <= 30 || !Object.keys(ctx.state?.talents?.coreSelections || {}).some((key) => key.startsWith(`${tree}:`))) return false;
+  const past = [...nodes].sort((a, b) => a.coordinate[0] - b.coordinate[0] || a.coordinate[1] - b.coordinate[1]).slice(30);
+  return past.every((node) => Number(ctx.state?.talentRanks?.[`${tree}:${node.coordinate.join(",")}`] || 0) === Math.min(3, node.maxRank));
+});
 // A trait of this loadout is picked and carries lines ("Hero trait: <name> (Lv N…)"; hero trait audit B2).
 const traitPicked = (ctx, heroId, name) => ctx.heroId === heroId && ctx.texts.some((entry) => entry.origin === "trait" && String(entry.source || "").startsWith(`Hero trait: ${name} (`));
 const equippedExclusiveRevivals = (ctx) => {
@@ -200,15 +216,26 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.minions.some((minion) => minion?.minionKey === "frost-magus")
   },
   {
-    id: "instant-smash-trauma",
-    title: "Instant Smash in the game's Trauma damage?",
-    question: "Does Instant Smash (\"+1% additional Trauma Damage for every +2% Critical Strike Damage\") reach Trauma in game? A panel test suggested it may be inactive (possibly the Max Active Divinity rule).",
-    evidence: "provisional",
-    current: "Provisional: applied from its text, crit damage gained in combat included.",
-    alternatives: [{ reading: "Instant Smash is inactive", effect: "Trauma divided by its multiplier (about ×0.23 on the Trauma fixture's +341%)" }],
-    test: "Compare the panel's Trauma DPS with the slate equipped and removed, and check whether another Divinity slate blocks it.",
-    source: "research/game-log-comparison-2026-10-09.md; CLAUDE.md (ailment crit)",
-    appliesWhen: (ctx) => ctx.hasText(/additional Trauma Damage for every \+?[\d.]+% Critical Strike Damage/i) && Boolean(ctx.ailments.trauma?.modeled)
+    id: "thunder-magus-chain-of-lightning",
+    title: "Thunder Magus: when does Thundercloud Surge's Chain of Lightning hit?",
+    question: "The game files give Thundercloud Surge (the Thunder Magus's Empower Skill) a Chain of Lightning damage row (126% of Base Damage at Lv.20, Physical converted to Lightning) that the TLIDB card does not show. How often does it hit a single target?",
+    evidence: "game data (partial)",
+    current: "Provisional: one Chain of Lightning hit per Thundercloud Surge cast, landing on cast (like Frost Release's own hit); game row 703, tooltip line skill_des 19142, stone 1916.",
+    alternatives: [{ reading: "It strikes repeatedly while the 6 s Euphoria lasts (Thundercloud Surge is Persistent)", effect: "several Chain of Lightning hits per cast: a larger share of the Thunder Magus's damage" }, { reading: "It only fires with something else (a Stage bonus or a trigger)", effect: "no Chain of Lightning damage in the base cycle" }],
+    test: "Summon one Thunder Magus on the dummy and count the chain-lightning damage numbers between two Thundercloud Surge casts.",
+    source: "src/minion-profiles.js (Thundercloud Surge); config_skill_damage group 703",
+    appliesWhen: (ctx) => ctx.minions.some((minion) => minion?.minionKey === "thunder-magus")
+  },
+  {
+    id: "module-minions-same-target",
+    title: "Modules: do all of a module's Minions hit the dummy at full rate?",
+    question: "A module keeps up to 4 Minions out (user-supplied answer). On a single training dummy, does each of them attack at its own full rate, or do they get in each other's way?",
+    evidence: "user-supplied",
+    current: "User-supplied 2026-10-21 (Google AI Mode answer, not an in-game test): one Minion per cast, up to 4 by default. The planner counts every Minion out as hitting the dummy at its full rate (all summoned before engaging when own buffs are pre-built). The Huge Ember Automaton Lv.20 reference run had one out.",
+    alternatives: [{ reading: "Fewer reach or hit the dummy at once", effect: "up to ×0.25 on a module's damage (one Minion)" }],
+    test: "Cast a module four times on the dummy (4 out), then compare the dummy recount with one Minion out.",
+    source: "src/minion-damage-model.js (module count); src/minion-profiles.js (MODULE_COUNT)",
+    appliesWhen: (ctx) => ctx.minions.some((minion) => minion?.modeled && minion?.family === "module" && minion.count > 1)
   },
   {
     id: "nether-king-window",
@@ -342,17 +369,6 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   // Core audit batch B7 (Minion): a reading still open, shown only with the core.
   {
-    id: "core-rally-module-count",
-    title: "Rally: how many Module Minions?",
-    question: "Rally gives \"Synthetic Troop Minions summoned at a time +1\". A Module's Max Minion Quantity is a placeholder in the game text: does the extra Minion stay within it?",
-    evidence: "user-supplied",
-    current: "User-supplied 2026-10-19 (Google AI Mode answer, not tested in game; uncertain): +1 Minion per cast, Module summons included, up to the skill's max quantity. The planner counts 1 + 1 Module Minions (the Module's max is not in the data). Synthetic Troop summons with a published maximum are already at it.",
-    alternatives: [{ reading: "A Module's max quantity is 1", effect: "×0.5 on the Module's damage (no second Minion)" }],
-    test: "Summon a Module with Rally and count the Minions on the field.",
-    source: "research/google-ai-mode-answers-2026-10-19.md; src/minion-damage-model.js",
-    appliesWhen: (ctx) => hasCore(ctx, "Rally") && ctx.minions.some((minion) => minion.modeled && minion.family === "module")
-  },
-  {
     id: "joined-force-base",
     title: "Joined Force: 60% of what?",
     question: "Is Joined Force's 60% taken from the off-hand's local base damage (after its own local affixes) and added to the main hand before global multipliers?",
@@ -433,6 +449,25 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.hasItem("Pantheon's Elegy") && (ctx.setupNames.has("Precise: Swiftness") || ctx.hasText(/Precise: Swiftness/i))
   },
   {
+    id: "named-aura-effect-precise-version",
+    title: "\"+X% <Aura> Aura\" lines: do they reach the Precise: (or plain) version?",
+    question: "Does a line such as a Belt corrosion's \"+25% Spell Amplification Aura\" or \"+25% Cruelty Aura Effect\" also raise Precise: Spell Amplification / Precise: Cruelty, and does \"+X% Deep Pain Aura\" also raise the plain Deep Pain?",
+    evidence: "provisional",
+    current: "Provisional (game data, 2026-10-20): yes. Each line writes Aura Effect tagged Aura plus the aura family (Deep Pain 5100412, Cruelty 5100419, …), and the Precise: version is read as sharing that family. Only \"+X% Deep Pain Aura\" on Precise: Deep Pain is confirmed in game (Dark Gaze's +120% matched the panel, 2026-09-08); the planner adds the line to the named Aura and to its Precise: version alike.",
+    alternatives: [
+      { reading: "The line raises only the Aura it names (Precise: versions are separate skills)", effect: "lower Aura Effect, and lower damage, on the Precise: Aura (or the plain Deep Pain)" }
+    ],
+    test: "Run the Precise: version of the named Aura (for example Precise: Spell Amplification or Precise: Cruelty with a matching Belt corrosion, or the plain Deep Pain with the Eternal Sea Fog belt's \"+21% Deep Pain Aura\") and compare that Aura's tooltip values with and without the item.",
+    source: "src/engine.js calculateAuraLedger (named Aura Effect); game affixes 530992 / 385296 / 156010624 / 435865344 (attr 3401, tags 5100305 + 51004xx)",
+    appliesWhen: (ctx) => {
+      const active = ctx.planner.activation?.activeNames;
+      if (!active) return false;
+      const lineNames = ctx.texts.map((entry) => String(entry.text).match(/^\+[\d.]+% (.+?) Aura(?: Effect)?$/i)?.[1]).filter((name) => name && !/\bAura\b/i.test(name));
+      // Inferred cases only: a non-Deep Pain line on its Precise: Aura, or a Deep Pain line on the plain Deep Pain.
+      return lineNames.some((name) => (/^Deep Pain$/i.test(name) ? active.has("Deep Pain") : active.has(`Precise: ${name}`)));
+    }
+  },
+  {
     id: "dance-lv5-value",
     title: "Dance of the Deep at LV.5: +1% or 0?",
     question: "At base trait level 5, is the Terra Skill Damage line +1% additional (TLIDB) or 0 (patch notes)?",
@@ -501,12 +536,16 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "bard-song-non-channeled",
     title: "Bard Song on non-channeled skills",
-    question: "In Bard, non-channeled skills channel Bard Song into a bubble that uses the skill. What are its channel interval and max stacks, and does that use count as Channeled?",
-    evidence: "unknown",
-    current: "Unknown: not modeled; those skills keep their normal casts.",
-    alternatives: [{ reading: "Bard Song changes their cadence and takes the −20% Channeled penalty", effect: "lower damage for these skills; size unknown" }],
-    test: "Time the Bard Song bubbles for one of these skills and compare its damage with and without Bard.",
-    source: "research/selena-traits-2026-10-13.md (T5, Q3)",
+    question: "In Bard, non-channeled skills channel Bard Song into a bubble that uses the skill once. Does the bubble come every (4 − Min Channeled Stacks) × 0.8 s ÷ Cast Speed (Attack Speed for Attacks), with \"+N Max Channeled Stacks\" lines raising the 4? Is the bubble's use free of the Bard −20% Channeled Skill Damage?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B13; TLIDB Bard Song keyword: 0.8 s base channeling interval with Cast / Attack Speed, max 4 channeled stacks, the bubble uses the skill once; user-stated 2026-10-13 that it replaces their casts): a bubble every max(1, Max − Min) stacks × 0.8 s ÷ the skill's speed factor, Max = 4 + the build's Max Channeled Stacks lines, Min = its Min Channeled Stacks lines; one full use per bubble, not a Channeled use (no −20%); never faster than the skill's cooldown or Terra duration. Triggered, rate-driven, channel, Combo and Sentry skills keep their own use model. Switch: Best-case assumptions → Bard Song cadence.",
+    alternatives: [
+      { reading: "Max Channeled Stacks lines do not raise Bard Song's 4", effect: "faster bubbles for builds with such lines" },
+      { reading: "The bubble's use takes the −20% Channeled Skill Damage", effect: "×0.8 on these skills" },
+      { reading: "The skill's own cast time is added to each bubble", effect: "slightly slower bubbles" }
+    ],
+    test: "In Bard with Ice Lances only, count the bubbles (or hits) over 20 s on the dummy, then again with a Min Channeled Stacks line.",
+    source: `research/selena-traits-2026-10-13.md (T5, Q3); ${HERO_TRAIT_AUDIT} (§5 B13)`,
     appliesWhen: (ctx) => ctx.heroId === "selena-sing-with-the-tide" && (ctx.planner.singWithTheTide?.bardSong?.skills || []).length > 0
   },
   {
@@ -1125,13 +1164,100 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "High Court Chariot: how long does a Holy Domain last?",
     question: "Murderous Intent restores 4 per second and a Holy Domain costs 15 (a recast every 3.75 s). The Domain's duration is not in the trait text or the readable game records: does it last at least 3.75 s, so it can be held?",
     evidence: "provisional",
-    current: "Provisional (hero trait audit Q-H7, recommended reading): the Holy Domain is held at uptime 1 (cast whenever 15 Murderous Intent are ready: the Trait Skill switch), centred on you with the dummy pulled inside, so \"While inside the Holy Domain, +44% additional damage\" holds. The other Holy Domain and Murderous Intent clauses wait for Rosa's batch B11.",
+    current: "Provisional (hero trait audit Q-H7, recommended reading): the Holy Domain is held at uptime 1 (cast whenever 15 Murderous Intent are ready: the Trait Skill switch), centred on you with the dummy pulled inside, so \"While inside the Holy Domain, +44% additional damage\" holds. The other Domain lines read it too (batch B11). The TLIDB Holy Domain keyword (fetched 2026-10-19) says it \"automatically closes 1s after you leave the Holy Domain\", which reads as no fixed duration while you stand in it.",
     alternatives: [
       { reading: "The Domain lasts less than 3.75 s", effect: "uptime = duration ÷ 3.75 s (Blocking's +10 Murderous Intent shortens the recast)" }
     ],
     test: "With High Court Chariot, cast one Holy Domain on the dummy and time it until it fades.",
     source: `${HERO_TRAIT_AUDIT} (§6 Q-H7)`,
     appliesWhen: (ctx) => ctx.heroId === "rosa-high-court-chariot" && ctx.hasText(/^While inside the Holy Domain ?, \+\d+(?:\.\d+)? ?% additional damage$/i)
+  },
+  // Hero trait audit B11 (2026-10-19; src/rosa-traits.js, src/hero-trait-modules.js "holyDomain" / "mercury", src/planner.js Mercury
+  // Baptism, src/combat-states.js its Infiltration): Rosa (High Court Chariot, Unsullied Blade) and its revived affixes. Shown only for Rosa.
+  {
+    id: "rosa-murderous-intent-level",
+    title: "High Court Chariot: how much Murderous Intent do you hold in the Holy Domain?",
+    question: "Divine Intervention gives additional damage per Murderous Intent you currently have. Does the Holy Domain stay up without recasting (so Murderous Intent fills to its max of 100), or do you recast it, spending 15 each time?",
+    evidence: "provisional",
+    current: "Provisional (best-case switch \"Holy Domain cast once and held\", default on): the Domain is cast once and held (TLIDB keyword: it closes only 1 s after you leave it), so Murderous Intent sits at its max (100, TLIDB keyword and config_char_field 2501100) and Divine Intervention reads it (+58% at rank 5). Desperation's channel consumes none, so it holds the max too. Off: cast whenever 15 are ready, so the level averages 7.5.",
+    alternatives: [
+      { reading: "The Domain must be recast before it ends", effect: "Murderous Intent averages less than the max; Divine Intervention drops with it" },
+      { reading: "Max Murderous Intent differs from 100", effect: "Divine Intervention scales with it" }
+    ],
+    test: "With High Court Chariot and Divine Intervention, cast one Holy Domain on the dummy, stand in it for 30 s, and read the Murderous Intent bar and the Domain.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B11)`,
+    appliesWhen: (ctx) => ctx.heroId === "rosa-high-court-chariot" && ctx.hasText(/^For every 1 Murderous Intent you currently have, [\d.]+ ?% additional damage dealt to enemies in the Holy Domain/i)
+  },
+  {
+    id: "rosa-enemy-count",
+    title: "Rosa: does the dummy count as 5 enemies in the Holy Domain or Realm of Mercury?",
+    question: "Unbreakable Stand (\"for each enemy in the Holy Domain\") and Boundless Sanctuary (\"for every enemy inside Realm of Mercury\") link the Enemy Count keyword, which says a Boss counts as 5 monsters. Does the training dummy (a Boss) count as 5 for these lines?",
+    evidence: "provisional",
+    current: "Provisional (best-case switch \"The dummy (a Boss) counts as 5 enemies\", default on): 5 enemies (TLIDB Enemy Count keyword, linked from the trait text): Unbreakable Stand +50% (5 × 10%, cap 90%), Boundless Sanctuary +40% (5 × 8%, cap 80%) while the Realm exists. Off: one enemy.",
+    alternatives: [
+      { reading: "The dummy counts as one enemy", effect: "Unbreakable Stand +10%, Boundless Sanctuary +8%" }
+    ],
+    test: "With Unbreakable Stand, read the character panel's additional damage with the dummy inside the Holy Domain, then outside it.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B11); TLIDB keyword Enemy Count`,
+    appliesWhen: (ctx) => (ctx.heroId === "rosa-high-court-chariot" && ctx.hasText(/additional damage for each enemy in the Holy Domain/i)) || (ctx.heroId === "rosa-unsullied-blade" && ctx.hasText(/^For every enemy inside Realm of Mercury/i))
+  },
+  {
+    id: "rosa-blocks-no-guard",
+    title: "High Court Chariot: blocks on the dummy and Desperation's No Guard",
+    question: "The dummy never attacks, so the block-driven lines (Improvision, Repent to the Light's Block Ratio stacks) need hits from elsewhere. And how strong is Desperation's No Guard on the dummy: does the 2-stack channel count as \"2 stacks lost\" (+100% effect), and is No Guard kept up by recasting within 8 s?",
+    evidence: "provisional",
+    current: "Provisional: block-driven lines follow the \"Hit or blocked recently\" best case (user rule 2026-10-12): Improvision held at its cap (+80% at rank 5), Repent to the Light's 15 Block Ratio stacks while Desperation recasts the Trait Skill. No Guard is held on the dummy: 10% (TLIDB keyword) × (1 + 100% for the 2 channeled stacks lost + No Guard Effect lines) × (1 + 2.8% × Block Ratio) (base Block Ratio 30%, + Invulnerability's 15% inside the Domain, + Repent's 15, capped by the Upper Limit), as additional damage taken; the channel time is not taken from your attacks.",
+    alternatives: [
+      { reading: "No blocks without an attacking enemy", effect: "Improvision and Repent's stacks off" },
+      { reading: "The stacks-lost bonus does not apply to a deliberate 2-stack recast", effect: "No Guard halves" },
+      { reading: "Channeling the Trait Skill stops your attacks", effect: "your damage drops by the channel's time share" }
+    ],
+    test: "With Desperation, channel the Trait Skill to 2 stacks next to the dummy and read No Guard's tooltip and timer on it.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B11); TLIDB keywords No Guard, Block Ratio, Repent to the Light`,
+    appliesWhen: (ctx) => ctx.heroId === "rosa-high-court-chariot" && (ctx.hasText(/^When Blocking in the Holy Domain/i) || ctx.hasText(/^At max channeled stacks, loses all channeled stacks and casts Holy Domain again/i) || ctx.hasText(/^Gains Repent to the Light/i))
+  },
+  {
+    id: "rosa-mercury-cycle",
+    title: "Unsullied Blade: the Mystic Mercury / Realm of Mercury cycle",
+    question: "How long do Mystic Mercury and Realm of Mercury each last on the dummy? Does Mystic Mercury still grant 5 Mercury Pts at 0 Mana, does it cost Mana or grant Pts inside the Realm with Born to Cleanse, and does Utmost Devotion's \"Gains 10% Mercury Pts\" mean 10% of Max Mercury Pts (Mystic Mercury's own Mana consumption included)?",
+    evidence: "provisional",
+    current: "Provisional: at the measured non-Channeled Attack use rate, Mystic Mercury spends 10% Unsealed Max Mana for 10 Pts per use (1%, or what is left, for 5 when short; read as always granting them, else the cycle stalls for good) until Max Mercury Pts (100, config_char_field 2501122; Utmost Devotion's +10% per 1000 Max Mana); the Realm drains 30/s, Mercury Baptism adds its Pts every 0.5 s, each use restores 15% Mana (× Born to Cleanse's -30%). Mystic Mercury costs nothing and grants nothing in the Realm (Born to Cleanse keeps its damage effects at 40%). Utmost Devotion: 10% of Max Mercury Pts per 2600 Mana consumed, Mystic Mercury's included (skill Mana costs are not in the planner). Every bonus is time-averaged over the cycle (the 5 s / 20 s windows too); the rate is measured without the Realm's own Attack Speed.",
+    alternatives: [
+      { reading: "No Pts at 0 Mana", effect: "the Realm is reached only when Mana lasts the whole fill: often never" },
+      { reading: "Utmost Devotion's 10% is 10 Pts, or counts only other Mana costs", effect: "slower fill with Devotion" },
+      { reading: "Born to Cleanse's Mystic Mercury also spends Mana in the Realm", effect: "lower Mana, lower Realm bonus" }
+    ],
+    test: "With Unsullied Blade and one non-Channeled Attack skill on the dummy, time Mystic Mercury → Realm → Mystic Mercury for a few cycles and read the Mercury Pts bar.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B11); TLIDB keywords Mystic Mercury, Realm of Mercury`,
+    appliesWhen: (ctx) => ctx.heroId === "rosa-unsullied-blade" && Boolean(ctx.lineState.rosa?.mercury?.active)
+  },
+  {
+    id: "rosa-mercury-baptism",
+    title: "Unsullied Blade: Mercury Baptism's damage and Infiltration",
+    question: "What does Mercury Baptism re-deal: X% of the non-Channeled Attack Elemental Hit Damage dealt since the last Baptism (after the dummy's resistances), every 0.5 s? And how long does its Infiltration stay after the Realm ends?",
+    evidence: "provisional",
+    current: "Provisional: every 0.5 s while the Realm exists, Mercury Baptism deals X% (44% at rank 5) of the non-Channeled Attack Elemental Hit Damage dealt since the last one (the dummy's mitigation applied, crit included) as True Damage, a separate damage source; the Infiltration of the largest recorded Elemental type (+13% × Infiltration Effect) is held for the Realm's time share.",
+    alternatives: [
+      { reading: "The record is a sliding window larger than 0.5 s", effect: "each Baptism re-deals more than one interval's damage" },
+      { reading: "The record is taken before the dummy's resistances", effect: "Baptism higher by the resistance factor" },
+      { reading: "The Infiltration outlasts the Realm", effect: "a higher Infiltration share" }
+    ],
+    test: "With Baptism of Purity in the Realm, read the True Damage numbers on the dummy against your hits over a few seconds.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B11); TLIDB keyword Mercury Baptism`,
+    appliesWhen: (ctx) => ctx.heroId === "rosa-unsullied-blade" && Boolean(ctx.lineState.rosa?.mercury?.baptism)
+  },
+  {
+    id: "rosa-mercury-purged",
+    title: "Mercury Purged: are the Baptism buffs held on the dummy?",
+    question: "Mercury Purged grants Baptism: Rage / Indolent / Impassive for 8 s on inflicting Ignite / Numbed / Frostbite. Are they held as long as the build keeps that ailment on the dummy?",
+    evidence: "provisional",
+    current: "Provisional: each Baptism buff is held while the build keeps the matching ailment on the dummy (every infliction refreshes its 8 s): Rage +30% additional damage on Critical Strike, Indolent +30% additional Max Damage, Impassive +60% Skill Area (TLIDB keywords); the -30% additional damage taken on you is defensive.",
+    alternatives: [
+      { reading: "Only one Baptism at a time", effect: "the strongest one only" }
+    ],
+    test: "With Mercury Purged, ignite the dummy and read the Baptism buff's timer over 20 s.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B11); TLIDB keywords Baptism: Rage, Indolent, Impassive`,
+    appliesWhen: (ctx) => ctx.heroId === "rosa-unsullied-blade" && (ctx.lineState.rosa?.purged || []).length > 0
   },
   // Hero trait audit B8 (2026-10-19; src/sage-traits.js, src/elixir-model.js, src/hero-trait-modules.js "sageScent"): Sage – Licorice
   // Note's Scent Bottles. Shown only for Sage.
@@ -1338,16 +1464,212 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "bing-firepower-coverage",
-    title: "Firepower Coverage: no Main Skill damage before the bombs exist",
-    question: "Firepower Coverage says \"Cannot use Main Skills\" and \"Automatically throws bombs at nearby enemies\". The planner does not model the bombs yet; should the Main Skill's damage be removed now, so the build does not read stronger than it is?",
+    title: "Firepower Coverage: a Main Skill the bombs cannot replace",
+    question: "Firepower Coverage says \"Cannot use Main Skills\" and \"Automatically throws bombs at nearby enemies\". The bombs fire the projectiles of a Non-channeling, Non-Sentry Main Attack Projectile Skill. With any other Main Skill (a Spell, a channel), does the Main Skill deal nothing, and do the bombs deal nothing either?",
     evidence: "provisional",
-    current: "Provisional (hero trait audit Q-H15, recommended reading; not answered yet): applied. The Main Skill deals no damage of its own and a warning names the missing source (the bombs, hero trait audit B12). Best-case switch \"Firepower Coverage: Cannot use Main Skills (applied)\"; off keeps the Main Skill's damage.",
+    current: "Provisional (hero trait audit Q-H15, recommended reading; not answered yet): applied. A Main Skill the bombs cannot replace deals no damage of its own, and a warning names the missing source (the bombs need an Attack Projectile Main Skill). An Attack Projectile Main Skill throws bombs with or without Firepower Coverage (hero trait audit B12), so there the line removes nothing more. Best-case switch \"Firepower Coverage: Cannot use Main Skills (applied)\"; off keeps such a Main Skill's damage.",
     alternatives: [
-      { reading: "Keep the Main Skill's damage until the bombs are modeled", effect: "the Main Skill's damage stands in for the bombs' (an overstatement or understatement)" }
+      { reading: "The automatic bombs fire some default projectile with any Main Skill", effect: "a non-projectile Main Skill would still deal bomb damage" }
     ],
-    test: "Not an in-game question: whether the planner should show the penalty before the bomb engine (batch B12) exists.",
-    source: `${HERO_TRAIT_AUDIT} (§6 Q-H15)`,
+    test: "With Firepower Coverage and a Spell Main Skill (Chromatic Shot), stand at the dummy for 20 s and read the recount.",
+    source: `${HERO_TRAIT_AUDIT} (§6 Q-H15, §5 B12)`,
     appliesWhen: (ctx) => ctx.heroId === "bing-blast-nova" && Boolean(ctx.lineState.firepowerCoverage)
+  },
+  // Hero trait audit B12 (2026-10-19; src/bing-traits.js, src/skill-hit-model.js heroEffects.bombs / overload / machines,
+  // src/hero-trait-modules.js "bombs" / "whimsy", src/combat-states.js the moon's Paralysis): Bing (Blast Nova, Creative Genius) and its
+  // revived affixes. Shown only for Bing.
+  {
+    id: "bing-bomb-hits",
+    title: "Blast Nova: how many of a bomb's projectiles hit one dummy?",
+    question: "Each bomb detonates \"firing Projectiles in all directions\" (the Main Skill's projectiles). On one training dummy, how many of them hit it? With Radiation Effect (\"will not be fired in all directions\"), do they land like the Main Skill's own volley?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit Q-H14, recommended reading): one projectile per bomb hits the dummy (all directions: one points at it), at full damage, no Shotgun falloff; with Radiation Effect the volley flies at the dummy and lands the Main Skill's Shotgun share (src/shotgun-effect.js: ceil(n / 2) standing close). The Main Skill's hit model gives each projectile's damage.",
+    alternatives: [
+      { reading: "A bomb landing on the dummy hits it with every projectile", effect: "bomb damage × the projectile count" },
+      { reading: "Radiation Effect fires all the projectiles at the dummy", effect: "the whole volley at its falloff, not the Shotgun share" }
+    ],
+    test: "With Blast Nova and Rain of Arrows (or Split Shot), count the damage numbers per bomb on the dummy, then again with Radiation Effect.",
+    source: `${HERO_TRAIT_AUDIT} (§6 Q-H14, §5 B12)`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-blast-nova" && Boolean(ctx.lineState.bing?.blastNova?.bombsActive)
+  },
+  {
+    id: "bing-bomb-rate",
+    title: "Blast Nova: how fast are bombs thrown, and when do they detonate?",
+    question: "\"Base Bomb Throwing Speed is 1 time per second\" with 100% of the Attack Speed bonuses: are the bombs thrown at that rate in place of the Main Skill's casts (with or without Firepower Coverage), 2 per throw? When does the first bomb detonate?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit Q-H14, recommended reading): throws per second = 1 × (1 + the Attack Speed bonuses, increased and additional, the Main Skill's supports included) × Π(1 + additional Bomb Throwing Speed: Radiation Effect, Firepower Coverage while moving), 2 bombs per throw (+2 at Blast Barrage's chance), in place of the Main Skill's own casts. The first throw lands one throw interval in and the bomb detonates 1 s later (Blast Barrage: at once); with Phantom Delivery the first detonation waits for the 11th bomb. The 5 s / 20 s windows count the detonations from there; the sustained rate is the throw rate.",
+    alternatives: [
+      { reading: "Without Firepower Coverage the throws follow the Main Skill's own attack rate", effect: "the bombs at the weapon's attack speed instead of 1 per second" },
+      { reading: "The first throw is at t = 0", effect: "the opening windows a little higher" }
+    ],
+    test: "With Blast Nova and no Attack Speed, count the bombs thrown in 10 s; then with +50% Attack Speed.",
+    source: `${HERO_TRAIT_AUDIT} (§6 Q-H14, §5 B12)`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-blast-nova" && Boolean(ctx.lineState.bing?.blastNova?.bombsActive)
+  },
+  {
+    id: "bing-bomb-damage-lines",
+    title: "Blast Nova: Dangerous Runaway, Phantom Delivery and Frenzy Hound on the dummy",
+    question: "Dangerous Runaway counts \"each bomb recently thrown\": is \"recently\" 4 s? Phantom Delivery: with bombs held until the limit, are 10 on the battlefield at each detonation? Frenzy Hound: does its +X% reach only the bomb hits, or everything that hits the dummy (ailments included)?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): Dangerous Runaway reads the bombs thrown in the last 4 s (bombs per second × 4 × 3%, capped); Phantom Delivery: a bomb detonates when the 11th lands, so 10 are on the field at each detonation (+60% at rank 5, the cap); Frenzy Hound: the bombs are thrown at the dummy, so it is always within 10 m of a detonation, and the bonus reaches the bomb hits only. Phantom Delivery's start / stop detonation never runs on the dummy (one movement state throughout).",
+    alternatives: [
+      { reading: "\"Recently\" is 2 s", effect: "Dangerous Runaway's stacks halve below the cap" },
+      { reading: "Frenzy Hound is a debuff on the enemy", effect: "it would also reach the bombs' ailments and other damage" }
+    ],
+    test: "Read the character panel's additional Bomb Damage while throwing at the dummy, with Dangerous Runaway and then Phantom Delivery.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12)`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-blast-nova" && Boolean(ctx.lineState.bing?.blastNova?.bombsActive) && (ctx.hasText(/additional Bomb Damage for each bomb recently thrown/i) || ctx.hasText(/^Bombs do not automatically explode when the upper limit is not reached$/i) || ctx.hasText(/additional damage to enemies within [\d.]+ ?m around a bomb when it detonates/i))
+  },
+  {
+    id: "bing-big-bang-pack",
+    title: "Bing's Big Bang Pack: Spare Bombs",
+    question: "\"When bombs deal damage, they can generate 3 additional Spare Bombs, with a chance equal to 35% of the bomb's Critical Strike Chance. -60% additional Spare Bomb Damage\": is the chance rolled once per bomb, do Spare Bombs deal a full bomb's damage at -60%, and can they make more Spare Bombs?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): once per bomb, 3 Spare Bombs at 35% × the bomb's crit chance (the Main Skill's, measured by the hit pass), each a bomb of the same damage at -60% additional; Spare Bombs make none: +3 × 0.35 × crit × 0.4 average bomb damage.",
+    alternatives: [
+      { reading: "Rolled per damage instance (each hit of a volley)", effect: "more Spare Bombs with Radiation Effect" },
+      { reading: "Spare Bombs make Spare Bombs", effect: "a geometric series on top" }
+    ],
+    test: "With Big Bang Pack and a high crit chance, count the extra detonations per bomb on the dummy.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12)`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-blast-nova" && Boolean(ctx.lineState.bing?.blastNova?.bombsActive) && ctx.hasText(/^When bombs deal damage, they can generate/i)
+  },
+  {
+    id: "bing-whimsy-cadence",
+    title: "Creative Genius: Whimsy Explosions and Whimsy Signal on the dummy",
+    question: "Whimsy Essence restores 20 per second, and at 100 a Spell hit fires a Whimsy Explosion (which consumes 100 and restores 25 Ingenuity Essence). Is Whimsy Signal (+20% additional Spell Damage taken for 5 s) then held on the dummy, and how much damage does the explosion deal?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): Whimsy Essence 20/s × (1 + Whimsy Essence Recovery Speed) + Inspiration Overflow's gains → one explosion per 100 while the build deals Spell Damage (+ Flash of Brilliance's free ones); Whimsy Signal on the dummy at min(1, 5 s × explosions per second) (at 20/s: every 5 s, so held), Trouble Maker's enhanced value × Whimsy Signal Effect, Spell hits only (enemy Spell Damage taken rule, 2026-10-18). The explosion's own damage is not in the text or the readable data, so it is not modeled.",
+    alternatives: [
+      { reading: "The explosion deals damage of its own", effect: "an extra damage source (needs its skill data)" },
+      { reading: "Whimsy Signal also reaches Spell damage over time", effect: "higher with a Spell DoT" }
+    ],
+    test: "With Creative Genius and a Spell on the dummy, read Whimsy Signal's timer and the explosion's damage numbers over 20 s.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12); TLIDB keywords Whimsy Explosion, Whimsy Signal`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.explosionsOn)
+  },
+  {
+    id: "bing-mind-domain",
+    title: "Mind Domain: Whimsy stacks in the energy field",
+    question: "Whimsy Explosion spawns an energy field that grants 1 Whimsy stack per 0.5 s inside (Whimsy: +5% additional Spell Damage, multiplies, 10 s). How long does the field last, and can you stay in it long enough to hold the max stacks?",
+    evidence: "provisional",
+    current: "Provisional (best-case switch \"Mind Domain: standing in the Whimsy Explosion's energy field\", default on): the max stacks held at min(1, 10 s × explosions per second) uptime, each +5% × (1 + Whimsy Effect) additional Spell Damage, multiplied. Off: no Whimsy stacks.",
+    alternatives: [
+      { reading: "The field lasts less than the time to build the max stacks", effect: "fewer stacks" }
+    ],
+    test: "With Mind Domain, stand in the field next to the dummy and read the Whimsy buff's stacks and timer.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12); TLIDB keyword Whimsy`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.explosionsOn) && ctx.hasText(/^Whimsy Explosion spawns an energy field/i)
+  },
+  {
+    id: "bing-ingenuity-overload",
+    title: "Creative Genius: what an Ingenuity Overload casts",
+    question: "Ingenuity Overload \"Triggers your Main Skill once immediately\" with \"+200% additional Max Spell Burst for the skill this time\" and a full charge. Is that one cast plus Max Spell Burst × 3 automatic casts, all cast by Spell Burst? Does it count as a Spell Burst activation (Inspiration Overflow), and does it reset your own Spell Burst charge?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): Ingenuity Essence 25 per Whimsy Explosion × (1 + Ingenious Chaos Principle × Max Spell Burst); the Trait Skill is pressed whenever 100 are ready (Trait Skill switch) or Auto-Ingenuity Program fires it; Law of Ingenuity's chance not to consume shortens the period. Each Overload casts the Main Skill once + Max Spell Burst × 3 automatic casts, all cast by Spell Burst (their hit lines apply), on top of your own casts and your own Spell Burst cycle (not reset); it counts as an activation for Inspiration Overflow. A Main Skill that cannot activate Spell Burst gets no Overload. (SS14 removed Genius Idea Generator's \"+1 to Max Spell Burst and +60% additional Spell Damage\" for these casts.)",
+    alternatives: [
+      { reading: "The Overload spends your own Spell Burst charge", effect: "fewer regular Spell Burst activations" }
+    ],
+    test: "With Creative Genius at 100 Ingenuity Essence, press the Trait Skill next to the dummy and count the Main Skill casts it makes.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12); TLIDB keyword Ingenuity Overload`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.overload?.on)
+  },
+  {
+    id: "bing-contingency-machines",
+    title: "Contingency Inspiration Delivery: how many casts the machines make",
+    question: "Each Ingenuity Overload summons 3 Contingency Inspiration Machines that cast your Main Skill (Base Cast Frequency = 100% of your Cast Speed, Skill Interval 0.4 – 0.9 s, \"Unable to move for 5s\"). How long do they stay, and does Cast Speed shorten their interval?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): each machine stays 5 s and casts the Main Skill every interval ÷ your Cast Speed factor, at full damage, as triggered casts (no Spell Burst); machines from consecutive Overloads add up.",
+    alternatives: [
+      { reading: "The machines last until the next Overload", effect: "more casts when Overloads are rare" },
+      { reading: "Cast Speed does not shorten the interval", effect: "fewer machine casts" }
+    ],
+    test: "Trigger one Ingenuity Overload with Contingency Inspiration Delivery and count the machines' casts and how long they stay.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12); TLIDB keyword Contingency Inspiration Machine`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.overload?.on) && ctx.hasText(/Contingency Inspiration Machines when casting Ingenuity Overload/i)
+  },
+  {
+    id: "bing-hyper-resonance",
+    title: "Hyper-Resonance Hypothesis: a 10 s Spell Burst Charge Speed buff per Overload",
+    question: "The buff (+X% additional Spell Burst Charge Speed for 10 s) follows each Ingenuity Overload. Is it time-averaged over the Overload period on the dummy?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): its value × min(1, 10 s × Overloads per second), as one time-averaged additional Charge Speed line.",
+    alternatives: [
+      { reading: "Simulate the charge cycle with the buff on and off", effect: "slightly different activations" }
+    ],
+    test: "Not an in-game question: the averaging rule.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12)`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.overload?.on) && ctx.hasText(/^When casting Ingenuity Overload ?, gains Buff Effect/i)
+  },
+  {
+    id: "bing-multi-coupling",
+    title: "Multi-Coupling Equation: which Empower or Defensive Skills count",
+    question: "\"For every 2 Empower or Defensive Skill(s) affecting you, +1 Max Spell Burst\": do the enabled Empower / Defensive skills on your skill board count, without being cast on the dummy?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): every enabled, active Empower or Defensive skill on the skill board counts as affecting you (best case), up to the trait's cap.",
+    alternatives: [
+      { reading: "Only skills whose buff is currently up count", effect: "fewer stacks for skills with short buffs" }
+    ],
+    test: "With Multi-Coupling Equation and two Defensive skills on the bar, read Max Spell Burst on the character panel before and after casting them.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12)`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && ctx.hasText(/Empower or Defensive Skill\(s\) affecting you/i)
+  },
+  {
+    id: "bing-whimsy-feeders",
+    title: "Inspiration Overflow and Flash of Brilliance: extra Whimsy Explosions",
+    question: "Inspiration Overflow restores 5 + 6 per 2 stacks consumed Whimsy Essence per Spell Burst activation (Interval 1 s); Flash of Brilliance fires a free Whimsy Explosion on a Main Skill cast at X% (Interval 2.5 s). Do the free explosions also restore Ingenuity Essence, and do Spell Burst's automatic casts count as \"casting a Main Skill\"?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B12): Inspiration Overflow at most once per second, from your Spell Burst activations and the Overloads'; Flash of Brilliance: one free explosion per 2.5 s + the expected wait for the chance (1 ÷ (casts per second × chance)), every Main Skill use counted; free explosions restore 25 Ingenuity Essence like the others.",
+    alternatives: [
+      { reading: "Free explosions restore no Ingenuity Essence", effect: "Flash of Brilliance changes no Overload cadence" }
+    ],
+    test: "With Flash of Brilliance, cast the Main Skill at the dummy with Whimsy Essence below 100 and watch the Ingenuity Essence bar.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B12)`,
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.explosionsOn) && (ctx.hasText(/^Instantly restores [\d.]+ Whimsy Essence when activating Spell Burst/i) || ctx.hasText(/^Casting a Main Skill has a [\d.]+ ?% chance to trigger Whimsy Explosion/i))
+  },
+  // Hero trait audit B13 (2026-10-19; src/selena-leftover-traits.js, src/skill-hit-model.js heroEffects.bardSong / crimsonShade,
+  // src/hero-trait-modules.js "crimsonShade" / "redShoes"): Selena's leftovers. Shown only for Selena.
+  {
+    id: "selena-sea-foam-bard-song",
+    title: "Sea Foam Nocturne: Min Channeled Stacks twice on Bard Song",
+    question: "\"Min Channeled Stacks takes effect twice on Bard Song\": does Bard Song start each bubble at twice the build's Min Channeled Stacks, so fewer stacks are left to channel?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B13): the Min Channeled Stacks lines count twice in the Bard Song cadence (stacks per bubble = Max − 2 × Min, at least 1).",
+    alternatives: [
+      { reading: "It doubles the stacks gained per channel tick instead", effect: "a similar speed-up, different with high Min" }
+    ],
+    test: "With Sea Foam Nocturne and a Min Channeled Stacks line, count the Bard Song bubbles over 20 s, then without Sea Foam.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B13)`,
+    appliesWhen: (ctx) => ctx.heroId === "selena-sing-with-the-tide" && Boolean(ctx.planner.singWithTheTide?.bardSong?.seaFoam)
+  },
+  {
+    id: "selena-crimson-shade",
+    title: "Lonely Ensemble: Crimson Shades' Terras on the dummy",
+    question: "Each Main Terra cast summons a Crimson Shade per Max Spell Burst (up to the Max Quantity, once per 1 s), and each Shade casts your Main Terra once. Does the Shade's Terra hit the dummy, does it use or get Terra Charge, and does its Terra DoT add to the Main Terra's?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B13; game record 1710013, keyword 80061): min(Max Spell Burst, Max Quantity) Shades per Main Terra cast, at most one summon per 1 s; each Shade's Terra is a full extra use of the Main Terra's hits on the dummy (best case, switch Crimson Shades' Terras hit the dummy) at the trait's −X% additional damage, consuming no Terra Charge and so without its Terra Charge bonus. A Terra DoT stays one instance on the dummy (no extra DoT).",
+    alternatives: [
+      { reading: "Shade casts keep the Terra Charge bonus", effect: "stronger Shade casts" },
+      { reading: "Shade Terra DoTs stack with the Main Terra's", effect: "extra DoT for a DoT Terra (Frost Terra)" },
+      { reading: "Max Quantity limits Shades alive at once, not per cast", effect: "fewer casts if Shades linger" }
+    ],
+    test: "With Lonely Ensemble and 2 Max Spell Burst on a Terra with hits (Flame Jet), compare the dummy's 20 s average with and without the trait.",
+    source: `${HERO_TRAIT_AUDIT} (§5 B13)`,
+    appliesWhen: (ctx) => ctx.heroId === "selena-dance-of-the-deep" && Boolean(ctx.lineState.crimsonShade)
+  },
+  {
+    id: "selena-red-shoes",
+    title: "Red Shoes of Cruelty: damage taken from Movement Speed",
+    question: "\"Increases the damage taken by enemies within the Terra Skill Area by 38% of Movement Speed bonus, up to 75%\": is it additional damage taken, which Movement Speed counts (the panel's bonus, with Activation Medium: Terra's −30%), and does it reach damage over time?",
+    evidence: "provisional",
+    current: "Provisional (hero trait audit B13): +min(75, 38% × Movement Speed bonus)% additional damage taken on the dummy inside the active Main Terra, hits and damage over time (like the Crimson Tide's); the bonus is the stat sheet's Movement Speed (movement held in full) less Activation Medium: Terra's −30% for 2 s at its trigger uptime. The self True Damage line has no DPS effect.",
+    alternatives: [
+      { reading: "Increased (additive) damage taken", effect: "smaller effect with other damage-taken lines" },
+      { reading: "Activation Medium: Terra's slow does not count", effect: "+11.4 points more damage taken while it is up" }
+    ],
+    test: "With Red Shoes on a Main Terra build, note the dummy damage at two Movement Speed values (boots on and off).",
+    source: `${HERO_TRAIT_AUDIT} (§5 B13)`,
+    appliesWhen: (ctx) => ctx.heroId === "selena-dance-of-the-deep" && Boolean(ctx.lineState.redShoes)
   },
   // Hero trait audit B10 (2026-10-19; src/rehan-traits.js, src/hero-trait-modules.js, src/planner.js): Rehan (Anger, Seething Silhouette)
   // and its revived affixes. Shown only for Rehan.
@@ -1449,6 +1771,1385 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "With Starfall Wasteland and a Ranged Projectile Main Skill, count the Spirit's floating numbers per cast on the dummy at 6 m.",
     source: `${HERO_TRAIT_AUDIT} (§5 B10)`,
     appliesWhen: (ctx) => ctx.heroId === "rehan-seething-silhouette" && Boolean(ctx.lineState.rehan?.spirit?.starfall)
+  },
+  {
+    id: "slate-import-o1-anchor",
+    title: "Import from game: the anchor cell of a square (O) crafted slate",
+    question: "The login dump names one cell per slate, the cell the game turns it about. For the square (O) crafted slate that cell has not been seen on a board yet: which of its four cells is it at each Direction?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): ShapeId 1051 is read as the square (the game lists each god's crafted bases as Z1, Z2, L1, L2, O1, T1, and the other five ids are confirmed on logged boards). Its 2 x 2 footprint matches the in-game previews of all six gods' squares (reference/slates). Its anchor is unknown (a preview shows no logged cell), so an imported square is placed only where a single 2 x 2 position fits beside the other slates, and parked beside the board otherwise.",
+    alternatives: [
+      { reading: "A fixed corner (for example the top-left cell at Direction 0)", effect: "every imported square would be placed straight from its logged cell" }
+    ],
+    test: "Equip a square crafted slate with free cells around it, screenshot the board, log in again and import: send the screenshot with the import report's slate lines.",
+    source: SLATE_IMPORT,
+    appliesWhen: (ctx) => importedSlates(ctx).some((slate) => slate.rarity === "magic" && /-2$/.test(String(slate.shape)))
+  },
+  {
+    id: "slate-import-unlogged-legendaries",
+    title: "Import from game: Space Rift, Residence of Stars and Contamination anchors",
+    question: "These slates have not been seen in a game log yet. Which of their cells does the game log as the anchor, and can Space Rift lie flat (a quarter turn)?",
+    evidence: "unknown",
+    current: "Unknown anchors. The footprints match the in-game previews (reference/slates): Space Rift a column of six, Residence of Stars an eight-cell pinwheel that is the same at every quarter turn (so any logged Direction is drawn as is), Contamination two cells in a column. The importer tries every cell of the slate as the anchor and places it only when one position fits beside the other slates (Space Rift always fills its logged column); otherwise it is parked. Space Rift is drawn upright only: a logged half turn is drawn as the column, a quarter turn parks it. Game text: a Nether King's Divinity is placed by its Source cell (the anchor) and changes shape with the Source's location.",
+    alternatives: [
+      { reading: "A fixed anchor cell per slate", effect: "these slates would always be placed from the log" },
+      { reading: "Space Rift can lie flat", effect: "a quarter-turned one would need a turned drawing in the planner" },
+      { reading: "Contamination covers three cells with three Brand slots (game text: 2-3 Brand slots, one Offspring cell each; the preview shows two)", effect: "a third cell the planner does not draw" }
+    ],
+    test: "Log in with one of these slates equipped, then send a screenshot of the board with the import report's slate lines.",
+    source: SLATE_IMPORT,
+    appliesWhen: (ctx) => importedSlateNamed(ctx, ["Space Rift", "Residence of Stars", "Nether King's Divinity: Contamination"])
+  },
+  {
+    id: "slate-import-banishment",
+    title: "Nether King's Banishment: its pattern and whether its cells block other slates",
+    question: "The planner's third Nether King slate, \"Offspring\", is read as the game's Banishment. Is the three-cell diagonal (the in-game preview reference/slates/Nether King Offspring.png) Banishment's pattern, and do its cells sit under other slates as Judgment's do?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): the game's localization names three Nether King's Divinity types, Judgment, Contamination and Banishment, and uses \"Offspring\" for a Nether King slate's cells (each holds one Brand Talent; the Source counts as one), not for a slate. The diagonal preview is neither Judgment's nor Contamination's pattern, so the planner's Offspring slate is read as Banishment. An imported Banishment becomes the Offspring slate with its talents and is parked beside the board, since the preview shows no name, the game text says the shape changes with the Source's location, and whether its cells block other slates is unconfirmed.",
+    alternatives: [
+      { reading: "Banishment has another pattern (the diagonal is another type at another Source location)", effect: "the imported slate would need its own shape" },
+      { reading: "Its cells block other slates", effect: "it would be placed like a regular slate" }
+    ],
+    test: "Equip Banishment, screenshot the board with another slate next to its cells, and compare with the planner's Offspring pattern.",
+    source: SLATE_IMPORT,
+    appliesWhen: (ctx) => importedSlateNamed(ctx, ["Nether King's Divinity: Offspring"])
+  },
+  {
+    id: "game-log-talent-cut-core",
+    title: "Import from game: talent nodes past the log's 30-entry cut",
+    question: "Talent trees with 31 or 32 nodes lose their last nodes from the login dump. Does the game ever keep a core talent selected with fewer points in its tree than the core's unlock threshold?",
+    evidence: "provisional",
+    current: "Provisional: a selected core means its unlock points are in the tree, so when the listed nodes fall short of them by exactly the lost nodes' max ranks, the importer sets those nodes to max rank (the 2026-10-19 Warlock tree: node 6,4). Otherwise they stay unknown and are listed as missing in the import report.",
+    alternatives: [
+      { reading: "A core can stay selected below its threshold", effect: "a filled node could be empty in game" }
+    ],
+    test: "In game, try to remove a point from a tree whose selected core sits at exactly its unlock threshold; if the game refuses, the reading holds.",
+    source: SLATE_IMPORT,
+    appliesWhen: (ctx) => cutTreeFilled(ctx)
+  },
+  {
+    id: "slate-residence-of-stars-copy",
+    title: "Residence of Stars: which slates does it copy from?",
+    question: "\"Copies the Medium Talents on the adjacent slate to this slate\": does Residence of Stars copy from every slate that touches it, or from one slate only, and do Nether King Medium nodes count as Medium Talents?",
+    evidence: "provisional",
+    current: "Provisional: it copies the Medium Talents (not Legendary Medium, Micro or Core Talents) of every slate sharing an edge with it, Nether King Medium nodes included as for Space Rift. Its copied lines are never copied again (a Prairie next to it copies nothing from it; user answer 2026-10-22, game Replicate text). (The rule text matches the game's own, influence 8001 in the SS13 and SS14 tables; the in-game preview shows the footprint only.)",
+    alternatives: [
+      { reading: "One adjacent slate only", effect: "fewer copied talents" },
+      { reading: "Slates touching it only at a corner count too", effect: "more copied talents" }
+    ],
+    test: "Place Residence of Stars touching two slates that have Medium Talents and read its copied talents in game.",
+    source: SLATE_IMPORT,
+    appliesWhen: (ctx) => (ctx.state?.slates?.inventory || []).some((slate) => (slate.template || slate.name) === "Residence of Stars" && (ctx.state?.equippedSlateIds || []).includes(slate.id))
+  },
+  // Slates audit 2026-10-22 (research/slates-nether-king-audit-2026-10-22.md): Nether King Authorities and slate-level rules.
+  {
+    id: "slate-judgment-effect-increase-multiplier",
+    title: "Judgment: how do the Effect Increase Multiplier nodes combine?",
+    question: "\"When Judgment is active, +X% Effect Increase Multiplier for <slates> along the connecting line\" (+5% for every Divinity Slate, +10% for A Corner of Divinity and Fallen Starlight, +10% for Non-Legendary slates): with two of them on one slate, are the multipliers added before they scale the +40% boost, and does a Brand copy take Judgment's own -30%?",
+    evidence: "provisional",
+    current: "Provisional: the link boost is 40% x (1 + the multipliers that name the slate, added); a multiplier written on Judgment's own Brand slot is first reduced by the Authority's -30% (+10% reads +7%). Game text (Effect Increase): \"The Effect Increase Multiplier affects the value of the effect boost.\"",
+    alternatives: [
+      { reading: "Each multiplier multiplies the boost on its own", effect: "slightly more boost with two of them (40 x 1.05 x 1.10 = 46.2% instead of 46%)" },
+      { reading: "The multipliers are not reduced on a Brand", effect: "+10% instead of +7% from a Brand copy" }
+    ],
+    test: "Equip a Judgment with one of these nodes, put a crafted slate on its line and read one talent's value with and without the node.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => Boolean(ctx.planner.netherKingAuthority?.judgment && Object.values(ctx.planner.netherKingAuthority.judgment.effectIncreaseMultipliers || {}).some((value) => value > 0))
+  },
+  {
+    id: "slate-judgment-line-slate-count",
+    title: "Judgment: which slates count \"along the connecting line\"?",
+    question: "\"When Judgment is active, for every 1 Divinity Slate along the connecting line, gain: +3% ...\": is the count every slate with a cell on Judgment's two arms (Space Rift included, though it takes no boost), and do the gains add up?",
+    evidence: "provisional",
+    current: "Provisional: every equipped, placed slate with a cell strictly between Judgment's corner cells counts once (Space Rift too), and the line gives +3% x that count (added). It gives nothing while Judgment has fewer than three Brands.",
+    alternatives: [
+      { reading: "Space Rift does not count", effect: "one step less per Space Rift on a line" },
+      { reading: "Each slate multiplies (1.03 per slate)", effect: "slightly more with many slates" }
+    ],
+    test: "Read the character panel's additional damage (or Aura Effect) with this node while moving one slate on and off Judgment's line.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => Boolean(ctx.planner.netherKingAuthority?.judgment) && (ctx.planner.resolvedSlates || []).some((slate) => [...(slate.fixed || []), ...(slate.brands || [])].some((affix) => /for every 1 Divinity Slate along the connecting line/i.test(affix)))
+  },
+  {
+    id: "slate-contamination-projection",
+    title: "Contamination: how strong are the projected Brand talents?",
+    question: "Contamination \"Projects all Brand Talents from the Nether King's Divinity onto directly adjacent Divinity Slates. -88% Effect for the Projected Talents\". Do the \"+X% Projection Effect\" nodes add to the -88% (+100% for Pedigree of Gods gives +12%), which slates are \"directly adjacent\", and does a whole-number talent (+1 to a skill level or stack) survive at -88%?",
+    evidence: "provisional",
+    current: "Provisional: each projected copy reads the Brand talent at (100 - 88 + the best applicable Projection Effect node)%; directly adjacent = sharing an edge with a Contamination cell (corners too with the diagonal node); whole-number values round as Judgment's own -30% does (never below 1); \"Statue of The New God has an empty slot\" = a free board cell. A projected copy of a Max Active Divinity talent counts only when it is the stronger copy (game text).",
+    alternatives: [
+      { reading: "The Projection Effect node multiplies the remaining 12%", effect: "far weaker projections (+100% gives 24%, not 112%)" },
+      { reading: "Whole-number talents round down to 0 at -88%", effect: "no skill-level or stack talents on the adjacent slates" }
+    ],
+    test: "Equip Contamination with three Brands next to a crafted slate and read the projected talents' values on that slate's tooltip, with and without a Projection Effect node.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => Boolean(ctx.planner.netherKingAuthority?.contamination)
+  },
+  {
+    id: "slate-banishment-adjacency",
+    title: "Banishment: what counts as an adjacent and a non-adjacent slate?",
+    question: "Banishment's Bonus Effect needs \"at least 3\" adjacent and non-adjacent Divinity Slates, and its Ultimate nodes give a bonus \"for every 1 adjacent / non-adjacent Divinity Slate\". Is a slate adjacent when it shares an edge with any of Banishment's three cells, and is every other equipped slate non-adjacent? Does \"When Banishment is active\" mean the Authority (three Brands) or the Bonus Effect's threshold?",
+    evidence: "provisional",
+    current: "Provisional: adjacent = sharing an edge with one of its cells; non-adjacent = every other equipped, placed Divinity Slate; \"When Banishment is active\" = its three Brand slots filled (the counts then scale those lines); the Bonus Effect also needs 3 of each.",
+    alternatives: [
+      { reading: "Corner contact counts as adjacent", effect: "more adjacent, fewer non-adjacent slates" },
+      { reading: "The Ultimate nodes also need the 3 / 3 threshold", effect: "no bonus below it" }
+    ],
+    test: "Equip Banishment with a Bonus Effect and move one slate from a corner contact to an edge contact; watch whether the effect switches on.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => Boolean(ctx.planner.netherKingAuthority?.banishment)
+  },
+  {
+    id: "slate-banishment-effects",
+    title: "Banishment's Bonus Effects: values and best-case readings",
+    question: "The planner reads Indomitable as always ready on the dummy (+10% additional damage and Minion Damage), Nether King: Projection as held at 5 stacks (+50% additional Projectile Damage) and Spell Burst's hit bonus at the patch notes' +10% (TLIDB's hover says +5%). Are these right, and which of the other effects matter on the dummy?",
+    evidence: "provisional",
+    current: "Provisional: Indomitable and Projection are read at their best case; Spell Burst's +10% additional Hit Damage for skills cast by Spell Burst is read (its triggered casts are not); Demolisher, Steep Strike, Shadow Strike, Quagmire, Provision and Tangle are not modeled; Ill Omen does not act on the dummy. The effect comes from Import from game (InfluenceId 12001-12010, stored as the slate's authorityEffect); the slate crafter has no control for it yet.",
+    alternatives: [
+      { reading: "Projection's stacks decay between casts", effect: "less Projectile Damage at low cast rates" },
+      { reading: "Spell Burst at TLIDB's +5%", effect: "half the hit bonus" }
+    ],
+    test: "With Banishment: Projection, read the buff's stack count during a dummy run; with Spell Burst, compare a Spell Burst cast's hit with and without the slate.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => Boolean(ctx.planner.netherKingAuthority?.banishment?.effect)
+  },
+  {
+    id: "slate-max-active-order",
+    title: "Max Active Divinity Slates: which copy counts past the limit?",
+    question: "Fallen Starlight, A Corner of Divinity and Sparks of Moth Fire allow 3 active copies, Pedigree of Gods, Prairie and every Nether King's Divinity 1. With more equipped, which copies does the game keep?",
+    evidence: "provisional",
+    current: "Provisional: the first copies in the build's slate order (captured slates, then the inventory) count; the rest show \"Max Active Divinity Slate(s): N\" and take no effect. The limits are game data (item descriptions).",
+    alternatives: [{ reading: "The game keeps the strongest or the most recently equipped copies", effect: "a different copy counts" }],
+    test: "Equip one copy more than the limit and see which slate the game marks inactive.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => (ctx.planner.resolvedSlates || []).some((slate) => slate.divinityLimited && !/Pedigree of Gods/.test(slate.template || slate.name))
+  },
+  {
+    id: "slate-nk-empower-defensive-casts",
+    title: "Nether King: Empower or Defensive Skills \"cast recently\"",
+    question: "\"+3% additional damage for each Empower or Defensive Skill cast recently. Stacks up to +4 time(s) (multiplies)\": does every Empower or Defensive Skill on the board count while you cast it on cooldown, and how long is \"recently\"?",
+    evidence: "provisional",
+    current: "Provisional: every enabled active Empower or Defensive Skill on the skill board counts as cast recently (best case, as Empowered Insight's board count), one factor of 1.03 each, up to 4.",
+    alternatives: [{ reading: "Only casts within the last 4 s count, at each skill's cooldown", effect: "fewer stacks for skills with long cooldowns" }],
+    test: "Cast one, then two Empower Skills and read the character panel's additional damage.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.texts.some((entry) => /for each Empower or Defensive Skill cast recently/i.test(entry.text))
+  },
+  {
+    id: "slate-warcry-used-recently",
+    title: "\"If you have used a Warcry Skill in the last 8s\"",
+    question: "God of Might's \"+8% additional Attack Damage if you have used a Warcry Skill in the last 8s\": is it held while a Warcry Skill is used on cooldown?",
+    evidence: "provisional",
+    current: "Provisional: held whenever an enabled Warcry Skill is on the skill board (best case, as the \"after using Mobility Skills\" rule).",
+    alternatives: [{ reading: "Held only for the share of time within 8 s of a Warcry cast", effect: "less damage with a Warcry cooldown above 8 s" }],
+    test: "Use a Warcry, wait 8 s, and compare the character panel's Attack Damage.",
+    source: "research/slates-nether-king-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.texts.some((entry) => /if you have used a Warcry Skill in the last/i.test(entry.text))
+  },
+  // Belt blend audit 2026-10-21 (research/belt-blends-pedigree-cores-2026-10-21.md): blend lines read for the first time.
+  {
+    id: "belt-caged-fury-movement",
+    title: "Caged Fury: is \"moved less than 12 m in the last 1 s\" standing still?",
+    question: "Caged Fury gives +15% additional Attack Speed after moving 12 m or more in the last 1 s, and +35% additional damage and +35% Physique after moving less than 12 m. Does ordinary movement (below 12 m per second) already count as \"less than 12 m\", so the damage half holds while you walk?",
+    evidence: "provisional",
+    current: "Provisional: the two halves are read as the Movement group's alternatives (12 m or more = moving, less than 12 m = standing still), and the planner keeps the one that gives more damage, listed in the assumptions.",
+    alternatives: [
+      { reading: "Walking below 12 m/s counts as \"less than 12 m\"", effect: "the +35% damage holds while moving too, so moving builds keep it" },
+      { reading: "Only standing still counts", effect: "as now" }
+    ],
+    test: "Equip Caged Fury, walk (no Mobility Skill) and watch whether the +35% damage buff stays up; then compare with standing still.",
+    source: "research/belt-blends-pedigree-cores-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/^If you have moved (?:less than )?\d+(?:\.\d+)? ?m (?:or more )?in the last \d+(?:\.\d+)? ?s, /i)
+  },
+  {
+    id: "belt-comradeship-minions",
+    title: "Comradeship: which belt bonuses do Minions gain?",
+    question: "\"Minions gain the Belt's bonuses\": do the Minions get every affix of the belt (base, crafted, corrosion and the blend lines), each as its Minion version, and do your own player-only lines (e.g. Max Life) do anything for them?",
+    evidence: "provisional",
+    current: "Provisional, by analogy with Isomorphic Arms (user-supplied 2026-10-19): every belt line except Comradeship's own is read in its Minion wording where the Minion model has one (\"+X% Fire Damage\" → \"… for Minions\", \"+X% additional damage\" → \"+X% additional Minion Damage\"); the rest are listed unread.",
+    alternatives: [
+      { reading: "Only the belt's damage affixes are copied", effect: "same figures for damage lines; defence lines stay unread either way" },
+      { reading: "The blend lines are not copied", effect: "a blend with a Minion reading would stop adding to the Minions" }
+    ],
+    test: "Summon a Minion, equip a belt with a +% Fire Damage affix and Comradeship, and compare the Minion's damage on the panel with and without the affix.",
+    source: "research/belt-blends-pedigree-cores-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/^(?:\[Comradeship\]\s*)?Minions gain the Belt's bonuses\.?$/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "belt-knockback-damage-share",
+    title: "Knockback distance → damage bonus: which lines count?",
+    question: "\"120% of the increase/decrease on Knockback distance is also applied to damage bonuses, up to +100% damage\": which Knockback distance lines count (skill and support ones, \"additional\" ones), and does a net decrease lower your damage?",
+    evidence: "provisional",
+    current: "Provisional: the build-wide \"+X% Knockback distance\" lines are summed (as for Endless Frenzy; skill-scoped and \"additional\" lines are not counted), × 120% as \"+X% damage\", up to +100%; a net decrease lowers it the same way.",
+    alternatives: [
+      { reading: "Skill and support Knockback lines count too", effect: "more damage with Knockback supports" },
+      { reading: "A decrease does not lower damage", effect: "no loss with negative Knockback distance" }
+    ],
+    test: "Equip the blend with and without a +X% Knockback distance affix and compare the panel's damage bonus.",
+    source: "research/belt-blends-pedigree-cores-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/of the increase\/decrease on Knockback distance is also applied to damage bonuses/i)
+  },
+  // Revived affix census 2026-10-21 (research/revived-affixes-2026-10-21.md): revived memory lines read for the first time.
+  {
+    id: "revived-main-attack-double-damage",
+    title: "Revived Main Attack Skill: stacks and the guaranteed Double Damage cadence",
+    question: "The revived \"+X% Attack Speed for every Main Attack Skill cast recently. Stacks up to 6 time(s). At max stacks, this skill is guaranteed to deal Double Damage after every N cast(s)\": is the guaranteed cast 1 in N casts or the cast after N (1 in N + 1), and do the stacks count casts in the last 4 s?",
+    evidence: "provisional",
+    current: "Provisional: stacks = Main Skill uses per second × 4 s (\"recently\", game hyperlink 103), at most 6; the Attack Speed applies to every attack; at max stacks 1 in every N casts of the Main Attack Skill rolls with +100% Double Damage chance (Main Skill Attacks only, not Sentry or Channeled).",
+    alternatives: [
+      { reading: "The guaranteed cast is the one after N casts (1 in N + 1)", effect: "a smaller expected Double Damage factor (×1.2 instead of ×1.25 at N = 4 with no other chance)" },
+      { reading: "\"Recently\" holds the stacks while attacking at any speed", effect: "slow attacks reach max stacks too" }
+    ],
+    test: "Equip the memory, attack the dummy with a single-hit Main Attack Skill without other Double Damage chance and count the doubled hits over 20 casts.",
+    source: "research/revived-affixes-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/Attack Speed for every Main Attack Skill cast recently/i) && Boolean(ctx.lineState.mainAttackSkill)
+  },
+  {
+    id: "revived-minion-life-or-shield",
+    title: "Revived Minion Damage: \"when Life or Energy Shield is 50% or higher\"",
+    question: "Does sealed Life count against \"Life is 50% or higher\" (as for Full Life), and does any Energy Shield pool keep the condition up while the affix drains Life and Energy Shield every second?",
+    evidence: "provisional",
+    current: "Provisional: Life holds at 50% or more of Max Life left unsealed and not at Low Life; Energy Shield holds whenever the build has any (the dummy never attacks; the affix's own drain is not held as a missing level).",
+    alternatives: [
+      { reading: "Sealed Life does not count against it", effect: "builds with heavily sealed Life and no Energy Shield also get the bonus" },
+      { reading: "The drain keeps a small Energy Shield pool below 50%", effect: "the bonus needs a large Energy Shield or unsealed Life" }
+    ],
+    test: "Summon a Minion with the memory equipped, then seal Life below 50% with no Energy Shield and compare the Minion's damage.",
+    source: "research/revived-affixes-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/additional Minion Damage when Life or Energy Shield is \d+(?:\.\d+)?% or higher/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "revived-numbed-on-lightning",
+    title: "Revived Numbed: how many stacks does \"every 10 Lightning Damage\" hold?",
+    question: "\"Every 10 time(s) Lightning Damage is dealt, inflicts N stack(s) of Numbed on enemies within 10 m nearby. Interval: 0.5 s\": does it keep the dummy at 10 Numbed stacks, and do Lightning damage over time ticks count as Lightning Damage dealt?",
+    evidence: "provisional",
+    current: "Provisional: an active skill that deals Hit Lightning Damage keeps the dummy Numbed at the 10-stack cap like every Numbed source; the stacks per trigger, the 0.5 s Interval and damage over time are not counted.",
+    alternatives: [
+      { reading: "Stacks follow the trigger rate (N stacks per 10 Lightning hits, at most one trigger per 0.5 s) against Numbed's duration", effect: "fewer stacks for slow or single-hit Lightning skills, mostly the 1-stack tiers" },
+      { reading: "Lightning damage over time also counts", effect: "Lightning DoT builds Numb the dummy too" }
+    ],
+    test: "Equip the memory, hit the dummy with a slow Lightning skill and read the Numbed stack count on the dummy.",
+    source: "research/revived-affixes-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/Lightning Damage is dealt, inflicts \d+ stack\(s\) of Numbed/i) && ctx.enemyAilments.has("Numbed")
+  },
+  {
+    id: "revived-torment-added-effect",
+    title: "Torment's added effect: scaled by Torment Effect?",
+    question: "\"Torment gains an additional effect: +X% additional Reaping Recovery Speed\": does \"+X% Torment Effect\" scale the added effect too, and does it multiply your Reaping Recovery Speed like other \"additional\" lines?",
+    evidence: "provisional",
+    current: "Provisional: while the build gains Torment and has a Reap source, the added effect is one \"+X% additional Reaping Recovery Speed\" multiplier, × (1 + Torment Effect) like Torment's own value (as Aura added effects follow Aura Effect).",
+    alternatives: [
+      { reading: "Torment Effect does not scale the added effect", effect: "less Reaping with a Torment Effect line (the prism's +100%)" }
+    ],
+    test: "With Torment and a +100% Torment Effect prism, read the Reaping Recovery Speed on the panel with and without the memory.",
+    source: "research/revived-affixes-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/^Torment gains an additional effect: \+[\d.]+% additional Reaping Recovery Speed$/i)
+  },
+  {
+    id: "revived-erosion-deterioration",
+    title: "Revived Erosion to Deterioration: which Erosion bonus carries over?",
+    question: "\"X% of the bonus to Erosion Damage also applied to Deterioration Damage\": is the bonus only the \"+X% Erosion Damage\" lines, or also generic \"+X% damage\", Spell- or skill-scoped Erosion lines and \"additional\" Erosion damage?",
+    evidence: "game data (partial)",
+    current: "Game data (partial) + provisional: the game record converts the increased Erosion Damage attribute (54021, increased) into increased Deterioration Damage (63021), capped. The planner sums the unscoped \"+X% Erosion Damage\" lines (and \"<Type> and Erosion Damage\"), and leaves out generic and skill-scoped lines and conditional bodies.",
+    alternatives: [
+      { reading: "Generic \"+X% damage\" counts as an Erosion bonus too", effect: "the cap is reached sooner" },
+      { reading: "Spell- or skill-scoped Erosion lines count", effect: "more Deterioration on Spell Erosion builds" }
+    ],
+    test: "With a Deterioration chance build, compare Deterioration damage with a \"+X% Erosion Damage\" line against a \"+X% damage\" line of the same size.",
+    source: "research/revived-affixes-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/of the bonus to Erosion Damage also applied to Deterioration Damage/i)
+  },
+  {
+    id: "revived-radical-evolution",
+    title: "Radical Evolution Theory: what is the \"final bonus\" to Origin of Spirit Magus Effect?",
+    question: "\"40% of the final bonus applied to Origin of Spirit Magus Effect is also applied to <Aura>'s Aura Effect bonus\": is the final bonus the summed \"+X% Origin of Spirit Magus effect\" lines times the \"additional\" ones, minus 100%, and does it raise the Precise: version of the Aura too?",
+    evidence: "provisional",
+    current: "Provisional: the Origin effect multiplier minus one, × 40%, joins that Aura's own Aura Effect like a \"+X% <Aura> Aura Effect\" line, which also raises its Precise: version; conditional Origin effect lines are not counted.",
+    alternatives: [
+      { reading: "Only the increased (summed) Origin effect counts", effect: "less Aura Effect with \"additional\" Origin effect lines" },
+      { reading: "Only the plain Aura, not its Precise: version", effect: "no gain with the Precise: Aura" }
+    ],
+    test: "Run the Aura with the memory and a +X% Origin of Spirit Magus effect line, and read the Aura's values with and without that line.",
+    source: "research/revived-affixes-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/of the final bonus applied to Origin of Spirit Magus Effect is also applied to/i)
+  },
+  {
+    id: "revived-discord-rotation",
+    title: "Discord of the Second Will: does the crowd control rotation hold every type?",
+    question: "\"When dealing damage, inflicts a random crowd control effect (except Freeze and Knockback), prioritizing effects that have not yet been inflicted. Interval: 1s\": does the dummy hold Paralysis, Frostbite, Weaken, Slow, Taunt and Blinding at once, and does its Frostbite count as the Frostbite ailment (Cold Damage taken)?",
+    evidence: "provisional",
+    current: "Provisional, read like the Bounded Holy Maiden kismet: while the build deals damage the dummy holds Paralysis (+15% damage taken), Frostbite (the enemy-ailment model), Weaken, Slow, Taunt and Blinding (crowd control types); only Paralysis's 4 s duration is sourced.",
+    alternatives: [
+      { reading: "Short durations leave some types off between applications", effect: "lower Paralysis uptime and fewer crowd control types" },
+      { reading: "Its Frostbite is only a crowd control type, not the ailment", effect: "no Cold Damage taken from it" }
+    ],
+    test: "Equip the memory, hit the dummy for 10 s and read which debuffs it shows and for how long.",
+    source: "research/revived-affixes-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/^When dealing damage, inflicts a random crowd control effect \(except Freeze and Knockback\)/i)
+  },
+  {
+    id: "pact-per-ailment-count",
+    title: "Pact \"per Ailment on enemies\" crit lines: per ailment type or per stack?",
+    question: "\"+9% Critical Strike Damage per Ailment on enemies, up to +18%\" (Hell Cavalry - Glow), \"+4% … up to +8%\" (Luluri - Amethyst) and The Bone worm's Daughter's \"+18% / +7% Critical Strike Damage\" and \"+70 Spell Critical Strike Rating per Ailment on enemies, up to +140\": does each ailment type on the enemy count once, or each ailment stack (several Ignite or Wilt stacks)?",
+    evidence: "provisional",
+    current: "Provisional: one count per ailment type on the dummy (the enemy-ailment model's count, as the \"for every type of Ailment the enemy has\" lines), up to the cap; with two or more types the line is at its cap.",
+    alternatives: [
+      { reading: "Each ailment stack counts", effect: "the cap is reached with one stacking ailment (several Ignite or Wilt stacks), more damage on single-ailment builds" },
+      { reading: "Only the enemy targeted by the hit counts its own ailments (same on the dummy)", effect: "no change on the dummy" }
+    ],
+    test: "With the pact at Lv6, hit the dummy with one ailment type (a single Ignite stack), then with two types, and read the Critical Strike Damage on the character panel or the dummy figure.",
+    source: "research/kismets-pacts-audit-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.hasText(/per Ailment on enemies, up to \+/i)
+  },
+  {
+    id: "kismet-great-library-count",
+    title: "Dual Kismet: Great Library: which Kismets count, and do the stacks add?",
+    question: "\"Additionally increases damage by 2% (stacks) for every unique Kismet installed\": do only Kismets and Dual Kismets count (Great Library itself included), or every installed Destiny (Micro and Medium Fates too)? And is it one additional term of 2% × N, or N stacks that multiply?",
+    evidence: "provisional",
+    current: "Provisional: one \"+X% additional damage\" term of 2% × the number of different Kismet and Dual Kismet names installed on the pact page (Fate slots included, Great Library itself counted, a lone Dual Kismet copy counted).",
+    alternatives: [
+      { reading: "Every installed Destiny name counts, Micro and Medium Fates included", effect: "a larger count and more damage" },
+      { reading: "Each stack is its own 2% multiplier", effect: "slightly more damage with many Kismets (1.02^N)" }
+    ],
+    test: "Install the Great Library pair with a known set of Kismets and Fates, read the damage bonus on the character panel, then remove one Fate and one Kismet in turn.",
+    source: "research/kismets-pacts-audit-2026-10-21.md",
+    appliesWhen: (ctx) => ctx.texts.some((entry) => /Dual Kismet: Great Library/.test(String(entry.source)))
+  },
+  {
+    id: "pact-point-budget",
+    title: "Pact Points: the quest's +3 and the Rare / Legendary Pactspirits' extra points",
+    question: "The game text gives 30 Pact Points at Lv. 90 and \"The upper limit increases to 33 points after completing the quest\"; the manual adds \"Legendary and Rare Pactspirits can provide additional Pact Points\". When does the quest give its 3 points, and how many extra points does each Rare / Legendary Battle Pactspirit give?",
+    evidence: "game data (partial)",
+    current: "Provisional: the quest's +3 counts from Lv. 90 (where the 30 cap is reached), and a Rare Battle Pactspirit gives 1 extra point, a Legendary one 2 (the game's servant table holds 0 / 1 / 2 for Magic / Rare / Legendary), up to 30 before the quest and 33 after. A page past the budget keeps its outermost nodes but leaves them out of the calculation.",
+    alternatives: [
+      { reading: "The quest's +3 comes only with more levels past 90 (33 at Lv. 96)", effect: "a smaller budget at Lv. 90–95: outer nodes left out" },
+      { reading: "Rare / Legendary Pactspirits give no extra points, or only open points earlier", effect: "a smaller budget below Lv. 90" }
+    ],
+    test: "On a character below Lv. 90, read the Pact Points (\"%d Pact Points not allocated\") with a Magic, then a Rare, then a Legendary Battle Pactspirit installed; at Lv. 90–95, read them before and after the quest.",
+    source: "research/kismets-pacts-audit-2026-10-21.md",
+    appliesWhen: (ctx) => Boolean(ctx.pactLimits?.applies && ctx.pactLimits.points.allocated > ctx.pactLimits.points.base)
+  },
+  {
+    id: "activation-medium-first-trigger",
+    title: "Activation Mediums: when does the first trigger land after engaging?",
+    question: "Skills start ready when the fight begins (user decision 2026-10-22), and a skill triggered by something that only fires after a delay waits for it. When does each medium's first trigger land on a fresh dummy: an \"Always attempts to trigger\" medium (Perpetual Motion, Boss / Elite, Wind Rhythm) at once, or one Interval / Cooldown in; a \"Triggers … every X s\" medium (Instruction, Rhythm) X s in; Activation Medium: Multistrike at the first Max Multistrike Count; and the gear / pact \"Triggers … upon …\" lines the planner reads one interval in?",
+    evidence: "provisional",
+    current: "Provisional (src/skill-hit-model.js firstUseSeconds, the 5 s / 20 s windows and the dummy recount alike): \"Always attempts\" mediums at 0 s (the medium starts ready like the skill; its Interval / Cooldown spaces the later triggers); \"every X s\" mediums at X s; Multistrike at its first Max Multistrike Count event; gear / pact triggered skills one trigger interval in. Activation Medium: Terra (fires at max Terra Charge) recasts the Main Terra at 0 s with own buffs built before the fight (prebuiltSelfBuffs: Terra Charge full; user decision 2026-10-22), one full charge in without; Wind Rhythm on the Main Terra DoT at 0 s.",
+    alternatives: [
+      { reading: "An \"Always attempts\" medium waits one Interval / Cooldown before its first attempt", effect: "its skill's first use one interval later (Blizzard with Wind Rhythm about 0.18 s, Boss / Elite 0.1 s): a little less damage in the 5 s window" },
+      { reading: "A gear / pact \"Triggers … upon dealing damage\" line fires on the build's first hit", effect: "its first use earlier: a little more damage in the 5 s window" }
+    ],
+    test: "On a fresh dummy, open with the medium's skill and compare the time stamp of its first damage number with the medium's Interval / Cooldown (a slow-motion recording of the first second is enough).",
+    source: "src/support-effects.js (startsReady), src/skill-hit-model.js firstUseSeconds and windowUses; TLIDB Activation Medium texts (src/data/skills/activation-medium-progression-ss13.generated.js)",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => /^triggered|trigger rate/.test(String(hit.rate?.useModel || "")))
+  },
+  {
+    id: "gear-minion-double-damage",
+    title: "Gear: \"+X% chance for Minions to deal Double Damage\"",
+    question: "Do Minion hits follow the player's Double Damage rule (each hit deals double damage with the summed chance, capped at 100%), and does the chance reach Minion ailments?",
+    evidence: "provisional",
+    current: "Provisional: the summed chance doubles each Minion hit (expected factor 1 + min(100%, chance)); Minion ailments are not modeled, so they take nothing.",
+    alternatives: [
+      { reading: "Chance above 100% is wasted, as now", effect: "no change" },
+      { reading: "Minion ailments inherit the doubled hit", effect: "would matter once Minion ailments are modeled" }
+    ],
+    test: "Summon one Minion, record its average hit on the dummy with and without the affix (no other Double Damage source) and compare the ratio with 1 + chance.",
+    source: "research/gear-affixes-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.hasText(/chance for Minions to deal Double Damage/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "gear-minion-infiltration",
+    title: "Gear: \"When Minions deal damage, inflicts <Type> Infiltration\"",
+    question: "With the per-enemy interval of 1 s, is the Infiltration held on the dummy all the time while a Minion keeps hitting it?",
+    evidence: "provisional",
+    current: "Provisional: held at uptime 1 (+13% additional damage of that type taken, × Infiltration Effect) while a modeled Minion deals damage, as the player's own \"When dealing damage, inflicts … Infiltration\" lines.",
+    alternatives: [
+      { reading: "The Infiltration lasts less than the 1 s interval", effect: "a lower average uptime and bonus" }
+    ],
+    test: "Summon a Minion with the line equipped and watch the dummy's debuff bar for gaps between Infiltration applications.",
+    source: "research/gear-affixes-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.hasText(/^When Minions deal damage, inflicts (?:Fire|Cold|Lightning) Infiltration/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "gear-parabolic-split-wording",
+    title: "Gear: \"+N Parabolic Projectile Split Quantity\"",
+    question: "Is the craft and base affix \"+N Parabolic Projectile Split Quantity\" the same stat as Three Birds with One Stone's \"+N to Parabolic Projectile Splits quantity\"?",
+    evidence: "provisional",
+    current: "Provisional: read as the same stat, so each extra Split lands on the dummy like Three Birds' (src/skill-hit-model.js parabolicSplit; open question core-three-birds-splits).",
+    alternatives: [
+      { reading: "A different stat (for example the Split count of the projectile itself only)", effect: "the extra Splits would not reach a single target" }
+    ],
+    test: "Use a Parabolic Projectile skill on the dummy with and without the affix and count the explosions per cast.",
+    source: "research/gear-affixes-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.hasText(/^\+\d+ Parabolic Projectile Split Quantity$/i)
+  },
+  {
+    id: "gear-after-standing-still",
+    title: "Gear: \"+X% additional Attack Damage after standing still for 0.1s\"",
+    question: "Does this weapon affix hold for every attack while the character stands still, and does attacking itself break \"standing still\"?",
+    evidence: "provisional",
+    current: "Provisional: read as a standing-still line (the Movement group's standing-still alternative, chosen when it gives more damage and listed in the assumptions); its \"-Y% additional Attack Speed\" half always applies.",
+    alternatives: [
+      { reading: "Each attack must wait 0.1 s of standing still first", effect: "a lower effective attack rate while standing still" }
+    ],
+    test: "Attack the dummy standing still with the weapon and compare the panel or the dummy average with and without the affix.",
+    source: "research/gear-affixes-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.hasText(/after standing still for [\d.]+ ?s$/i)
+  },
+  {
+    id: "gear-blessing-minion-damage",
+    title: "Gear: \"+X% damage and Minion Damage per stack of any Blessing\"",
+    question: "Does the Minion Damage half count the player's held Blessing stacks (as the damage half does), and is it increased (not additional) Minion Damage?",
+    evidence: "provisional",
+    current: "Provisional: +X% increased Minion Damage per Blessing stack the player holds (the Blessing model's held stacks), next to the player's +X% damage per stack.",
+    alternatives: [
+      { reading: "It counts Blessings the Minions hold (Commander's Gambit)", effect: "the Minion half follows the Minions' stacks instead" }
+    ],
+    test: "Summon a Minion, hold a known number of Blessing stacks and compare the Minion's damage with and without the Vorax Neck affix.",
+    source: "research/gear-affixes-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.hasText(/damage and Minion Damage per stack of any Blessing/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "gear-main-spell-repeat",
+    title: "Gear: \"+X% chance to trigger the Main Spell Skill 1 additional time when using it\"",
+    question: "Is the repeat a full extra use of the Main Spell Skill (all its hits and ailment applications), and can the repeat itself repeat or activate Spell Burst?",
+    evidence: "provisional",
+    current: "Provisional: each manual use of a modeled Main Spell Skill repeats once with the summed chance (at most 100%), as a full use; a repeat does not roll again. The Scorching Beam path does not read the line.",
+    alternatives: [
+      { reading: "The repeat can chain (it rolls again)", effect: "uses × 1 / (1 − chance) instead of × (1 + chance)" },
+      { reading: "The repeat is a triggered cast that cannot activate Spell Burst", effect: "a Spell Burst build gains less from it" }
+    ],
+    test: "Cast a Main Spell Skill on the dummy 50 times with the weapon equipped and count the casts it repeats.",
+    source: "research/gear-affixes-audit-2026-10-22.md",
+    appliesWhen: (ctx) => ctx.hasText(/chance to trigger the Main Spell Skill 1 additional time when using it/i) && ctx.skillHits.some((hit) => hit.mainSpellRepeat)
+  },
+  {
+    id: "gear-minion-curse-trigger",
+    title: "Gear: \"Triggers Lv. N <Curse> when Minions deal damage\"",
+    question: "Is a curse a Minion triggers held on the dummy all the time while the Minion keeps hitting (cooldown 0.2 s), and is it exactly the printed level (no Curse or Skill Level lines raise it)?",
+    evidence: "provisional",
+    current: "Provisional: held at uptime 1 at the printed level while a modeled Minion deals damage; it takes a curse slot after the skill curses like any gear-triggered curse (src/build-mechanics.js).",
+    alternatives: [
+      { reading: "The curse lasts shorter than the gap between Minion hits", effect: "a lower uptime" },
+      { reading: "Curse level lines raise it", effect: "a stronger curse" }
+    ],
+    test: "Summon a Minion with the affix equipped, watch the dummy's debuff bar for gaps and compare the curse's tooltip level with the printed one.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8",
+    appliesWhen: (ctx) => ctx.hasText(/Curse when (?:Minions deal|a Minion deals) damage/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "gear-minion-hasten",
+    title: "Gear: \"Minions have Hasten\"",
+    question: "Do the Minions' Hasten values follow the game buff (+8% additional Attack and Cast Speed), and do your Hasten Effect lines scale the Minions' copy?",
+    evidence: "provisional",
+    current: "Provisional: +8% additional Minion Attack and Cast Speed (game buff 3471), unscaled by the player's Hasten Effect.",
+    alternatives: [
+      { reading: "Hasten Effect lines scale it", effect: "a larger speed bonus on builds with Hasten Effect" }
+    ],
+    test: "Compare a Minion's attacks per 10 s on the dummy with and without the affix.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game buff 3471",
+    appliesWhen: (ctx) => ctx.hasText(/^Minions have Hasten$/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "gear-minion-lucky",
+    title: "Gear: \"Minions gain Lucky upon a Critical Strike\"",
+    question: "Once a Minion has landed a Critical Strike, is it Lucky all the time (crit checks and damage rolls take the better of two), or only for a short time after each crit?",
+    evidence: "provisional",
+    current: "Provisional: Lucky held while the Minion can crit: crit chance 1 − (1 − c)² and each damage roll the better of two (+ (max − min) / 6 on the average).",
+    alternatives: [
+      { reading: "Lucky lasts a few seconds after each crit", effect: "a lower uptime at low crit chance" },
+      { reading: "Lucky affects only the damage roll", effect: "no crit chance gain" }
+    ],
+    test: "Summon a low-crit Minion and compare its crits per 100 hits with and without the affix.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8",
+    appliesWhen: (ctx) => ctx.hasText(/^Minions gain Lucky upon a Critical Strike$/i) && ctx.minions.some((minion) => minion?.modeled)
+  },
+  {
+    id: "gear-minion-count",
+    title: "Gear: \"+X% additional Minion Damage when you have N Minion(s)\"",
+    question: "Does the count include every summoned Minion (each Synthetic Troop, Spirit Magus and module), and does it read the count you hold at once?",
+    evidence: "provisional",
+    current: "Provisional: the sum of the modeled Minions' counts at their maximum (best case: every Synthetic Troop summoned); the line applies when that sum is at least N.",
+    alternatives: [
+      { reading: "Only Minions of one kind count", effect: "the line holds less often" }
+    ],
+    test: "Summon N − 1 and then N Minions and compare a Minion's damage on the dummy.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8",
+    appliesWhen: (ctx) => ctx.hasText(/additional Minion Damage when you have \d+ Minion\(s\)$/i)
+  },
+  {
+    id: "gear-profane",
+    title: "Profane: \"Has Profane\" / \"Gains Profane when inflicting Wilt or Deterioration\"",
+    question: "Is Profane +7% additional Erosion Damage and +7% additional Wilt and Deterioration Duration (game buff 3492), and is it held all the time while the build keeps inflicting Wilt?",
+    evidence: "provisional",
+    current: "Provisional: +7% additional Erosion Damage and +7% additional Wilt Duration while held: always with \"Has Profane\", while the dummy carries Wilt for the on-Wilt line; \"Minions have Profane\" gives the Minions +7% additional Erosion Damage.",
+    alternatives: [
+      { reading: "The buff lasts a few seconds and lapses between Wilt applications", effect: "a lower uptime" }
+    ],
+    test: "Compare the dummy's average with and without the source (one change at a time) on an Erosion build.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game buff 3492 (config_char_buff)",
+    appliesWhen: (ctx) => ctx.hasText(/^(?:Has Profane|Gains Profane when inflicting Wilt or Deterioration)/i)
+  },
+  {
+    id: "gear-blessing-gain-events",
+    title: "Gear: Blessings gained when Minions deal damage or when casting an Elixir Skill",
+    question: "With \"X% chance to gain a stack of a random Blessing when Minions deal damage\" or \"Gains 1 stack(s) of all Blessings when casting an Elixir Skill\", are the Blessings full all fight long?",
+    evidence: "provisional",
+    current: "Provisional: each counts as a gain source of every Blessing while a modeled Minion hits / an Elixir Skill is on the skill board, so the Blessings are held at their max (best case).",
+    alternatives: [
+      { reading: "A random Blessing stack lands too rarely to hold all of them", effect: "fewer held stacks" },
+      { reading: "Elixir casts are too rare to keep the Blessings up", effect: "a lower uptime" }
+    ],
+    test: "Watch the Blessing bar for 20 s on the dummy with the affix equipped.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8",
+    appliesWhen: (ctx) => ctx.hasText(/(?:random Blessing when Minions deal damage|of all Blessings when casting an Elixir Skill)$/i)
+  },
+  {
+    id: "gear-command-gated",
+    title: "Gear: \"+X% additional damage for Synthetic Troop Minions when having at least N Command\"",
+    question: "Does the line apply while the Command you hold (Command Gain over time, capped) reaches N, and is Command full against the dummy?",
+    evidence: "provisional",
+    current: "Provisional: another additional layer on the Command Minions when the Command model's steady Command (src/minion-cores.js commandState) reaches N.",
+    alternatives: [
+      { reading: "Command spending (Summon commands) keeps it below N", effect: "the line holds part of the time" }
+    ],
+    test: "Summon Synthetic Troops with the staff equipped and compare their damage with Command below and above N.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8",
+    appliesWhen: (ctx) => ctx.hasText(/additional damage for Synthetic Troop Minions when having at least \d+ Command$/i)
+  },
+  {
+    id: "gear-aggression-minion-crit",
+    title: "Gear: \"Gains Attack / Spell Aggression when Minions land a (Spell) Critical Strike\"",
+    question: "Is the Aggression held all the time while a Minion keeps critting the dummy?",
+    evidence: "provisional",
+    current: "Provisional: held while a modeled Minion can crit (Spell Aggression: a Minion skill with the Spell tag), with the player's own Aggression values.",
+    alternatives: [
+      { reading: "The Aggression lapses between Minion crits", effect: "a lower uptime at low Minion crit chance" }
+    ],
+    test: "Summon a Minion with the affix equipped and watch the buff bar on the dummy.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8",
+    appliesWhen: (ctx) => ctx.hasText(/Aggression when Minions land a (?:Spell )?Critical Strike$/i)
+  },
+  {
+    id: "gear-shadows",
+    title: "Shadow Quantity and \"+X% additional Shadow Damage\" on one dummy",
+    question: "With N Shadows and a single target, does every Shadow strike the dummy with the full attack, each after the first at the 70% Shotgun falloff (1 + 0.7 × (N − 1) Shadow hits per use), and does Wilt Spike's \"Shadow Quantity +1 when buff reaches max stacks\" hold while it keeps hitting?",
+    evidence: "provisional",
+    current: "Provisional: each use adds the use's hits × (1 + 0.7 × (N − 1)) as the Shadows' own hits (game manual 1001010820 / 1001010821; TLIDB Phantom: \"If no other targets are present, it will strike the character's target\", falloff 70%), with the player's layers plus the Shadow-only lines; Wilt Spike's own +1 is held with its 5 buff stacks (own buffs pre-built).",
+    alternatives: [
+      { reading: "Shadows prefer other targets and only some reach a lone dummy", effect: "fewer Shadow hits" },
+      { reading: "The falloff applies to the player's hit too", effect: "a lower total per use" }
+    ],
+    test: "Use a Shadow Strike skill on the dummy for 20 s with 0, 1 and 2 Shadow Quantity (one change at a time) and compare the averages.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game manual 1001010820 / 1001010821; TLIDB Phantom (game hyperlink 136)",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.shadows?.count > 0)
+  },
+  {
+    id: "gear-barrage-waves",
+    title: "Barrage: \"+X% chance to +1 to Barrage Skill Total Waves\" and \"+X% damage increase per wave\"",
+    question: "Is the extra-wave chance one summed roll per cast (at most +1 wave above 100%), and does \"damage increase per wave\" add X% per earlier wave (wave k deals 1 + k × X%) or compound?",
+    evidence: "provisional",
+    current: "Provisional: +min(1, ΣX%) expected waves per cast; wave k (the first is 0) deals ×(1 + k × ΣX%), averaged over the cast's waves (game fields 2013001 / 2501029; no game text gives the per-wave formula). Fallen Star's comets and Rockfall do not read these lines yet.",
+    alternatives: [
+      { reading: "Each wave compounds (×(1 + X%)^k)", effect: "slightly more damage on casts with many waves" },
+      { reading: "The per-wave increase joins the increased-damage pool", effect: "less damage on builds with large increased pools" }
+    ],
+    test: "Cast Blizzard on the dummy with and without the affix and compare each wave's damage numbers.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affixes 469039 / 368511; manual 1001011421",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.barrage?.active)
+  },
+  {
+    id: "gear-combo-points-per-starter",
+    title: "\"+N Combo Points gained from Combo Starters\"",
+    question: "Does each Combo Starter then give 1 + N points, so the Finisher consumes 2 × (1 + N) (capped at the skill's max, 4) and gains one hit / Clone and one Amplification step per point?",
+    evidence: "provisional",
+    current: "Provisional: points per Starter = 1 (observed on Crescent Slash) + ΣN (game field 2012116, gear and support lines); the Finisher consumes min(4, 2 × points), which sets its Amplification and Crescent Slash's hits / Spectral Slash's Clones.",
+    alternatives: [
+      { reading: "The cap is reached earlier and the Finisher fires after one Starter", effect: "a shorter cycle instead of a stronger Finisher" }
+    ],
+    test: "Use Crescent Slash with the affix and read the Combo Point counter before the Finisher (2 with no affix).",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 709372224; manual 1001013023",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.comboPoints?.sources?.length)
+  },
+  {
+    id: "gear-spell-burst-on-use",
+    title: "\"+X% chance to immediately gain N stack(s) of Spell Burst Charge when using a skill\"",
+    question: "Do the manual uses of the Spell Burst skill add chance × N Spell Burst Charge each, on top of the charge time, and do Spell Burst's own automatic casts (or other skills) also roll it?",
+    evidence: "provisional",
+    current: "Provisional: the charge rate is Max Spell Burst ÷ full charge time + Σ chance × N per manual use of the skill; automatic Spell Burst casts and other skills are not counted.",
+    alternatives: [
+      { reading: "Automatic Spell Burst casts also roll it", effect: "a faster recharge" }
+    ],
+    test: "Watch the Spell Burst bar on the dummy with and without the affix and time a full recharge.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 32278",
+    appliesWhen: (ctx) => ctx.hasText(/Spell Burst Charge when using a skill/i) && ctx.skillHits.some((hit) => hit.rate?.spellBurst)
+  },
+  {
+    id: "gear-demolisher-consumed",
+    title: "\"+X% additional skill damage when Demolisher Charge is consumed\"",
+    question: "Does the bonus reach every hit of the use that consumes the charge (and its ailments), and nothing else?",
+    evidence: "provisional",
+    current: "Provisional: +X% additional damage on the use's hits at the profile's Demolisher share of uses (parts that only land on consuming uses take it in full); ailments do not take it.",
+    alternatives: [
+      { reading: "It lasts for the following uses too", effect: "more damage at high attack speed" }
+    ],
+    test: "Compare the Demolisher hit's damage number with and without the affix.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 175116",
+    appliesWhen: (ctx) => ctx.hasText(/additional skill damage when Demolisher Charge is consumed/i) && ctx.skillHits.some((hit) => hit.profile?.demolisher)
+  },
+  {
+    id: "gear-terra-charge-on-use",
+    title: "\"100% chance to gain 1 charge stacks when using a Terra Skill\"",
+    question: "Is the charge gained at the use consumed by that same cast (so a fast recast always consumes at least one more charge), or only by the next cast?",
+    evidence: "provisional",
+    current: "Provisional: Terra Charge consumed per cast = min(max, recast interval ÷ charge interval + 1); a cast that already holds the max (Activation Medium: Terra) gains nothing from it.",
+    alternatives: [
+      { reading: "The charge is gained after the cast consumes its charges", effect: "the same per cast on a fast recast, a shorter refill under Activation Medium: Terra" }
+    ],
+    test: "Recast a Terra skill quickly with and without the affix and compare its damage numbers (each consumed charge is +26%).",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 444624",
+    appliesWhen: (ctx) => ctx.hasText(/charge stacks when using a Terra Skill/i)
+  },
+  {
+    id: "gear-tangle-enhancement",
+    title: "\"+X% Tangle Damage Enhancement\"",
+    question: "Do the Tangle Damage Enhancement lines add up into one additional multiplier on the Tangle Skill's damage (hits and own DoT), like Focus / Combo Damage Enhancement, and does it reach the Clockwork Core skill?",
+    evidence: "provisional",
+    current: "Provisional: Σ X% as one additional multiplier on every Tangle Skill's hits and own DoT, the Clockwork Core skill included (game field 2006249 with the Tangle tag; manual 1001012926 / 1001013030 for Focus / Combo).",
+    alternatives: [
+      { reading: "It reaches Tangle-triggered casts only, not the Core skill", effect: "no bonus on Youga's Clockwork Core skill" }
+    ],
+    test: "Cast a Spell Tangle skill on the dummy with and without the affix and compare its damage numbers.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 13977477",
+    appliesWhen: (ctx) => ctx.hasText(/Tangle Damage Enhancement$/i)
+  },
+  {
+    id: "gear-attack-focus-fervor",
+    title: "Attack Focus: \"Gains 2 Fervor Rating when the supported skill hits an enemy\" without Fervor",
+    question: "Does Attack Focus's Fervor Rating build (to the Max Fervor Rating 100) when the build has no Fervor buff, so its \"per 10 Fervor Rating\" damage and Critical Strike Rating lines apply at full value on a dummy you keep hitting?",
+    evidence: "provisional",
+    current: "Provisional: the support's lines read the build's own Fervor Rating when it has Fervor, else the Max Fervor Rating 100 (2 per hit; the dummy is hit continuously). The Fervor buff's own +2% Critical Strike Rating per point still needs Fervor.",
+    alternatives: [
+      { reading: "Fervor Rating only accumulates while having Fervor", effect: "Attack Focus does nothing on a build without Fervor" },
+      { reading: "Fervor Rating decays between hits", effect: "a lower held Rating at a low hit rate" }
+    ],
+    test: "Equip the Attack Focus gear on a build without Fervor, hit the dummy for 10 s and read the Fervor Rating on the buff bar.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 201391632; keyword Fervor (game hyperlink 740)",
+    appliesWhen: (ctx) => ctx.supports.has("Attack Focus")
+  },
+  {
+    id: "gear-dual-onslaught",
+    title: "Dual Onslaught: alternating casts while Dual Wielding",
+    question: "Do the supported skill's casts alternate strictly (1st: +X% Attack and Cast Speed; 2nd: +Y% additional damage), and does the speed apply to the 1st cast's own use time?",
+    evidence: "provisional",
+    current: "Provisional: the use interval averages the two casts' (the harmonic mean of the two speed pools) and the damage is +Y% on every 2nd cast (+Y / 2 on average); Skill Area has no effect on one dummy.",
+    alternatives: [
+      { reading: "The speed applies to the cast after the 1st", effect: "the same average" },
+      { reading: "Multistrike repeats count as casts", effect: "a different split between the two bonuses" }
+    ],
+    test: "Dual wield, use the supported skill on the dummy for 20 s with and without the gear, and compare the averages.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 381754400",
+    appliesWhen: (ctx) => ctx.supports.has("Dual Onslaught")
+  },
+  {
+    id: "gear-empowered-supports",
+    title: "Empowered Insight and Empowered Channeling",
+    question: "Empowered Insight: does every Empower Skill on the skill board count as \"affecting\" you (its buff held)? Empowered Channeling: is a continuous channel held at its 3 stacks from the start?",
+    evidence: "provisional",
+    current: "Provisional: Empowered Insight counts the active Empower Skills on the skill board (buffs held, best case); Empowered Channeling holds its cap on a Channeled Skill (own buffs pre-built, also in the 5 s / 20 s windows).",
+    alternatives: [
+      { reading: "Only Empower buffs actually up count", effect: "Empowered Insight is off part of the time" },
+      { reading: "The channel stacks build from 0 in each window", effect: "less in the 5 s window" }
+    ],
+    test: "Watch the support's buff icon on the dummy with one and two Empower Skills, and time the channel stacks.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; TLIDB Empowered Insight / Empowered Channeling",
+    appliesWhen: (ctx) => ctx.supports.has("Empowered Insight") || ctx.supports.has("Empowered Channeling")
+  },
+  {
+    id: "gear-passive-precise-restrain",
+    title: "\"All Passive Skill slots are supported by Lv. 30 Precise: Restrain\"",
+    question: "Does the granted Precise Restrain (Lv. 30: 30% Sealed Mana Compensation) join every Aura, including one that already has Restrain or Precise Restrain socketed, and do the two add up?",
+    evidence: "provisional",
+    current: "Provisional: every Aura-slot skill takes a Lv. 30 Precise Restrain at its fixed level (TLIDB progression: 15.5% + 0.5% per level); its compensation adds to the Aura's own supports' (a socketed Precise Restrain of the same or higher level keeps its own).",
+    alternatives: [
+      { reading: "The grant does not stack with a socketed Restrain", effect: "less compensation on those Auras" }
+    ],
+    test: "Equip the weapon and compare each Aura's Sealed Mana on its tooltip with and without it.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; TLIDB Precise Restrain",
+    appliesWhen: (ctx) => ctx.hasText(/^All Passive Skill slots are supported by Lv\. \d+ /i)
+  },
+  {
+    id: "gear-item-aim-trigger",
+    title: "Gear: \"Triggers Lv. 30 Aim while standing still. Interval: 1 s\"",
+    question: "Is the item's Aim held to Aim's 10 s cooldown (6 s of every 10 s), and what is Aim's damage bonus at Lv. 30 (35% at Lv. 20, 38.5% observed at Lv. 26)?",
+    evidence: "provisional",
+    current: "Provisional: with no Aim on the skill board, a Lv. 30 Aim at max(1 s, its cooldown) while standing still (the movement group compares it), at the Lv. 20 value 35% (no level table is published); with Aim on the board, no change.",
+    alternatives: [
+      { reading: "The item's trigger ignores the cooldown", effect: "Aim held all the time while standing still" },
+      { reading: "Aim scales with level past 20", effect: "a larger bonus" }
+    ],
+    test: "Stand still at the dummy with the item and no Aim on the bar, and time the Aim buff icon.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 39246804; TLIDB Aim",
+    appliesWhen: (ctx) => ctx.hasText(/^Triggers Lv\. \d+ Aim while standing still/i)
+  },
+  {
+    id: "gear-item-dot-trigger",
+    title: "Gear: \"Triggers Lv. 30 Black Hole when moving. Interval: 1.5 s\"",
+    question: "Is the item's Black Hole held to the skill's 10 s cooldown, and do its 100 Affliction on damage and its Euphoria (+3.5% additional Damage Over Time per 10 Affliction) apply?",
+    evidence: "provisional",
+    current: "Provisional: with no Black Hole on the skill board, a Lv. 30 Black Hole DoT at max(1.5 s, its 10 s cooldown) while moving (the movement group compares it), the skill's own DoT model; its Affliction and Euphoria are not modeled (as for the skill on the board).",
+    alternatives: [
+      { reading: "The item's trigger ignores the cooldown", effect: "a Black Hole every 1.5 s, overlapping" },
+      { reading: "Its Euphoria applies to every DoT on the dummy", effect: "+35% additional DoT for 4 s of every 10 s" }
+    ],
+    test: "Move around the dummy with the weapon and count the Black Holes per 20 s.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 35981324; TLIDB Black Hole",
+    appliesWhen: (ctx) => ctx.hasText(/^Triggers Lv\. \d+ Black Hole when moving/i)
+  },
+  {
+    id: "gear-scorch-trigger",
+    title: "Gear: \"Triggers Lv. 20 Scorch Curse upon dealing damage to enemies\"",
+    question: "Does the item's Scorch give the Lv. 20 value (+39% additional Fire Damage taken) scaled by Curse Effect, held all the time on the dummy?",
+    evidence: "provisional",
+    current: "Provisional: with no Scorch skill on the bar, the dummy carries Scorch at +39% × (1 + Curse Effect) additional Fire Damage taken (the gear-curse rule; only the Lv. 20 value is sourced).",
+    alternatives: [
+      { reading: "Curse Effect does not scale it", effect: "a lower bonus on Curse Effect builds" }
+    ],
+    test: "Hit the dummy with a Fire skill and the item, and compare with the Scorch skill on the bar.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; src/build-mechanics.js",
+    appliesWhen: (ctx) => ctx.hasText(/^Triggers Lv\. \d+ Scorch Curse upon dealing damage/i)
+  },
+  {
+    id: "gear-named-aura-smc",
+    title: "Gear: Sealed Mana Compensation for one Aura (\"for Energy Fortress\", \"additional Fearless … Sealed Mana Compensation\")",
+    question: "Do these lines reach the Aura's Precise: form too (both carry the Aura's own tag), and does the additional form multiply that Aura's whole compensation?",
+    evidence: "provisional",
+    current: "Provisional: the line joins that Aura family's reservation (base and Precise: form): the plain form as local compensation, the additional form as a multiplier, like Deep Pain's line.",
+    alternatives: [
+      { reading: "Only the base Aura takes it", effect: "no change on a Precise: Aura" }
+    ],
+    test: "Equip the item and compare the Aura's Sealed Mana on its tooltip with and without it.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affixes 629779904 / 732444 / 752220224 / 972167104",
+    appliesWhen: (ctx) => ctx.hasText(/Sealed Mana Compensation for (?!Focus|Spirit Magus|the supported)|additional (?!Deep Pain)[A-Z][\w' :]* Sealed Mana Compensation$/)
+  },
+  {
+    id: "gear-god-of-war-blessing",
+    title: "Gear: \"Gains 2 stack(s) of God of War's Blessing\"",
+    question: "Is God of War's Blessing +0.5 Projectile Quantity per stack on Projectile Skills (whole projectiles), and what is its fourth effect (game node 403, \"percent 2\" per stack)?",
+    evidence: "provisional",
+    current: "Partly modeled: +1 Projectile Quantity on Projectile Skills at 2 stacks (game buff 3; extra projectiles reach the dummy only where the skill text allows); Movement Speed and Skill Area have no DPS effect; the fourth effect is not identified.",
+    alternatives: [
+      { reading: "Fractional Projectile Quantity accumulates differently", effect: "a different count at odd stacks" }
+    ],
+    test: "Read the Projectile Quantity and the buff tooltip with the item equipped.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 11688589, buff 3 (affix 200000139)",
+    appliesWhen: (ctx) => ctx.hasText(/God of War's Blessing$/i)
+  },
+  {
+    id: "gear-ferocity",
+    title: "Gear: \"Gains Ferocity when dealing Physical Damage\"",
+    question: "Is Ferocity held all the time while the build deals Physical Damage, and how does \"Physical Damage cannot be converted\" act on a build that converts part of its Physical Damage?",
+    evidence: "provisional",
+    current: "Provisional: +10% additional Physical Damage while a modeled hit, DoT or Trauma deals Physical Damage (4 s, refreshed); the conversion lock is not modeled.",
+    alternatives: [
+      { reading: "The conversion lock undoes partial conversions once Ferocity is up", effect: "more Physical, less converted damage" }
+    ],
+    test: "Hit the dummy with a Physical attack and compare the damage numbers with and without the item.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 16567469; keyword Ferocity (game hyperlink 10000118)",
+    appliesWhen: (ctx) => ctx.hasText(/^Gains Ferocity when dealing Physical Damage$/i)
+  },
+  {
+    id: "gear-attack-ailment-chance",
+    title: "Gear: \"+15% chance for Attacks to inflict Damaging Ailments\"",
+    question: "Does the chance join every Attack Skill's Ignite, Trauma and Wilt applications (and no Spell's)?",
+    evidence: "provisional",
+    current: "Provisional: added to each Attack Skill's own chance for each damaging ailment (game fields 2006480 / 2006510 / 2006520 on the Attack tag).",
+    alternatives: [
+      { reading: "Once an Attack hits, the chance holds for every skill's applications", effect: "Spells gain it too" }
+    ],
+    test: "Use an Attack with a base ailment on the dummy and count the applications with and without the item.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 101080109",
+    appliesWhen: (ctx) => ctx.hasText(/chance for Attacks to inflict Damaging Ailments$/i)
+  },
+  {
+    id: "gear-double-ailment",
+    title: "Gear: \"+12% chance to deal double Trauma Damage\"",
+    question: "Is the doubling rolled per application (a doubled Trauma stack keeps its ×2 while held), so the run's strongest stacks are mostly doubled ones?",
+    evidence: "provisional",
+    current: "Provisional: each application is ×2 with the summed chance (at most 100%), a discrete variation in the strongest-stacks roll (src/ailment-model.js expectedStrongestStacks; the recount too); independent stacks take ×(1 + chance) on average.",
+    alternatives: [
+      { reading: "The doubling applies per tick, not per application", effect: "×(1 + chance) on average instead" }
+    ],
+    test: "Watch the dummy's Trauma numbers with the item equipped for doubled ticks.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 971068",
+    appliesWhen: (ctx) => ctx.hasText(/chance to deal double (?:Ignite|Trauma|Wilt) Damage$/i)
+  },
+  {
+    id: "gear-elemental-to-gear",
+    title: "Gear: \"Adds X - Y Elemental Damage to the gear\"",
+    question: "Does the weapon gain X - Y Fire, X - Y Cold and X - Y Lightning Damage (three ranges), as the game recipe writes all three in parallel?",
+    evidence: "provisional",
+    current: "Provisional: each of Fire, Cold and Lightning is added to the gear at the full range (game affix 899716224: node 363 writes attrs 5107 / 5108 / 5109 in parallel on Attacks).",
+    alternatives: [
+      { reading: "One random element per roll", effect: "a third of the added damage" }
+    ],
+    test: "Read the weapon's damage lines on its tooltip with the affix.",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 899716224",
+    appliesWhen: (ctx) => ctx.hasText(/Elemental Damage to the gear$/i)
+  },
+  // ---- Legendary audit 2026-10-22 (research/legendary-items-audit-2026-10-22.md §5): provisional readings of legendary lines ----
+  {
+    id: "legendary-guaranteed-crit",
+    title: "Pantheon's Elegy: God of War's Dirge \"Guaranteed to land Critical Strikes\"",
+    question: "Does \"Guaranteed to land Critical Strikes\" make every hit crit even with a \"-100% Critical Strike Rating\" line (Genius Battlegear) or a \"Cannot inflict Critical Strike\" effect?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): game affix 937538880 is a flag (node 107, label 3001120). Every player hit crits (chance 100%), whatever the rating; ailments and Reaps never crit (user-confirmed). A rule that forbids crits is not read.",
+    alternatives: [
+      { reading: "A \"-100% Critical Strike Rating\" or \"Cannot inflict Critical Strike\" line wins", effect: "no crits on such builds" }
+    ],
+    test: "Equip the Dirge with Genius Battlegear and hit the dummy: check whether the floating numbers show crits.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/scorching-beam-critical.js hasGuaranteedCrit",
+    appliesWhen: (ctx) => ctx.hasText(/^Guaranteed to land Critical Strikes$/i)
+  },
+  {
+    id: "legendary-enemy-resistance-radius",
+    title: "Legendary: \"-35% Elemental Resistance for enemies within 20m\" and the like",
+    question: "Elementalist's Dirge (-35% Elemental), Corroded Heart (-40% Elemental and Erosion) and Grasp of Truth (+20% Elemental, a penalty) change the resistance of enemies around you: is that the same as the same amount of Resistance Penetration on the dummy?",
+    evidence: "provisional",
+    current: "Provisional: held while the dummy stands inside the radius (within 10 m in the near case), applied as Penetration of the opposite sign (-35% → +35% Elemental Resistance Penetration), as the Spell-hit resistance shred lines.",
+    alternatives: [
+      { reading: "A resistance reduction is applied before penetration and can go below 0%", effect: "more damage on a dummy with low resistance" }
+    ],
+    test: "Hit the dummy with one element with and without the item and compare with the same amount of a Penetration line.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; game buff 35115, affix 869075584; src/combat-states.js enemyResistanceWithin",
+    appliesWhen: (ctx) => ctx.hasText(/Resistance for enemies within \d+ ?m$/i)
+  },
+  {
+    id: "legendary-fixed-blur-rating",
+    title: "Pantheon's Elegy: Goddess of Deception's Dirge \"Has 120 points of fixed Blur Rating\"",
+    question: "Does the fixed Rating give Blur on its own, held at 120 (past the usual 100) for every \"per Blur Rating\" line?",
+    evidence: "provisional",
+    current: "Provisional: a Blur source; Blur is held at Rating 120 (the highest fixed value), like a fixed Fervor Rating past its cap (user-confirmed for Fervor).",
+    alternatives: [
+      { reading: "The fixed Rating needs another Blur source to have Blur", effect: "no Blur on builds without one" },
+      { reading: "The Rating stays capped at 100", effect: "a smaller \"per Blur Rating\" bonus" }
+    ],
+    test: "Equip the Dirge with Folklore of Locking Fingers and read the Blur Rating and the Damage Over Time bonus on the panel.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/blur-sources.js FIXED_BLUR_RATING",
+    appliesWhen: (ctx) => ctx.hasText(/^Has \d+ points? (?:\(s\) )?of fixed Blur Rating$/i)
+  },
+  {
+    id: "legendary-crit-no-extra-damage",
+    title: "Silent Aria: \"Critical Strikes cannot deal additional damage\"",
+    question: "Does a crit then deal what a non-crit deals, with the \"+X% additional damage on Critical Strike\" lines also gone, while the crit still counts as a crit for on-crit effects?",
+    evidence: "provisional",
+    current: "Provisional: a crit hit deals the non-crit damage (crit damage and crit-only lines removed); the crit chance still counts for on-crit effects; the panel's Critical Strike Damage stays (Instant Smash reads it).",
+    alternatives: [
+      { reading: "Only the Critical Strike Damage multiplier is removed; crit-only additional damage lines still apply", effect: "more damage with crit-only lines" }
+    ],
+    test: "Hit the dummy with and without the gloves on a build with a crit-only line and compare crit and non-crit numbers.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/scorching-beam-critical.js critNoExtraDamage",
+    appliesWhen: (ctx) => ctx.hasText(/^Critical Strikes cannot deal additional damage$/i)
+  },
+  {
+    id: "legendary-fixed-support-multiplier",
+    title: "Pantheon's Elegy: Lich's Dirge \"Support Skill's Mana Multiplier is fixed at 88%\"",
+    question: "With Off The Beaten Track (fixed at 95%) too, which fixed multiplier applies?",
+    evidence: "provisional",
+    current: "Provisional: the lower fixed value (88%) applies to every support's Mana Multiplier in the Aura reservations.",
+    alternatives: [
+      { reading: "The later or the core's value wins", effect: "95% with Off The Beaten Track" }
+    ],
+    test: "Read an Aura's Sealed Mana with the Dirge alone and with Off The Beaten Track.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/planner.js fixedSupportManaMultiplier",
+    appliesWhen: (ctx) => ctx.hasText(/^Support Skill's Mana Multiplier is fixed at 88 ?%/i)
+  },
+  {
+    id: "legendary-lich-dirge-counts",
+    title: "Pantheon's Elegy: Lich's Dirge \"remaining Energy\" and \"non-Exclusive Support Skill equipped\"",
+    question: "Is \"remaining Energy\" the skill board's Energy left after every skill and support cost, and does \"non-Exclusive Support Skill equipped\" count every support on every skill (active and passive) except the skill-specific ones?",
+    evidence: "provisional",
+    current: "Provisional: remaining Energy = the board's leftover after the costs (as Indifference reads it); the count = every enabled support on an enabled board setup whose catalog entry is not Exclusive.",
+    alternatives: [
+      { reading: "Only the supports of active skills count", effect: "a smaller Aura Effect bonus" }
+    ],
+    test: "Read the Aura Effect on the panel while adding and removing supports.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js perRemainingEnergy / perNonExclusiveSupport",
+    appliesWhen: (ctx) => ctx.hasText(/remaining Energy, up to|for each non-Exclusive Support Skill equipped/i)
+  },
+  {
+    id: "legendary-lowest-attribute",
+    title: "Pantheon's Elegy: Goddess of Knowledge's Dirge, lowest attribute",
+    question: "Is \"+2% additional damage per 3 points\" rounded down per 3 points, and does each tied lowest attribute give its own multiplier?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): affix 1033360236 has one row per attribute (node 224 picks the lowest, node 114 converts it ÷ 3 × 2, capped at 80). Read as floor(lowest ÷ 3) × 2%, each tied lowest attribute its own multiplier; the rounding is provisional.",
+    alternatives: [
+      { reading: "No rounding (2% × lowest ÷ 3)", effect: "up to 1.3% more" }
+    ],
+    test: "Read the additional damage on the panel at a lowest attribute that is not a multiple of 3.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js lowestAttributeTied",
+    appliesWhen: (ctx) => ctx.hasText(/points of your lowest attribute among Strength, Dexterity, and Intelligence/i)
+  },
+  {
+    id: "legendary-elixir-uptime",
+    title: "Legendary: \"… while an Elixir Skill is active\" and \"… if you have cast an Elixir Skill recently\"",
+    question: "Are these bonuses right as time averages of the Elixirs' uptime (while active: 1 − Π(1 − each Elixir's share); recently: casts per second × 4 s, capped at 1)?",
+    evidence: "provisional",
+    current: "Provisional: each body is time-averaged with the Elixir model's casts and uptimes; \"for every Elixir Skill cast recently, stacks up to N\" holds min(N, casts per second × 4 s) stacks.",
+    alternatives: [
+      { reading: "Best case: held all the time", effect: "the full bonus" }
+    ],
+    test: "Watch the buff icon over 20 s on the dummy with an Elixir recharging from Charging Progress.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/combat-states.js elixirTimed",
+    appliesWhen: (ctx) => ctx.hasText(/while an Elixir Skill is active$|if you have cast an Elixir Skill recently$|for every Elixir Skill cast recently/i)
+  },
+  {
+    id: "legendary-ranger-dirge-aggression",
+    title: "Pantheon's Elegy: Ranger's Dirge, Aggression while having Fervor",
+    question: "With Fervor held, does the Dirge give both Attack and Spell Aggression with +200% to each one's effect?",
+    evidence: "provisional",
+    current: "Provisional: while Fervor is held both Aggressions are held and each one's effect is raised by +200%.",
+    alternatives: [
+      { reading: "The +200% applies to one Aggression only", effect: "less damage" }
+    ],
+    test: "Read Attack Speed and Cast Speed on the panel with Fervor and the Dirge.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/combat-states.js fervorAggression",
+    appliesWhen: (ctx) => ctx.hasText(/^While having Fervor, gains Attack Aggression and Spell Aggression/i)
+  },
+  {
+    id: "legendary-per-resistance",
+    title: "Legendary: lines \"for every 1% <Element> Resistance\" (Fleeting Sky, Frozen Path, Legless Bird's Lament)",
+    question: "Do they read the effective (capped) resistance on the stat sheet, rounded down per step?",
+    evidence: "provisional",
+    current: "Provisional: the effective resistance of that element on the stat sheet, rounded down per step, up to the line's cap.",
+    alternatives: [
+      { reading: "The uncapped resistance", effect: "more for builds over the cap" }
+    ],
+    test: "Read the Attack and Cast Speed (Fleeting Sky) on the panel at two Lightning Resistance values.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js perResistance",
+    appliesWhen: (ctx) => ctx.hasText(/^For every 1 ?% (?:Cold|Lightning|Erosion) Resistance, |for every \+?\d+ ?% (?:Fire|Cold|Lightning|Erosion) Resistance$/i)
+  },
+  {
+    id: "legendary-identical-resistances",
+    title: "Double Rainbow: \"for every 2 types of Resistance with identical values\"",
+    question: "With all three Elemental Resistances at the same value (75%), is that one step (+19%) or three pairs?",
+    evidence: "provisional",
+    current: "Provisional: the largest group of equal effective resistances ÷ 2, rounded down (three equal values: 1 step; corroded, four equal values: 2 steps), each step its own multiplier.",
+    alternatives: [
+      { reading: "Every pair counts (three equal values: 3 pairs)", effect: "much more damage" }
+    ],
+    test: "Read the additional damage on the panel with two and with three equal resistances.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js identicalResistances",
+    appliesWhen: (ctx) => ctx.hasText(/types of (?:Elemental )?Resistance with identical values/i)
+  },
+  {
+    id: "legendary-trinity-penetration",
+    title: "Trinity: \"Gains Elemental Resistance Penetration equal to your minimum effective Elemental Resistance\"",
+    question: "Is \"effective\" the capped resistance on the stat sheet?",
+    evidence: "provisional",
+    current: "Provisional: Elemental Resistance Penetration = the lowest of the effective (capped) Fire, Cold and Lightning Resistance.",
+    alternatives: [
+      { reading: "The uncapped resistance", effect: "more penetration for builds over the cap" }
+    ],
+    test: "Compare dummy damage at two resistance levels with the chest on.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js minimumElementalResistance",
+    appliesWhen: (ctx) => ctx.hasText(/^Gains Elemental Resistance Penetration equal to your minimum effective Elemental Resistance$/i)
+  },
+  {
+    id: "legendary-terra-use-buff",
+    title: "Clay Doll's Broken Finger: \"+X% Spell Damage for 2 s after using a Terra Skill\"",
+    question: "Is the buff right as an uptime of min(1, Terra uses per second × 2 s)?",
+    evidence: "provisional",
+    current: "Provisional: time-averaged over the Main Terra Skill's use rate.",
+    alternatives: [
+      { reading: "Best case: always up", effect: "the full bonus" }
+    ],
+    test: "Watch the buff icon while using the Terra Skill on the dummy.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; game affix 688711232; src/line-conditions.js afterTerraUse",
+    appliesWhen: (ctx) => ctx.hasText(/s after using a Terra Skill\.?$/i)
+  },
+  {
+    id: "legendary-meditate",
+    title: "Circular Clearing: Meditate while standing still",
+    question: "Standing still for 5 s holds 5 Meditate stacks (Multistrikes deal 50% increasing damage): is that the right reading?",
+    evidence: "provisional",
+    current: "Provisional: TLIDB Meditate (10131): \"Multistrikes deal 10% increasing damage … Stacks up to 5 times and lasts for 10s\"; 1 stack per second while standing still, 5 stacks held in the standing-still choice.",
+    alternatives: [
+      { reading: "The stacks build from 0 in the 5 s window", effect: "less in the 5 s figure" }
+    ],
+    test: "Stand still at the dummy and read the Meditate stacks and the Multistrike numbers.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js",
+    appliesWhen: (ctx) => ctx.hasText(/stacks? of Meditate per second while standing still$/i)
+  },
+  {
+    id: "legendary-weapon-fixed-values",
+    title: "Death's Touch / Demons' Touch: the weapon's Critical Strike Rating or Attack Speed \"is fixed at\"",
+    question: "Does \"fixed\" replace the weapon's own value (base and local lines) while the build-wide Critical Strike Rating and Attack Speed lines still apply?",
+    evidence: "provisional",
+    current: "Provisional: every held weapon's own rating / attacks per second is replaced by the fixed value; build-wide lines apply on top.",
+    alternatives: [
+      { reading: "The final value is fixed (no build-wide line applies)", effect: "less damage on builds with Attack Speed / crit lines" }
+    ],
+    test: "Read the weapon's Attack Speed on the panel with and without an Attack Speed line.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/weapon-damage-model.js WEAPON_CRIT_FIXED / WEAPON_SPEED_FIXED",
+    appliesWhen: (ctx) => ctx.hasText(/^(?:The Critical Strike Rating is fixed at \d+ for the Weapon|Weapon Attack Speed is fixed at [\d.]+)$/i)
+  },
+  {
+    id: "legendary-empower-trigger-block",
+    title: "Tyrant's Smoldering Hold: \"Unable to trigger Empower Skills\"",
+    question: "Does the uncorroded line stop only triggered Empower casts (Activation Medium) and leave manual casts, while the corroded \"Unable to use Empower Skills\" stops them all?",
+    evidence: "unknown",
+    current: "Unknown: the corroded line switches the board's Empower Skills off; the uncorroded line is not read (manual casts kept).",
+    alternatives: [
+      { reading: "Both lines stop every Empower Skill", effect: "no Empower effects with the uncorroded gloves" }
+    ],
+    test: "Equip the uncorroded gloves and try to cast an Empower Skill by hand.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/planner.js empowerBlocked",
+    appliesWhen: (ctx) => ctx.hasText(/^Unable to (?:trigger|use) Empower Skills$/i)
+  },
+  {
+    id: "legendary-prophet-frostbite-types",
+    title: "Pantheon's Elegy: Prophet's Dirge, Max Frostbite Rating per damage type",
+    question: "Are the three types Physical, Elemental (any of Fire / Cold / Lightning) and Erosion, each counted once while the build deals it?",
+    evidence: "provisional",
+    current: "Provisional: +20 Max Frostbite Rating per group the build deals (Physical, Elemental, Erosion), capped by the 120 Frostbite Rating cap; the Freeze check counts no group.",
+    alternatives: [
+      { reading: "Fire, Cold and Lightning count separately", effect: "up to +100 instead of +60" }
+    ],
+    test: "Read the dummy's Frostbite Rating while dealing one, then two damage types.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/combat-states.js MAX_FROSTBITE_PER_TYPE",
+    appliesWhen: (ctx) => ctx.hasText(/Max Frostbite Rating for each damage type among Physical\/Elemental\/Erosion dealt recently$/i)
+  },
+  {
+    id: "legendary-blur-rating-gain",
+    title: "Legendary: \"Gains N points of Blur Rating for every M m of movement\"",
+    question: "Does gaining Blur Rating give Blur on its own (a Blur source), or does it only raise the Rating of a Blur you already have?",
+    evidence: "unknown",
+    current: "Unknown: not read. Blur needs a Blur source; with Blur active its Rating is held at 100.",
+    alternatives: [
+      { reading: "Rating gains while moving are a Blur source", effect: "Blur and its lines on builds without another source" }
+    ],
+    test: "Equip the item with no other Blur source, move and watch for the Blur buff.",
+    source: "research/legendary-items-audit-2026-10-22.md §6",
+    appliesWhen: (ctx) => ctx.hasText(/points of Blur Rating for every [\d.]+ ?m of movement$/i)
+  },
+  {
+    id: "legendary-weapon-base-lines",
+    title: "Legendary weapons: base damage, crit and speed of a crafted or corroded legendary weapon",
+    question: "Does a corroded legendary weapon keep its base damage, Critical Strike Rating and Attack Speed (the corrosion line replacing only the base's implicit affix)?",
+    evidence: "provisional",
+    current: "Provisional: a legendary weapon that carries no base line reads its game base's damage, crit and speed (config_item_gold base → item_base record), corroded or not.",
+    alternatives: [
+      { reading: "Corrosion removes the base stats too", effect: "a corroded legendary weapon deals no weapon damage" }
+    ],
+    test: "Compare the weapon's damage on the panel before and after corroding it.",
+    source: "research/legendary-items-audit-2026-10-22.md §2.3; src/weapon-damage-model.js legendaryWeaponBaseLines",
+    appliesWhen: (ctx) => (ctx.planner?.equipment?.candidateItems || []).some((item) => item.slot === "mainHand" && (item.rarity === "legendary" || item.rarity === "captured") && (item.corrosionModifiers || []).length > 0)
+  },
+  {
+    id: "legendary-main-skill-retrigger",
+    title: "Legendary: \"Triggers the Main Active Skill every N s\" (God of Machines's Dirge, Silent Observer, Illusory Chimera, Immolating World)",
+    question: "Is each trigger a full use of the Main Skill that takes no use time and costs nothing, held back by the skill's cooldown, and not fired while a channeled Main Skill channels?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): affix 1033360239 / 66988124 are a cooldown (node 206) plus \"cast the slot-1 Main skill\" (node 2320). Each trigger adds one full use per interval to the Main Skill's hits; a skill with a cooldown is not used faster than its cooldown; a channeled Main Skill (the beam) and a Main Skill whose use model is a channel, Terra or rate model are not retriggered; its own damage over time is not recast.",
+    alternatives: [
+      { reading: "Triggered casts also fire during a channel", effect: "many more beam hits" },
+      { reading: "Triggered casts cost Mana or share the use time", effect: "fewer extra uses" }
+    ],
+    test: "Equip Silent Observer on an attack skill and count the hits over 10 s on the dummy with and without it.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/main-skill-retriggers.js",
+    appliesWhen: (ctx) => ctx.hasText(/triggers the Main Active Skill|Triggers a Main Skill once every|Trigger the Main Skill for every/i)
+  },
+  {
+    id: "legendary-conditional-aura-grant",
+    title: "Legendary: item-granted Auras without \"Precise\" and with a Full Mana condition",
+    question: "Are \"You have a Lv. 20 Charged Flames\" and \"You have a Lv. 30 Spell Amplification when (not) at Full Mana\" item-granted Auras like Lone Walker's (always on, no Energy, no Mana sealed), with Full Mana meaning at least 95% of Mana unsealed?",
+    evidence: "provisional",
+    current: "Provisional: the user-confirmed item-grant rule (2026-10-13, Lone Walker's Boots) for every Aura an item grants; a Full Mana condition is settled against the board's Aura reservations (at least 95% Mana unsealed, the Full Life rule by analogy).",
+    alternatives: [
+      { reading: "Sealed Mana does not count against Full Mana", effect: "\"at Full Mana\" grants on Aura builds" }
+    ],
+    test: "Equip Phantom with a Full Mana roll on an Aura build and check whether the Aura's buff shows.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/gear-unique-modules.js grantedPreciseAuras; src/planner.js conditionalAuraGrants",
+    appliesWhen: (ctx) => ctx.hasText(/^You have a Lv\. \d+ (?!Precise)[A-Za-z' -]+(?: when (?:not )?at Full Mana)?$/i) || ctx.hasText(/^You have a Lv\. \d+ Precise:? [A-Za-z' -]+ when (?:not )?at Full Mana$/i)
+  },
+  {
+    id: "legendary-granted-support-scope",
+    title: "Legendary: supports granted to some Passive Skill slots or to every Skill of a tag",
+    question: "Headless Crown's \"first 2 / last 2 Passive Skill slots\" are the Aura rows 1–2 / 3–4 of the skill board, and \"Demolisher Skills are supported by …\" reaches every active skill with the tag: right?",
+    evidence: "provisional",
+    current: "Provisional: rows in board order (row 1 the top Aura slot); a tag grant joins every active setup with the tag at the item's fixed level.",
+    alternatives: [
+      { reading: "Slot order counts filled slots only", effect: "another Aura takes the support" }
+    ],
+    test: "Check which Auras show the granted support in the skill panel.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/gear-unique-modules.js PASSIVE_ROWS_GRANT / TAG_GRANT",
+    appliesWhen: (ctx) => ctx.hasText(/^The (?:first|last) \d+ Passive Skill slots are supported by|^\w+ Skills are supported by Lv\./i)
+  },
+  {
+    id: "legendary-enamor-slots",
+    title: "Enamor: \"When a Spell Skill is equipped in the second slot\" and \"non-Main Skill slot\"",
+    question: "Is slot 1 the Main Skill's active slot (so the \"second slot\" is the second active skill slot), and does an equipped but unused skill count?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): affix 427045504 and siblings check a skill with the tag in slot N (node 208). The active skill board's rows in board order, slot 1 the Main Skill's; an enabled skill counts whether or not it is cast.",
+    alternatives: [
+      { reading: "Slots count from the first non-Main slot", effect: "a different skill meets the condition" }
+    ],
+    test: "Move a Spell Skill between the second and third active slots and read the damage on the panel.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js skillInSlot / perSkillNonMainSlot",
+    appliesWhen: (ctx) => ctx.hasText(/Skill is equipped in the (?:second|third|fourth|fifth) slot|Skill equipped in a non-Main Skill slot/i)
+  },
+  {
+    id: "legendary-keyword-stacks",
+    title: "Legendary: stacked keyword buffs held on the dummy (Cage, Throne, Meditate)",
+    question: "Iced Drinker's Cage (one stack per second while inflicting Frostbite, 5 s, max 4), Supreme Throne (while channeling at max stacks, max 10) and Circular Clearing's Meditate (standing still, max 5): are the buffs held at their cap on a long dummy fight?",
+    evidence: "provisional",
+    current: "Provisional: held at the cap (own buffs pre-built); the values are the TLIDB keyword hovers (Cage +14% additional Cold Damage per stack, multiplies; Throne +1% additional Channeled Skill Damage per stack; Meditate 10% increasing Multistrike damage per stack).",
+    alternatives: [
+      { reading: "The stacks build from 0 in the 5 s window", effect: "less in the 5 s figure" }
+    ],
+    test: "Watch the buff stacks on the character while attacking the dummy for 10 s.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/combat-states.js; research/tlidb-ss14-2026-10-22/legendary-keyword-hovers/",
+    appliesWhen: (ctx) => ctx.hasText(/stack\(s\) of Cage when inflicting Frostbite|Throne (?:at max channeled stacks|every)|stacks? of Meditate per second/i)
+  },
+  {
+    id: "legendary-shred-debuffs",
+    title: "Legendary: Combo Lightning, When Winter Comes and Formation Breaker on the dummy",
+    question: "Combo Lightning (-10% Lightning Resistance from attacks, 50% chance), When Winter Comes (-2% Elemental Resistance per Barrage hit, 10 stacks) and Formation Breaker (+30% damage taken near a Sentry): held all the time on the dummy, the resistance changes applied as penetration?",
+    evidence: "provisional",
+    current: "Provisional: held while an attack / a Barrage Skill hits or a Sentry is deployed; resistance reductions as penetration; Combo Lightning's own minor damage is not modeled.",
+    alternatives: [
+      { reading: "Uptime below 1 (chance per hit, 2 s duration)", effect: "a smaller bonus" }
+    ],
+    test: "Read the dummy's resistance in the combat log or compare damage with and without the item.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/combat-states.js",
+    appliesWhen: (ctx) => ctx.hasText(/chance to trigger Combo Lightning|Elemental Resistance for enemies when a Barrage Skill hits|damage taken by enemies in proximity to Sentries/i)
+  },
+  {
+    id: "legendary-fire-only",
+    title: "Scorching Tempo: \"Only Fire Damage can be dealt\"",
+    question: "Is it the same restriction as Extreme Coldness's \"You can only deal Cold Damage\" (non-Fire damage deals 0, conversions to Fire still work, Minions and True Damage unrestricted)?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): affix 939359744 is a flag (node 107); read as the Extreme Coldness restriction for Fire (user-confirmed scope for Extreme Coldness, 2026-10-19).",
+    alternatives: [
+      { reading: "Non-Fire damage is converted to Fire", effect: "no damage lost" }
+    ],
+    test: "Cast a Cold skill with the chest on and watch the floating numbers.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/damage-type-restriction.js",
+    appliesWhen: (ctx) => ctx.hasText(/^Only (?:Physical|Fire|Cold|Lightning|Erosion) Damage can be dealt$/i)
+  },
+  {
+    id: "legendary-numbed-conditions",
+    title: "Legendary: \"+1 Ignite limit for Numbed enemies\" and \"… when they have at least 10 stack(s) of Numbed\"",
+    question: "With Numbed kept on the dummy (10 stacks assumed), do these hold all the time?",
+    evidence: "provisional",
+    current: "Provisional: they hold while the build inflicts Numbed (the Numbed stack count is the cap of 10, best case, as the other Numbed lines).",
+    alternatives: [
+      { reading: "The dummy holds fewer Numbed stacks", effect: "the 10-stack line off" }
+    ],
+    test: "Read the Numbed stacks on the dummy while attacking.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/planner.js numbedIgniteLimit; src/line-conditions.js numbedStacksAtLeast",
+    appliesWhen: (ctx) => ctx.hasText(/Ignite limit for Numbed enemies|at least \d+ stack\(s\) of Numbed/i)
+  },
+  {
+    id: "legendary-restoration-focus-conditions",
+    title: "Legendary: \"if you haven't used any Restoration Skills recently\" and \"When Focus Skills are equipped in the Active Skill Slot\"",
+    question: "Best case, no Restoration Skill is used on the dummy; and does an equipped Focus Skill count even when it is not the Main Skill?",
+    evidence: "provisional",
+    current: "Provisional: the Restoration condition holds (best case); the Focus condition holds while an enabled Focus Skill sits in an active skill slot.",
+    alternatives: [
+      { reading: "A Restoration Skill on the board is used", effect: "the Strayed Healer's lines off" }
+    ],
+    test: "Compare the panel with and without a Restoration Skill used recently.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/line-conditions.js",
+    appliesWhen: (ctx) => ctx.hasText(/if you haven't used any Restoration Skills recently$|^When Focus Skills are equipped in the Active Skill Slot/i)
+  },
+  {
+    id: "legendary-wilt-stack-taken",
+    title: "Chaos Abyss: \"+X% additional damage taken (multiplies) for each stack of Wilt\" and \"+X% additional Wilt Duration if enemies' Wilt stacks are less than 20\"",
+    question: "Does the damage taken multiply once per Wilt stack on the dummy (1.02^stacks at 2%), counted from the Wilt stacks actually held, and does the Wilt Duration bonus switch off once 20 stacks are held?",
+    evidence: "provisional",
+    current: "Provisional: (1 + X%)^stacks with the stacks the Wilt model holds on the dummy (steady state from the measuring pass, capped at 30); it reaches every damage the dummy takes. The duration bonus holds while the steady stacks stay below 20; its own feedback on the stack count is not iterated.",
+    alternatives: [
+      { reading: "The stacks are the debuff's own (one per damage instance, up to 30), not the Wilt stacks", effect: "the cap on any fast hitter" },
+      { reading: "The duration bonus raises the stacks past 20 and then drops off (oscillates)", effect: "a smaller average duration bonus" }
+    ],
+    test: "Wilt the dummy with and without Chaos Abyss and compare the 20 s average; read the dummy's Wilt stacks.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/combat-states.js wiltStackTaken / wiltDurationBelowStacks",
+    appliesWhen: (ctx) => ctx.hasText(/for enemies for each stack of Wilt they have|Wilt Duration if enemies' Wilt stacks are less than/i)
+  },
+  {
+    id: "legendary-laceration",
+    title: "Ralph's Dreadcrest: Laceration stacks and \"+33% Laceration Effect for each stack of Trauma\"",
+    question: "Laceration (TLIDB keyword: +8% additional Physical Damage, 5 s, up to 30 stacks): are the stacks summed (+8% × stacks, not 1.08^stacks), does each stack last 5 s from its own gain (stacks = min(30, Trauma inflicted per second × 5 s)), and does the Laceration Effect scale the +8% by the Trauma stacks held on the dummy?",
+    evidence: "provisional",
+    current: "Provisional: 8% × min(30, Trauma applications per second × 5 s) additional Physical Damage, × (1 + 33% × Trauma stacks on the dummy); the cap while the Trauma model has not measured the rate. The self-damage, Mana and Energy Shield removal are defence.",
+    alternatives: [
+      { reading: "One shared 5 s timer refreshed on each gain", effect: "the cap whenever Trauma is inflicted at least every 5 s" },
+      { reading: "Stacks multiply (1.08^stacks)", effect: "much more damage at 30 stacks" }
+    ],
+    test: "Hit the dummy with Ralph's Dreadcrest on a Trauma build and read the Laceration stacks and the Physical damage on the panel.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/combat-states.js lacerationOnTrauma; research/tlidb-ss14-2026-10-22/legendary-keyword-hovers/10182.html",
+    appliesWhen: (ctx) => ctx.hasText(/Gains 1 stack of Laceration when inflicting Trauma|Laceration Effect for each stack of Trauma/i)
+  },
+  {
+    id: "legendary-terra-restoration-set",
+    title: "Kingly Armor: \"Terra Charge's Restoration Speed is set to N% of the default value\"",
+    question: "Does the line replace every other Terra Charge Recovery / Restoration Speed line (300% means a charge every 0.5 s ÷ 3, whatever else the build carries), and does Crimson Gash's −40% per stack still apply on top?",
+    evidence: "provisional",
+    current: "Provisional: the build's Recovery / Restoration Speed lines are replaced by N% − 100% (the highest such line wins); Crimson Gash's combat penalty still applies on top.",
+    alternatives: [
+      { reading: "The line multiplies the build's own speed (×N%)", effect: "a faster charge interval with other Recovery lines" },
+      { reading: "Gash's penalty is overridden too", effect: "a faster charge interval with Crimson Gash" }
+    ],
+    test: "Equip Kingly Armor on a Terra build with another Terra Charge Recovery Speed source and read the panel's Terra Charge Restoration Speed.",
+    source: "research/legendary-items-audit-2026-10-22.md §5; src/selena-dance.js RECOVERY_SET",
+    appliesWhen: (ctx) => ctx.hasText(/Terra Charge ?'s Restoration Speed is set to/i)
+  },
+  {
+    id: "corrosion-keeps-base-stats",
+    title: "Corroded gear: the base's own stats stay when a corrosion base affix replaces the implicit",
+    question: "On a corroded weapon, do the base's damage, Critical Strike Rating and Attack Speed stay (only the implicit affix is replaced), as an armour piece's base defence does?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): a corroded Lone Walker's Boots keeps its +1615 gear Evasion in the game log (research/frost-terra-defense-compare-2026-10-13.md), and the weapon corrosion pools carry local multipliers of the base stats (\"+(15–25)% Gear Physical Damage\", \"+(5–8)% gear Attack Speed\"). A weapon's base damage, crit and speed and an armour piece's base defence stay; a jewellery or spell-weapon implicit (resistance, attributes, added Spell damage) is replaced (provisional).",
+    alternatives: [
+      { reading: "A jewellery implicit stays too", effect: "the ring's / necklace's / belt's base line counts on corroded items" }
+    ],
+    test: "Corrode a rare weapon and read its Physical Damage and Attack Speed in the tooltip; corrode a rare ring and check its resistance line.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/gear-base-stats.js",
+    appliesWhen: (ctx) => (ctx.planner.equipment?.candidateItems || []).some((item) => (item?.corrosionModifiers || []).length > 0 && (item?.implicitModifiers || []).length > 0)
+  },
+  {
+    id: "legendary-own-blessing-stacks",
+    title: "Arminius Guillotine: \"Own N additional stacks of Tenacity Blessing\"",
+    question: "Are the owned stacks held all the time on top of the gained stacks and above the normal max (a build with Tenacity at its max of 4 holds 5 with \"Own 1\")?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): affix 107853 is node 621 (add N stacks of buff 340, Tenacity Blessing). Read as N stacks held whether or not a gain source exists, added to the gained stacks and to the max (provisional).",
+    alternatives: [
+      { reading: "The owned stacks count only up to the normal max", effect: "no extra stacks where Tenacity is already at its max" }
+    ],
+    test: "Equip Arminius Guillotine on a build with Tenacity Blessing at its max and read the buff's stack count.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/blessing-model.js",
+    appliesWhen: (ctx) => ctx.hasText(/Own \d+ additional stacks? of (?:Tenacity|Focus|Agility) Blessing/i)
+  },
+  {
+    id: "legendary-trinity-law",
+    title: "Trinity: Law / Edict of Trinity (one element per hit at 5× / 6×, no conversion)",
+    question: "With several elements in a hit, which element is chosen how often (the text says the lower its Flat Damage percentage, the likelier), do Physical and Erosion parts still deal damage, and does \"Damage types cannot be converted\" also stop the skill's own conversion (Hammer of Ash's Physical → Fire)?",
+    evidence: "provisional",
+    current: "Provisional: the chosen element's parts deal N× and the other elements 0, chance ∝ 1 ÷ the element's share of the flat damage (a single-element hit is exact); Physical and Erosion parts are unchanged; the skill's own and the supports' conversions are off (\"added as\" stays); player hits only (the beam is Fire: ×N).",
+    alternatives: [
+      { reading: "Chance proportional to 1 − share, or equal chances", effect: "a different multi-element expectation" },
+      { reading: "The skill's own conversion still applies", effect: "converted attacks (Hammer of Ash) get the ×N" }
+    ],
+    test: "Hit the dummy with a single-element spell with and without Trinity (×5 expected); then with a Fire + Cold spell, count which element's numbers appear.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/trinity.js",
+    appliesWhen: (ctx) => ctx.hasText(/Any hit dealing Elemental Damage is guaranteed to deal \d+x Elemental Damage/i)
+  },
+  {
+    id: "legendary-solar-ring",
+    title: "Broken Sun Ring: Solar Ring / Corona on the dummy",
+    question: "Can the player stand so the dummy is inside the Solar Ring (+40% / Corona +60% additional damage taken), and what are the ring's inner and outer radii?",
+    evidence: "provisional",
+    current: "Provisional: best case (the user's best-case distance rule), the dummy is inside the ring all the time; the radius is not published (game buffs 35107 / 35108 are not in the readable tables).",
+    alternatives: [
+      { reading: "The ring excludes point blank and the player stands close", effect: "no bonus in the near case" }
+    ],
+    test: "Equip Broken Sun Ring and hit the dummy from several distances; note where the numbers jump.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/combat-states.js solarRingTaken",
+    appliesWhen: (ctx) => ctx.hasText(/Enemies within the (?:Solar Ring|Corona) take/i)
+  },
+  {
+    id: "legendary-ailment-flat-base",
+    title: "Evil Heart Armor / Confusion Elemental Belt: base ailment damage from \"the added Flat Damage's value\"",
+    question: "Which added flat damage counts (the skill's added flat damage after added damage effectiveness, all types?), is the lower percent applied to its minimum and the upper percent to its maximum, and does \"Adds -99% additional Base Ailment Damage\" also reduce the part gained from the flat damage?",
+    evidence: "game data (partial)",
+    current: "Game data (partial): game node 381 (ailment type, lower and upper percent) and affix 16341925 (attrs 5821 / 5823 / 5824, mod 4). Read as lower% × the Main Skill's added flat minimum and upper% × its maximum (per hit, after effectiveness, first strike), added to the ailment's base after the -99% reduces its other base sources. The beam's Ignite ledger does not read it.",
+    alternatives: [
+      { reading: "The -99% also reduces the flat part", effect: "the items do almost nothing" },
+      { reading: "The flat value is before added damage effectiveness", effect: "a larger base on low-effectiveness skills" }
+    ],
+    test: "Equip Evil Heart Armor (Trauma roll) on an attack with known added Physical damage and read the panel's Base Trauma Damage.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/ailment-model.js flatBase / baseAdditional; src/planner.js ailmentFlatAdded",
+    appliesWhen: (ctx) => ctx.hasText(/of the added Flat Damage's (?:value as )?Base (?:Ignite|Trauma|Wilt) Damage/i)
+  },
+  {
+    id: "legendary-deterioration-items",
+    title: "Deterioration items: Blight, Hand of Malice, Harbinger's Reversed Plumes, Ruinous Star",
+    question: "Blight's damage taken per stack (summed, stacks = applications per second × 1 s); Ruinous Star's ticks (each tick the expiry damage, +30% per tick after the first) and Obliterate (only 1 use per 0.5 s of a non-channeled Main Skill inflicts Deterioration; its conversion to Erosion not modeled); Harbinger's Double Damage held while Deterioration is inflicted: right?",
+    evidence: "provisional",
+    current: "Provisional: as the question states; Obliterate (TLIDB keyword 10162) converts 100% of Physical and Elemental damage to Erosion on the enhanced cast, which the hit engine does not model (Ruinous Star's Obliterate line reads Partly modeled).",
+    alternatives: [
+      { reading: "Ruinous Star's ticks each deal a third of the expiry damage", effect: "about a third of the modeled Deterioration" }
+    ],
+    test: "Hit the dummy with an Erosion skill and Ruinous Star; compare the True Damage numbers per stack with and without it.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/combat-states.js deteriorationFrom; src/skill-hit-model.js",
+    appliesWhen: (ctx) => ctx.hasText(/Deterioration (?:Damage taken per stack|no longer deals True Damage)|additional Deterioration Damage if you have dealt|stack\(s\) of Deterioration ?\. Lasts|enhanced by Obliterate/i)
+  },
+  {
+    id: "legendary-ash",
+    title: "Hot Night's Embrace / Illusory Chimera: Ash every N Fire casts",
+    question: "Ash (TLIDB keyword 10147: no crits, +30% additional Fire Damage, unable to refresh): is a gain while Ash is up lost (so the uptime is D ÷ the first multiple of the gain period that reaches D), and does \"Cannot inflict Critical Strike\" remove the crits for exactly that share?",
+    evidence: "provisional",
+    current: "Provisional: uptime as stated from the hit pass's measured Fire casts per second; time-averaged +30% × uptime additional Fire Damage and the crit rating × (1 − uptime).",
+    alternatives: [{ reading: "The gain counter keeps counting while Ash is up and the next gain refreshes on expiry", effect: "a higher uptime on fast casters" }],
+    test: "Cast a Fire skill at a known rate with Hot Night's Embrace and time the Ash buff.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/combat-states.js ashGain",
+    appliesWhen: (ctx) => ctx.hasText(/a Fire Skill is cast, gains Ash for/i)
+  },
+  {
+    id: "legendary-blessing-gains",
+    title: "Legendary Blessing lines: random / any Blessing gains, Tenacity max-stack bonuses on Focus, Blessing Duration",
+    question: "Do Illusory Chimera's \"random Blessing upon dealing damage\" and Grace Boots' \"Non-Critical Strikes grant any Blessing\" hold every Blessing at its max (as the other gain sources), and do the -50% / -90% Blessing Duration lines (Feline Steps, Divine Ember) ever drop a held Blessing on the dummy?",
+    evidence: "provisional",
+    current: "Provisional: a gain source of each Blessing while the build hits (held at max, own buffs pre-built); Immolating World copies the Tenacity max-stack bonuses to Focus. Missing fact: the Blessing gain rates and durations (the model has no gain-rate × duration uptime), so the Duration lines and the rate-limited gains (Tranquil Stir's Spell Burst consumption, Cover the Sun's Tenacity on curse) stay Not modeled.",
+    alternatives: [{ reading: "A random Blessing gain spreads one stack per second over three Blessings", effect: "fewer stacks of each where the duration is short" }],
+    test: "Equip Illusory Chimera's random-Blessing roll on a build with no other Blessing source and read the stacks on the dummy.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/blessing-model.js",
+    appliesWhen: (ctx) => ctx.hasText(/random Blessing upon dealing damage|Non-Critical Strikes to grant \d+ stacks? of any Blessing|Bonuses to Max Stacks of Tenacity Blessing also apply to Focus|% (?:additional )?Blessing Duration$|stack\(s\) of a random Blessing when consuming Spell Burst|simultaneously apply \d+ stack\(s\) of Tenacity Blessing/i)
+  },
+  {
+    id: "legendary-shadow-procs",
+    title: "Despised Shadow / Frantic Shadow: extra Shadows on use and Attack Speed on Shadow hits",
+    question: "Is \"33% chance to gain +3 Shadows when using the Shadow Strike skill\" an expected +3 Shadows on 33% of uses (each Shadow at the 70% falloff), and are Frantic Shadow's three Attack Speed rolls separate buffs refreshed by Shadow hits?",
+    evidence: "provisional",
+    current: "Provisional: the expected Shadow weight over the chance; each Frantic Shadow roll time-averaged as 1 − (1 − chance)^(Shadow hits in its duration), with the hit pass's measured Shadow hits per second.",
+    alternatives: [{ reading: "The extra Shadows last several uses", effect: "a larger weight" }],
+    test: "Use a Shadow Strike skill with Despised Shadow and count the Shadows per use over 20 uses.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/skill-hit-model.js shadowState; src/combat-states.js shadowHitSpeed",
+    appliesWhen: (ctx) => ctx.hasText(/chance to gain \+\d+ Shadows when using the Shadow Strike skill|Attack Speed for [\d.]+ ?s when Shadows hit enemies/i)
+  },
+  {
+    id: "legendary-extremity",
+    title: "Silent Monologue: Power of Conviction and Extremity",
+    question: "Power of Conviction reads the stat sheet's Evasion in whole 600 steps (+1% additional Max Damage each, up to 200%); Extremity needs 100000 Evasion. How often does a hit count as \"dealing Min Damage\" for Reap What You Sow's Unlucky Damage?",
+    evidence: "provisional",
+    current: "Provisional: Power of Conviction as stated; Extremity off below 100000 Evasion (Inactive); with Extremity, Piece for the Crown is defence and Reap What You Sow is Not modeled (missing fact: the Min Damage event).",
+    alternatives: [{ reading: "Evasion counts after the panel's multipliers only", effect: "a different step count" }],
+    test: "Equip Silent Monologue and compare the Max Damage on the panel with the Evasion total.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/line-conditions.js perEvasion; src/legendary-line-status.js",
+    appliesWhen: (ctx) => ctx.hasText(/for every \d+ Evasion you have|While having Extremity/i)
+  },
+  {
+    id: "legendary-minion-items",
+    title: "Legendary Minion, Synthetic Troop and Sentry lines",
+    question: "Read as: Machine Lord's damage on Synthetic Troop / Module Minions only; Cry of Divinity's Command on Minion crits held (best case) and Iron Nest's -20 Max Command lowering the cap; Warden's Breastpin's 75% of the plain crit % lines; \"Your Minions can only deal X\" zeroing other rows; Miniature Void Sea per Minion out; Blade-Dancer's Edges' extra Sentry and its per-nearby-Sentry bonus over the Sentries held deployed; Call of Souls' Growth held at its 50 cap. Are these right?",
+    evidence: "provisional",
+    current: "Provisional, as stated. Still Not modeled, missing facts: Minion conversion and \"added as\" (the Minion engine has one damage type per skill row: Decayed Mind, Illusory Chimera), Quantum Convergence's Synthetic Troop Life loss, Iron and Bloom's initial Multistrike Count for troops, Contained Mind's empty support slots of a non-Main troop skill, Rat Herder's Minion Spell Burst, Horn Ring's Minion crit after an Empower cast (Empower cast rate), Imperial Iron Sentry's Sentry Multistrike / Spell Burst, Demolisher Charge on Sentry use; Minion Duration and Physique are No DPS effect.",
+    alternatives: [{ reading: "Warden's Breastpin also shares flat and scoped crit lines", effect: "more Minion crit" }],
+    test: "Compare a Synthetic Troop build's dummy figures with and without Machine Lord; check the Minions' crit on the panel with Warden's Breastpin.",
+    source: "research/legendary-items-audit-2026-10-22.md §9; src/minion-damage-model.js; src/minion-cores.js; src/skill-hit-model.js",
+    appliesWhen: (ctx) => ctx.hasText(/Synthetic Troop|Command|also applied to Minions|Your Minions can only deal|for every Minion you have|Sentries that can be deployed|nearby Sentry within|Growth for [\d.]+ ?s when Minions land/i)
+  },
+  {
+    id: "legendary-unmodeled-families",
+    title: "Legendary lines still Not modeled, with the missing fact",
+    question: "Which of these facts can be read in game or from the hovers: Combo Finisher charges / Amplification / points on crit (Heart of Animitta, Bodhi Girdle, Vajra Handguards); the triggered skills' own damage (Secret Origin Unleash, Bull's Rage and Burst of Anger, Shattering, Dark Gate, Fearless Warcry); the replacement skills' damage (True Flame Immolation, Barrier Burst) and Solid River's charge-speed trigger; Thunder Focus hits per second and Transcendence (Exemption Thunderhell, Mortal's Reverie); Blur Rating per metre and Mobility casts per second (Chain behind the Curtain, Eternal Sea Fog, Elegy of Immortality, Legendary Soldier Spectacles' Arena / Renown / Notoriety / Giantism); Lucky / Unlucky rolls (Rat King's Megagon Dice, Everburn Thunderfire); Spell Burst charge consumption (Genius Battlegear, Shadow of Thunderlight's Fury); Mana / Life consumed per second (skill costs); the Storm, Banquet and Zodiac Flash effects (Heart of the Storm, End Night Banquet, Realm Beyond Reach); Stray Bird's returning hits on one target; Barrage Wave Interval; the Saints' element choice; Magmaskull's initial Affliction and its \"Affliction gains an additional effect\" scaling; Dragon Breath Armor's \"ignores Fire Resistance\"; Mask of Infernal Iron's Ignite replaced by Scorch; skill levels from resistance or sealed Life (Fire Lord's Pyric Stride, The Three Saints, Phantom); Tangle crit (Malign Embrace, Old Grudge); Numbed counts (Electricity Amplifier, Thunder Manipulator's Numbed Effect on crit); Double Damage dealt recently (Will); Life consumed at Full Life (Crimson King, Strange Snow); Ignite spread (Cursed Flame); Physical added as Fire during Multistrike only (Devouring Tide); the supports Precise: Concentrated and Gladiator's Roar; \"Legendary enemy units\" (Memory); Physical damage taken converted to Lightning within 10 m (Pantheon's Elegy); excess Min Channeled Stacks; a fixed Reaping Recovery Speed; Blur Rating per second; Ghost Slaughter's Fervor consumption at Low Life?",
+    evidence: "unknown",
+    current: "Unknown: each family is listed in research/legendary-items-audit-2026-10-22.md §6 with the fact it needs; the lines read Not modeled (or Partly modeled) until then.",
+    alternatives: [{ reading: "A best-case reading for each family (full uptime, every roll Lucky, every trigger at its cap)", effect: "more damage than the game gives where the fact turns out lower" }],
+    test: "One controlled dummy run per family (with and without the item), as listed in the audit document.",
+    source: "research/legendary-items-audit-2026-10-22.md §6",
+    appliesWhen: (ctx) => ctx.hasText(/Combo Finisher|triggers? (?:Lv\.|Shattering)|Replaces the Main Skill|Thunder Focus|Transcendence|Blur Rating for every|Mobility Skill cast recently|Arena|Notoriety|Lucky|Spell Burst Charge stack consumed|Spell Burst Charge is consumed|consumed recently|windfield|Banquet|Aquarius|Hercules|Scutum|Returning Projectile|Wave Interval|Mantra of the Saints|Oracle of the Saints|initially inflicted Affliction|ignores enemy Fire Resistance|Ignite inflicted is replaced with Scorch|Skill Level for every|Life Sealed when at Full Mana|activated Tangle|Tangle Critical Strike Rating|inflict Numbed recently|Numbed Effect on Critical Strike|Double Damage recently|consumed more than|Ignite spreads|as Fire Damage during Multistrike|Precise: Concentrated|Gladiator's Roar|Legendary enemy units|Damage taken by enemies within d+m to Lightning|excess stack(s) of Min Channeled|Reaping Recovery Speed is fixed|Blur Rating per second|Consumes all Fervor Rating/i)
   }
 ]);
 

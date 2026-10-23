@@ -2,6 +2,9 @@ import { selenaSingWithTheTideSs13 as tideData } from "./data/heroes/selena-sing
 import { calculateSeaFoamNocturne } from "./sea-foam-nocturne.js";
 import { parseCharacterStatClause } from "./character-stats.js";
 import { slotTraitLevel } from "./hero-memory-rules.js";
+import { bardSongState } from "./selena-leftover-traits.js";
+
+const BARD_SONG_TEXT = "0.8 s channel interval, 4 max stacks, the bubble uses the skill once";
 
 // Selena (Sing with the Tide): the trait state every damage engine reads (Selena traits batch, 2026-10-13;
 // research/selena-traits-2026-10-13.md). Sources, by clause:
@@ -54,9 +57,10 @@ export function characterSkillAreaPercent(modifierTexts = []) {
  * @param {object[]} p.modifierTexts the build's lines (Skill Area for Undersea Ballad)
  * @param {object} p.channel build-mechanics channel (line / support Max and Min Channeled Stacks for Sea Foam)
  * @param {number} p.idyllStacks configured Idyll stacks (15 by default)
- * @param {string[]} p.bardSongSkills active non-channeled, non-Mobility skills (Bard Song would channel them; not modeled)
+ * @param {string[]} p.bardSongSkills active non-channeled, non-Mobility skills (Bard Song channels them; hero trait audit B13)
+ * @param {object} p.requestedConditions the combat conditions (the Bard Song switch bardSongChannel)
  */
-export function resolveSingWithTheTide({ state, conditions = {}, heroMemories = {}, traitLevelBonus = { all: 0, nonBase: 0 }, modifierTexts = [], channel = {}, idyllStacks = IDYLL_MAX, bardSongSkills = [] } = {}) {
+export function resolveSingWithTheTide({ state, conditions = {}, heroMemories = {}, traitLevelBonus = { all: 0, nonBase: 0 }, modifierTexts = [], channel = {}, idyllStacks = IDYLL_MAX, bardSongSkills = [], requestedConditions = {} } = {}) {
   const hero = state?.hero || {};
   const selected = hero.selectedHeroId === SING_WITH_THE_TIDE;
   const traits = hero.selectedTraits || {};
@@ -101,6 +105,10 @@ export function resolveSingWithTheTide({ state, conditions = {}, heroMemories = 
     // User-confirmed 2026-10-13: stacks from supports count too (Immolate's +13 Max Channeled Stacks maxes it out).
     buildMaxStacks: (channel.lineMaxStacks || 0) + (channel.supportMaxStacks || 0), buildMinStacks: (channel.lineMinStacks || 0) + (channel.supportMinStacks || 0), tideContact: conditions.tideContact
   });
+  // Bard Song (hero trait audit B13; src/selena-leftover-traits.js): the bubble cadence of the non-channeled skills; Sea Foam Nocturne's
+  // "Min Channeled Stacks takes effect twice on Bard Song" (picked with a memory in its slot).
+  const bardSong = bardSongState({ selected, seaFoam: selected && traits.level60 === "Sea Foam Nocturne" && levels.level60 > 0, channel,
+    extraMax: state?.combat?.extraMaxChanneledStacks || 0, extraMin: state?.combat?.extraInitialChanneledStacks || 0, requestedConditions });
   const increasedTideEffectPercent = undersea.tideEffectPercent + chantey.tideEffectPercent;
   const loudSongTideEffectPercent = ceaselessTide ? LOUD_SONG_TIDE_EFFECT_PERCENT : 0;
   const tideEffectFactor = Math.max(0, 1 + increasedTideEffectPercent / 100) * (1 + murmursTideEffectPercent / 100) * (1 + loudSongTideEffectPercent / 100) * seaFoamNocturne.factor;
@@ -125,7 +133,7 @@ export function resolveSingWithTheTide({ state, conditions = {}, heroMemories = 
     ? [{ source: "Selena: enemy on the Tide (Sing with the Tide)", text: `+${enemyOnTideDamageTakenPercent}% additional damage taken (enemy on the Tide)`, value: enemyOnTideDamageTakenPercent }] : [];
   const assumptions = !selected ? [] : [
     { id: "selena:state", value: ceaselessTide ? "Bard + Loud Song" : "Bard", text: `Selena state: Bard${ceaselessTide ? " and Loud Song (Ceaseless Tide: deemed Loud Song while Bard; +80% additional Tide Effect, -20% additional Attack and Cast Speed)" : " (always Bard without Ceaseless Tide: user-confirmed 2026-10-13)"}; Bard: -20% additional Channeled Skill Damage on direct channeled hits only (user-confirmed 2026-10-13).` },
-    { id: "selena:bardSong", value: bardSongSkills.length, text: `Bard Song (user-stated 2026-10-13, uncertain: it turns non-channeled skills into channeled ones): not modeled — its channel interval and max stacks are unknown, so these skills keep their normal casts${bardSongSkills.length ? `: ${bardSongSkills.join(", ")}` : " (none active in this build)"}. Scorching Beam keeps its measured Bard residual. Instant skills, which Bard Song skips, cannot be told apart in the data.` },
+    { id: "selena:bardSong", value: bardSong.applied ? bardSong.stacksPerBubble : 0, text: `Bard Song (hero trait audit B13, provisional; user-stated 2026-10-13: it turns non-channeled skills into channeled ones; TLIDB keyword: ${BARD_SONG_TEXT}): ${!bardSong.enabled ? "switched off (Bard Song cadence not applied): these skills keep their normal casts" : `a bubble every ${bardSong.detail}, each bubble one use of the skill (not a Channeled use: the Bard -20% does not reach it); never faster than the skill's cooldown or Terra duration; triggered, rate-driven, channel, Combo and Sentry skills keep their own use model`}${bardSongSkills.length ? `: ${bardSongSkills.join(", ")}` : " (none active in this build)"}. Scorching Beam keeps its measured Bard residual. Instant skills, which Bard Song skips, cannot be told apart in the data.` },
     { id: "selena:tide", value: Boolean(conditions.tideContact), text: `Tide: ${conditions.tideContact ? "always up, the player and the dummy on it, also with Murmurs' -50% Tide Duration (user-confirmed 2026-10-13; Tide uptime not simulated)" : "off (condition)"}; Tide Effect ×${round(tideEffectFactor)}${tideEffect.increased.length || tideEffect.additional.length ? ` = ${[...tideEffect.increased.map((line) => `(1 + ${line.value}% ${line.source})`), ...tideEffect.additional.map((line) => `(1 + ${line.value}% ${line.source})`)].join(" × ")}` : ""}.` },
     undersea.selected && { id: "selena:underseaBallad", value: undersea.tideEffectPercent, text: `Undersea Ballad: character Skill Area ${undersea.skillAreaPercent}% → +${undersea.tideEffectPercent}% Tide Effect (cap +${undersea.capPercent}%; your own "+X% Skill Area" lines as increased Tide Effect: user-confirmed 2026-10-13).` },
     chantey.selected && { id: "selena:chantey", value: chantey.stacks, text: chantey.loudSong ? `Chantey of Sinking: ${chantey.stacks} stacks (Loud Song through Ceaseless Tide; pre-built) → +${chantey.tideEffectPercent}% increased Tide Effect, added to Undersea Ballad's before the additional sources multiply (user-confirmed 2026-10-13).` : "Chantey of Sinking: inactive (needs the Loud Song state; the planner keeps Bard without Ceaseless Tide)." },
@@ -135,6 +143,6 @@ export function resolveSingWithTheTide({ state, conditions = {}, heroMemories = 
   return {
     selected, levels, ceaselessTide, tideUp, enemyOnTideDamageTakenPercent, waveAriaPercent, idyllPerStackPercent, murmursTideEffectPercent,
     seaFoamNocturne, undersea, chantey, artificialMoon, tideEffect, tideEffectFactor, hitLines, takenLines, assumptions,
-    bardSong: { skills: bardSongSkills, modeled: false }
+    bardSong: { ...bardSong, skills: bardSongSkills, modeled: bardSong.applied }
   };
 }

@@ -1,5 +1,7 @@
 import { effectiveGearModifierTexts } from "./engine.js";
 import { normalizePercentageText } from "./percentage-text.js";
+import { FIXED_BLUR_RATING } from "./blur-sources.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 
 export function calculateBlurEffects({ equipment, talents = [], slates = [], active = false, recentlyEnded = false, hasSource = false } = {}) {
   const texts = [], ratingGainSources = [];
@@ -11,13 +13,16 @@ export function calculateBlurEffects({ equipment, talents = [], slates = [], act
   }
   for (const panel of talents) for (const node of panel.allocatedNodes || []) if (node.rank > 0 && !node.replacedBy) for (const text of (node.description || "").split("|")) add(text.trim(), panel.name, node.rank * (node.inverseEffectMultiplier ?? 1));
   // Selected cores (talent batch T4): the Warlock core Daze and the Shadowmaster core Stealth Stab are Blur effects
-  // too. Daze is one state (a boolean below), so a Daze slate plus the Daze core still count once (provisional, Q7).
+  // too. Daze is one state (a boolean below), so a Daze slate plus the Daze core still count once (cores never stack, user rule 2026-10-21; Q7).
   for (const panel of talents) for (const core of panel.activeCores || []) for (const text of (core.description || "").split("|")) add(text.trim(), `${panel.name} core: ${core.name}`);
-  for (const slate of slates) for (const text of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) add(text.replace(/^.*:\s*/, ""), slate.name);
+  for (const slate of slates) for (const text of slateTalentLines(slate)) add(text.replace(/^.*:\s*/, ""), slate.name);
   // Blur Effect can close a longer modifier: Valerie's Night Stroll (corroded) "Refreshes Blur upon gaining
   // Blur , Interval: 1s. +49% Blur Effect" is one line, so the clause after a sentence break counts too.
   const effectPercent = texts.reduce((sum, line) => sum + (Number(line.text.match(/(?:^|[.;]\s+)([+-]?[\d.]+)% Blur Effect$/i)?.[1]) || 0) * line.multiplier, 0);
-  const rating = active ? 100 : 0;
+  // A fixed Blur Rating ("Has 120 points of fixed Blur Rating", src/blur-sources.js FIXED_BLUR_RATING) replaces the held 100, past
+  // that cap like a fixed Fervor Rating (legendary audit batch 1; the highest fixed value is used: provisional).
+  const fixedRatings = texts.map((line) => Number(line.text.match(FIXED_BLUR_RATING)?.[1])).filter((value) => value > 0);
+  const rating = active ? (fixedRatings.length ? Math.max(...fixedRatings) : 100) : 0;
   const damageSources = [], movementSources = [];
   let stealth = false, refresh = false, daze = false;
   for (const line of texts) {

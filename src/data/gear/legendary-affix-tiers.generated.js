@@ -167,7 +167,7 @@ export const legendaryAffixTiers = {
       {
         "tier": 2,
         "id": 52531952,
-        "text": "Gains 8 Command every second for 2 s when Minions land a Critical Strike"
+        "text": "Gains 4 Command every second for 2 s when Minions land a Critical Strike"
       }
     ]
   },

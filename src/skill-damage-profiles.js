@@ -205,7 +205,7 @@ export function collectSkillDamageSources({ setups = [], activeNames = new Set()
     if (!profile) continue;
     const active = activeNames.has(setup.name);
     const status = !active ? "inactive" : profile.engine ? "modeled" : "not modeled";
-    const reason = !active ? "not active in the current Energy allocation" : profile.engine === "minion" ? `minion engine (${profile.summon})` : profile.engine === "trigger-main" ? "triggers the Main Skill (trigger-main engine)" : profile.engine ? `${profile.engine} engine` : profile.reason || "no damage model for this skill";
+    const reason = !active ? "switched off on the board" : profile.engine === "minion" ? `minion engine (${profile.summon})` : profile.engine === "trigger-main" ? "triggers the Main Skill (trigger-main engine)" : profile.engine ? `${profile.engine} engine` : profile.reason || "no damage model for this skill";
     sources.push({ setupKey: setup.setupKey || setup.instanceId || setup.name, name: setup.name, role: setup.role, enabled: setup.enabled !== false, active, profile, status, reason });
   }
   return sources;

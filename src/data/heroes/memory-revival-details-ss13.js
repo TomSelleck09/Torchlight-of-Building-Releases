@@ -35,7 +35,9 @@ export const lunarPhaseRevivedAffixDetailsSs13 = {
   "Crossing the Divine Threshold": "Immune to Crowd Control Effects and Curses while inside the Divine Realm\n+1 to max stacks of all Blessings while outside the Divine Realm\n\nHero Trait Exclusive: Oracle Thea | Incarnation of the Gods",
   "Inverted Shrine": "Inflicts Desecration on yourself when inflicting Desecration on enemies\n+50% additional Erosion Damage when you have Desecration\n\nHero Trait Exclusive: Oracle Thea|Blasphemer",
   "Bing's Big Bang Pack": "When bombs deal damage, they can generate 3 additional Spare Bomb(s), with a chance equal to 35% of the bomb's Critical Strike Chance. -60% additional Spare Bomb Damage\n\nHero Trait Exclusive: Escapist Bing | Blast Nova",
-  "Genius Idea Generator": "+2 to Whimsy Explosion Projectile Quantity, +100% Whimsy Effect, +40% Whimsy Signal Effect\n+1 to Max Spell Burst and +60% additional Spell Damage for Spells triggered by Ingenuity Overload\n\nHero Trait Exclusive: Escapist Bing|Creative Genius",
+  // SS14 (2026-10-21): the SS13 second line "+1 to Max Spell Burst and +60% additional Spell Damage for Spells triggered by Ingenuity
+  // Overload" is removed (game hyperlink 12038 in the 2026-10-18 language table, TLIDB Memory_Revival fetched 2026-10-21, patch notes).
+  "Genius Idea Generator": "+2 to Whimsy Explosion Projectile Quantity, +100% Whimsy Effect, +40% Whimsy Signal Effect\n\nHero Trait Exclusive: Escapist Bing|Creative Genius",
   "Ceaseless Tide": "Deemed to be in the Loud Song state while in the Bard state\nMovement Speed is no longer additionally reduced while in the Loud Song state\n\nHero Trait Exclusive: Tide Whisper Selena | Sing with the Tide",
   "Radical Evolution Theory: Cruelty": "40% of the final bonus applied to Origin of Spirit Magus Effect is also applied to Cruelty's Aura Effect bonus",
   "Radical Evolution Theory: Spell Amplification": "40% of the final bonus applied to Origin of Spirit Magus Effect is also applied to Spell Amplification's Aura Effect bonus",

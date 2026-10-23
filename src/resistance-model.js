@@ -6,6 +6,7 @@ import { pactspiritTreesSs13 } from "./data/pacts/pactspirit-trees-ss13.js";
 import { prismAreaBounds, prismMutationDownside, prismNodeAffixes, inverseImageEffectMultiplier } from "./prism-crafting.js";
 import { MAX_RESISTANCE_DEFAULT_PERCENT, MAX_RESISTANCE_HARD_CAP_PERCENT } from "./game-attribute-defaults.js";
 import { withoutSlateCoreName } from "./granted-core-lines.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 
 const elements = ["Fire", "Cold", "Lightning", "Erosion"];
 export function parseResistanceModifier(text) {
@@ -51,7 +52,7 @@ export function calculateResistances({ equipment, talents = [], slates = [], mem
     }
     for (const core of panel.activeCores || []) add(core.description, `Core talent: ${core.name}`);
   }
-  for (const slate of slates) for (const text of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) add(withoutSlateCoreName(text), slate.name);
+  for (const slate of slates) for (const text of slateTalentLines(slate)) add(withoutSlateCoreName(text), slate.name);
   for (const line of [...(memories?.lines || []), ...(memories?.unsupported || [])]) add(line.text, line.source);
   // Pact totals already include allocated native nodes and rolled Kismets.
   for (const element of [...elements, "Elemental"]) {

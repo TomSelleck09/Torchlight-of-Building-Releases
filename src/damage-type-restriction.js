@@ -13,7 +13,9 @@
 // with no Cold part left is not modeled as a hit, so it applies no ailments (src/skill-hit-model.js).
 import { normalizePercentageText } from "./percentage-text.js";
 
-export const ONLY_DAMAGE_TYPE_LINE = /^You can only deal (Physical|Fire|Cold|Lightning|Erosion) Damage$/i;
+// "Only Fire Damage can be dealt" (Scorching Tempo; game affix 939359744, node 107 flag; legendary audit batch 2, 2026-10-22) is the
+// same restriction in the other word order.
+export const ONLY_DAMAGE_TYPE_LINE = /^(?:You can only deal (Physical|Fire|Cold|Lightning|Erosion) Damage|Only (Physical|Fire|Cold|Lightning|Erosion) Damage can be dealt)$/i;
 export const AILMENT_DAMAGE_TYPES = Object.freeze({ ignite: "Fire", trauma: "Physical", wilt: "Erosion" });
 const cap = (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
 const clean = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim();
@@ -27,7 +29,7 @@ export function damageTypeRestriction(modifierTexts = []) {
   const found = [];
   for (const line of modifierTexts) {
     const match = clean(line?.text).match(ONLY_DAMAGE_TYPE_LINE);
-    if (match) found.push({ type: cap(match[1]), source: line.source || "", text: clean(line.text) });
+    if (match) found.push({ type: cap(match[1] || match[2]), source: line.source || "", text: clean(line.text) });
   }
   if (!found.length) return null;
   const types = [...new Set(found.map((entry) => entry.type))];

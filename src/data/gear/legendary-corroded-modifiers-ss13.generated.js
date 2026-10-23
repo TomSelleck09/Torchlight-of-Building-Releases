@@ -1,4 +1,4 @@
-// Generated from TLIDB equipment pages on 2026-10-15 (SS14).
+// Generated from TLIDB equipment pages on 2026-10-22 (SS14).
 export const legendaryCorrodedModifiersSs13 = {
   "Enamor": [
     "-1 Main Skill Level",

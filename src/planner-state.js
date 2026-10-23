@@ -7,7 +7,11 @@ import { AIM_UPTIME_AUTO_SENTINEL } from "./aim-model.js";
 import { libraryFromBackup } from "./recovery-core.js";
 import { migrateLegendaryEquipment } from "./legendary-text-migrations.js";
 import { migrateChangedEquipment } from "./changed-item-migrations.js";
+// Saved SS13 Nether King lines read as their SS14 nodes (user decision 2026-10-22; src/nether-king-migration.js).
+import { migrateNetherKingSlates } from "./nether-king-migration.js";
 import { migrateCustomSupports } from "./support-text-migrations.js";
+import { migrateMinionOwnedSetups, removeActiveSlotMagi } from "./minion-skill-owners.js";
+import { migrateTraitGrantedSetups } from "./trait-granted-skills.js";
 import { defaultFollowerState, normalizeFollowerState } from "./follower-model.js";
 
 const storageKey = "tli-builder:selena-candidate:v1";
@@ -167,14 +171,14 @@ export function normalizePlannerState(value = {}) {
   // Game objects changed in place (TOWER Sequence ids with a new affix, Truth → I Am Truth): src/changed-item-migrations.js.
   const changedEquipment = migrateChangedEquipment(value.equipmentOverrides && typeof value.equipmentOverrides === "object" ? value.equipmentOverrides : {}, Array.isArray(value.equipmentInventory) ? value.equipmentInventory : []);
   const legendaryEquipment = migrateLegendaryEquipment(changedEquipment.overrides, changedEquipment.inventory);
-  return {
+  const normalized = {
     ...defaults,
     ...value,
     disabledEquipmentSlots: Array.isArray(value.disabledEquipmentSlots) ? value.disabledEquipmentSlots : [],
     disabledSupportNames: Array.isArray(value.disabledSupportNames) ? value.disabledSupportNames : [],
     removedInventoryItemIds: Array.isArray(value.removedInventoryItemIds) ? value.removedInventoryItemIds : [],
     equippedSlateIds: Array.isArray(value.equippedSlateIds) ? value.equippedSlateIds : null,
-    slates: { ...defaults.slates, ...(value.slates || {}), geometryVersion: Number(value.slates?.geometryVersion || 0), placements: value.slates?.placements && typeof value.slates.placements === "object" ? value.slates.placements : null, parked: value.slates?.parked && typeof value.slates.parked === "object" ? value.slates.parked : {}, inventory: Array.isArray(value.slates?.inventory) ? value.slates.inventory : [] },
+    slates: { ...defaults.slates, ...(value.slates || {}), geometryVersion: Number(value.slates?.geometryVersion || 0), placements: value.slates?.placements && typeof value.slates.placements === "object" ? value.slates.placements : null, parked: value.slates?.parked && typeof value.slates.parked === "object" ? value.slates.parked : {}, inventory: migrateNetherKingSlates(Array.isArray(value.slates?.inventory) ? value.slates.inventory : []) },
     talentRanks: value.talentRanks && typeof value.talentRanks === "object" ? value.talentRanks : {},
     talents: { ...defaults.talents, ...(value.talents || {}), useCapturedRanks:value.talents?.useCapturedRanks ?? !emptyTemplate, selectedTrees:normalizeTalentTreeSelection(value.talents?.selectedTrees,defaults.talents.selectedTrees), coreSelections:{ ...(value.talents?.coreSelections ?? defaults.talents.coreSelections) }, prismInventory:Array.isArray(value.talents?.prismInventory)?value.talents.prismInventory.map((item)=>({...item})):[], installedPrisms:{...(value.talents?.installedPrisms||{})}, installedPrismNodes:{...(value.talents?.installedPrismNodes||{})} },
     // Saved legendary lines with an unsigned positive roll get their "+" on read (src/legendary-text-migrations.js).
@@ -190,6 +194,16 @@ export function normalizePlannerState(value = {}) {
     followers: normalizeFollowerState(value.followers),
     pacts: { ...defaults.pacts, ...(value.pacts || {}), activeSpirits: { ...(value.pacts?.activeSpirits || {}) }, selectedSpirits: Array.isArray(value.pacts?.selectedSpirits)?Array.from({length:3},(_,index)=>typeof value.pacts.selectedSpirits[index]==="string"?value.pacts.selectedSpirits[index]:""):defaultPactspiritSlots.filter((name)=>value.pacts?.activeSpirits?.[name]!==false), spiritLevels: { ...(value.pacts?.spiritLevels || {}) }, nativeNodeQuantities: { ...(value.pacts?.nativeNodeQuantities || {}) }, kismetSlots: { ...(value.pacts?.kismetSlots || {}) }, fateUnlocks: { ...(value.pacts?.fateUnlocks || {}) } }
   };
+  // A Minion's own skills saved as board skills (before 2026-10-21) become their summon, or go when it is already there; a
+  // Spirit Magus moves to a free Aura slot for heroes other than Iris 1 / 2 (src/minion-skill-owners.js migrateMinionOwnedSetups;
+  // read-time, like the item migrations above).
+  normalized.skills = migrateMinionOwnedSetups(normalized.skills, { heroId: normalized.hero?.selectedHeroId }).skills;
+  // Only Iris 1 / 2 keep a Spirit Magus in an active skill slot; for any other hero it is removed (user decision 2026-10-21).
+  normalized.skills = removeActiveSlotMagi(normalized.skills, normalized.hero?.selectedHeroId).skills;
+  // A hero-trait skill saved as an ordinary board skill (before 2026-10-21) leaves the board: the trait grants it. Its supports
+  // move to the granted skill's key `trait:<skill>` when the saved hero picks the granting trait (src/trait-granted-skills.js).
+  normalized.skills = migrateTraitGrantedSetups(normalized.skills, normalized.hero).skills;
+  return normalized;
 }
 
 function normalizeBuildRecord(build, index, fallbackState) {

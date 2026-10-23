@@ -1,4 +1,10 @@
-import { CATALOG_TAG_GAME_IDS, GAME_SKILL_TAG_NAMES, skillGameTagsSs13, supportEligibilitySs13 } from "./data/skills/support-eligibility-ss13.generated.js";
+import { CATALOG_TAG_GAME_IDS, GAME_SKILL_TAG_NAMES, skillGameTagsSs13 as linkedStoneTagsSs13, supportEligibilitySs13 } from "./data/skills/support-eligibility-ss13.generated.js";
+import { minionSkillOwnersSs13 } from "./data/skills/minion-skill-owners-ss13.generated.js";
+
+// The skills' own stone tags: the support-eligibility link (by icon and visible tags) plus the module summons ("Module: Goblin
+// Priest", …), which the TLIDB skill list left out; their stone tags come from the same config_skill_stone records
+// (scripts/build-minion-skill-owners.mjs). The Modularization supports' include groups are the modules' family tags.
+const skillGameTagsSs13 = { ...Object.fromEntries(minionSkillOwnersSs13.filter((owner) => owner.catalogEntry).map((owner) => [owner.owner, { stoneId: owner.stoneId, tags: owner.gameTagIds }])), ...linkedStoneTagsSs13 };
 import { inferDamageProfile } from "./skill-damage-profiles.js";
 
 // Eligibility is the game's own tag filter: each support stone's include / exclude tag groups in config_skill_stone, read

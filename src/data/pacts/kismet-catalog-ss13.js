@@ -2043,5 +2043,17 @@ export const kismetCatalogSs13 = [
     ],
     "icon": "./src/assets/tli/kismets/dual-kismet-shackles.webp",
     "source": "https://tlidb.com/en/Dual_Kismet_Shackles"
+  },
+  {
+    "name": "Dual Kismet: Ribbon",
+    "kind": "medium",
+    "rarity": "Legendary",
+    "affixes": [
+      "Activates the following effects when there are 2 of this Kismet on the same pact page:",
+      "+1 to Max Bond Stacks",
+      "+50% Bond Gaining Speed"
+    ],
+    "icon": "./src/assets/tli/kismets/dual-kismet-ribbon.webp",
+    "source": "https://tlidb.com/en/Dual_Kismet_Ribbon"
   }
 ];

@@ -32,3 +32,21 @@ export const CONSUMED_COMBO_POINTS = consumedComboPoints();
 export function finisherAmplificationPercent(amplificationPercent, consumedPoints = CONSUMED_COMBO_POINTS) {
   return amplificationPercent * consumedPoints;
 }
+
+// "+N Combo Points gained from Combo Starters" (gear: craft and Vorax affix 709372224) and "… for the supported skill" (supports:
+// 395397824) write one stat, game field 2012116 (manual 1001013023: "The number of Combo Points gained from each Combo Starter
+// is affected by this stat"), so they add to the 1 point per Starter observed on Crescent Slash (gear affix batch B, 2026-10-22;
+// provisional: the per-Starter sum is not observed in game). The Finisher consumes Starters × points, capped at the max Combo
+// Points (4 in every Combo skill text that names one).
+export const COMBO_POINTS_GAINED_LINE = /^\+(\d+(?:\.\d+)?) Combo Points gained from Combo Starters$/;
+export function comboPointState(modifierTexts = [], supportLines = []) {
+  const sources = [];
+  for (const line of modifierTexts) {
+    const match = String(line?.text ?? "").replace(/\s+/g, " ").trim().match(COMBO_POINTS_GAINED_LINE);
+    if (match) sources.push({ source: line.source ?? null, text: match[0], value: Number(match[1]) * (line.multiplier ?? 1) });
+  }
+  for (const line of supportLines) if (line?.value) sources.push({ source: line.source ?? null, text: line.text, value: Number(line.value) });
+  const perStarter = COMBO_POINTS_PER_STARTER + sources.reduce((total, line) => total + line.value, 0);
+  const consumed = consumedComboPoints({ pointsPerStarter: perStarter });
+  return { perStarter, consumed, sources, changed: consumed !== CONSUMED_COMBO_POINTS };
+}

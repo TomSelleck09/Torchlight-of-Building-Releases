@@ -13,6 +13,7 @@ import { resolveHeroModules, heroModuleFor, heroModuleRevivedLine } from "./hero
 import { resolveOrigins, readsOriginLine } from "./origin-of-spirit-magus.js";
 import { resolveFollowerEffects } from "./follower-model.js";
 import { classifyCritOnlyLine } from "./crit-only-lines.js";
+import { classifyTaggedCritLine } from "./scorching-beam-critical.js";
 
 // Conditional and per-stat passive lines from every source (research/talent-batch-2026-10-12.md §7.2, chunk 2):
 // talent nodes, cores, gear, slates, prisms, pacts, kismets and hero memories (planner.modifierTexts). Each line with
@@ -49,7 +50,12 @@ export function handledElsewhere(text) {
   if (/\bBlur\b/i.test(text) && !/^While Blur is active, loses Blur after casting a Main Skill/i.test(text)) return true;
   // (Only the pact "Affliction … at Full Life" lines belong to the planner's Full Life model; other "at Full Life" lines
   // resolve here with the fullLife key: gear-pact batch chunk 2.)
-  if (/Blocked recently|Affliction.*(?:at|on) Full Life\.?$|with Max Affliction/i.test(text)) return true;
+  // The crit model reads "For every 1% Fire Resistance, +X% Critical Strike Damage, up to +Y%" (src/scorching-beam-critical.js
+  // perFireResistance); the other per-resistance lines resolve here (legendary audit batch 1, key perResistance).
+  if (/^For every 1 ?% Fire Resistance, \+[\d.]+ ?% Critical Strike Damage, up to \+[\d.]+ ?%$/i.test(text)) return true;
+  // The block model reads "+X% damage / Critical Strike Rating if you have Blocked recently" (src/block-model.js); other bodies
+  // with that condition resolve here (legendary audit batch 1, 2026-10-22).
+  if (/^\+[\d.]+\s*%\s+(?:damage|Critical Strike Rating) if you have Blocked recently$|Affliction.*(?:at|on) Full Life\.?$|with Max Affliction/i.test(text)) return true;
   return false;
 }
 
@@ -61,6 +67,12 @@ export function bodyReaders(body) {
   // Crit lines: the spell crit model (src/scorching-beam-critical.js) and the weapon model read derived crit lines.
   // "+X% additional Critical Strike Rating" (Cohesion; core audit batch B3) is its own multiplier on the rating in both models.
   if (/^[+-]?[\d.]+% (?:Spell |Attack )?Critical Strike (?:Rating|Damage)$/i.test(body) || /^[+-]?[\d.]+% additional (?:Spell |Attack )?Critical Strike Rating$/i.test(body)) readers.push("crit");
+  // Flat rating bodies: "+N Critical Strike Rating" (both crit models; the revived Frostbitten Critical Strike Rating family) and
+  // "+N (Attack and) Spell Critical Strike Rating" (the spell crit model).
+  if (/^\+[\d.]+ (?:(?:Attack and )?Spell )?Critical Strike Rating$/i.test(body)) readers.push("crit");
+  // Tag-scoped crit bodies ("+60% Melee Attack Critical Strike Damage" from "… against Elites", Kismet: Giant Bear; kismet / pact
+  // audit 2026-10-21): the crit models read them by tag (src/scorching-beam-critical.js classifyTaggedCritLine).
+  if (classifyTaggedCritLine(body)) readers.push("crit");
   if (classifyDamageLine(body)) readers.push("damage");
   if (classifyHitLine(body)) readers.push("hit");
   if (classifyWeaponAttackLine(body)) readers.push("weapon");
@@ -76,8 +88,20 @@ export function bodyReaders(body) {
   if (/^[+-]?[\d.]+% Aura Effect$/i.test(body)) readers.push("aura");
   // "+X% Reaping Duration" (src/reaping-model.js collectReapingModifiers reads the derived line; Psychic's Dirge).
   if (/^\+[\d.]+% Reaping Duration$/i.test(body)) readers.push("reaping");
+  // "+X% Affliction Effect" (src/build-mechanics.js derivedAfflictionEffect → the shared Affliction effect ledger; the revived
+  // "For every enemy within 20 m nearby" family).
+  if (/^\+[\d.]+% Affliction Effect$/i.test(body)) readers.push("affliction");
+  // Extra ailment stacks (src/ailment-model.js extraStacks; Strayed Healer's Waistguard, legendary audit batch 8).
+  if (/^\+?[\d.]+% chance to inflict (?:an|\d+) additional stack(?:\(s\))? of (?:Trauma|Wilt)$/i.test(body)) readers.push("ailment");
+  // Spirit Magus initial Growth (src/minion-damage-model.js GROWTH_INITIAL; Friend Nemesis, legendary audit batch 7).
+  if (/^\+?[\d.]+ initial Growth for Spirit Magi$/i.test(body)) readers.push("minion");
+  // A share of the added flat damage as base ailment damage (src/ailment-model.js flatBase; Confusion Elemental Belt).
+  if (/^gains [\d.]+% - [\d.]+% of the added Flat Damage's (?:value as )?Base (?:Ignite|Trauma|Wilt|Ailment) Damage$/i.test(body)) readers.push("ailment");
   return [...new Set(readers)];
 }
+
+// Bodies with no damage effect on the dummy (own recovery, movement, block).
+const NEUTRAL_BODY = /^[+-]?[\d.]+ ?% (?:Life Regain(?: and Energy Shield Regain)?|Energy Shield Regain|Movement Speed|Block Ratio|(?:Attack |Spell |Attack and Spell )?Block Chance)$/i;
 
 // Conditional bodies use "Attack Speed and Cast Speed" where the plain template says "Attack and Cast Speed".
 const normalizeBody = (body) => String(body).replace(/Attack Speed and Cast Speed/i, "Attack and Cast Speed");
@@ -92,6 +116,13 @@ const scaleBody = (body, factor, power, multiplier) => {
     return `Adds ${r(added[1])} - ${r(added[2])} ${added[3]}`;
   }
   const match = body.match(NUMBER);
+  // A flat crit rating body scales like a percentage ("+70 Spell Critical Strike Rating per Ailment on enemies, up to +140", The
+  // Bone worm's Daughter; kismet / pact audit 2026-10-21): the crit models read "+N (Spell) Critical Strike Rating" (bodyReaders).
+  const flatRating = !match && power == null && factor != null && body.match(/^([+-]?\d+(?:\.\d+)?)( (?:(?:Attack and )?Spell )?Critical Strike Rating)$/i);
+  if (flatRating) {
+    const rounded = Math.round(Number(flatRating[1]) * multiplier * (factor ?? 1) * 10000) / 10000;
+    return `${rounded >= 0 ? "+" : ""}${rounded}${flatRating[2]}`;
+  }
   // A body without a percentage ("+1 to Max Focus Blessing Stacks") is taken as written when nothing scales it.
   if (!match) return factor == null && power == null && multiplier === 1 ? body : null;
   const base = Number(match[1]) * multiplier;
@@ -112,7 +143,7 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
   const combat = resolveCombatStates(modifierTexts, state || {});
   combat.deterioration = deteriorationFrom(modifierTexts, state || {}, combat.entries);
   // The crowd control types on the dummy (Thea – Blasphemer's Mountain of Sins reads them; hero trait audit B7).
-  if (state) { state.buffs = combat.buffs; state.regain = combat.regain; state.enemyCrowdControl = combat.crowdControl || []; }
+  if (state) { state.buffs = combat.buffs; state.regain = combat.regain; state.enemyCrowdControl = combat.crowdControl || []; state.deteriorationActive = Boolean(combat.deterioration); }
   lines.push(...combat.entries);
   derived.push(...combat.derived);
   // Hero trait modules (talent batch chunk 4): ammo, Spacetime Illusion, Purgatory, Crimson Tide; Not modeled with a reason
@@ -146,10 +177,12 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
       const derivedText = resolved.active ? scaleBody(body, resolved.bodyFactors?.[index] !== undefined ? resolved.bodyFactors[index] : resolved.factor, resolved.power, multiplier) : null;
       return { body, derivedText, readers: bodyReaders(body) };
     });
-    const unread = bodies.filter((item) => !item.readers.length);
+    // A body with no damage effect (Regain, Movement Speed, Block) leaves the line In calc (legendary
+    // audit 2026-10-22: Agony's Embrace read Partly modeled for its Regain half while its Penetration moved the figures).
+    const unread = bodies.filter((item) => !item.readers.length && !NEUTRAL_BODY.test(normalizePercentageText(item.body).replace(/\s+/g, " ").trim()));
     // A body-less condition (Hare's Agility's stack gain: its stacks are the next clause's factor) is In calc while it holds; a
     // resolved `partial` (a part with no reading, named in the condition text) reads Partly modeled.
-    const status = resolved.notOnDummy ? "Not on dummy" : resolved.unmodeled ? "Not modeled" : resolved.active === null ? "Not modeled" : !resolved.active ? "Inactive" : !bodies.length ? "In calc" : unread.length === bodies.length ? "Not modeled" : unread.length || resolved.partial ? "Partly modeled" : "In calc";
+    const status = resolved.notOnDummy ? "Not on dummy" : resolved.unmodeled ? "Not modeled" : resolved.active === null ? "Not modeled" : !resolved.active ? "Inactive" : !bodies.length ? "In calc" : bodies.every((item) => !item.readers.length) ? "Not modeled" : unread.length || resolved.partial ? "Partly modeled" : "In calc";
     const entry = { source: line.source, origin: line.origin, text, condition: split.condition.key, params: split.condition.params, group: resolved.group, active: resolved.active === true, conditionText: resolved.conditionText, provisional: Boolean(resolved.provisional), factor: resolved.factor ?? null, bodies, status };
     lines.push(entry);
     if (!resolved.active) continue;

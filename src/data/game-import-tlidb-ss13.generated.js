@@ -12813,7 +12813,9 @@ export const memoryRevivalAffixIdsSs13 = {
  },
  "500200700": {
   "tier": 0,
-  "text": "Mercury Purged"
+  "text": "Mercury Purged",
+  "name": "Mercury Purged",
+  "source": "game config_modifier (SS14 2026-10-18)"
  },
  "500200800": {
   "tier": 0,
@@ -12916,7 +12918,9 @@ export const memoryRevivalAffixIdsSs13 = {
  },
  "500202900": {
   "tier": 0,
-  "text": "Into the Night"
+  "text": "Into the Night",
+  "name": "Into the Night",
+  "source": "game config_modifier (SS14 2026-10-18)"
  },
  "500203000": {
   "tier": 0,
@@ -12940,8 +12944,9 @@ export const memoryRevivalAffixIdsSs13 = {
  },
  "500203400": {
   "tier": 0,
-  "text": "The Place of Oracle",
-  "name": "The Place of Oracle"
+  "text": "The Place of Oracle: Agility",
+  "name": "The Place of Oracle: Agility",
+  "source": "game config_modifier (SS14 2026-10-18)"
  },
  "500203600": {
   "tier": 0,
@@ -13002,6 +13007,24 @@ export const memoryRevivalAffixIdsSs13 = {
   "tier": 0,
   "text": "Red Shoes of Cruelty",
   "name": "Red Shoes of Cruelty"
+ },
+ "500204800": {
+  "tier": 0,
+  "text": "+1 Max Youga Count in the Universe",
+  "name": "+1 Max Youga Count in the Universe",
+  "source": "game config_modifier (SS14 2026-10-18)"
+ },
+ "500204900": {
+  "tier": 0,
+  "text": "The Place of Oracle: Focus",
+  "name": "The Place of Oracle: Focus",
+  "source": "game config_modifier (SS14 2026-10-18)"
+ },
+ "500205000": {
+  "tier": 0,
+  "text": "The Place of Oracle: Tenacity",
+  "name": "The Place of Oracle: Tenacity",
+  "source": "game config_modifier (SS14 2026-10-18)"
  }
 };
 export const memoryRevivalAffixesSs13 = [

@@ -33,17 +33,20 @@ function afflictionLayer(configuredRating, fullAfflictionScale, explicitPerPoint
 
 // Expected strongest of n successful applications, every n at once: same midpoint rule as
 // ailment-model.js expectedStrongestApplication (chance 100%, crit mixture), cdf^n built by product.
-function strongestOfSuccesses({ min, max, critChancePercent = 0, critFactor = 1, count, steps = 400 }) {
+// A doubled application ("+X% chance to deal double <Ailment> Damage"; gear affix batch D) is ×2 with that chance.
+function strongestOfSuccesses({ min, max, critChancePercent = 0, critFactor = 1, doubleChancePercent = 0, count, steps = 400 }) {
   const values = new Array(count + 1).fill(0);
   if (!(max > 0)) return values;
   const crit = clampChance(critChancePercent);
   const factor = Math.max(1, critFactor);
   const span = Math.max(0, max - min);
   const uniformCdf = (value) => span === 0 ? (value >= min ? 1 : 0) : Math.max(0, Math.min(1, (value - min) / span));
-  const top = max * factor;
+  const double = clampChance(doubleChancePercent);
+  const top = max * factor * (double > 0 ? 2 : 1);
+  const single = (value) => (1 - crit) * uniformCdf(value) + crit * uniformCdf(value / factor);
   const cdf = Array.from({ length: steps }, (_, index) => {
     const value = top * (index + 0.5) / steps;
-    return (1 - crit) * uniformCdf(value) + crit * uniformCdf(value / factor);
+    return (1 - double) * single(value) + double * single(value / 2);
   });
   const power = new Array(steps).fill(1);
   for (let n = 1; n <= count; n++) {
@@ -104,8 +107,14 @@ function pooledChancePercent(ailment, rate) {
 // max-Affliction resistance reduction above; frost-terra audit 2026-10-13). Nothing removes Affliction for a skill DoT here.
 function maxAfflictionAdditionalRatios(ailment, afflictionPerSecond) {
   const factor = ailment.maxAfflictionAdditional?.factor ?? 1;
-  if (!(factor > 1)) return null;
-  return { firstMaxSeconds: afflictionPerSecond > 0 ? 100 / afflictionPerSecond : Infinity, steadyFraction: 1, ratioAtNone: 1 / factor, ratioAtFull: 1 };
+  const additional = factor > 1 ? { firstMaxSeconds: afflictionPerSecond > 0 ? 100 / afflictionPerSecond : Infinity, steadyFraction: 1, ratioAtNone: 1 / factor, ratioAtFull: 1 } : null;
+  // "−X% All Resistance when the enemy has max Affliction" on this DoT (user decision 2026-10-21; src/ailment-shared.js): its ratios
+  // to the steady time share, as the Ignite chain's (maxAfflictionRatios). With Pain Amplification as well the two multiply; the
+  // reduction's uptime (first max, removers' steady share) is used.
+  const resistance = ailment.maxAfflictionResistance?.recount || null;
+  if (!resistance) return additional;
+  if (!additional) return { ...resistance };
+  return { firstMaxSeconds: resistance.firstMaxSeconds, steadyFraction: resistance.steadyFraction, ratioAtNone: resistance.ratioAtNone * additional.ratioAtNone, ratioAtFull: resistance.ratioAtFull * additional.ratioAtFull };
 }
 
 function otherAilment({ ailment, retention, count, critChancePercent, rate = 0, afflictionPerSecond = 0 }) {
@@ -132,12 +141,13 @@ function otherAilment({ ailment, retention, count, critChancePercent, rate = 0, 
   const limit = Math.max(1, Number(ailment.stackLimit) || 1);
   const stacks = Math.max(1, Number(ailment.stacksPerApplication) || 1);
   const multi = limit > 1;
-  const roll = { min: ailment.base.min, max: ailment.base.max, critChancePercent, critFactor, chancePercent: 100 };
+  const doubleChancePercent = ailment.combat.doubleChancePercent || 0;
+  const roll = { min: ailment.base.min, max: ailment.base.max, critChancePercent, critFactor, doubleChancePercent, chancePercent: 100 };
   const retainedBase = retention === "newest"
     ? Array.from({ length: count + 1 }, (_, n) => n ? averageApplication * (multi ? Math.min(limit, n * stacks) : 1) : 0)
     : multi ? Array.from({ length: count + 1 }, (_, n) => n ? expectedStrongestStacks({ streams: [{ ...roll, attempts: n }], stackLimit: limit, stacksPerApplication: stacks }) : 0)
-    : strongestOfSuccesses({ min: ailment.base.min, max: ailment.base.max, critChancePercent, critFactor, count });
-  const retainedLimit = (retention === "newest" ? averageApplication : ailment.base.max * (crit > 0 ? Math.max(1, critFactor) : 1)) * (multi ? limit : 1);
+    : strongestOfSuccesses({ min: ailment.base.min, max: ailment.base.max, critChancePercent, critFactor, doubleChancePercent, count });
+  const retainedLimit = (retention === "newest" ? averageApplication : ailment.base.max * (crit > 0 ? Math.max(1, critFactor) : 1) * (doubleChancePercent > 0 ? 2 : 1)) * (multi ? limit : 1);
   return { ...common, stacking: "shared-timer", retainedBase, retainedLimit };
 }
 

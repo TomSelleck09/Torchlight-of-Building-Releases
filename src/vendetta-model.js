@@ -94,7 +94,7 @@ export function hitCritChances(hit) {
   return { effective, raw: Math.max(raw, effective) };
 }
 
-export function calculateVendettaTriggers({ sources = [], setups = [], resolvedMain = null, skillHits = [], weaponAttack = null, modifierTexts = [], windows = [5, 20], erika = null, hasHasten = false } = {}) {
+export function calculateVendettaTriggers({ sources = [], setups = [], resolvedMain = null, skillHits = [], weaponAttack = null, modifierTexts = [], windows = [5, 20], erika = null, hasHasten = false, bardSong = null } = {}) {
   if (!sources.length) return [];
   const cooldownLines = modifierTexts.map((line) => ({ line, parsed: classifyHitLine(line.text, { targetCursed: false }) })).filter(({ parsed }) => parsed?.kind === "cooldownRecovery").map(({ line, parsed }) => ({ source: line.source, text: line.text, value: parsed.value * (line.multiplier ?? 1), additional: parsed.additional }));
   const cooldownFactor = Math.max(0.0001, 1 + cooldownLines.filter((line) => !line.additional).reduce((sum, line) => sum + line.value, 0) / 100) * cooldownLines.filter((line) => line.additional).reduce((factor, line) => factor * (1 + line.value / 100), 1);
@@ -130,7 +130,12 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
     const triggerFactor = (1 + spec.trigger.additionalAttackDamagePercent / 100) * (1 + penaltyPercent / 100) * (1 + poolPercent / 100);
     const perTrigger = mainPerUse * triggerFactor;
     const mainDps = mainHit.combat.dps;
-    const useTime = spec.timing.useTime / speedFactor / (hastened ? 1 + erika.hasten.attackSpeedPercent / 100 : 1);
+    // Selena – Sing with the Tide's Bard Song (hero trait audit B13, provisional): in the Bard state the trigger skill channels Bard Song
+    // and its bubble uses it once, every stacks per bubble × 0.8 s ÷ Attack Speed, in place of its own attack time (the Main Skill's
+    // hit model applies the same cadence, so the time lost per cycle stays in step).
+    const ownTime = bardSong ? bardSong.stacksPerBubble * bardSong.intervalSeconds : spec.timing.useTime;
+    const useTime = ownTime / speedFactor / (hastened ? 1 + erika.hasten.attackSpeedPercent / 100 : 1);
+    if (bardSong) notes.push(`${spec.name}: Bard Song (Sing with the Tide, hero trait audit B13, provisional): a bubble every ${bardSong.stacksPerBubble} stack(s) × ${bardSong.intervalSeconds} s ÷ Attack Speed uses it once (its attack takes ${round(spec.timing.useTime)} s).`);
     const cooldown = hastened && spec.name === "Vendetta" ? 0 : spec.timing.cooldown / cooldownFactor;
     const phantomPerCast = erika?.phantom ? erika.phantom.phantoms * erika.phantom.casts / erika.phantom.everyCasts : 0;
     const phantomFactor = 1 + (erika?.phantom?.additionalPercent || 0) / 100;

@@ -81,9 +81,8 @@ const PENDING = {
   // MODULE_LINES below names the lines the Carino module reads (src/carino-traits.js).
   // Erika (B5, 2026-10-19): Charging Tail and Vengeful Night Wraith join the intake; MODULE_LINES below names the lines the
   // Lightning Shadow / Vendetta's Sting modules read (src/erika-traits.js, src/hero-trait-modules.js).
-  // Bing (B12)
-  "Bing's Big Bang Pack": P("B12", "Bing's bomb engine", "When bombs deal damage"),
-  "Genius Idea Generator": P("B12", "Bing's Whimsy / Ingenuity Overload engine", "+2 to Whimsy Explosion", "+1 to Max Spell Burst and +60% additional Spell Damage for Spells triggered by Ingenuity Overload"),
+  // Bing (B12, 2026-10-19): Bing's Big Bang Pack and Genius Idea Generator join the intake; MODULE_LINES below names the lines the Bing
+  // modules read (src/bing-traits.js).
   // Gemma (B3, 2026-10-19): First Flake of Strange Snow joins the intake (src/combat-states.js reads its deemed Frostbite Rating and
   // additional Frostbite Effect) and so does Sweet Pain's Erosion Magus Origin (src/origin-of-spirit-magus.js: defensive, No DPS
   // effect). Advanced Elemental Impact stays out: TLIDB gives only its base text ("+12% additional damage for 2 other types of
@@ -97,13 +96,12 @@ const PENDING = {
   // readers (Spell Burst Charge Speed and hit damage, src/skill-hit-model.js; Skill Area).
   // Moto and Iris (B6, 2026-10-19): Machine's Joy, Peril of Synthetic Troops, Nourishing Spring Rain, Nature's Party, Soft Storm and
   // Blowing Breeze join the intake; MODULE_LINES below names the lines the Moto / Iris modules read (src/moto-iris-traits.js).
-  // Rosa (B11)
-  "Between the Holy Land and Hell": P("B11", "Rosa's Holy Domain / Repent to the Light", "Gains Repent to the Light"),
-  "Mercury Purged": P("B11", "Rosa's Mercury Baptism engine", "When inflicting Frostbite", "When inflicting Ignite", "When inflicting Numbed"),
+  // Rosa (B11, 2026-10-19): Between the Holy Land and Hell and Mercury Purged join the intake; MODULE_LINES below names the lines the
+  // Rosa modules read (src/rosa-traits.js).
   // Sage (B8, 2026-10-19): Omni-Elixir Side Effect and Basic Pharmacology Manuscript join the intake; MODULE_LINES below names the
   // lines the Scent Bottle module reads (src/sage-traits.js).
-  // Selena (B13)
-  "Red Shoes of Cruelty": P("B13", "the Main Terra Skill Area's damage taken from Movement Speed", "While Main Terra Skill is active, increases the damage taken")
+  // Selena (B13, 2026-10-19): Red Shoes of Cruelty joins the intake; MODULE_LINES below names the line the Selena module reads
+  // (src/selena-leftover-traits.js redShoesState through src/hero-trait-modules.js "redShoes").
 };
 
 // Lines of an exclusive revival that a hero module reads (hero trait audit B4): they join the intake so the module sees them in
@@ -148,7 +146,18 @@ const MODULE_LINES = {
   "Hero's Resourcefulness": ["Burst becomes Burst Blast", "All conditions of this trait", "The Base Trait effect that generates Rage"],
   "Furious Roar": ["Attacks trigger Burst once on Critical Strike", "-20% additional Burst Damage"],
   "Ancestral Hate": ["Seething Spirit consumes"],
-  "Starfall Wasteland": ["Seething Spirit now only uses", "Generates 15 Rage", "+1 to Projectile Quantity", "33% chance for Ranged Skills cast by Seething Spirit"]
+  "Starfall Wasteland": ["Seething Spirit now only uses", "Generates 15 Rage", "+1 to Projectile Quantity", "33% chance for Ranged Skills cast by Seething Spirit"],
+  // Rosa (B11): Repent to the Light after a Trait Skill cast (its Block Ratio stacks feed Desperation's No Guard) and Mercury Purged's
+  // Baptism buffs while the matching ailment is on the dummy.
+  "Between the Holy Land and Hell": ["Gains Repent to the Light"],
+  "Mercury Purged": ["When inflicting Frostbite", "When inflicting Ignite", "When inflicting Numbed"],
+  // Bing (B12): Big Bang Pack's Spare Bombs (the bomb engine); Genius Idea Generator's Whimsy / Whimsy Signal Effect (the Whimsy
+  // engine; its SS13 Ingenuity Overload line is gone in SS14, 2026-10-21).
+  "Bing's Big Bang Pack": ["When bombs deal damage"],
+  "Genius Idea Generator": ["+2 to Whimsy Explosion"],
+  // Selena (B13): Red Shoes of Cruelty's damage taken on the dummy inside the Main Terra Skill (its self True Damage line goes to the
+  // generic reader: No DPS effect).
+  "Red Shoes of Cruelty": ["While Main Terra Skill is active, increases the damage taken"]
 };
 /** Whether a hero module reads this line of an exclusive revival (its badge is the module's entry). */
 export function moduleReadExclusiveLine(name, line) {

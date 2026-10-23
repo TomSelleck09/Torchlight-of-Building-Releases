@@ -12,6 +12,7 @@
 // the strongest applications of the run (expectedStrongestStacks).
 
 import { AFFLICTION_DAMAGE_PER_POINT, BASE_CRITICAL_DAMAGE_PERCENT } from "./game-attribute-defaults.js";
+import { maxAfflictionLayerWindowScale } from "./max-affliction-resistance.js";
 import { damageTypeRestriction, restrictionLine } from "./damage-type-restriction.js";
 export const ailmentDefinitions = Object.freeze({
   ignite: Object.freeze({ key: "ignite", name: "Ignite", damageType: "Fire", elemental: true, baseDurationSeconds: 4, defaultStackLimit: 1, stacking: "strongest" }),
@@ -58,12 +59,24 @@ export function unscopeSkillAilmentLine(text) {
 export function collectAilmentTypedSources(ailmentKey, modifierTexts = []) {
   const definition = ailmentDefinitions[ailmentKey];
   const A = escape(definition.name), T = escape(definition.damageType);
-  const result = { base: [], chance: [], duration: [], increased: [], additional: [], taken: [], critOnlyAdditional: [], perRecentCritAdditional: [], perCritDamageAdditional: [], stackLimit: [], reapingDuration: [], extraStacks: [], unrecognized: [] };
+  const result = { base: [], flatBase: [], baseAdditional: [], chance: [], duration: [], additionalDuration: [], doubleChance: [],increased: [], additional: [], taken: [], critOnlyAdditional: [], perRecentCritAdditional: [], perCritDamageAdditional: [], stackLimit: [], reapingDuration: [], extraStacks: [], unrecognized: [] };
   const rules = [
+    // Base ailment damage from the skill's added flat damage (game node 381: ailment type, lower / upper percent; Evil Heart Armor,
+    // Confusion Elemental Belt; legendary audit batch 6, 2026-10-22): "Gains X% - Y% of the added Flat Damage's value as Base
+    // <Ailment> Damage" — read as X% of the added flat minimum and Y% of its maximum (calculateAilment `flatAdded`; provisional).
+    ["flatBase", new RegExp(`^gains (\\d+(?:\\.\\d+)?)% - (\\d+(?:\\.\\d+)?)% of the added Flat Damage's (?:value as )?Base (?:${A}|Ailment) Damage$`, "i"), (m) => ({ minPercent: number(m[1]), maxPercent: number(m[2]) })],
+    // "Adds -99% additional Base Ailment Damage" (game affix 16341925: attrs 5821 / 5823 / 5824, mod 4): the base damage the
+    // ailment has from its other sources; the node-381 part above is read as not reduced (provisional).
+    ["baseAdditional", new RegExp(`^Adds ([+-]?\\d+(?:\\.\\d+)?)% additional Base (?:${A}|Ailment) Damage$`, "i")],
     // "Base Ailment Damage" adds to every damaging ailment's base.
     ["base", new RegExp(`^Adds (\\d+(?:\\.\\d+)?)\\s*[-–]\\s*(\\d+(?:\\.\\d+)?) Base (?:${A}|Ailment) Damage$`, "i"), (m) => ({ min: number(m[1]), max: number(m[2]) })],
     ["chance", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% (?:chance to inflict ${A}|${A} chance${chanceAliases[ailmentKey].map((alias) => `|${escape(alias)}`).join("")})$`, "i")],
     ["duration", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% ${A} Duration$`, "i")],
+    // "+X% additional <Ailment> Duration" (Profane, game buff 3492 attr 3601 mod 4; gear affix batch A 2026-10-22): its own multiplier.
+    ["additionalDuration", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% additional ${A} Duration$`, "i")],
+    // "+12% chance to deal double Trauma Damage" (corrosion affix; game affix 971068: on hit, with chance P1, +100% additional damage
+    // on that hit's Trauma, tag 5100006; gear affix batch D 2026-10-22): a per-application ×2 the strongest-stacks roll reads.
+    ["doubleChance", new RegExp(`^\\+?(\\d+(?:\\.\\d+)?)% chance to deal double ${A} Damage$`, "i")],
     ["critOnlyAdditional", new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% additional ${A} Damage dealt by Critical Strikes$`, "i")],
     ["perRecentCritAdditional", new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% additional ${A} Damage \\(multiplies\\) for each Critical Strike dealt recently\\. Stacks up to (\\d+) time`, "i"), (m) => ({ value: number(m[1]), cap: number(m[2]) })],
     ["perCritDamageAdditional", new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% additional ${A} Damage for every \\+(\\d+(?:\\.\\d+)?)% Critical Strike Damage$`, "i"), (m) => ({ value: number(m[1]), per: number(m[2]) })],
@@ -78,6 +91,8 @@ export function collectAilmentTypedSources(ailmentKey, modifierTexts = []) {
     // (Shadowmaster [5,0]) is an expected 0.06 extra stack. Ignite's "Inflicts N additional stack(s)" stays on the
     // Ignite ledger (src/theoretical-sources.js), so it is not read here.
     ["extraStacks", new RegExp(`^(\\d+(?:\\.\\d+)?)% chance to inflict (\\d+) additional stack\\(s\\) of ${A}$`, "i"), (m) => ({ value: number(m[1]) / 100 * number(m[2]), chancePercent: number(m[1]), stacks: number(m[2]) })],
+    // Strayed Healer's Waistguard corroded (legendary audit batch 8): "+40% chance to inflict an additional stack of Wilt".
+    ["extraStacks", new RegExp(`^\\+?(\\d+(?:\\.\\d+)?)% chance to inflict an additional stack of ${A}$`, "i"), (m) => ({ value: number(m[1]) / 100, chancePercent: number(m[1]), stacks: 1 })],
     ["reapingDuration", new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% ${A} Reaping Duration$`, "i")]
   ];
   if (definition.elemental) rules.push(["increased", /^\+(\d+(?:\.\d+)?)% Elemental Damage$/i]);
@@ -90,6 +105,7 @@ export function collectAilmentTypedSources(ailmentKey, modifierTexts = []) {
       const entry = { ...shaped, source: line.source, text: line.text, ...(line.scopedText ? { scopedText: line.scopedText } : {}) };
       if ("value" in entry && bucket !== "perCritDamageAdditional" && bucket !== "perRecentCritAdditional") entry.value = scale(entry.value);
       if (bucket === "base") { entry.min = scale(entry.min); entry.max = scale(entry.max); }
+      if (bucket === "flatBase") { entry.minPercent = scale(entry.minPercent); entry.maxPercent = scale(entry.maxPercent); }
       result[bucket].push(entry);
       break;
     }
@@ -136,15 +152,18 @@ export function collectAilmentDuration(modifierTexts = []) {
 // Expected value of the strongest successful application among `attempts`
 // independent tries. Each success rolls a uniform base in [min, max]; a critical
 // application additionally multiplies by `critFactor`.
-export function expectedStrongestApplication({ min, max, chancePercent, attempts, critChancePercent = 0, critFactor = 1, steps = 400 }) {
+export function expectedStrongestApplication({ min, max, chancePercent, attempts, critChancePercent = 0, critFactor = 1, doubleChancePercent = 0, steps = 400 }) {
   const chance = Math.max(0, Math.min(1, chancePercent / 100));
   const crit = Math.max(0, Math.min(1, critChancePercent / 100));
+  // A doubled application ("+X% chance to deal double <Ailment> Damage"; gear affix batch D): ×2 with that chance, independent of crit.
+  const double = Math.max(0, Math.min(1, doubleChancePercent / 100));
   if (!(attempts > 0) || chance === 0 || !(max > 0)) return 0;
   const span = Math.max(0, max - min);
   const uniformCdf = (value) => span === 0 ? (value >= min ? 1 : 0) : Math.max(0, Math.min(1, (value - min) / span));
   const factor = Math.max(1, critFactor);
-  const cdf = (value) => (1 - chance) + chance * ((1 - crit) * uniformCdf(value) + crit * uniformCdf(value / factor));
-  const top = max * factor;
+  const single = (value) => (1 - crit) * uniformCdf(value) + crit * uniformCdf(value / factor);
+  const cdf = (value) => (1 - chance) + chance * ((1 - double) * single(value) + double * single(value / 2));
+  const top = max * factor * (double > 0 ? 2 : 1);
   const whole = Math.floor(attempts), fraction = attempts - whole;
   const expectedFor = (count) => {
     if (count <= 0) return 0;
@@ -169,12 +188,13 @@ export function expectedStrongestMixture(streams = [], steps = 400) {
   if (active.length === 1) return expectedStrongestApplication({ ...active[0], steps });
   const clamp = (value) => Math.max(0, Math.min(1, value));
   const cdfs = active.map((stream) => {
-    const chance = clamp(stream.chancePercent / 100), crit = clamp((stream.critChancePercent || 0) / 100);
+    const chance = clamp(stream.chancePercent / 100), crit = clamp((stream.critChancePercent || 0) / 100), double = clamp((stream.doubleChancePercent || 0) / 100);
     const span = Math.max(0, stream.max - stream.min), factor = Math.max(1, stream.critFactor || 1);
     const uniform = (value) => span === 0 ? (value >= stream.min ? 1 : 0) : clamp((value - stream.min) / span);
-    return { attempts: stream.attempts, cdf: (value) => (1 - chance) + chance * ((1 - crit) * uniform(value) + crit * uniform(value / factor)) };
+    const single = (value) => (1 - crit) * uniform(value) + crit * uniform(value / factor);
+    return { attempts: stream.attempts, cdf: (value) => (1 - chance) + chance * ((1 - double) * single(value) + double * single(value / 2)) };
   });
-  const top = Math.max(...active.map((stream) => stream.max * Math.max(1, stream.critFactor || 1)));
+  const top = Math.max(...active.map((stream) => stream.max * Math.max(1, stream.critFactor || 1) * ((stream.doubleChancePercent || 0) > 0 ? 2 : 1)));
   let total = 0;
   for (let index = 0; index < steps; index++) {
     const value = top * (index + 0.5) / steps;
@@ -205,11 +225,12 @@ export function expectedStrongestStacks({ streams = [], stackLimit = 1, stacksPe
   const ranks = weights.length;
   const clamp = (value) => Math.max(0, Math.min(1, value));
   const cdfs = active.map((stream) => {
-    const chance = clamp(stream.chancePercent / 100), crit = clamp((stream.critChancePercent || 0) / 100);
+    const chance = clamp(stream.chancePercent / 100), crit = clamp((stream.critChancePercent || 0) / 100), double = clamp((stream.doubleChancePercent || 0) / 100);
     const span = Math.max(0, stream.max - stream.min), factor = Math.max(1, stream.critFactor || 1);
     const uniform = (value) => span === 0 ? (value >= stream.min ? 1 : 0) : clamp((value - stream.min) / span);
+    const single = (value) => (1 - crit) * uniform(value) + crit * uniform(value / factor);
     const whole = Math.floor(stream.attempts);
-    return { whole, fraction: stream.attempts - whole, cdf: (value) => (1 - chance) + chance * ((1 - crit) * uniform(value) + crit * uniform(value / factor)) };
+    return { whole, fraction: stream.attempts - whole, cdf: (value) => (1 - chance) + chance * ((1 - double) * single(value) + double * single(value / 2)) };
   });
   // P(count = j) for j < ranks, n attempts each above x with probability q.
   const binomialHead = (n, q) => {
@@ -219,7 +240,7 @@ export function expectedStrongestStacks({ streams = [], stackLimit = 1, stacksPe
     for (let j = 0; j < ranks && j <= n; j++) { head[j] = term; term *= (n - j) / (j + 1) * q / (1 - q); }
     return head;
   };
-  const top = Math.max(...active.map((stream) => stream.max * Math.max(1, stream.critFactor || 1)));
+  const top = Math.max(...active.map((stream) => stream.max * Math.max(1, stream.critFactor || 1) * ((stream.doubleChancePercent || 0) > 0 ? 2 : 1)));
   let total = 0;
   for (let index = 0; index < steps; index++) {
     const value = top * (index + 0.5) / steps;
@@ -240,13 +261,18 @@ export function expectedStrongestStacks({ streams = [], stackLimit = 1, stacksPe
 
 // Average strongest-application magnitude over a window that starts on a fresh
 // target, given a continuous chain of applications (timer refreshed by each success).
-export function windowAverageStrongest({ seconds, applicationsPerSecond, ...roll }) {
+// `firstApplicationSeconds` (a skill DoT ready at engagement, src/skill-dot-model.js; user decision 2026-10-22): the first
+// application lands then and the rest follow at the rate, attempts = 1 + (t − first) × rate from it on. Without it the attempts
+// grow as t × rate (the first application one interval in), as before.
+export function windowAverageStrongest({ seconds, applicationsPerSecond, firstApplicationSeconds = null, ...roll }) {
   if (!(seconds > 0) || !(applicationsPerSecond > 0)) return 0;
+  const first = Number.isFinite(firstApplicationSeconds) && firstApplicationSeconds >= 0 ? firstApplicationSeconds : null;
   const slices = 80;
   let total = 0;
   for (let index = 0; index < slices; index++) {
     const time = seconds * (index + 0.5) / slices;
-    total += expectedStrongestApplication({ ...roll, attempts: time * applicationsPerSecond });
+    const attempts = first == null ? time * applicationsPerSecond : time < first ? 0 : 1 + (time - first) * applicationsPerSecond;
+    total += expectedStrongestApplication({ ...roll, attempts });
   }
   return total / slices;
 }
@@ -266,7 +292,7 @@ const product = (values) => values.reduce((factor, value) => factor * (1 + value
 // holds every typed (Fire) damage line.
 export const CHANCE_TO_DAMAGE = /^For every \+(\d+(?:\.\d+)?)% Ignite, Wilt, and Trauma Chance, \+(\d+(?:\.\d+)?)% Ignite, Wilt, and Trauma Damage respectively$/i;
 
-export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit = {}, applicationsPerSecond = 0, combat = {}, auraChancePercent = 0, auraDurationPercent = 0, enemyAilmentTypes = 1, fieryFantasy = false, appliers = null, overrides = {} }) {
+export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit = {}, applicationsPerSecond = 0, combat = {}, auraChancePercent = 0, auraDurationPercent = 0, enemyAilmentTypes = 1, fieryFantasy = false, appliers = null, overrides = {}, flatAdded = null }) {
   const definition = ailmentDefinitions[ailmentKey];
   const typed = collectAilmentTypedSources(ailmentKey, modifierTexts);
   if (overrides.skipTypedDamage) { typed.increased = []; typed.additional = []; typed.taken = []; }
@@ -284,6 +310,11 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const extraOf = (applier) => scopedPerApplier && applier?.baseExtra ? applier.baseExtra : { min: 0, max: 0 };
   // The summary base (town figure, ledger) keeps the main skill's scoped base, as before.
   const mainApplier = scopedPerApplier ? appliers.find((applier) => applier.main && !applier.blocked) : null;
+  // Evil Heart Armor / Confusion Elemental Belt (legendary audit batch 6): the other base sources × Π(1 + "additional Base Ailment
+  // Damage"), then the share of the main skill's added flat damage (`flatAdded`, per hit: { min, max }).
+  const baseScale = typed.baseAdditional.reduce((factor, line) => factor * Math.max(0, 1 + line.value / 100), 1);
+  const flat = flatAdded && typed.flatBase.length ? typed.flatBase.reduce((range, line) => ({ min: range.min + (flatAdded.min || 0) * line.minPercent / 100, max: range.max + (flatAdded.max || 0) * line.maxPercent / 100 }), { min: 0, max: 0 }) : { min: 0, max: 0 };
+  if (baseScale !== 1 || flat.max > 0) { globalBase.min = globalBase.min * baseScale + flat.min; globalBase.max = globalBase.max * baseScale + flat.max; }
   const base = { min: globalBase.min + extraOf(mainApplier).min, max: globalBase.max + extraOf(mainApplier).max };
   // `overrides.chance` (a combineAilmentChance result) serves the generic Ignite path, whose build-wide
   // chance is the Ignite ledger's (src/ailment-applications.js igniteGlobalChanceSources).
@@ -305,7 +336,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   }
   if (fieryFantasy && rawChancePercent > 100) typed.additional.push({ source: "Core talent: Fiery Fantasy", text: `+3% additional ${definition.name} Damage per +1% chance above 100% (${Math.round(rawChancePercent * 100) / 100}% chance)`, value: Math.min(150, 3 * (rawChancePercent - 100)) });
   const durationSources = [...typed.duration, ...collectAilmentDuration(modifierTexts), ...(auraDurationPercent ? [{ source: "Auras", text: "Ailment duration", value: auraDurationPercent }] : [])];
-  const durationSeconds = overrides.durationSeconds ?? definition.baseDurationSeconds * Math.max(0, 1 + durationSources.reduce((sum, line) => sum + line.value, 0) / 100);
+  const durationSeconds = overrides.durationSeconds ?? definition.baseDurationSeconds * Math.max(0, 1 + durationSources.reduce((sum, line) => sum + line.value, 0) / 100) * (typed.additionalDuration || []).reduce((factor, line) => factor * Math.max(0, 1 + line.value / 100), 1);
   const stackLimit = overrides.stackLimit ?? definition.defaultStackLimit + typed.stackLimit.reduce((sum, line) => sum + line.value, 0);
   const extraTypedStacks = ailmentKey === "ignite" ? 0 : typed.extraStacks.reduce((total, line) => total + line.value, 0);
   const stacksPerApplication = Math.max(1, overrides.stacksPerApplication || 1) + extraTypedStacks;
@@ -343,7 +374,10 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const combatAdditional = [...(shared.combatAdditionalPercents || []), ...typed.additional.map((line) => line.value), ...perCritDamage(critBonusCombat).map((line) => line.value)];
   // Damage per point of Affliction: config_attributes 5724 default 0.01 (2026-10-17 game attribute data).
   const afflictionFactor = (rating) => 1 + Math.max(0, Math.min(100, rating)) * AFFLICTION_DAMAGE_PER_POINT * (1 + (shared.afflictionEffectPercent || 0) / 100) * (shared.additionalAfflictionEffectFactor ?? 1);
-  const resistanceFactor = Math.max(0, 1 - ((shared.targetResistancePercent || 0) - (shared.penetrationPercent || 0)) / 100);
+  // "−X% All Resistance when the enemy has max Affliction" (user decision 2026-10-21; src/ailment-shared.js): the steady factor holds
+  // the time share at max, a window its own share on the clean dummy, a full-Affliction Reap the full reduction.
+  const maxAfflictionResistance = shared.maxAfflictionResistance?.active ? shared.maxAfflictionResistance : null;
+  const resistanceFactor = maxAfflictionResistance ? maxAfflictionResistance.steadyFactor : Math.max(0, 1 - ((shared.targetResistancePercent || 0) - (shared.penetrationPercent || 0)) / 100);
   const takenFactor = product([...(shared.additionalDamageTakenPercents || []), ...typed.taken.map((line) => line.value)]);
   // "(multiplies) for every type of Ailment": each type is its own multiplier.
   const perAilmentTypeFactor = (count) => (shared.perEnemyAilmentTypePercents || []).reduce((factor, value) => factor * (1 + value / 100) ** Math.max(0, count), 1);
@@ -357,7 +391,9 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const sustainedSeconds = Number(combat.sustainedWindowSeconds) || 20;
   // Per-stream roll: the base scaled by the inflicting skill's own layers, its chance and crit chance.
   const baseFor = (applier) => scopedPerApplier ? { min: globalBase.min + extraOf(applier).min, max: globalBase.max + extraOf(applier).max } : base;
-  const rollFor = (applier) => ({ min: baseFor(applier).min * applier.scale, max: baseFor(applier).max * applier.scale, chancePercent: applier.chancePercent, critChancePercent: applier.critChancePercent, critFactor: critOnlyFactor });
+  // "+X% chance to deal double <Ailment> Damage" (gear affix batch D): one summed chance, at most 100%, per application.
+  const doubleChancePercent = Math.min(100, typed.doubleChance.reduce((sum, line) => sum + line.value, 0));
+  const rollFor = (applier) => ({ min: baseFor(applier).min * applier.scale, max: baseFor(applier).max * applier.scale, chancePercent: applier.chancePercent, critChancePercent: applier.critChancePercent, critFactor: critOnlyFactor, doubleChancePercent });
   // Stacks per success, pooled over the streams by success rate (each applier's expected extra stacks, B8).
   const pooledStacksPerSuccess = () => {
     const successes = streams.reduce((sum, applier) => sum + applier.successesPerSecond, 0);
@@ -373,7 +409,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   // inflicting skills the stack mix follows their success rates (a new stack replaces the
   // one with the shortest remaining duration, so no skill's stacks are favoured).
   const independent = stacking === "independent";
-  const averageApplicationFor = (applier) => ((baseFor(applier).min + baseFor(applier).max) / 2) * applier.scale * (1 + (applier.critChancePercent / 100) * (critOnlyFactor - 1));
+  const averageApplicationFor = (applier) => ((baseFor(applier).min + baseFor(applier).max) / 2) * applier.scale * (1 + (applier.critChancePercent / 100) * (critOnlyFactor - 1)) * (1 + doubleChancePercent / 100);
   const successesPerSecond = streams.reduce((sum, applier) => sum + applier.successesPerSecond, 0);
   // Stacks per second: each success adds stacksPerApplication plus the inflicting skill's expected extra stacks (B8).
   const stacksOf = (applier) => stacksPerApplication + (applier.extraStacks || 0);
@@ -398,9 +434,10 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     }
     return total / slices;
   };
-  const window = (seconds) => independent
+  const windowResistance = (seconds) => maxAfflictionResistance ? maxAfflictionLayerWindowScale(maxAfflictionResistance, seconds) : 1;
+  const window = (seconds) => (independent
     ? averageApplication * windowStacks(seconds) * combatFactor
-    : windowStrongest(seconds) * combatFactor;
+    : windowStrongest(seconds) * combatFactor) * windowResistance(seconds);
   const steadyStrongest = independent
     ? averageApplication * steadyActiveStacks
     : strongestAt((applier) => applier.applicationsPerSecond * sustainedSeconds);
@@ -418,9 +455,14 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     town: { perBaseFactor: townPerBase, minimumDps: base.min * townPerBase, maximumDps: base.max * townPerBase },
     // A full-Affliction Reap settles this DoT at 100 rating.
     fullAfflictionScale: (shared.combatAfflictionRating ?? 0) > 0 ? afflictionFactor(100) / afflictionFactor(shared.combatAfflictionRating) : 1,
+    // The max-Affliction resistance reduction in full at that moment ÷ the steady time share (1 without the line), and each window's
+    // resistance scale, so a window's full-Affliction figure is window DoT ÷ windowScale × fullAfflictionResistanceScale.
+    fullAfflictionResistanceScale: maxAfflictionResistance ? maxAfflictionResistance.fullScale : 1,
+    maxAfflictionWindowScale: { 0: 1, 5: windowResistance(5), 20: windowResistance(20) },
+    maxAfflictionResistance: maxAfflictionResistance ? { reductionPercent: maxAfflictionResistance.reductionPercent, steadyFraction: maxAfflictionResistance.steadyFraction, firstMaxSeconds: maxAfflictionResistance.firstMaxSeconds, recount: maxAfflictionResistance.recount, sources: shared.maxAfflictionResistanceSources || [] } : null,
     // Affliction damage taken is 1 + rating × afflictionPerPoint (the dummy recount rescales DoTs over time).
     afflictionPerPoint: (afflictionFactor(100) - 1) / 100,
-    combat: { factor: combatFactor, steadyDps: steadyStrongest * combatFactor, steadyStrongestBase: steadyStrongest, stacking, steadyActiveStacks, averageApplication, successesPerSecond, fiveSecondAverageDps: window(5), twentySecondAverageDps: window(20), critOnlyFactor, recentCritStacks: perRecentCrit },
+    combat: { factor: combatFactor, steadyDps: steadyStrongest * combatFactor, steadyStrongestBase: steadyStrongest, stacking, steadyActiveStacks, averageApplication, successesPerSecond, doubleChancePercent, fiveSecondAverageDps: window(5), twentySecondAverageDps: window(20), critOnlyFactor, recentCritStacks: perRecentCrit },
     // Step factors in application order; their product equals combat.factor.
     steps: {
       increasedFactor: 1 + increasedPercent / 100,
@@ -441,4 +483,10 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     sources: { typed, chance: chanceSources, duration: durationSources, increasedPercent, townAdditional, combatAdditional, perCritDamageTown: perCritDamage(critBonusTown), perCritDamageCombat: perCritDamage(critBonusCombat) },
     modeled: anyBase && (chancePercent > 0 || streams.length > 0)
   };
+}
+
+/** Does the build have a base for this ailment (a flat base line, or a share of the added flat damage, game node 381)? */
+export function hasAilmentBase(ailmentKey, modifierTexts = []) {
+  const typed = collectAilmentTypedSources(ailmentKey, modifierTexts);
+  return typed.base.length > 0 || typed.flatBase.length > 0;
 }

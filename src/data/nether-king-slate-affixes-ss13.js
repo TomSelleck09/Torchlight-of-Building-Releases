@@ -1,56 +1,11 @@
-// SS13 Nether King fixed talent nodes from https://tlidb.com/en/Nether_King
-export const netherKingFixedAffixesSs13 = [
-  { name: "Micro Nether King Talent Node", effect: "+18% damage" },
-  { name: "Micro Nether King Talent Node", effect: "+18% Minion Damage" },
-  { name: "Micro Nether King Talent Node", effect: "Adds 14 - 16 Physical Damage to your and your Minions' Attacks and Spells" },
-  { name: "Micro Nether King Talent Node", effect: "Adds 13 - 17 Cold Damage to your and your Minions' Attacks and Spells" },
-  { name: "Micro Nether King Talent Node", effect: "Adds 12 - 18 Fire Damage to your and your Minions' Attacks and Spells" },
-  { name: "Micro Nether King Talent Node", effect: "Adds 1 - 29 Lightning Damage to your and your Minions' Attacks and Spells" },
-  { name: "Micro Nether King Talent Node", effect: "Adds 14 - 16 Erosion Damage to your and your Minions' Attacks and Spells" },
-  { name: "Micro Nether King Talent Node", effect: "+30% Critical Strike Rating" },
-  { name: "Micro Nether King Talent Node", effect: "+30% Minion Critical Strike Rating" },
-  { name: "Micro Nether King Talent Node", effect: "+15% Critical Strike Damage" },
-  { name: "Micro Nether King Talent Node", effect: "+15% Minion Critical Strike Damage" },
-  { name: "Micro Nether King Talent Node", effect: "+6% Attack and Cast Speed · +6% Minion Attack and Cast Speed" },
-  { name: "Micro Nether King Talent Node", effect: "+12% Projectile Speed · +12% Minion Projectile Speed" },
-  { name: "Micro Nether King Talent Node", effect: "+18% Skill Area · +18% Minion Skill Area" },
-  { name: "Micro Nether King Talent Node", effect: "+720 Armor" },
-  { name: "Micro Nether King Talent Node", effect: "+720 Evasion" },
-  { name: "Micro Nether King Talent Node", effect: "+7% Cold Resistance" },
-  { name: "Micro Nether King Talent Node", effect: "+7% Fire Resistance" },
-  { name: "Micro Nether King Talent Node", effect: "+7% Lightning Resistance" },
-  { name: "Micro Nether King Talent Node", effect: "+7% Erosion Resistance" },
-  { name: "Medium Nether King Talent Node", effect: "+6% Elemental and Erosion Resistance Penetration · +6% Elemental and Erosion Resistance Penetration for Minions" },
-  { name: "Medium Nether King Talent Node", effect: "+6% Armor DMG Mitigation Penetration · +6% Armor DMG Mitigation Penetration for Minions" },
-  { name: "Medium Nether King Talent Node", effect: "+8% chance to deal Double Damage · +8% chance for Minions to deal Double Damage" },
-  { name: "Medium Nether King Talent Node", effect: "Adds 5 - 5 Base Ignite Damage" },
-  { name: "Medium Nether King Talent Node", effect: "Adds 5 - 5 Base Trauma Damage" },
-  { name: "Medium Nether King Talent Node", effect: "Adds 5 - 5 Base Wilt Damage" },
-  { name: "Medium Nether King Talent Node", effect: "+6% Movement Speed" },
-  { name: "Medium Nether King Talent Node", effect: "+6% Aura Effect" },
-  { name: "Medium Nether King Talent Node", effect: "+6% Sealed Mana Compensation" },
-  { name: "Medium Nether King Talent Node", effect: "+8% Warcry Effect" },
-  { name: "Medium Nether King Talent Node", effect: "+8% Elixir Skill Effect" },
-  { name: "Medium Nether King Talent Node", effect: "+30 Strength" },
-  { name: "Medium Nether King Talent Node", effect: "+30 Dexterity" },
-  { name: "Medium Nether King Talent Node", effect: "+30 Intelligence" },
-  { name: "Medium Nether King Talent Node", effect: "6% additional damage applied to Life" },
-  { name: "Medium Nether King Talent Node", effect: "+10% Life Regain · +10% Energy Shield Regain" },
-  { name: "Medium Nether King Talent Node", effect: "Regenerates 6% Life per second" },
-  { name: "Medium Nether King Talent Node", effect: "+30% Energy Shield Charge Speed" },
-  { name: "Medium Nether King Talent Node", effect: "+12% additional damage for you and your Minions (multiplies)" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+12% additional damage for you and your Minions against Cursed enemies" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "Triggers Lv. 1 Timid Curse when you or your Minions deal damage to enemies. Cooldown: 0.2 s" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "Triggers Lv. 1 Entangled Pain Curse when you or your Minions deal damage to enemies. Cooldown: 0.2 s" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "Immune to Paralysis and Slow" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "Immune to both Blinding and Weaken" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "You and your Minions have Attack Aggression · +30% Attack Aggression Effect" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "You and your Minions have Spell Aggression · +30% Spell Aggression Effect" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+50% Ill Omen Cumulative Efficiency" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+30% chance to inflict Damaging Ailments" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+100 Attack and Spell Critical Strike Rating · -99% additional Elemental and Erosion Damage" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+30% Frostbite Effect" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+50% Affliction Effect if you have dealt Fire Hit Damage recently" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+30% Numbed Effect · Inflicts 2 additional stack(s) of Numbed" },
-  { name: "Legendary Medium Nether King Talent Node", effect: "+32% Deterioration Damage" },
-];
+// Nether King talent nodes: Micro, Medium and Legendary Medium (the Nether King's Divinity's base affixes and Brand options).
+// SS14 data since 2026-10-22 (src/data/nether-king-nodes-ss14.generated.js, from https://tlidb.com/en/Nether_King, checked
+// against the game's talent types). The SS14 patch notes moved every tier up one step: the SS13 Legendary Medium nodes are now
+// Ultimate (src/data/nether-king-ultimate-affixes-ss13.js), SS13 Medium → Legendary Medium (values raised; +1 <Element> Skill
+// Level and "Adds 10 - 10 Base Ailment Damage" added, the three "Adds 5 - 5 Base <Ailment> Damage" removed), SS13 Micro →
+// Medium, and new Micro nodes at half the Medium values. Saved slates keep the text they were made with.
+import { netherKingNodesSs14 } from "./nether-king-nodes-ss14.generated.js";
+
+export const netherKingFixedAffixesSs13 = netherKingNodesSs14
+  .filter((node) => node.name !== "Ultimate Nether King Talent Node")
+  .map(({ id, name, effect, maxDivinityEffect }) => ({ id, name, effect, ...(maxDivinityEffect ? { maxDivinityEffect } : {}) }));

@@ -17,6 +17,12 @@ const TYPE = "(Physical|Fire|Cold|Lightning|Erosion)";
 const RULES = [
   { family: "conversion", pattern: new RegExp(`^Converts ${N}% of ${TYPE} Damage (?:in)?to ${TYPE} Damage$`, "i"), build: (m) => ({ percent: Number(m[1]), from: m[2], to: m[3] }) },
   { family: "addedAs", pattern: new RegExp(`^Adds ${N}% (?:of )?${TYPE} Damage (?:as|to) ${TYPE} Damage$`, "i"), build: (m) => ({ percent: Number(m[1]), from: m[2], to: m[3] }) },
+  // "Adds 25% Non-Erosion Damage as Erosion Damage" (Dual Kismet: Wraith; kismet / pact audit 2026-10-21): the same reading for each
+  // damage type other than the named one (Physical, Fire, Cold and Lightning parts each add 25% of their roll as Erosion).
+  { family: "addedAs", pattern: new RegExp(`^Adds ${N}% (?:of )?Non-${TYPE} Damage (?:as|to) ${TYPE} Damage$`, "i"), build: (m) => ({ percent: Number(m[1]), fromAllBut: m[2], to: m[3] }) },
+  // "Adds 8% of Elemental Damage as Erosion Damage" (weapon corrosion base affix; gear affix audit 2026-10-22): the same reading for
+  // each Elemental type (the Fire, Cold and Lightning parts each add 8% of their roll as Erosion).
+  { family: "addedAs", pattern: new RegExp(`^Adds ${N}% (?:of )?Elemental Damage (?:as|to) ${TYPE} Damage$`, "i"), build: (m) => ({ percent: Number(m[1]), fromList: ["Fire", "Cold", "Lightning"].filter((type) => type.toLowerCase() !== m[2].toLowerCase()), to: m[2] }) },
   { family: "multistrike", pattern: new RegExp(`^\\+${N}% (?:chance to (?:perform a )?Multistrike|Multistrike [Cc]hance)$`, "i"), build: (m) => ({ value: Number(m[1]), kind: "chance" }) },
   { family: "multistrike", pattern: new RegExp(`^Multistrikes deal ${N}% increasing damage$`, "i"), build: (m) => ({ value: Number(m[1]), kind: "increment" }) },
   // "+N initial Multistrike Count" (Preemptive Strike; game affix 713584, field 2006252): shifts every count of the sequence
@@ -48,6 +54,10 @@ export function passiveSupportLines(modifierTexts = []) {
     const scale = line.multiplier ?? 1;
     const entry = { source: line.source, text: line.text, origin: line.origin, passive: true };
     if (parsed.family === "conversion") out.conversion.push({ ...entry, from: parsed.from, to: parsed.to, percent: parsed.percent * scale });
+    else if (parsed.family === "addedAs" && parsed.fromAllBut) {
+      for (const from of ["Physical", "Fire", "Cold", "Lightning", "Erosion"]) if (from.toLowerCase() !== parsed.fromAllBut.toLowerCase()) out.addedAs.push({ ...entry, from, to: parsed.to, percent: parsed.percent * scale });
+    }
+    else if (parsed.family === "addedAs" && parsed.fromList) for (const from of parsed.fromList) out.addedAs.push({ ...entry, from, to: parsed.to, percent: parsed.percent * scale });
     else if (parsed.family === "addedAs") out.addedAs.push({ ...entry, from: parsed.from, to: parsed.to, percent: parsed.percent * scale });
     else if (parsed.family === "multistrike") out.multistrike.push({ ...entry, value: parsed.value * scale, kind: parsed.kind });
     else if (parsed.family === "steepStrike") out.steepStrike.push({ ...entry, value: parsed.value * scale, kind: parsed.kind });

@@ -40,6 +40,15 @@ export const BUFF_VALUES = Object.freeze({
   attackAggression: { percent: 5, source: "Attack Aggression (game keyword 10000100)" },
   spellAggression: { percent: 7, source: "Spell Aggression (game keyword 10000101)" },
   hasten: { percent: 8, source: "Hasten (game keyword 10000106)" },
+  // Ash (TLIDB keyword 10147): +30% additional Fire Damage.
+  ash: 30,
+  profane: { percent: 7, source: "Profane (game buff 3492)" },
+  // Gear affix batch D (2026-10-22): Ferocity (keyword 10000118: "+10% additional Physical Damage and -3% additional damage taken.
+  // Physical Damage cannot be converted to other types"; game buff 3493, 4 s) and God of War's Blessing (game buff 3, affix 200000139
+  // per stack: +10% Movement Speed, +10% Skill Area, +0.5 Projectile Quantity on Projectile Skills (field 2006108, tag 6001110), and a
+  // node-403 effect "percent 2" the readable tables do not name).
+  ferocity: { percent: 10, source: "Ferocity (game keyword 10000118)" },
+  godOfWar: { projectileQuantityPerStack: 0.5, source: "God of War's Blessing (game buff 3, affix 200000139)" },
   fervorPerPoint: 2, fervorMax: 100,
   fortitudeBaseMax: 3,
   frail: 15, infiltration: 13, paralysis: 15, paralysisDurationSeconds: 4, thrillBarrier: 20,
@@ -50,6 +59,15 @@ export const BUFF_VALUES = Object.freeze({
 const num = (text) => Number(String(text).replace("−", "-"));
 const sum = (values) => values.reduce((total, value) => total + value, 0);
 const round = (value) => Math.round(value * 10000) / 10000;
+// "Recently" is "Within 4s" (game hyperlink 103, as src/line-conditions.js RECENTLY_SECONDS).
+const RECENT_SECONDS = 4;
+// A body's leading value × factor ("+30% Critical Strike Damage" × 0.5 → "+15% Critical Strike Damage"); null without a value or at 0.
+const scaleLeadingNumber = (body, factor) => {
+  const match = String(body).match(/^([+-]?)(\d+(?:\.\d+)?)(.*)$/);
+  if (!match) return null;
+  const value = round(Number(match[2]) * factor);
+  return value ? `${match[1] || "+"}${value}${match[3]}` : null;
+};
 // Juggernaut's Armor scale is read against the level-85 dummy's Physical Armor mitigation (src/target-hit-mitigation.js).
 const AFFLICTION_PERCENT_PER_POINT = AFFLICTION_DAMAGE_PER_POINT * 100;
 const JUGGERNAUT_DUMMY_PHYSICAL_ARMOUR_PERCENT = level85DummyDefenses.armourPercent;
@@ -66,27 +84,43 @@ const PATTERNS = {
   hasFervor: /^(?:Have|Has|Gains) Fervor(?: when there are enemies Nearby)?$/i,
   // Negative values too (2026-10-17: the follower's Focused Slash "-5% Fervor Effect … for each Sweep Slash", src/follower-model.js).
   fervorEffect: /^([+-]\d+(?:\.\d+)?)% Fervor effect$/i,
-  fervorRatingOnHit: /^\+\d+% chance to gain \d+ Fervor rating on hit$/i,
+  // Rating gains (also Chaotic Ending's "Gains 3 Fervor Rating on a Critical Strike" / "… for Non-Critical Strikes"): the Rating
+  // is already held at its max (or fixed) while Fervor is held, so the gains change nothing.
+  fervorRatingOnHit: /^(?:\+\d+% chance to gain \d+ Fervor rating on hit|Gains \d+ (?:points of )?Fervor Rating (?:on a Critical Strike|for Non-Critical Strikes))$/i,
   critDamagePerFervor: /^(\d+(?:\.\d+)?)% Critical Strike Damage per Fervor Rating$/i,
   movementPerFervor: /^\+\d+(?:\.\d+)?% Movement Speed per \d+ Fervor Rating$/i,
   // Centralize (Ronin core): its two parts arrive as separate lines. Part 1 raises the Rating on hit; part 2 consumes half of it
   // when the player is hit, -0.8% additional damage per point consumed (best case: not hit, condition centralizeNotHit).
   centralize: /^Gains additional Fervor Rating equal to/i,
   centralizeHit: /^Consumes half of current Fervor Rating when hit(?:\. ?-(\d+(?:\.\d+)?)% additional damage per (\d+)? ?points? consumed)?/i,
-  attackAggressionGain: /^(?:Has Attack Aggression|Both you and your Minions have Attack Aggression|Gains Attack Aggression when casting an Attack Skill)$/i,
+  // Nether King nodes (slates audit 2026-10-22): "You and your Minions have Attack / Spell Aggression" (SS13 and SS14 wordings).
+  attackAggressionGain: /^(?:Has Attack Aggression|(?:Both )?you and your Minions have Attack Aggression|Gains Attack Aggression when casting an Attack Skill)$/i,
   attackAggressionDefeat: /chance to gain Attack Aggression on defeat$/i,
-  spellAggressionGain: /^Has Spell Aggression$/i,
+  spellAggressionGain: /^(?:Has Spell Aggression|(?:Both )?you and your Minions have Spell Aggression)$/i,
   aggressionEffect: /^\+(\d+(?:\.\d+)?)% (Attack|Spell) Aggression Effect$/i,
   spellAggressionPerCast: /^\+(\d+(?:\.\d+)?)% Spell Aggression Effect for every Main Spell Skill cast recently\. Stacks up to (\d+) times$/i,
   hastenAlways: /^Has Hasten$/i,
-  hastenAgility: /^(?:Has Hasten when reaching Max Agility Blessing stacks|When having Agility Blessing, has Hasten)$/i,
+  hastenAgility: /^(?:Has Hasten when reaching Max Agility Blessing stacks|When having Agility Blessing ?, has Hasten)$/i,
   hastenTrauma: /^Gains Hasten when inflicting Trauma for \d+(?:\.\d+)? ?s$/i,
   hastenMinionCrit: /^Gains Hasten when Minions land a Critical Strike$/i,
+  // Gear affix batch A (2026-10-22). "Minions have Hasten": the Minions hold Hasten (game buff 3471 "Quickness": +8% additional
+  // Attack, Cast and Movement Speed). Aggression the player gains from Minion crits. Profane (game buff 3492: +7% additional Erosion
+  // Damage, +7% additional Wilt and Deterioration Duration) for the player and / or the Minions.
+  minionHasten: /^Minions have Hasten$/i,
+  attackAggressionMinionCrit: /^Gains Attack Aggression when Minions land a Critical Strike$/i,
+  spellAggressionMinionSpellCrit: /^Gains Spell Aggression when Minion Spells land a Critical Strike$/i,
+  profane: /^Has Profane(\. Minions have Profane)?$/i,
+  profaneOnWilt: /^Gains Profane when inflicting Wilt or Deterioration$/i,
+  ferocityOnPhysical: /^Gains Ferocity when dealing Physical Damage$/i,
+  godOfWarBlessing: /^Gains (\d+) stack\(s\) of God of War's Blessing$/i,
   hastenEffect: /^\+(\d+(?:\.\d+)?)% Hasten Effect$/i,
   fortitudeGain: /^Gains a stack of Fortitude when using a Melee Skill$/i,
   fortitudeExtra: /^(?:Owns (\d+) additional stack\(s\) of Fortitude|\+(\d+) (?:to )?Max Fortitude Stacks)$/i,
   fortitudeDamage: /^\+(\d+(?:\.\d+)?)% additional damage (?:per|for every) (\d+) stack\(s\) of Fortitude$/i,
   elixirActive: /^(.+?) while an Elixir Skill is active$/i,
+  // Legendary audit batch 1 (Fire Lord's Promise, Strayed Healer's Waistguard, Omni-Elixir Notes, Illusory Chimera's rolls).
+  elixirCastRecently: /^(.+?) if you have cast an Elixir Skill recently$/i,
+  elixirPerCastRecently: /^(.+?) for every Elixir Skill cast recently\. Stacks up to (\d+) time\(s\)$/i,
   // Core audit B8 (src/elixir-model.js): the Elixir Skills' uptime on the dummy and their Elixir Effect.
   elixirProgress: ELIXIR_PROGRESS_LINE,
   elixirEffect: ELIXIR_EFFECT_LINE,
@@ -95,6 +129,9 @@ const PATTERNS = {
   elixirDuration: ELIXIR_DURATION_LINE,
   restorationKept: RESTORATION_KEPT_LINE,
   miraculousGain: MIRACULOUS_GAIN_LINE,
+  // "Gains N stack(s) of all Blessings when casting an Elixir Skill" (Belt base affix; gear affix batch A): a Blessing gain source,
+  // read by src/blessing-model.js (every Blessing while an Elixir Skill is on the board and cast).
+  elixirBlessings: /^Gains \d+ stack\(s\) of all Blessings when casting an Elixir Skill$/i,
   elixirOther: /Elixir Skill/i,
   // Storm's Command (core audit B8, src/storm-command.js): +X% additional Attack Damage per different Warcry cast recently.
   stormCommand: STORM_COMMAND_LINE,
@@ -110,10 +147,40 @@ const PATTERNS = {
   takenWithin: /^\+(\d+(?:\.\d+)?)% additional (Physical|Fire|Cold|Lightning|Erosion) Damage taken by (?:Nearby enemies|enemies in Proximity|enemies within (\d+(?:\.\d+)?) ?m)$|^\+(\d+(?:\.\d+)?)% additional damage taken by enemies within (\d+(?:\.\d+)?) ?m$/i,
   // "Every 0.25 s, +6% additional damage taken for enemies within 10 m. Stacks up to 5 times" (Impending): a stacking debuff.
   takenStacking: /^Every ([\d.]+) ?s, \+(\d+(?:\.\d+)?)% additional damage taken for enemies within (\d+(?:\.\d+)?) ?m\. Stacks up to (\d+) times?$/i,
+  // Legendary audit batch 1 (2026-10-22): an aura of resistance change around the player ("-35% Elemental Resistance for enemies
+  // within 20m", Pantheon's Elegy: Elementalist's Dirge, game buff 35115; "-40% Elemental and Erosion Resistance for enemies within
+  // 15m", The Coward's Counterfire: Corroded Heart; "+20% Elemental Resistance for enemies within 12m", Grasp of Truth, a penalty,
+  // affix 869075584 attr 5741 flat).
+  enemyResistanceWithin: /^([+-]\d+(?:\.\d+)?)% (Elemental and Erosion|Elemental|Fire|Cold|Lightning|Erosion) Resistance for enemies within (\d+(?:\.\d+)?) ?m$/i,
   // Chunk 3: "When a Spell hit inflicts Fire Damage, -15% Cold, Lightning, and Erosion Resistance for the target for 3 s".
   spellHitShred: /^When a Spell hit inflicts (Fire|Cold|Lightning|Erosion) Damage, -(\d+(?:\.\d+)?)% ((?:(?:Fire|Cold|Lightning|Erosion)(?:, | and |, and )?)+) Resistance for the target for (\d+(?:\.\d+)?) ?s$/i,
+  // Gear affix audit 2026-10-22 (Helmet base / Chest craft / TOWER Sequence lines): "When Minions deal damage, inflicts Cold Infiltration.
+  // Interval for each enemy: 1 s" — held while a modeled Minion deals damage, as the player's on-hit wording.
+  infiltrationMinions: /^When Minions deal damage, inflicts (Fire|Cold|Lightning) Infiltration(?:\. Interval for each enemy: [\d.]+ ?s)?$/i,
   lightningInfiltrationCrit: /^Inflicts Lightning Infiltration on Critical Strike$/i,
   coldInfiltrationFrozen: /^Inflicts Cold Infiltration when dealing damage to Frozen enemies$/i,
+  // Legendary audit batch 2 (2026-10-22). Varagon's Lament: Cold Infiltration at a Frostbite Rating threshold. Iced Drinker's Cage:
+  // Cage (TLIDB 10139: "+14% additional Cold Damage and -7% additional Damage Over Time taken. Stacks up to 4 stack(s) and lasts 5s
+  // (multiplies)") gained on Frostbite infliction once per second. Supreme Throne: Throne (10122: "+1% additional Channeled Skill
+  // Damage per stack. -1% additional damage taken, up to 10 stacks. Lasts for 4s") while channeling at max stacks. Thunder Branch /
+  // Shadow of Thunderlight's Touch: Combo Lightning (10111: "Reduces enemy Lightning Resistance by 10% on hit for 8s, dealing minor
+  // damage") from attacks. When Winter Comes: an Elemental Resistance shred per Barrage hit. Formation Breaker: damage taken near a
+  // Sentry.
+  coldInfiltrationFrostbiteRating: /^Inflicts Cold Infiltration when dealing damage to enemies with a Frostbite Rating of (\d+) or above$/i,
+  cageOnFrostbite: /^Gains 1 stack\(s\) of Cage when inflicting Frostbite ?\. Interval: ([\d.]+) ?s$/i,
+  throneAtMaxChannel: /^(?:Gains 1 Throne at max channeled stacks|Gains (\d+) stacks of Throne every [\d.]+ ?s when channeling), up to (\d+) stacks$/i,
+  comboLightningAttacks: /^(\d+(?:\.\d+)?) ?% for Attacks chance to trigger Combo Lightning$/i,
+  barrageHitShred: /^-(\d+(?:\.\d+)?)% Elemental Resistance for enemies when a Barrage Skill hits\. Stacks up to (\d+) time\(s\)\. Lasts for [\d.]+ ?s$/i,
+  sentryProximityTaken: /^\+(\d+(?:\.\d+)?)% additional damage taken by enemies in proximity to Sentries$/i,
+  solarRingTaken: /^Enemies within the (Solar Ring|Corona) take \+(\d+(?:\.\d+)?)% additional damage$/i,
+  solarRingNear: /^Enemies within the (?:Solar Ring|Corona) are considered to be within 3m of you$/i,
+  // Legendary audit batch 3. Chaos Abyss: damage taken per Wilt stack on the dummy (the Wilt model's steady stacks). Ralph's Dreadcrest:
+  // Laceration (TLIDB 10182: "+8% additional Physical Damage … This effect lasts 5s. Stacks up to 30 time(s)") per Trauma inflicted,
+  // and its Effect per Trauma stack on the dummy.
+  wiltStackTaken: /^Upon inflicting damage, \+(\d+(?:\.\d+)?)% additional damage taken \(multiplies\) for enemies for each stack of Wilt they have\. Stacks up to (\d+) time\(s\)$/i,
+  wiltDurationBelowStacks: /^\+(\d+(?:\.\d+)?)% additional Wilt Duration if enemies' Wilt stacks are less than (\d+)$/i,
+  lacerationOnTrauma: /^Gains 1 stack of Laceration when inflicting Trauma$/i,
+  lacerationEffectPerTrauma: /^\+(\d+(?:\.\d+)?)% Laceration Effect for each stack of Trauma$/i,
   // The same Elementalist node since the 2026-10-14 game patch (TLIDB tree text): Frostbitten instead of Frozen.
   coldInfiltrationFrostbitten: /^Inflicts Cold Infiltration when dealing damage to Frostbitten enemies$/i,
   // Broken Dream (2026-10-18): "Inflicts Cold Infiltration on enemies cursed by Biting Cold": held while that curse skill is on the dummy.
@@ -145,14 +212,21 @@ const PATTERNS = {
   // Hair-trigger (Shadowdancer core; game talent 41001200, trigger 1000060 "skill triggered", node 624 on attr 57191; core audit
   // batch B3): "+2% additional damage of a skill for every 7 points of Fervor Rating when the skill is triggered".
   hairTrigger: /^\+(\d+(?:\.\d+)?)% additional damage of a skill for every (\d+) points? of Fervor Rating when the skill is triggered$/i,
-  damagePerFervor: /^\+(\d+(?:\.\d+)?)% (additional )?(damage|Projectile Damage) (?:per|for every) (\d+)? ?(?:point of )?Fervor Rating$/i,
+  // "points of" too (Chaotic Ending's "+7% damage for every 10 points of Fervor Rating"; legendary audit batch 1, 2026-10-22).
+  damagePerFervor: /^\+(\d+(?:\.\d+)?)% (additional )?(damage|Projectile Damage) (?:per|for every) (\d+)? ?(?:points? of )?Fervor Rating$/i,
+  // Ranger's Dirge (Pantheon's Elegy; legendary audit batch 1): Aggression and its effect while Fervor is held.
+  fervorAggression: /^While having Fervor, gains Attack Aggression and Spell Aggression, and \+(\d+(?:\.\d+)?)% Attack Aggression and Spell Aggression Effect$/i,
   spellAggressionOnCast: /^Gains Spell Aggression when casting a Spell Skill$/i,
   // "+20% chance to gain a 4 s Thrill Barrier upon inflicting Elemental Ailments" (TLIDB keyword: Thrill Barrier +20% additional
   // Elemental Damage).
   thrillBarrier: /^\+(\d+(?:\.\d+)?)% chance to gain a (\d+(?:\.\d+)?) ?s Thrill Barrier upon inflicting Elemental Ailments$/i,
+  ashGain: /^Every (\d+) time\(s\) a Fire Skill is cast, gains Ash for (\d+(?:\.\d+)?) ?s$/i,
+  shadowHitSpeed: /^(\d+(?:\.\d+)?)% chance to gain \+(\d+(?:\.\d+)?)% Attack Speed for (\d+(?:\.\d+)?) ?s when Shadows hit enemies$/i,
   // Decimal chances read too (2026-10-15): a Judgment-linked slate scales "+25%" to "+35%" (+40%), and other values to decimals.
   paralysisCursed: /^Upon dealing damage to a Cursed target, there is a \+(\d+(?:\.\d+)?)% chance to Paralyze it$/i,
   paralysisRegain: /^When Regaining, inflicts Paralysis on enemies within \d+ ?m$/i,
+  // Bing – Blast Nova's Artificial Moon line (hero trait audit B12): Paralysis around the bombs, which are thrown at the dummy.
+  paralysisBombs: /^Continuously inflicts enemies within (\d+) ?m of the bomb with Paralysis and Slow$/i,
   paralysisEffect: /^\+(\d+(?:\.\d+)?)% inflicted Paralysis Effect(?: when holding a (Two|One)-Handed Weapon)?$/i,
   // Judgment (core audit batch B2): game affix 191779 writes attr 5719 mod 4 with the Critical Strike tag 5001010 and the enemy
   // state tag 4000180 (Paralyzed), the "+X% additional damage on Critical Strike" bucket (src/crit-only-lines.js), gated on
@@ -163,6 +237,8 @@ const PATTERNS = {
   // 2125501 [10, 50]: field 2007015 Max Frostbite Rating, attr 6201 Skill Area on the Cold Pulse tag 6100040; hero trait audit
   // B2): the rating part; the Skill Area part changes nothing on one dummy.
   maxFrostbite: /^\+(\d+) (?:to )?Max Frostbite Rating(?: and [+-]\d+(?:\.\d+)? ?% additional [\w ]+ Skill Area)?$/i,
+  // Prophet's Dirge (legendary audit batch 1): per damage type group dealt recently (MAX_FROSTBITE_PER_TYPE below).
+  maxFrostbitePerType: /^\+(\d+) to Max Frostbite Rating for each damage type among Physical\/Elemental\/Erosion dealt recently$/i,
   // Ice Puppet's Ice Cage (pactspirit outer node, game affix 404859; the affix carries no client-side effect rows).
   icePrison: /^Focus energy to create an ice prison Near yourself and the Pact Holder, which debuffs Frostbitten enemies inside every second and makes them take \+(\d+(?:\.\d+)?)% additional Cold Damage, up to (\d+) stacks, for (\d+(?:\.\d+)?) ?s\.?$/i,
   // Pact scripted-effects batch (2026-10-13): pact-spirit outer effects and kismets with their own clock (src/timed-effects.js).
@@ -181,6 +257,12 @@ const PATTERNS = {
   escalatingMaxDamage: /^(\d+(?:\.\d+)?)% of the bonuses and additional bonuses for Max Damage is also applied to Damage Over Time$/i,
   iceSoul: /^Inflicts Frostbite on nearby enemies$/i,
   holyMaiden: /^Inflicts Paralysis, Blind, Weaken, Slow, Taunt, and Frostbite on hit$/i,
+  // Discord of the Second Will (lunar-phase revived memory affix, game affix 500201500): one random crowd control effect per second
+  // when dealing damage, not Freeze or Knockback, an effect the target lacks first. Read like the Holy Maiden line above: the
+  // rotation keeps every type on the dummy (Paralysis, Weaken, Slow, Taunt, Blinding here; Frostbite in src/enemy-ailments.js).
+  // Revived affix census 2026-10-21 (provisional, open question revived-discord-rotation: durations other than Paralysis's 4 s are
+  // not sourced).
+  discordCrowdControl: /^When dealing damage, inflicts a random crowd control effect \(except Freeze and Knockback\), prioritizing effects that have not yet been inflicted\. Interval: ([\d.]+) ?s$/i,
   channelWeaken: /^For every (\d+) channeled stacks, inflicts Weaken on enemies within (\d+(?:\.\d+)?) ?m$/i,
   attackProjectileBlind: /^Blinds nearby enemies when using an Attack Projectile Skill$/i,
   valkyrieGain: /^Gains 1 stack of Valkyrie's Hymn for every (\d+(?:\.\d+)?)% Max Mana consumed$/i,
@@ -215,7 +297,11 @@ const PATTERNS = {
   frostbiteCapRaise: /^Frostbite Rating can exceed its upper limit, up to (\d+)$/i,
   frostbiteEffectAdditional: /^([+-]\d+(?:\.\d+)?)% additional Frostbite Effect$/i,
   deemedFrostbite: /^Each type of Crowd Control Effect, Ailment, and Curse afflicting an enemy is deemed to have (\d+) additional Frostbite Rating, up to (\d+)$/i,
-  numbedEffect: /^\+(\d+(?:\.\d+)?)% Numbed Effect$/i,
+  // Signed: the revived Numbed family's T3 prints "-10% Numbed Effect" (revived affix census 2026-10-21).
+  numbedEffect: /^([+-]\d+(?:\.\d+)?)% Numbed Effect$/i,
+  // The revived Numbed family (TLIDB Memory Revival; game affix 16227245): a Numbed source on Lightning Damage dealt
+  // (src/enemy-ailments.js adds the ailment; this entry badges the line).
+  numbedOnLightning: /^Every (\d+) time\(s\) Lightning Damage is dealt, inflicts (\d+) stack\(s\) of Numbed on enemies within (\d+(?:\.\d+)?) ?m nearby\. Interval: ([\d.]+) ?s$/i,
   numbedExtra: /^Inflicts (\d+) additional stack\(s\) of Numbed$/i,
   numbedThreshold: /thresholds for inflicting Numbed$/i,
   numbedBase: /^Changes the base effect of Numbed to: \+(\d+(?:\.\d+)?)% additional Lightning Damage taken$/i,
@@ -225,7 +311,16 @@ const PATTERNS = {
   deteriorationExtra: /^(\d+(?:\.\d+)?)% chance to inflict (\d+) additional stack\(s\) of Deterioration$/i,
   deteriorationIncreased: /^\+(\d+(?:\.\d+)?)% Deterioration Damage$/i,
   deteriorationAdditional: /^([+-]?\d+(?:\.\d+)?)% additional Deterioration Damage$/i,
-  deteriorationDuration: /^[+-]?\d+(?:\.\d+)?% (?:additional )?Deterioration Duration$/i
+  // The revived Erosion to Deterioration family (game affix 16346693: node 114 converts P1% of attr 54021 mod 3, the increased
+  // Erosion Damage bonus, into attr 63021 mod 3, the increased Deterioration Damage, at most P2).
+  deteriorationFromErosion: /^(\d+(?:\.\d+)?)% of the bonus to Erosion Damage also applied to Deterioration Damage, up to \+?(\d+(?:\.\d+)?)%$/i,
+  deteriorationDuration: /^[+-]?\d+(?:\.\d+)?% (?:additional )?Deterioration Duration$/i,
+  // Legendary audit batch 6 (2026-10-22): Blight, Hand of Malice, Ruinous Star (Obliterate: TLIDB keyword 10162).
+  deteriorationTakenPerStack: /^\+(\d+(?:\.\d+)?)% additional Deterioration Damage taken per stack of Deterioration the enemy has\. Stacks up to (\d+) time\(s\)$/i,
+  deteriorationCritRecently: /^([+-]?\d+(?:\.\d+)?)% additional Deterioration Damage if you have dealt a Critical Strike recently$/i,
+  deteriorationTicks: /^Deterioration no longer deals True Damage when it expires\. Instead, it deals True Damage once every (\d+(?:\.\d+)?) ?s while it lasts\. The damage gains a (\d+(?:\.\d+)?)% additional damage increment each time, up to (\d+) time\(s\)$/i,
+  obliterateEvery: /^Every (\d+(?:\.\d+)?) ?s, your next non-Channeled Main Skill is enhanced by Obliterate(?: Skills not enhanced by Obliterate cannot inflict Deterioration)?$/i,
+  obliterateOnly: /^Skills not enhanced by Obliterate cannot inflict Deterioration$/i
 };
 
 /** True when this module reads the line (src/line-effects.js leaves it alone). */
@@ -235,10 +330,17 @@ export function readByCombatStates(text) {
 
 /** The Frostbite Rating the build inflicts (10 base + "+N to Max Frostbite Rating", capped at 120, or at a "can exceed its
  * upper limit, up to N" line's N; provisional reading). */
-export function inflictedFrostbiteRating(modifierTexts = []) {
-  return Math.min(frostbiteRatingCap(modifierTexts), uncappedFrostbiteRating(modifierTexts));
+export function inflictedFrostbiteRating(modifierTexts = [], { typeGroups = 0 } = {}) {
+  return Math.min(frostbiteRatingCap(modifierTexts), uncappedFrostbiteRating(modifierTexts, typeGroups));
 }
-const uncappedFrostbiteRating = (modifierTexts) => BUFF_VALUES.frostbiteBaseRating + sum(modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text)).trim().match(PATTERNS.maxFrostbite); return match && !/Minion/i.test(line.text) ? num(match[1]) * (line.multiplier ?? 1) : 0; }));
+// Prophet's Dirge (Pantheon's Elegy; legendary audit batch 1): "+20 to Max Frostbite Rating for each damage type among Physical /
+// Elemental / Erosion dealt recently": +N per group the build deals (Physical, any of Fire / Cold / Lightning, Erosion); every hit
+// lands far more often than "recently" (4 s) runs out. Callers without the dealt types (the Freeze check of src/enemy-ailments.js)
+// pass none and count no group (provisional).
+export const MAX_FROSTBITE_PER_TYPE = PATTERNS.maxFrostbitePerType;
+export const damageTypeGroups = (types) => { const set = new Set(types || []); return (set.has("Physical") ? 1 : 0) + (["Fire", "Cold", "Lightning"].some((type) => set.has(type)) ? 1 : 0) + (set.has("Erosion") ? 1 : 0); };
+const perTypeFrostbiteRating = (modifierTexts, typeGroups) => typeGroups > 0 ? sum(modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text)).trim().match(MAX_FROSTBITE_PER_TYPE); return match && line.origin !== "derived" && !line.lineEffect ? num(match[1]) * (line.multiplier ?? 1) * typeGroups : 0; })) : 0;
+const uncappedFrostbiteRating = (modifierTexts, typeGroups = 0) => BUFF_VALUES.frostbiteBaseRating + perTypeFrostbiteRating(modifierTexts, typeGroups) + sum(modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text)).trim().match(PATTERNS.maxFrostbite); return match && !/Minion/i.test(line.text) ? num(match[1]) * (line.multiplier ?? 1) : 0; }));
 /** The Frostbite Rating cap: 120, or the highest "Frostbite Rating can exceed its upper limit, up to N" (Deepfreeze; B3). */
 export function frostbiteRatingCap(modifierTexts = []) {
   return Math.max(BUFF_VALUES.frostbiteMaxRating, ...modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text)).trim().match(PATTERNS.frostbiteCapRaise); return match ? num(match[1]) : 0; }));
@@ -367,12 +469,21 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.movementPerFervor)) entry(line, false, "Movement Speed", { status: "No DPS effect" });
 
   // ---- Aggression and Hasten ----
-  const aggressionEffect = (kind) => sum(find(PATTERNS.aggressionEffect).filter((line) => line.clean.match(PATTERNS.aggressionEffect)[2].toLowerCase() === kind).map((line) => num(line.clean.match(PATTERNS.aggressionEffect)[1]) * (line.multiplier ?? 1)));
-  const attackAggressionLines = find(PATTERNS.attackAggressionGain).filter((line) => !/when casting an Attack Skill/i.test(line.clean) || state.castsAttack);
+  // Ranger's Dirge (legendary audit batch 1): with Fervor held, both Aggressions and +X% to each one's effect (provisional: the
+  // Aggressions are buffs on the player, like "Has Attack Aggression").
+  const fervorAggressionLines = find(PATTERNS.fervorAggression);
+  const fervorAggressionEffect = hasFervor ? sum(fervorAggressionLines.map((line) => num(line.clean.match(PATTERNS.fervorAggression)[1]) * (line.multiplier ?? 1))) : 0;
+  for (const line of fervorAggressionLines) entry(line, hasFervor, hasFervor ? `Fervor held (${fervorRating} Rating): Attack and Spell Aggression held, +${fervorAggressionEffect}% Aggression Effect (provisional)` : "no Fervor source", { provisional: true });
+  const aggressionEffect = (kind) => fervorAggressionEffect + sum(find(PATTERNS.aggressionEffect).filter((line) => line.clean.match(PATTERNS.aggressionEffect)[2].toLowerCase() === kind).map((line) => num(line.clean.match(PATTERNS.aggressionEffect)[1]) * (line.multiplier ?? 1)));
+  const attackAggressionLines = [...find(PATTERNS.attackAggressionGain).filter((line) => !/when casting an Attack Skill/i.test(line.clean) || state.castsAttack), ...(hasFervor ? fervorAggressionLines : [])];
   // Kitty Express (pact scripted-effects batch): "Has Attack Aggression when reaching Max Feline Stimulant stacks" (game affix
   // 86855680) holds with the Feline Stimulant stacks at their cap (own buff, best case; resolved with the timed effects below).
   const felineOn = find(PATTERNS.felineGain).length > 0 && conditionOn("felineStimulant") && Number(state.mainUsesPerSecond) > 0;
-  const hasAttackAggression = attackAggressionLines.length > 0 || (felineOn && find(PATTERNS.felineAggression).length > 0);
+  // Gear affix batch A: Attack Aggression gained when Minions crit, held while a modeled Minion crits (uptime 1; provisional, as the
+  // Hasten line above).
+  const minionCritAggression = find(PATTERNS.attackAggressionMinionCrit);
+  for (const line of minionCritAggression) entry(line, Boolean(state.minionsCrit), state.minionsCrit ? "a modeled Minion crits: Attack Aggression refreshed (uptime 1; provisional)" : "no modeled Minion", { provisional: true, bodies: state.minionsCrit ? ["Attack Damage", "Attack Speed"].map((stat) => `+${round(BUFF_VALUES.attackAggression.percent * (1 + aggressionEffect("attack") / 100))}% additional ${stat}`) : [] });
+  const hasAttackAggression = attackAggressionLines.length > 0 || (felineOn && find(PATTERNS.felineAggression).length > 0) || (minionCritAggression.length > 0 && Boolean(state.minionsCrit));
   for (const line of find(PATTERNS.attackAggressionGain)) entry(line, attackAggressionLines.includes(line), attackAggressionLines.includes(line) ? "Attack Aggression held (gained by the build's Attack skill / always)" : "no active Attack skill");
   for (const line of find(PATTERNS.attackAggressionDefeat)) entry(line, false, "the training dummy never dies", { status: "Not on dummy" });
   if (hasAttackAggression) {
@@ -381,10 +492,12 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     derive(`+${value}% additional Attack Speed`, BUFF_VALUES.attackAggression.source, "Attack Aggression held");
   }
   // "Gains Spell Aggression when casting a Spell Skill" (residual batch A-3): held while the build casts a Spell on the dummy.
-  const spellAggressionLines = [...find(PATTERNS.spellAggressionGain), ...find(PATTERNS.spellAggressionOnCast).filter(() => state.dealsSpellDamage)];
+  const spellAggressionLines = [...find(PATTERNS.spellAggressionGain), ...find(PATTERNS.spellAggressionOnCast).filter(() => state.dealsSpellDamage), ...find(PATTERNS.spellAggressionMinionSpellCrit).filter(() => state.minionSpellsCrit), ...(hasFervor ? fervorAggressionLines : [])];
   for (const line of find(PATTERNS.spellAggressionOnCast).filter(() => !state.dealsSpellDamage)) entry(line, false, "no Spell Skill is cast on the dummy");
+  for (const line of find(PATTERNS.spellAggressionMinionSpellCrit).filter(() => !state.minionSpellsCrit)) entry(line, false, "no modeled Minion casts a Spell");
   const hasSpellAggression = spellAggressionLines.length > 0;
-  for (const line of spellAggressionLines) entry(line, true, "Spell Aggression held");
+  // The Minion-crit line carries the buff as its bodies, so its badge follows whether a player Spell hit takes it (gear affix batch A).
+  for (const line of spellAggressionLines.filter((item) => !fervorAggressionLines.includes(item))) entry(line, true, "Spell Aggression held", PATTERNS.spellAggressionMinionSpellCrit.test(line.clean) ? { provisional: true, bodies: ["Spell Damage", "Cast Speed"].map((stat) => `+${round(BUFF_VALUES.spellAggression.percent * (1 + aggressionEffect("spell") / 100))}% additional ${stat}`) } : undefined);
   const perCast = find(PATTERNS.spellAggressionPerCast);
   const perCastEffect = hasSpellAggression && state.mainIsSpell ? sum(perCast.map((line) => { const match = line.clean.match(PATTERNS.spellAggressionPerCast); return num(match[1]) * num(match[2]) * (line.multiplier ?? 1); })) : 0;
   for (const line of perCast) entry(line, perCastEffect > 0, perCastEffect > 0 ? "the Main Spell Skill is cast continuously: stacks held at their cap (provisional)" : "no Spell Aggression or no Main Spell Skill", { provisional: true });
@@ -409,6 +522,46 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     derive(`+${value}% additional Attack Speed`, BUFF_VALUES.hasten.source, "Hasten held");
     derive(`+${value}% additional Cast Speed`, BUFF_VALUES.hasten.source, "Hasten held");
   }
+  // "Minions have Hasten": the buff's own value on the Minions (the player's "Hasten Effect" lines scale the player's Hasten only;
+  // provisional), read by src/minion-damage-model.js as Minion Attack and Cast Speed.
+  for (const line of find(PATTERNS.minionHasten)) {
+    const active = Boolean(state.minionsCrit);
+    entry(line, active, active ? "the modeled Minions hold Hasten" : "no modeled Minion", { provisional: true });
+    if (active) derive(`+${BUFF_VALUES.hasten.percent}% additional Minion Attack and Cast Speed`, BUFF_VALUES.hasten.source, "Minions have Hasten", true);
+  }
+  // ---- Profane (gear affix batch A; game buff 3492) ----
+  // "Has Profane" holds always; "Gains Profane when inflicting Wilt or Deterioration" while the dummy carries Wilt or Deterioration;
+  // "Minions have Profane" while a modeled Minion is out. Values: +7% additional Erosion Damage, +7% additional Wilt and Deterioration
+  // Duration (game affixes 319376192, 334360768, 491988896 on the buff).
+  const profaneLines = find(PATTERNS.profane);
+  const profaneOnWilt = find(PATTERNS.profaneOnWilt);
+  const wiltOnDummy = (state.enemyAilments || []).some((name) => ["Wilt", "Deterioration"].includes(name));
+  for (const line of profaneOnWilt) entry(line, wiltOnDummy, wiltOnDummy ? "the build inflicts Wilt or Deterioration: Profane refreshed (uptime 1; provisional)" : "the build inflicts no Wilt or Deterioration", { provisional: true });
+  const hasProfane = profaneLines.length > 0 || (profaneOnWilt.length > 0 && wiltOnDummy);
+  const minionsProfane = profaneLines.some((line) => line.clean.match(PATTERNS.profane)[1]) && Boolean(state.minionsCrit);
+  for (const line of profaneLines) entry(line, true, `Profane held${line.clean.match(PATTERNS.profane)[1] ? (state.minionsCrit ? "; the modeled Minions hold it too" : "; no modeled Minion") : ""}`);
+  if (hasProfane) {
+    derive(`+${BUFF_VALUES.profane.percent}% additional Erosion Damage`, BUFF_VALUES.profane.source, "Profane held");
+    derive(`+${BUFF_VALUES.profane.percent}% additional Wilt Duration`, BUFF_VALUES.profane.source, "Profane held");
+  }
+  // ---- Ferocity and God of War's Blessing (gear affix batch D) ----
+  // "Gains Ferocity when dealing Physical Damage" (game affix 16567469: on dealing Physical damage, buff 3493 for 4 s): held while
+  // the build deals Physical Damage on the dummy (uptime 1; provisional). Its -3% damage taken is defence; "Physical Damage cannot be
+  // converted" would undo a partial conversion and is not modeled (a fully converting build deals no Physical, so never gains it).
+  const ferocityLines = find(PATTERNS.ferocityOnPhysical);
+  const hasFerocity = ferocityLines.length > 0 && Boolean(state.dealsPhysicalDamage);
+  const ferocityBody = `+${BUFF_VALUES.ferocity.percent}% additional Physical Damage`;
+  for (const line of ferocityLines) entry(line, hasFerocity, hasFerocity ? "the build deals Physical Damage on the dummy: Ferocity (4 s) refreshed (uptime 1; provisional); its -3% damage taken is defence and \"Physical Damage cannot be converted\" is not modeled" : "the build deals no Physical Damage", { provisional: true, bodies: [ferocityBody] });
+  if (hasFerocity) derive(ferocityBody, BUFF_VALUES.ferocity.source, "Ferocity held", true);
+  // "Gains N stack(s) of God of War's Blessing" (game affix 11688589: buff 3, permanent stacks): +0.5 Projectile Quantity per stack on
+  // Projectile Skills, read as whole projectiles (rounded down; provisional); Movement Speed and Skill Area have no DPS effect on one
+  // dummy; the fourth effect is unidentified (Partly modeled).
+  const godOfWarLines = find(PATTERNS.godOfWarBlessing);
+  const godOfWarStacks = godOfWarLines.reduce((total, line) => total + num(line.clean.match(PATTERNS.godOfWarBlessing)[1]) * (line.multiplier ?? 1), 0);
+  const godOfWarQuantity = Math.floor(godOfWarStacks * BUFF_VALUES.godOfWar.projectileQuantityPerStack + 1e-9);
+  for (const line of godOfWarLines) entry(line, true, `${godOfWarStacks} permanent stack(s): +${godOfWarQuantity} Projectile Quantity on Projectile Skills (0.5 per stack, whole projectiles; provisional); +10% Movement Speed and +10% Skill Area per stack have no DPS effect; the buff's fourth effect (game node 403, "percent 2" per stack) is not identified`, { provisional: true, status: "Partly modeled", bodies: godOfWarQuantity ? [`+${godOfWarQuantity} Projectile Quantity`] : [] });
+  if (godOfWarQuantity) derive(`+${godOfWarQuantity} Projectile Quantity`, BUFF_VALUES.godOfWar.source, `${godOfWarStacks} stacks × 0.5`, true);
+  if (minionsProfane) derive(`+${BUFF_VALUES.profane.percent}% additional Minion Erosion Damage`, BUFF_VALUES.profane.source, "Minions have Profane", true);
 
   // ---- Thrill Barrier (residual batch A-3) ----
   // Uptime = 1 − (1 − chance)^(inflictions in one duration), with one Elemental Ailment infliction per main-skill use (the
@@ -423,6 +576,38 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     const value = round(BUFF_VALUES.thrillBarrier * uptime);
     entry(line, uptime > 0, uptime > 0 ? `Thrill Barrier uptime ${round(uptime * 100)}% (${round(chance * 100)}% per infliction, ${round(rate)} inflictions/s from the main skill's use rate, ${seconds} s; provisional)` : elementalOnDummy ? "no main-skill use rate" : "the build inflicts no Elemental Ailment", { provisional: true, bodies: [`+${value}% additional Elemental Damage`] });
     if (value > 0) derive(`+${value}% additional Elemental Damage`, line.source, `Thrill Barrier at ${round(uptime * 100)}% uptime`, true);
+  }
+
+  // ---- Ash (legendary audit batch 7; TLIDB keyword 10147: "Cannot inflict Critical Strike. +30% additional Fire Damage and +30%
+  // Movement Speed. Unable to refresh") ----
+  // Hot Night's Embrace / Illusory Chimera: "Every N time(s) a Fire Skill is cast, gains Ash for D s". The casts are the Main Skill's
+  // uses while a Fire skill is active; a gain while Ash is up is lost (unable to refresh), so the uptime is D ÷ (the first multiple of
+  // the gain period that reaches D). Time-averaged (provisional): +30% × uptime additional Fire Damage and the crit rating × (1 −
+  // uptime), the second read as "-X% additional Critical Strike Rating".
+  for (const line of find(PATTERNS.ashGain)) {
+    const [, every, seconds] = line.clean.match(PATTERNS.ashGain);
+    // The hit pass's measured Fire casts per second (src/planner.js facts.fireCastsPerSecond); the early Main Skill rate meanwhile.
+    const measured = Number.isFinite(state.fireCastsPerSecond) ? state.fireCastsPerSecond : null;
+    const rate = Math.max(0, measured ?? (Number(state.mainUsesPerSecond) || 0));
+    const fire = measured != null ? measured > 0 : (state.activeTags || new Set()).has("Fire");
+    const period = rate > 0 ? num(every) / rate : Infinity;
+    const duration = num(seconds);
+    const uptime = fire && Number.isFinite(period) ? duration / (Math.max(1, Math.ceil(duration / period - 1e-9)) * period) : 0;
+    const value = round(BUFF_VALUES.ash * uptime), critLoss = round(100 * uptime);
+    entry(line, uptime > 0, uptime > 0 ? `Ash uptime ${round(uptime * 100)}% (one gain per ${every} Fire casts at ${round(rate)} casts/s, ${duration} s, unable to refresh): +${value}% additional Fire Damage and no crits for that share (time-averaged; provisional)` : fire ? "no Main Skill use rate" : "no active Fire skill", { provisional: true, bodies: uptime > 0 ? [`+${value}% additional Fire Damage`, `-${critLoss}% additional Critical Strike Rating`] : [] });
+    if (uptime > 0) { derive(`+${value}% additional Fire Damage`, line.source, `Ash at ${round(uptime * 100)}% uptime`, true); derive(`-${critLoss}% additional Critical Strike Rating`, line.source, `Ash at ${round(uptime * 100)}% uptime: no crits`, true); }
+  }
+
+  // ---- Frantic Shadow (legendary audit batch 7): "N% chance to gain +X% Attack Speed for T s when Shadows hit enemies" ----
+  // Uptime = 1 − (1 − chance)^(Shadow hits in T s), with the hit pass's measured Shadow hits per second (src/planner.js
+  // facts.shadowHitsPerSecond); the three rolls are separate buffs, each time-averaged (provisional).
+  for (const line of find(PATTERNS.shadowHitSpeed)) {
+    const [, chance, value, seconds] = line.clean.match(PATTERNS.shadowHitSpeed);
+    const rate = Number.isFinite(state.shadowHitsPerSecond) ? state.shadowHitsPerSecond : null;
+    const uptime = rate > 0 ? 1 - (1 - Math.min(1, num(chance) * (line.multiplier ?? 1) / 100)) ** (rate * num(seconds)) : 0;
+    const speed = round(num(value) * uptime);
+    entry(line, uptime > 0, uptime > 0 ? `uptime ${round(uptime * 100)}% (${chance}% per Shadow hit, ${round(rate)} Shadow hits/s, ${seconds} s): +${speed}% Attack Speed time-averaged (provisional)` : rate === 0 ? "no Shadow hits the dummy" : "the Shadow hit rate is not measured yet", { provisional: true, bodies: uptime > 0 ? [`+${speed}% Attack Speed`] : [] });
+    if (uptime > 0) derive(`+${speed}% Attack Speed`, line.source, `Frantic Shadow at ${round(uptime * 100)}% uptime`, true);
   }
 
   // ---- Fortitude (defence) and per-stack damage ----
@@ -475,8 +660,30 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     else if (!elixirs.setups.some((setup) => setup.castsPerSecond > 0)) entry(line, false, `${elixirStateText}: no Elixir Skill is cast on the dummy`, { status: "Not on dummy" });
     else { const gain = miraculousGainState(elixirs, [line]); entry(line, Boolean(gain), gain ? gain.text : `${elixirStateText}: no Elixir cast`, { provisional: true, status: gain ? "Partly modeled" : "Not on dummy" }); }
   }
-  const elixirRead = [PATTERNS.elixirActive, PATTERNS.elixirProgress, PATTERNS.elixirEffect, PATTERNS.elixirAdditionalEffect, PATTERNS.elixirDuration, PATTERNS.tailoredRemedy, PATTERNS.restorationKept, PATTERNS.miraculousGain];
-  for (const line of find(PATTERNS.elixirActive)) entry(line, false, hasElixir ? "lines that need an active Elixir Skill are not read (the Elixir model reads only the Elixir Effects; core audit B8)" : "no Elixir Skill", { status: hasElixir ? "Not modeled" : "Inactive" });
+  const elixirRead = [PATTERNS.elixirActive, PATTERNS.elixirProgress, PATTERNS.elixirEffect, PATTERNS.elixirAdditionalEffect, PATTERNS.elixirDuration, PATTERNS.tailoredRemedy, PATTERNS.restorationKept, PATTERNS.miraculousGain, PATTERNS.elixirBlessings, PATTERNS.elixirCastRecently, PATTERNS.elixirPerCastRecently];
+  for (const line of find(PATTERNS.elixirBlessings)) entry(line, hasElixir, hasElixir ? "an Elixir Skill on the skill board is cast during the fight: a gain source of every Blessing (src/blessing-model.js; provisional)" : "no Elixir Skill on the skill board", { provisional: true });
+  // Legendary audit batch 1 (2026-10-22): lines that hold while an Elixir Skill is active, or after one was cast recently (4 s, game
+  // hyperlink 103), read from the Elixir model's casts and uptimes. "While active": the share of time some Elixir is up, 1 − Π(1 −
+  // each Elixir's active share) (independent casts: provisional); "cast recently": min(1, casts per second × 4 s) (regular casts);
+  // "for every Elixir Skill cast recently, stacks up to N": min(N, casts per second × 4 s). Each body is time-averaged (its value ×
+  // the share), as the Elixir Effects are (src/elixir-model.js). A body with no linear value ("Damage dealt is guaranteed to inflict
+  // Wilt", "+N% Elixir Skill Effect for every Elixir Skill cast recently") stays unread.
+  const elixirShare = elixirs?.setups?.length ? 1 - elixirs.setups.reduce((product, setup) => product * (1 - Math.max(0, Math.min(1, setup.activeShare ?? setup.uptime ?? 0))), 1) : 0;
+  const elixirCastsPerSecond = sum((elixirs?.setups || []).map((setup) => Number(setup.castsPerSecond) || 0));
+  const elixirRecent = Math.min(1, elixirCastsPerSecond * RECENT_SECONDS);
+  const elixirBodies2 = (body) => { const both = body.match(/^([+-]\d+(?:\.\d+)?)% (additional )?damage (?:and Minion Damage|for you and your Minions)$/i); return both ? [`${both[1]}% ${both[2] || ""}damage`, `${both[1]}% ${both[2] || ""}Minion Damage`] : [body]; };
+  const elixirTimed = (line, body, factor, how) => {
+    if (!hasElixir || !elixirs?.setups?.length) return entry(line, false, "no Elixir Skill on the skill board", { status: "Inactive" });
+    if (!(factor > 0)) return entry(line, false, `${elixirStateText}: no Elixir Skill is cast on the dummy (the dummy is never defeated, so only Charging Progress per second recharges one)`, { status: "Not on dummy" });
+    if (/Elixir Skill Effect|guaranteed to inflict/i.test(body)) return entry(line, false, `${elixirStateText}: this body has no time-averaged reader (provisional)`, { status: "Not modeled" });
+    const bodies = elixirBodies2(body).map((item) => scaleLeadingNumber(item, factor)).filter(Boolean);
+    if (!bodies.length) return entry(line, false, `${elixirStateText}: the body has no value to average`, { status: "Not modeled" });
+    entry(line, true, `${how} → ×${round(factor)} (time-averaged; provisional)`, { provisional: true, bodies });
+    for (const text of bodies) derive(text, line.source, how, true);
+  };
+  for (const line of find(PATTERNS.elixirActive)) elixirTimed(line, line.clean.match(PATTERNS.elixirActive)[1], elixirShare, `an Elixir Skill is active ${round(elixirShare * 100)}% of the time (${elixirStateText})`);
+  for (const line of find(PATTERNS.elixirCastRecently)) elixirTimed(line, line.clean.match(PATTERNS.elixirCastRecently)[1], elixirRecent, `an Elixir Skill cast in the last ${RECENT_SECONDS} s ${round(elixirRecent * 100)}% of the time (${round(elixirCastsPerSecond)} casts/s)`);
+  for (const line of find(PATTERNS.elixirPerCastRecently)) { const match = line.clean.match(PATTERNS.elixirPerCastRecently); const stacks = Math.min(num(match[2]), elixirCastsPerSecond * RECENT_SECONDS); elixirTimed(line, match[1], stacks, `${round(stacks)} Elixir casts in the last ${RECENT_SECONDS} s (${round(elixirCastsPerSecond)} casts/s, up to ${match[2]})`); }
   for (const line of find(PATTERNS.elixirOther).filter((line) => !elixirRead.some((re) => re.test(line.clean)))) entry(line, false, "Elixir Skill effects are not modeled", { status: hasElixir ? "Not modeled" : "Inactive" });
 
   // ---- Storm's Command (core audit B8, src/storm-command.js) ----
@@ -549,6 +756,19 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
   // Resistance shred on a Spell hit of a type (chunk 3): held while a Spell hit deals that type (uptime 1: a modeled Spell
   // hits far more often than once per 3 s; provisional). The reduction is applied as an equal penetration (the dummy's
   // resistance is 30%, so the two coincide there; their difference below 0% resistance is not modeled: provisional).
+  // Resistance change on enemies within a radius of the player (legendary audit batch 1): held while the dummy stands inside it
+  // (within 10 m in the near case; the Distant alternative stands farther), applied as penetration of the opposite sign, as the
+  // Spell-hit shred below (provisional, open question legendary-enemy-resistance-radius).
+  for (const line of find(PATTERNS.enemyResistanceWithin)) {
+    const match = line.clean.match(PATTERNS.enemyResistanceWithin);
+    const value = round(num(match[1]) * (line.multiplier ?? 1));
+    const radius = num(match[3]);
+    const active = explicitRadiusHolds(radius, state.nearTarget) && value !== 0;
+    const types = /and Erosion/i.test(match[2]) ? ["Elemental", "Erosion"] : [match[2][0].toUpperCase() + match[2].slice(1).toLowerCase()];
+    const bodies = types.map((type) => `${-value >= 0 ? "+" : ""}${round(-value)}% ${type} Resistance Penetration`);
+    entry(line, active, active ? `the dummy stands within ${radius} m (${state.nearTarget === false ? `Distant alternative, ${DISTANT_STANDING_METERS} m` : "near case: within 10 m"}): ${value > 0 ? "+" : ""}${value}% ${match[2]} Resistance held on it, applied as ${bodies.join(" and ")} (provisional)` : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away, outside ${radius} m`, { provisional: true, bodies });
+    if (active) for (const body of bodies) derive(body, line.source, `enemies within ${radius} m: ${value > 0 ? "+" : ""}${value}% ${match[2]} Resistance (provisional)`, true);
+  }
   for (const line of find(PATTERNS.spellHitShred)) {
     const match = line.clean.match(PATTERNS.spellHitShred);
     const type = match[1][0].toUpperCase() + match[1].slice(1).toLowerCase();
@@ -567,9 +787,18 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     if (active) debuffs.infiltration.add(typeWord);
     entry(line, active, active ? `the build hits the dummy: ${typeWord} Infiltration held (uptime 1, provisional)` : "no modeled hit", { provisional: true, bodies: [`+${BUFF_VALUES.infiltration}% additional ${typeWord} Damage taken`] });
   }
+  for (const line of find(PATTERNS.infiltrationMinions)) {
+    const type = line.clean.match(PATTERNS.infiltrationMinions)[1];
+    const typeWord = type[0].toUpperCase() + type.slice(1).toLowerCase();
+    const active = Boolean(state.minionsCrit);
+    if (active) debuffs.infiltration.add(typeWord);
+    entry(line, active, active ? `a modeled Minion deals damage to the dummy: ${typeWord} Infiltration held (uptime 1, provisional)` : "no modeled Minion", { provisional: true, bodies: [`+${BUFF_VALUES.infiltration}% additional ${typeWord} Damage taken`] });
+  }
   for (const line of find(PATTERNS.lightningInfiltrationCrit)) { const active = Boolean(state.canCrit) && dealt.has("Lightning"); if (active) debuffs.infiltration.add("Lightning"); entry(line, active, active ? "the build crits with Lightning Damage: Lightning Infiltration held (uptime 1, provisional)" : "no crit with Lightning Damage", { provisional: true }); }
   const frostbitten = (state.enemyAilments || []).includes("Frostbite");
-  debuffs.frostbiteRating = frostbitten ? inflictedFrostbiteRating(modifierTexts) : 0;
+  const frostbiteTypeGroups = damageTypeGroups(state.dealtDamageTypes || state.dealtTypes);
+  debuffs.frostbiteRating = frostbitten ? inflictedFrostbiteRating(modifierTexts, { typeGroups: frostbiteTypeGroups }) : 0;
+  for (const line of find(MAX_FROSTBITE_PER_TYPE)) { const value = num(line.clean.match(MAX_FROSTBITE_PER_TYPE)[1]) * (line.multiplier ?? 1); const active = frostbitten && frostbiteTypeGroups > 0; entry(line, active, !frostbitten ? "the build inflicts no Frostbite" : `${frostbiteTypeGroups} damage type group${frostbiteTypeGroups === 1 ? "" : "s"} dealt (Physical / Elemental / Erosion): +${round(value * frostbiteTypeGroups)} Max Frostbite Rating → Frostbite Rating ${debuffs.frostbiteRating} (max 120; provisional)`, { provisional: true }); }
   // user-confirmed 2026-10-18: Frozen at 100 or higher (TLIDB says "more than 100").
   debuffs.frozen = frostbitten && debuffs.frostbiteRating >= BUFF_VALUES.frostbiteFreezeAt;
   // First Flake of Strange Snow (B3): deemed Frostbite Rating per type of Crowd Control Effect, Ailment and Curse on the dummy.
@@ -597,10 +826,89 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     for (const line of deemedLines) entry(line, Boolean(deemedFrostbite), deemedFrostbite ? `${deemedFrostbite.types.length} type${deemedFrostbite.types.length === 1 ? "" : "s"} on the dummy (${deemedFrostbite.types.join(", ")}): +${deemedFrostbite.bonus} deemed Frostbite Rating (${deemedFrostbite.per} each, up to ${deemedFrostbite.cap}), ${debuffs.frostbiteRating} in all${debuffs.frozen ? ", Frozen" : ""} (provisional: on top of the inflicted rating, counts for Freeze)` : "the dummy is not Frostbitten", { provisional: true });
   }
   for (const line of find(PATTERNS.frostbiteCapRaise)) {
-    const raw = uncappedFrostbiteRating(modifierTexts), moves = frostbitten && raw > BUFF_VALUES.frostbiteMaxRating;
+    const raw = uncappedFrostbiteRating(modifierTexts, frostbiteTypeGroups), moves = frostbitten && raw > BUFF_VALUES.frostbiteMaxRating;
     entry(line, moves, !frostbitten ? "the build inflicts no Frostbite" : moves ? `Frostbite Rating ${Math.min(raw, frostbiteRatingCap(modifierTexts))} past the 120 cap (up to ${frostbiteRatingCap(modifierTexts)})` : `the inflicted Frostbite Rating (${raw}) stays under the 120 cap, so the raised cap changes nothing`);
   }
   for (const line of find(PATTERNS.coldInfiltrationFrozen)) { if (debuffs.frozen) debuffs.infiltration.add("Cold"); entry(line, debuffs.frozen, debuffs.frozen ? "the dummy is Frozen" : "the dummy is not Frozen (Frostbite Rating < 100)"); }
+  // ---- Legendary audit batch 2 (keyword values from the TLIDB hover cards, research/tlidb-ss14-2026-10-22/legendary-keyword-hovers/) ----
+  for (const line of find(PATTERNS.coldInfiltrationFrostbiteRating)) {
+    const need = num(line.clean.match(PATTERNS.coldInfiltrationFrostbiteRating)[1]);
+    const active = frostbitten && debuffs.frostbiteRating >= need && Boolean(state.anyHit);
+    if (active) debuffs.infiltration.add("Cold");
+    entry(line, active, !frostbitten ? "the build inflicts no Frostbite" : active ? `the dummy's Frostbite Rating ${debuffs.frostbiteRating} ≥ ${need}: Cold Infiltration held (uptime 1, provisional)` : `the dummy's Frostbite Rating ${debuffs.frostbiteRating} < ${need}`, { provisional: true, bodies: [`+${BUFF_VALUES.infiltration}% additional Cold Damage taken`] });
+  }
+  for (const line of find(PATTERNS.cageOnFrostbite)) {
+    const interval = num(line.clean.match(PATTERNS.cageOnFrostbite)[1]);
+    const stacks = frostbitten ? Math.min(4, Math.floor(5 / Math.max(1e-9, interval))) : 0;
+    const value = round(((1 + 14 / 100) ** stacks - 1) * 100);
+    entry(line, stacks > 0, stacks > 0 ? `Frostbite inflicted on every hit: a Cage stack every ${interval} s, each lasting 5 s: ${stacks} stacks held (max 4), +14% additional Cold Damage each (multiplies; own buff pre-built, provisional)` : "the build inflicts no Frostbite", { provisional: true, bodies: stacks ? [`+${value}% additional Cold Damage`] : [] });
+    if (stacks > 0) derive(`+${value}% additional Cold Damage`, line.source, `${stacks} Cage stacks`, true);
+  }
+  for (const line of find(PATTERNS.throneAtMaxChannel)) {
+    const cap = num(line.clean.match(PATTERNS.throneAtMaxChannel)[2]);
+    const active = Boolean(state.channeledMain) && state.prebuiltSelfBuffs !== false;
+    entry(line, active, active ? `channeling the Main Skill at max stacks: ${cap} Throne stacks held (own buff pre-built; +1% additional Channeled Skill Damage per stack; provisional)` : state.channeledMain ? "own buffs start cold (condition prebuiltSelfBuffs off)" : "no channeled Main Skill", { provisional: true, bodies: active ? [`+${cap}% additional Channeled Skill Damage`] : [] });
+    if (active) derive(`+${cap}% additional Channeled Skill Damage`, line.source, `${cap} Throne stacks`, true);
+  }
+  for (const line of find(PATTERNS.comboLightningAttacks)) {
+    const active = Boolean(state.castsAttack) && Boolean(state.anyHit);
+    entry(line, active, active ? "an Attack hits the dummy far more often than Combo Lightning's 8 s: -10% Lightning Resistance held, applied as +10% Lightning Resistance Penetration (its minor damage not modeled; provisional)" : "no Attack Skill hits the dummy", { provisional: true, bodies: active ? ["+10% Lightning Resistance Penetration"] : [] });
+    if (active) derive("+10% Lightning Resistance Penetration", line.source, "Combo Lightning held (provisional)", true);
+  }
+  for (const line of find(PATTERNS.barrageHitShred)) {
+    const [, per, cap] = line.clean.match(PATTERNS.barrageHitShred);
+    const active = Boolean(state.anyHit) && (state.activeTags || new Set()).has("Barrage");
+    const value = round(num(per) * num(cap));
+    entry(line, active, active ? `a Barrage Skill hits the dummy: ${cap} stacks held, -${value}% Elemental Resistance applied as +${value}% Elemental Resistance Penetration (provisional)` : "no Barrage Skill hits the dummy", { provisional: true, bodies: active ? [`+${value}% Elemental Resistance Penetration`] : [] });
+    if (active) derive(`+${value}% Elemental Resistance Penetration`, line.source, `${cap} stacks (Barrage hits)`, true);
+  }
+  // Wilt stacks on the dummy: the Wilt model's steady stacks from the measuring pass (the cap meanwhile, as Open Wounds' Trauma).
+  const wiltInflicted = (state.enemyAilments || []).includes("Wilt");
+  for (const line of find(PATTERNS.wiltStackTaken)) {
+    const [, per, cap] = line.clean.match(PATTERNS.wiltStackTaken);
+    const measured = Number.isFinite(state.wilt?.steadyActiveStacks) ? state.wilt.steadyActiveStacks : null;
+    const stacks = wiltInflicted ? Math.min(num(cap), measured ?? num(cap)) : 0;
+    const value = round(((1 + num(per) * (line.multiplier ?? 1) / 100) ** stacks - 1) * 100);
+    entry(line, value > 0, !wiltInflicted ? "the build inflicts no Wilt" : `${round(stacks)} Wilt stacks on the dummy (${measured != null ? "the Wilt model's steady stacks" : "held at the cap until the Wilt model measures them"}): +${per}% additional damage taken per stack, multiplying (provisional)`, { provisional: true, enemyDebuff: true, bodies: value > 0 ? [`+${value}% additional damage taken`] : [] });
+    if (value > 0) derive(`+${value}% additional damage taken`, line.source, `${round(stacks)} Wilt stacks on the dummy`, true);
+  }
+  for (const line of find(PATTERNS.wiltDurationBelowStacks)) {
+    const need = num(line.clean.match(PATTERNS.wiltDurationBelowStacks)[2]);
+    const stacks = Number.isFinite(state.wilt?.steadyActiveStacks) ? state.wilt.steadyActiveStacks : null;
+    const active = wiltInflicted && stacks != null && stacks < need;
+    entry(line, active, !wiltInflicted ? "the build inflicts no Wilt" : stacks == null ? "the Wilt stacks on the dummy are not measured" : active ? `${round(stacks)} Wilt stacks < ${need} (steady): the duration bonus holds; its feedback on the stacks is not iterated (provisional)` : `${round(stacks)} Wilt stacks ≥ ${need}`, { provisional: true, bodies: active ? [`+${line.clean.match(PATTERNS.wiltDurationBelowStacks)[1]}% additional Wilt Duration`] : [] });
+    if (active) derive(`+${line.clean.match(PATTERNS.wiltDurationBelowStacks)[1]}% additional Wilt Duration`, line.source, `${round(stacks)} Wilt stacks < ${need}`, true);
+  }
+  // Laceration: stacks = min(30, Trauma stacks inflicted per second × 5 s) (the cap until the Trauma model measures the rate); each
+  // +8% additional Physical Damage, summed (provisional), × (1 + Laceration Effect: +X% per Trauma stack on the dummy). Its self-damage
+  // (50 True Damage per second, Mana and Energy Shield removal) is defence.
+  for (const line of find(PATTERNS.lacerationOnTrauma)) {
+    const inflicted = (state.enemyAilments || []).includes("Trauma");
+    const rate = Number(state.trauma?.stackRate);
+    const stacks = !inflicted ? 0 : Number.isFinite(rate) && rate > 0 ? Math.min(30, rate * 5) : 30;
+    const traumaStacks = !inflicted ? 0 : Number.isFinite(state.trauma?.steadyActiveStacks) ? state.trauma.steadyActiveStacks : Math.max(1, Number(state.trauma?.stackLimit) || 1);
+    const effect = sum(find(PATTERNS.lacerationEffectPerTrauma).map((item) => num(item.clean.match(PATTERNS.lacerationEffectPerTrauma)[1]) * (item.multiplier ?? 1))) * traumaStacks;
+    const value = round(8 * stacks * (1 + effect / 100));
+    entry(line, value > 0, !inflicted ? "the build inflicts no Trauma" : `${round(stacks)} Laceration stacks (Trauma inflicted ${Number.isFinite(rate) && rate > 0 ? `${round(rate)}/s × 5 s` : "often enough to hold the cap"}, max 30) × 8% additional Physical Damage${effect ? ` × (1 + ${round(effect)}% Laceration Effect from ${round(traumaStacks)} Trauma stacks)` : ""} (summed; provisional)`, { provisional: true, bodies: value > 0 ? [`+${value}% additional Physical Damage`] : [] });
+    if (value > 0) derive(`+${value}% additional Physical Damage`, line.source, `${round(stacks)} Laceration stacks`, true);
+  }
+  for (const line of find(PATTERNS.lacerationEffectPerTrauma)) entry(line, find(PATTERNS.lacerationOnTrauma).length > 0 && (state.enemyAilments || []).includes("Trauma"), "scales Laceration (read with its gain line)", { provisional: true });
+  for (const line of find(PATTERNS.sentryProximityTaken)) {
+    const value = num(line.clean.match(PATTERNS.sentryProximityTaken)[1]) * (line.multiplier ?? 1);
+    const active = (state.sentrySkills || []).length > 0;
+    entry(line, active, active ? `a Sentry (${state.sentrySkills.join(", ")}) is deployed at the dummy: +${value}% additional damage taken (provisional)` : "no modeled Sentry Skill", { provisional: true, bodies: active ? [`+${value}% additional damage taken`] : [] });
+    if (active) derive(`+${value}% additional damage taken`, line.source, "enemy in proximity to a Sentry (provisional)", true);
+  }
+  // Broken Sun Ring's Solar Ring / Corona (keyword hovers 10166 / 10167; game buffs 35107 / 35108): the ring's radius is not
+  // published, so the best case (user rule 2026-10-09: best-case distance) stands the player so the dummy is inside it; the line
+  // "considered to be within 3m of you" then holds too (the near case already does). Provisional: open question legendary-solar-ring.
+  for (const line of find(PATTERNS.solarRingTaken)) {
+    const [, ring, percent] = line.clean.match(PATTERNS.solarRingTaken);
+    const value = num(percent) * (line.multiplier ?? 1);
+    entry(line, true, `best case: the dummy stands inside the ${ring} (its radius is not published): +${value}% additional damage taken (provisional)`, { provisional: true, enemyDebuff: true, bodies: [`+${value}% additional damage taken`] });
+    derive(`+${value}% additional damage taken`, line.source, `the dummy inside the ${ring} (best case, provisional)`, true);
+  }
+  for (const line of find(PATTERNS.solarRingNear)) entry(line, state.nearTarget !== false, state.nearTarget !== false ? "the dummy counts as within 3 m (the near case holds anyway)" : "the Distant alternative: the ring's 3 m rule is not modeled there", { provisional: true });
   for (const line of find(PATTERNS.infiltrationCursedBy)) {
     const [, type, curse] = line.clean.match(PATTERNS.infiltrationCursedBy);
     const typeWord = type[0].toUpperCase() + type.slice(1).toLowerCase();
@@ -614,6 +922,11 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     for (const type of types) debuffs.infiltration.add(type);
     entry(line, types.length > 0, types.length ? `inflicts ${types.join(", ")} Infiltration (the types the build deals; uptime 1, provisional)` : "the build deals no Elemental Damage", { provisional: true });
   }
+  // Mercury Baptism (Rosa – Unsullied Blade, hero trait audit B11; src/rosa-traits.js): the Infiltration of the largest recorded
+  // Elemental type, held for the Realm of Mercury's time share (provisional). A full share joins the held set; a partial one adds its
+  // time-averaged value below unless another source already holds that type.
+  const rosaInfiltration = state.rosa?.mercury?.infiltration || null;
+  if (rosaInfiltration && rosaInfiltration.uptime >= 1 - 1e-9) debuffs.infiltration.add(rosaInfiltration.type);
   // Fire Infiltration on the beam / Ignite path stays the existing condition (src/scorching-beam-hit.js, theoretical-sources).
   // Infiltration Effect (residual batch A-3): scales that type's +13% (keyword value × (1 + Σ effect)). The beam / Ignite
   // path's own Fire Infiltration (src/scorching-beam-hit.js) does not read it.
@@ -626,6 +939,9 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     entry(line, held, held ? `scales the ${word} Infiltration on the dummy` : beamFire ? "the beam path's Fire Infiltration does not read Infiltration Effect" : `no ${word} Infiltration source`, beamFire ? { status: "Not modeled" } : {});
   }
   for (const type of debuffs.infiltration) if (!(type === "Fire" && state.beamActive)) derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect(type) / 100))}% additional ${type} Damage taken`, `${type} Infiltration (keyword ${type === "Fire" ? "10000103" : type === "Cold" ? "10000104" : "10000105"})`, `${type} Infiltration on the dummy`, true);
+  if (rosaInfiltration && rosaInfiltration.uptime < 1 - 1e-9 && !debuffs.infiltration.has(rosaInfiltration.type) && !(rosaInfiltration.type === "Fire" && state.beamActive)) {
+    derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect(rosaInfiltration.type) / 100) * rosaInfiltration.uptime)}% additional ${rosaInfiltration.type} Damage taken`, `${rosaInfiltration.type} Infiltration (Mercury Baptism)`, `Mercury Baptism's ${rosaInfiltration.type} Infiltration for the Realm's ${round(rosaInfiltration.uptime * 100)}% (provisional)`, true);
+  }
   for (const line of find(PATTERNS.perInfiltrationType)) {
     const count = debuffs.infiltration.size + (state.fireInfiltrationCondition && !debuffs.infiltration.has("Fire") ? 1 : 0);
     const value = round(num(line.clean.match(PATTERNS.perInfiltrationType)[1]) * (line.multiplier ?? 1) * count);
@@ -643,6 +959,9 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.paralysisTenacity)) { const active = Boolean(state.anyHit) && tenacityAtMax; if (active) debuffs.paralysis = 1; entry(line, active, active ? `Tenacity Blessing at max stacks (${tenacity}; Blessing model, own buffs held) and the build hits the dummy: Paralysis held (4 s base duration refreshed by hits; provisional)` : !state.anyHit ? "no modeled hit" : tenacity > 0 ? `Tenacity Blessing below max stacks (${tenacity} of ${tenacityMax})` : "no Tenacity Blessing stacks", { provisional: true }); }
   const dealsDamage = Boolean(state.anyHit || state.minionsCrit);
   for (const line of find(PATTERNS.paralysisDealDamage)) { if (dealsDamage) debuffs.paralysis = 1; entry(line, dealsDamage, dealsDamage ? "the build (or its Minions) deals damage to the dummy: Paralysis held (4 s base duration, refreshed); Weaken lowers only the enemy's damage and counts as a crowd control type (provisional)" : "the build deals no modeled damage", { provisional: true, enemyDebuff: true }); }
+  // Bing – Blast Nova's moon (hero trait audit B12; src/bing-traits.js): the bombs land at the dummy, so it stays within their 10 m while
+  // the bombs replace the Main Skill's casts (provisional); Slow lowers only the enemy's speed.
+  for (const line of find(PATTERNS.paralysisBombs)) { const active = Boolean(state.bing?.blastNova?.bombsActive); if (active) debuffs.paralysis = 1; entry(line, active, active ? `the bombs are thrown at the dummy, so it stays within ${num(line.clean.match(PATTERNS.paralysisBombs)[1])} m of them: Paralysis held (refreshed continuously; provisional); Slow only slows it` : `no bombs: ${state.bing?.blastNova?.why || "Blast Nova's bombs are not in this build"}`, { provisional: true, enemyDebuff: true }); }
   for (const line of find(PATTERNS.paralysisNearby)) { const active = state.nearTarget !== false; if (active) debuffs.paralysis = 1; entry(line, active, active ? `the player stands close to the dummy (best case): inside Nearby (${KEYWORD_RADII_METERS.nearby} m, TLIDB keyword radius), so it is Paralyzed` : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: not Nearby`, { provisional: true, enemyDebuff: true }); }
   // Blocking: the "Hit or blocked recently" best case (condition blockedRecently, state.hitRecently), which needs Block chance.
   const canBlock = (Number(state.blockChance?.attack) || 0) > 0 || (Number(state.blockChance?.spell) || 0) > 0;
@@ -650,6 +969,7 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
   // Dual Kismet: Bounded Holy Maiden (game affix 908139264: on hit, Paralysis buff 230, Blind 20060, Weaken 270, Slow 260,
   // Taunt 280 and Frostbite): Paralysis held while the build hits (pact scripted-effects batch 2026-10-13; the -60% Crowd
   // Control Effect next to it is not applied to the Paralysis it inflicts: provisional).
+  for (const line of find(PATTERNS.discordCrowdControl)) { if (dealsDamage) debuffs.paralysis = 1; entry(line, dealsDamage, dealsDamage ? `the build deals damage to the dummy: one crowd control effect every ${num(line.clean.match(PATTERNS.discordCrowdControl)[1])} s, a missing type first, so the rotation keeps Paralysis (4 s base duration, manual rule 1002020420), Frostbite (src/enemy-ailments.js), Weaken, Slow, Taunt and Blinding on the dummy (best case; the other durations are not sourced: provisional)` : "the build deals no modeled damage", { provisional: true, enemyDebuff: true, bodies: [`+${round(BUFF_VALUES.paralysis)}% damage taken`] }); }
   for (const line of find(PATTERNS.holyMaiden)) { const active = Boolean(state.anyHit); if (active) debuffs.paralysis = 1; entry(line, active, active ? "the build hits the dummy: Paralysis held (4 s base duration, refreshed by hits; manual rule 1002020420), Frostbite inflicted on hit (src/enemy-ailments.js), and Blind, Weaken, Slow and Taunt count as crowd control types" : "no modeled hit", { provisional: true, enemyDebuff: true, bodies: [`+${round(BUFF_VALUES.paralysis)}% damage taken`] }); }
   // Regain events (src/regain-model.js, 2026-10-14): the build Regains on hit while it has missing Life / Energy Shield (a
   // self-drain line, or the "Hit or blocked recently" best case); switched by the regainEvents condition. Read again by
@@ -853,6 +1173,7 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
   if (debuffs.frozen) holdCc("Freeze", { kind: "full" });
   if (debuffs.paralysis) holdCc("Paralysis", { kind: "full" });
   if (find(PATTERNS.holyMaiden).length && state.anyHit) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, { kind: "full" });
+  if (find(PATTERNS.discordCrowdControl).length && dealsDamage) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, { kind: "full" });
   if (find(PATTERNS.paralysisDealDamage).length && dealsDamage) holdCc("Weaken", { kind: "full" });
   // Sacrificial Pawn (Thea – Blasphemer's Disgraced Minister on the Desecrated dummy, alone; TLIDB keyword: "considered a Crowd
   // Control Effect"; hero trait audit B7, src/thea-traits.js).
@@ -1097,6 +1418,12 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
   else if (felineFigure && debuffs.numbedStacks > 0) timedEffects.push({ id: "numbed", label: "Numbed (Feline Figure)", source: "Lightning Shadow: Feline Figure", target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: "Lightning", reach: "all", percent: numbedPerStack, schedule: { kind: "steps", points: felineFigure.schedule.points, sustained: debuffs.numbedStacks } }] });
   if (numbed && debuffs.numbedStacks > 0) derive(`+${round(numbedPerStackRaw * debuffs.numbedStacks)}% additional Lightning Damage taken`, `Numbed (keyword 762: +${numbedBase}% additional Lightning Damage taken per stack${numbedChanged ? ", changed base effect" : ""}, max 10${numbedAdditional !== 1 ? `; ×${numbedAdditional} additional Numbed Effect` : ""})`, otherNumbed ? `${debuffs.numbedStacks} Numbed stacks on the dummy (best case, as the support resolver reads it: provisional)` : `${debuffs.numbedStacks} average Numbed stacks from Feline Figure (Q-H10: provisional)`, true);
   for (const line of find(PATTERNS.numbedEffect)) entry(line, numbed, numbed ? "scales Numbed's Lightning Damage taken" : "the build inflicts no Numbed");
+  // The revived Numbed family's source line (src/enemy-ailments.js): In calc when it is what keeps the dummy Numbed; with another
+  // source already holding the 10-stack cap it adds nothing (provisional best-case stack count, as for every Numbed source).
+  for (const line of find(PATTERNS.numbedOnLightning)) {
+    const own = (state.enemyAilmentSources || {}).Numbed === line.source;
+    entry(line, numbed && own, !numbed ? "no active skill deals Lightning Damage, so this inflicts no Numbed" : own ? `keeps the dummy Numbed (${BUFF_VALUES.numbedMaxStacks} stacks held, best case: provisional; the stacks per trigger and the Interval are not counted)` : "another Numbed source already holds the dummy at its 10-stack cap (best case: provisional)", { status: numbed && own ? "In calc" : numbed ? "No DPS effect" : "Inactive" });
+  }
   for (const line of find(PATTERNS.numbedBase)) entry(line, numbed, numbed ? "replaces Numbed's +5% per stack, max 10 stacks (user-confirmed 2026-10-12)" : "the build inflicts no Numbed");
   for (const line of [...find(PATTERNS.numbedExtra), ...find(PATTERNS.numbedThreshold)]) entry(line, false, otherNumbed ? "Numbed is already at its 10-stack cap in the best-case reading (provisional)" : "the build inflicts no Numbed", { status: otherNumbed ? "No DPS effect" : "Inactive", provisional: true });
 
@@ -1169,7 +1496,7 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
     return [];
   };
   for (const item of entries) if (!item.bodies.length && item.active) { const effects = effectsOf(item); if (effects.length) item.bodies = effects.map((text) => ({ body: text, derivedText: text, readers: ["state"] })); }
-  return { crowdControl: [...ccSchedules.keys()], centralize, regain, warcry: stormCommand, elixir: elixirs, entries, derived, buffs: { fervorRating, fervorAttackAilment, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, hasHasten, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration] }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis };
+  return { crowdControl: [...ccSchedules.keys()], centralize, regain, warcry: stormCommand, elixir: elixirs, entries, derived, buffs: { fervorRating, fervorAttackAilment, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, hasHasten, hasProfane, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration] }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis };
 }
 
 // Lucky roll helpers live in src/lucky-damage.js; re-exported for the existing importers.
@@ -1189,15 +1516,49 @@ export function deteriorationFrom(modifierTexts = [], state = {}, entries = []) 
   const chance = pick(PATTERNS.deteriorationChance), extra = pick(PATTERNS.deteriorationExtra), increased = pick(PATTERNS.deteriorationIncreased), additional = pick(PATTERNS.deteriorationAdditional), duration = pick(PATTERNS.deteriorationDuration);
   const chancePercent = sum(chance.map(({ match, scale }) => num(match[1]) * scale));
   const extraStacks = sum(extra.map(({ match, scale }) => num(match[1]) * scale / 100 * num(match[2])));
-  const increasedPercent = sum(increased.map(({ match, scale }) => num(match[1]) * scale));
+  // The revived Erosion to Deterioration family: P1% of the increased Erosion Damage bonus joins the increased Deterioration Damage,
+  // at most P2 (game affix 16346693). The bonus is read as the untyped-skill "+X% Erosion Damage" lines (also "<Type> and Erosion");
+  // generic "+X% damage" and skill-scoped lines are left out (attr 54021 mod 3; provisional, revived affix census 2026-10-21).
+  const fromErosionLines = pick(PATTERNS.deteriorationFromErosion);
+  const erosionBonus = fromErosionLines.length ? sum(lines.map((line) => line.clean.match(/^\+(\d+(?:\.\d+)?)% (?:(?:Physical|Fire|Cold|Lightning|Elemental) and )?Erosion Damage$/i)?.[1]).map((value, index) => value ? num(value) * (lines[index].multiplier ?? 1) : 0)) : 0;
+  const fromErosion = fromErosionLines.reduce((total, { match, scale }) => total + Math.min(num(match[2]) * scale, num(match[1]) * scale / 100 * erosionBonus), 0);
+  const increasedPercent = sum(increased.map(({ match, scale }) => num(match[1]) * scale)) + fromErosion;
   const additionalPercents = additional.map(({ match, scale }) => num(match[1]) * scale);
+  // Legendary audit batch 6 (provisional; open question legendary-deterioration-items):
+  // - Hand of Malice "+35% additional Deterioration Damage if you have dealt a Critical Strike recently": while the build crits.
+  const critRecently = pick(PATTERNS.deteriorationCritRecently);
+  if (state.canCrit) for (const { match, scale } of critRecently) additionalPercents.push(num(match[1]) * scale);
+  // - Blight "+10% additional Deterioration Damage taken per stack of Deterioration the enemy has, up to 8": summed per held stack;
+  //   the hit engine counts the stacks (applications per second × the 1 s duration).
+  const takenPerStack = pick(PATTERNS.deteriorationTakenPerStack).map(({ match, scale }) => ({ per: num(match[1]) * scale, cap: num(match[2]) }));
+  // - Ruinous Star: each stack deals its True Damage every 0.33 s while it lasts (1 s: 3 ticks), +30% additional per tick after the
+  //   first, at most 5 increments; each tick read as the expiry damage (60% of the Erosion hit) with its increment.
+  const ticks = pick(PATTERNS.deteriorationTicks)[0];
+  const tickFactor = ticks ? (() => {
+    const every = num(ticks.match[1]), increment = num(ticks.match[2]), cap = num(ticks.match[3]);
+    const count = every > 0 ? Math.max(1, Math.floor(1 / every + 1e-9)) : 1;
+    let total = 0;
+    for (let k = 0; k < count; k += 1) total += 1 + increment / 100 * Math.min(cap, k);
+    return { count, factor: total, every, increment, cap };
+  })() : null;
+  // - Ruinous Star: "Every 0.5 s, your next non-Channeled Main Skill is enhanced by Obliterate" and "Skills not enhanced by Obliterate
+  //   cannot inflict Deterioration": only that share of the Main Skill's uses inflicts it (Obliterate's conversion of the other parts
+  //   to Erosion, keyword 10162, is not modeled).
+  const obliterate = pick(PATTERNS.obliterateEvery)[0];
+  const obliterateOnly = Boolean(obliterate && (/cannot inflict Deterioration$/i.test(obliterate.line.clean) || pick(PATTERNS.obliterateOnly).length));
   const active = chancePercent > 0 && Boolean(state.hitErosion);
   const reason = !state.hitErosion ? "no modeled hit deals Erosion Damage (Deterioration needs Hit Erosion Damage)" : chancePercent > 0 ? `${Math.min(100, chancePercent)}% chance per Erosion hit, 60% of the Erosion damage dealt as True Damage when each 1 s stack ends (manual; the delay is not in the windows: provisional)` : "no Deterioration chance";
   const add = (items, status) => { for (const { line } of items) entries.push({ source: line.source, origin: line.origin, text: line.clean, active: status === "In calc", conditionText: reason, status, provisional: true, bodies: [], condition: "combatState", group: null }); };
   add(chance, active ? "In calc" : "Inactive");
   add([...extra, ...increased, ...additional], active ? "In calc" : "Inactive");
+  for (const { line } of fromErosionLines) entries.push({ source: line.source, origin: line.origin, text: line.clean, active: active && fromErosion > 0, conditionText: !active ? reason : fromErosion > 0 ? `${round(erosionBonus)}% Erosion Damage bonus → +${round(fromErosion)}% Deterioration Damage (provisional)` : "no \"+X% Erosion Damage\" bonus to carry over", status: active && fromErosion > 0 ? "In calc" : "Inactive", provisional: true, bodies: [], condition: "combatState", group: null });
   for (const { line } of duration) entries.push({ source: line.source, origin: line.origin, text: line.clean, active: false, conditionText: "duration only delays the damage (dealt when each stack ends)", status: "No DPS effect", provisional: true, bodies: [], condition: "combatState", group: null });
-  return active ? { chancePercent: Math.min(100, chancePercent), extraStacks, increasedPercent, additionalPercents, share: DETERIORATION_SHARE, source: "Deterioration (manual rule 1002030520)" } : null;
+  add(critRecently, active && state.canCrit ? "In calc" : "Inactive");
+  add(pick(PATTERNS.deteriorationTakenPerStack), active ? "In calc" : "Inactive");
+  add(ticks ? [ticks] : [], active ? "In calc" : "Inactive");
+  add(obliterate ? [obliterate] : [], active ? "Partly modeled" : "Inactive");
+  add(pick(PATTERNS.obliterateOnly), active ? "In calc" : "Inactive");
+  return active ? { chancePercent: Math.min(100, chancePercent), extraStacks, increasedPercent, additionalPercents, takenPerStack, tickFactor, obliterateEverySeconds: obliterateOnly ? num(obliterate.match[1]) : null, share: DETERIORATION_SHARE, source: "Deterioration (manual rule 1002030520)" } : null;
 }
 
 /**

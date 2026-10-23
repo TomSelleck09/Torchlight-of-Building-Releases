@@ -8,7 +8,11 @@
 // "per recent Critical Strike" reader stays for any other item that really says it (src/scorching-beam-critical.js).
 // Matched with any value: a Judgment scales the number first (its own Brand talents take -30%, linked slates +40%).
 const STALE_SLATE_TALENT_LINES = [
-  [/^([+-]?\d+(?:\.\d+)?)% Critical Strike Damage per recent Critical Strike, up to 4 stacks$/, (value) => `${value}% Critical Strike Damage per recent non-Critical Strike, up to 4 stacks`]
+  [/^([+-]?\d+(?:\.\d+)?)% Critical Strike Damage per recent Critical Strike, up to 4 stacks$/, (value) => `${value}% Critical Strike Damage per recent non-Critical Strike, up to 4 stacks`],
+  // Nether King Ultimate (slates audit 2026-10-22): "+12% additional damage for you and your Minions against Cursed enemies" is read
+  // as its two halves, the player's line in the wording the Cursed readers know (src/build-mechanics.js, src/ailment-shared.js,
+  // src/skill-hit-lines.js) and the Minion's; a "you and your Minions" condition body never reaches those readers.
+  [/^\+?(\d+(?:\.\d+)?)% additional damage for you and your Minions against Cursed enemies$/i, (value) => `+${value}% additional damage against Cursed enemies\n+${value}% additional Minion Damage against Cursed enemies`]
 ];
 
 /** A slate talent effect with a stale catalog wording replaced (the same string when nothing changes). */

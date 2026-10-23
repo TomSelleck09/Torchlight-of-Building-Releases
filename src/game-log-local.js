@@ -3,7 +3,7 @@
 // and returns only the sanitised build dumps. The raw log text, tokens, account ids and names never leave here.
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { decodeGameLogBytes, detectGameLogEncoding, listSnapshots, loadGameIdMap, scanGameLog } from "./game-log-import.js";
+import { decodeGameLogBytes, detectGameLogEncoding, linkCharactersByGear, listSnapshots, loadGameIdMap, scanGameLog } from "./game-log-import.js";
 
 export const DEFAULT_GAME_LOG_DIR = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Torchlight Infinite\\UE_game\\TorchLight\\Saved\\Logs";
 export const GAME_LOG_ENDPOINT = "/api/game-log/snapshots";
@@ -56,10 +56,14 @@ export async function readGameLogSnapshots({ dir = gameLogDir(), maxFiles = MAX_
     let scan;
     try { scan = scanGameLog(text, { accountGroups, characterGroups, tokens, partialTail: /^UE_game\.log$/i.test(name) }); } catch { continue; } finally { text = null; }
     if (!scan.dumps.length) continue;
-    files.push({ name, modified: info.mtime.toISOString(), truncated: info.size > maxBytes, scan, snapshots: listSnapshots(scan, idMap) });
+    files.push({ name, modified: info.mtime.toISOString(), truncated: info.size > maxBytes, scan });
   }
   accountGroups.clear(); characterGroups.clear(); tokens.clear();
   if (!files.length) return { found: false, reason: "No character data in the game logs yet. Log in to a character in the game, then reopen this dialog." };
+  // A login whose dump lost the player section (no account id) joins its character by worn gear across every file (one
+  // token map), so a backup login with the hero and level can fill it; the rows are listed after that.
+  linkCharactersByGear(files.flatMap((file) => file.scan.dumps));
+  for (const file of files) file.snapshots = listSnapshots(file.scan, idMap);
   // Owned-pactspirit star levels are account-wide and cut at 30 per dump: give each file the other files' lists
   // (star levels only) so an import can fill the levels its own dumps lack (mergeDumps).
   for (const file of files) {

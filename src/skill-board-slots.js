@@ -17,7 +17,7 @@ export function skillBoardRows(setups, savedSlots, tab = "skills", { traitGrants
 }
 
 function userBoardRows(setups, savedSlots, tab, count) {
-  // A setup set aside by a board rule (`slotInactive`: src/magus-active-slot.js, a Spirit Magus in an active slot without Iris)
+  // A setup set aside by a board rule (`slotInactive`: src/magus-active-slot.js, a second copy of a Spirit Magus)
   // keeps its row too; setupBoardTab puts an Iris active-slot Magus (`boardTab: "skills"`) on the skills tab.
   const enabled = setups.filter((setup) => (setup.enabled || setup.traitReplaced || setup.slotInactive) && !setup.traitGranted && setupBoardTab(setup) === (tab === "auras" ? "auras" : "skills"));
   const saved = savedSlots?.[tab];

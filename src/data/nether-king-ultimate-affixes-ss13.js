@@ -1,43 +1,11 @@
-// SS13 Nether King Ultimate talent nodes from https://tlidb.com/en/Nether_King
-export const netherKingUltimateAffixesSs13 = [
-  { name: "Ultimate Nether King Talent Node", effect: "When Contamination is active, +12% Projection Effect for all Divinity Slate (Max Divinity Effect: 1) [Autocracy]", maxDivinityEffect: 1 },
-  { name: "Ultimate Nether King Talent Node", effect: "When Contamination is active, +100% Projection Effect for all Pedigree of Gods (Max Divinity Effect: 1) [Autocracy]", maxDivinityEffect: 1 },
-  { name: "Ultimate Nether King Talent Node", effect: "When Contamination is active, +50% Projection Effect for all Fallen Starlight (Max Divinity Effect: 1) [Autocracy]", maxDivinityEffect: 1 },
-  { name: "Ultimate Nether King Talent Node", effect: "When Contamination is active, +30% Projection Effect for all A Corner of Divinity (Max Divinity Effect: 1) [Autocracy]", maxDivinityEffect: 1 },
-  { name: "Ultimate Nether King Talent Node", effect: "When Contamination is active, +30% Projection Effect for all Non-Legendary Divinity Slate (Max Divinity Effect: 1) [Autocracy]", maxDivinityEffect: 1 },
-  { name: "Ultimate Nether King Talent Node", effect: "When Contamination is active, and Statue of The New God has an empty slot, +30% Projection Effect for all Divinity Slate (Max Divinity Effect: 1) [Autocracy]", maxDivinityEffect: 1 },
-  { name: "Ultimate Nether King Talent Node", effect: "When Contamination is active, diagonally adjacent spaces are also within its effect area (Max Divinity Effect: 1)[Autocracy]", maxDivinityEffect: 1 },
-  { name: "Ultimate Nether King Talent Node", effect: "Precise: Fearless gains an additional base effect: +5% chance to deal Double Damage" },
-  { name: "Ultimate Nether King Talent Node", effect: "+15% additional Physical Damage against enemies in Proximity" },
-  { name: "Ultimate Nether King Talent Node", effect: "+5 Spell Critical Strike Rating and +10% Spell Critical Strike Rating for every +1 to Spell Skill Level. Stacks up to 10 time(s)" },
-  { name: "Ultimate Nether King Talent Node", effect: "0.14% additional Spell Damage for every 1% Life sealed" },
-  { name: "Ultimate Nether King Talent Node", effect: "14% chance for Attack Horizontal Projectiles to return" },
-  { name: "Ultimate Nether King Talent Node", effect: "-20 Critical Strike Rating · +16% additional damage on Projectile Critical Strike" },
-  { name: "Ultimate Nether King Talent Node", effect: "+1% additional Projectile Damage for every +6% Knockback Distance. Stacks up to 14 time(s)" },
-  { name: "Ultimate Nether King Talent Node", effect: "Ill Omen gains an additional effect: +2% additional damage taken" },
-  { name: "Ultimate Nether King Talent Node", effect: "+8% additional Affliction effect · +48 Affliction inflicted per second" },
-  { name: "Ultimate Nether King Talent Node", effect: "20% chance to trigger Lv. 1 Scorching Pulse when Reaping. Interval: 2 s" },
-  { name: "Ultimate Nether King Talent Node", effect: "+1 Minion Skill Level · +4% additional Minion Damage" },
-  { name: "Ultimate Nether King Talent Node", effect: "+2% additional Minion Damage for each Minion. Stacks up to 6 time(s) · +15% Minion Max Life" },
-  { name: "Ultimate Nether King Talent Node", effect: "+20% Critical Strike Damage per recent Critical Strike, up to 4 stacks" },
-  { name: "Ultimate Nether King Talent Node", effect: "+1 to All Skills' Levels" },
-  { name: "Ultimate Nether King Talent Node", effect: "+14% additional Fire Damage taken by enemies within 10 m" },
-  { name: "Ultimate Nether King Talent Node", effect: "+14% additional Max Lightning Damage" },
-  { name: "Ultimate Nether King Talent Node", effect: "+14% additional Cold Damage on Critical Strike" },
-  { name: "Ultimate Nether King Talent Node", effect: "-50% to Paralysis, Weaken, and Slow effects received while Attack and Spell Block Chance is no less than 50%" },
-  { name: "Ultimate Nether King Talent Node", effect: "Converts 27% of Erosion Damage taken to random Elemental Damage" },
-  { name: "Ultimate Nether King Talent Node", effect: "+3% additional damage for each Empower or Defensive Skill cast recently. Stacks up to +4 time(s) (multiplies)" },
-  { name: "Ultimate Nether King Talent Node", effect: "+1% additional Erosion Damage on Hit. Stacks up to 12 time(s). Lasts for 3 s" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Banishment is active, for every 1 adjacent Divinity Slate, gains: · +3% Aura Effect" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Banishment is active, for every 1 adjacent Divinity Slate, gains: · +3% Sealed Mana Compensation" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Banishment is active, for every 1 non-adjacent Divinity Slate, gains: · +3% additional Armor (multiplies)" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Banishment is active, for every 1 non-adjacent Divinity Slate, gains: · +3% additional Evasion (multiplies)" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Banishment is active, for every 1 non-adjacent Divinity Slate, gains: · +3% additional Max Energy Shield (multiplies)" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Banishment is active, for every 1 adjacent Divinity Slate, gains: · +1% Max Elemental Resistance" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Judgment is active, for every 1 Divinity Slate along the connecting line, gain: · +3% additional damage for you and your Minions (multiplies)" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Judgment is active, for every 1 Divinity Slate along the connecting line, gain: · +3% Aura Effect" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Judgment is active, for every 1 Divinity Slate along the connecting line, gain: · +3% Origin of Spirit Magus effect" },
-  // Patch notes 2026-10-15 (Ultimate Craft Affixes): +25% → +10% and +20% → +10%.
-  { name: "Ultimate Nether King Talent Node", effect: "When Judgment is active, +10% Effect Increase Multiplier for A Corner of Divinity and Fallen Starlight along the connecting line" },
-  { name: "Ultimate Nether King Talent Node", effect: "When Judgment is active, +10% Effect Increase Multiplier for Non-Legendary Divinity Slate along the connecting line" },
-];
+// Nether King Ultimate talent nodes. SS14 data since 2026-10-22 (src/data/nether-king-nodes-ss14.generated.js, from
+// https://tlidb.com/en/Nether_King, checked against the game's talent types). SS14 patch notes: the SS13 Legendary Medium nodes
+// are Ultimate now ("+100 Attack and Spell Critical Strike Rating · -99% additional Elemental and Erosion Damage" → "+80 Attack
+// and Spell Critical Strike Rating"); new "When Judgment is active, +5% Effect Increase Multiplier for Divinity Slate along the
+// connecting line"; the Ultimate Craft Affixes for A Corner of Divinity / Fallen Starlight and Non-Legendary slates on the link
+// +25% / +20% → +10%. The patch notes' new Contamination "+7% Projection effect" (game id 90000216) is not on TLIDB yet.
+import { netherKingNodesSs14 } from "./nether-king-nodes-ss14.generated.js";
+
+export const netherKingUltimateAffixesSs13 = netherKingNodesSs14
+  .filter((node) => node.name === "Ultimate Nether King Talent Node")
+  .map(({ id, name, effect, maxDivinityEffect }) => ({ id, name, effect, ...(maxDivinityEffect ? { maxDivinityEffect } : {}) }));

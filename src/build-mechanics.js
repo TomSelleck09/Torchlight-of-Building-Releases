@@ -11,12 +11,13 @@ import { classifyHitLine, splitHitLineText, scopeApplies } from "./skill-hit-lin
 import { inferDamageProfile } from "./skill-damage-profiles.js";
 import { supportEffectsFor, SCORCHING_BEAM_DEDICATED_SUPPORTS } from "./support-effects.js";
 import { curseTakenEffect, curseTakenLine, NO_DUMMY_EFFECT_CURSES } from "./curse-effects.js";
-import { triggeredCurseRank, curseLimitReason } from "./curse-limit.js";
+import { triggeredCurseRank, curseOverLimitWarning } from "./curse-limit.js";
 import { doubleDamageForSkill } from "./double-damage.js";
 import { mainAttributeBonusRemoved } from "./gear-unique-modules.js";
 import { collectAllReapingSources } from "./reaping-model.js";
 import { buildWideAilmentBlock, blockedAilmentsOf } from "./ailment-blocks.js";
 import { damageTypeRestriction, restrictionLine } from "./damage-type-restriction.js";
+import { trinityState } from "./trinity.js";
 
 // Build-wide mechanics that every damage path shares: support bonuses for the
 // main skill, channeled-stack scaling, curses triggered by gear, Torment, Focus
@@ -46,7 +47,11 @@ const BASE_MAX_CHANNELED_STACKS = 5;
 // Stacks" at Lv10–29). Provisional for other channeled skills: no game record of the base value is extracted
 // (field 2006051 is the min-stack bonus field).
 const BASE_MIN_CHANNELED_STACKS = 1;
+// Torment (game hyperlink 10000108; TLIDB keyword Torment, 2026-10-21): +5% additional Damage Over Time per stack, up to 3 stacks.
+export const TORMENT_STACKS = 3, TORMENT_PER_STACK_PERCENT = 5;
 // Level-20 Entangled Pain, reused from the skill record (TLIDB Lv.20 text matches: +39%).
+// Level-20 Scorch ("+39% additional Fire Damage taken", the skill record; gear affix batch D: a gear-triggered Scorch).
+const SCORCH_LEVEL20_FIRE_TAKEN = selenaCompleteSkillLoadoutSs13.setups.find((setup) => setup.name === "Scorch")?.databaseLevel20?.cursedEnemyAdditionalFireDamageTakenPercent ?? 39;
 const ENTANGLED_PAIN_LEVEL20_DOT_TAKEN = selenaCompleteSkillLoadoutSs13.setups.find((setup) => setup.name === "Entangled Pain")?.databaseLevel20?.cursedEnemyAdditionalDamageOverTimeTakenPercent ?? 39;
 // Curses whose effect on the dummy is modeled (named in the over-limit note).
 // Origins whose copies of talent / slate-total keys no total reads (gear-pact batch G8).
@@ -63,7 +68,7 @@ const acutenessAdditionalPhysical = (level) => {
   return Number.isFinite(value) ? value : 15.6;
 };
 
-export function collectBuildMechanics({ main, setups = [], activeNames = new Set(), modifierTexts = [], specialSupportConfigs = {}, castsPerSecond = 0, curseLimitMaximum = 1, skillCurses = [], heroMemories = { lines: [] }, targetLife = true, auraAilmentChance = null } = {}) {
+export function collectBuildMechanics({ main, setups = [], activeNames = new Set(), modifierTexts = [], specialSupportConfigs = {}, castsPerSecond = 0, curseLimitMaximum = 1, skillCurses = [], heroMemories = { lines: [] }, targetLife = true, auraAilmentChance = null, minionsDealDamage = false, twoHandedWeapon = false } = {}) {
   const recognized = new Map();
   const mark = (line, note) => recognized.set(normalizePercentageText(line.text), note);
   const hit = [], igniteIncreased = [], igniteAdditional = [], igniteCombatAdditional = [], combatTaken = [], synthetic = [], notes = [];
@@ -234,6 +239,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   // Affliction core supplies ("+X% additional Affliction effect") are also read from gear, kismets, pacts and memories,
   // which no total counts. Talent and slate copies stay with their totals; core lines stay with the core model.
   const additionalAfflictionEffect = [];
+  const maxAfflictionResistance = [];
   for (const line of modifierTexts) {
     // A core's "damage applied to Life" line (Dirt: "10% additional damage applied to Life") has no total either: read here
     // too (core audit batch B1, F4; the talent / slate totals parse only talent nodes and slate affixes).
@@ -250,7 +256,12 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
       continue;
     }
     match = text.match(/^\+(\d+(?:\.\d+)?)% additional Affliction effect$/i);
-    if (match) { additionalAfflictionEffect.push({ source: line.source, text, value: number(match[1]) * scale }); mark(line, "Additional Affliction effect (damage over time)"); }
+    if (match) { additionalAfflictionEffect.push({ source: line.source, text, value: number(match[1]) * scale }); mark(line, "Additional Affliction effect (damage over time)"); continue; }
+    // "−X% All Resistance when the enemy has max Affliction" (talent affix 371197; src/max-affliction-resistance.js): the Ignite path
+    // read it from the talent / slate totals only, so a gear copy (the belt blend; belt blend audit 2026-10-21) was unread.
+    // Every DoT of a resisted type reads the same list (theoretical-sources.js maxAfflictionAllResistance; user decision 2026-10-21).
+    match = OTHER_ORIGINS.has(line.origin) ? text.match(/^([+-]\d+(?:\.\d+)?)% All Resistance when the enemy has max Affliction$/i) : null;
+    if (match) { maxAfflictionResistance.push({ source: line.source, text, value: number(match[1]) * scale }); mark(line, "Enemy resistance at max Affliction (Fire, Cold, Lightning and Erosion damage over time, for the time at max)"); }
   }
   for (const line of modifierTexts) {
     const text = line.text, scale = line.multiplier ?? 1;
@@ -285,8 +296,35 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     if (match && match[2] === "Cataclysm" && beamActive) { grantedSupports.push({ name: match[2], level: Number(match[1]), source: line.source, text }); mark(line, `Cataclysm support on the Main Skill (item-granted, Lv.${match[1]})`); continue; }
     // Also "Trigger(s) Lv. 19 X Curse on hit. Cooldown: 1 s." and "Nearby enemies within 10m are cursed by …" (gear-pact
     // batch chunk 2: crafted wordings that read nothing before).
-    match = text.match(/^(?:Triggers? Lv\. (\d+) ([\w']+(?: [\w']+)*?) Curse (?:upon dealing damage to enemies|on hit)|Nearby enemies within \d+ ?m are cursed by Lv\. (\d+) ([\w']+(?: [\w']+)*))/i);
+    // Nether King Ultimate nodes (slates audit 2026-10-22): "Triggers Lv. 1 Timid Curse when you or your Minions deal damage to enemies.
+    // Cooldown: 0.2 s" is the same trigger from your own damage.
+    match = text.match(/^(?:Triggers? Lv\. (\d+) ([\w']+(?: [\w']+)*?) Curse (?:upon dealing damage to enemies|on hit|when you or your Minions deal damage to enemies)|Nearby enemies within \d+ ?m are cursed by Lv\. (\d+) ([\w']+(?: [\w']+)*))/i);
     if (match) { gearCurses.push({ name: match[2] || match[4], level: Number(match[1] || match[3]), source: line.source, text, origin: line.origin, slot: line.slot }); continue; }
+    // Pantheon's Elegy: Onslaughter's Dirge (legendary audit batch 1, 2026-10-22): "Enemies within 15m are cursed by Lv. 25 Timid Curse
+    // while you are wielding a Two-Handed weapon": a gear curse while a Two-Handed weapon is held (the dummy stands within 10 m).
+    match = text.match(/^Enemies within \d+ ?m are cursed by Lv\. (\d+) ([\w']+(?: [\w']+)*?)(?: Curse)? while you are wielding a Two-Handed weapon$/i);
+    if (match) {
+      if (!twoHandedWeapon) { mark(line, "Inactive: no Two-Handed weapon held"); continue; }
+      gearCurses.push({ name: match[2], level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot });
+      continue;
+    }
+    // Imperial Iron Sentry (legendary audit batch 2): "Enemies within 8m Nearby Sentries receive Lv. 20 Timid Curse": a gear curse
+    // while an active Sentry Skill is deployed at the dummy (provisional: the Sentry stands within 8 m of it).
+    match = text.match(/^Enemies within \d+ ?m Nearby Sentries receive Lv\. (\d+) ([\w']+(?: [\w']+)*?)(?: Curse)?$/i);
+    if (match) {
+      if (!setups.some((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.tags || []).includes("Sentry"))) { mark(line, "Inactive: no active Sentry Skill"); continue; }
+      gearCurses.push({ name: match[2], level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot });
+      continue;
+    }
+    // Curses Minions trigger ("Triggers Lv. 20 Timid Curse when Minions deal damage to enemies. Cooldown: 0.2 s", "Triggers Lv. 10
+    // Entangled Pain Curse and Timid Curse when a Minion deals damage. Cooldown: 1 s"; gear affix batch A, 2026-10-22): the same
+    // gear-triggered curses, held while a modeled Minion deals damage to the dummy (its hits come far more often than the cooldown).
+    match = text.match(/^Triggers? Lv\. (\d+) ((?:[\w']+(?: [\w']+)*? Curse)(?: and [\w']+(?: [\w']+)*? Curse)*) when (?:Minions deal|a Minion deals) damage(?: to enemies)?(?:\. Cooldown: [\d.]+ ?s)?$/i);
+    if (match) {
+      if (!minionsDealDamage) { mark(line, "Inactive: no modeled Minion deals damage"); continue; }
+      for (const name of match[2].split(/ and /).map((part) => part.replace(/ Curse$/i, "").trim())) gearCurses.push({ name, level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot, minionTrigger: true });
+      continue;
+    }
     // Dual Kismet: Spindle (pact scripted-effects batch 2026-10-13): "Triggers Lv. 25 Corruption upon inflicting damage. Cooldown:
     // 0.2s" names the curse skill without the word "Curse" (game affix 482924864 casts the Corruption Curse, stone 2030). Read
     // as a gear-triggered curse when the name is a curse the planner knows; only the Lv.20 value is sourced (+39%; provisional).
@@ -359,8 +397,35 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   const tormentEffectLines = tormentLines ? modifierTexts.filter((line) => /^\+(\d+(?:\.\d+)?)% Torment Effect$/i.test(normalizePercentageText(String(line.text)).trim())) : [];
   const tormentEffectPercent = tormentEffectLines.reduce((sum, line) => sum + number(normalizePercentageText(String(line.text)).trim().match(/^\+(\d+(?:\.\d+)?)%/)[1]) * (line.multiplier ?? 1), 0);
   for (const line of tormentEffectLines) mark(line, `Torment Effect: Torment's +15% additional DoT × (1 + ${tormentEffectPercent}%)`);
-  const tormentValue = Math.round(15 * (1 + tormentEffectPercent / 100) * 10000) / 10000;
-  if (tormentLines && beamActive) igniteCombatAdditional.push({ source: `Torment (3 stacks${tormentEffectPercent ? `, +${tormentEffectPercent}% Torment Effect` : ""})`, text: `Each stack: +5% additional Damage Over Time for 4 s, up to 3 stacks${tormentEffectPercent ? ` × (1 + ${tormentEffectPercent}% Torment Effect)` : ""}`, value: tormentValue, category: "Additional damage", condition: "dealing damage over time" });
+  // Torment (game hyperlink 10000108, language table 2026-10-18, and TLIDB keyword Torment, fetched 2026-10-21: "Each stack of Torment
+  // additionally increases Damage Over Time dealt by 5% for 4s. Stacks up to 3 times"): held at 3 stacks while the build deals damage
+  // over time (refreshed long before 4 s), one +15% additional term. It goes into the shared combat ledger, which every damage over
+  // time reads once: the Ignite paths (beam and generic), Trauma, Wilt, the skills' own DoTs, and so the Reaps that settle them.
+  // Before 2026-10-21 it was added only when Scorching Beam was active, so other DoT builds never got it.
+  const tormentValue = Math.round(TORMENT_STACKS * TORMENT_PER_STACK_PERCENT * (1 + tormentEffectPercent / 100) * 10000) / 10000;
+  if (tormentLines) igniteCombatAdditional.push({ source: `Torment (3 stacks${tormentEffectPercent ? `, +${tormentEffectPercent}% Torment Effect` : ""})`, text: `Each stack: +5% additional Damage Over Time for 4 s, up to 3 stacks${tormentEffectPercent ? ` × (1 + ${tormentEffectPercent}% Torment Effect)` : ""}`, value: tormentValue, category: "Additional damage", condition: "dealing damage over time" });
+  // "Torment gains an additional effect: +X% additional Reaping Recovery Speed" (the revived Torment family, game affix 6414413; also
+  // craft and prism rolls): part of Torment while the build gains it, scaled by Torment Effect like Torment's own value (provisional,
+  // as the Aura added effects). A derived line for the multi-source Reaping model and `additionalReapingRecovery` for the Ignite
+  // path's Reaping (src/theoretical-sources.js). Without a Reap source it changes nothing. Revived affix census 2026-10-21.
+  // A resolved conditional "+X% Affliction Effect" body (src/line-effects.js; the revived Affliction Effect family's "For every enemy
+  // within 20 m nearby, …") is increased Affliction Effect like the plain line the talent / gear / memory totals read: it joins the
+  // shared "Affliction effect" ledger (src/theoretical-sources.js), which every DoT reads.
+  const derivedAfflictionEffect = modifierTexts.filter((line) => line.lineEffect?.conditional).map((line) => ({ line, match: normalizePercentageText(String(line.text)).trim().match(/^\+(\d+(?:\.\d+)?)% Affliction Effect$/i) })).filter((item) => item.match)
+    .map(({ line, match }) => ({ source: `${line.source} (${line.lineEffect.conditionText || "condition met"})`, text: line.derivedFrom || line.text, value: number(match[1]) * (line.multiplier ?? 1) }));
+  const tormentAddedRecovery = [];
+  const reapSourceCount = tormentLines ? collectAllReapingSources(modifierTexts).length : 0;
+  for (const line of modifierTexts) {
+    if (line.origin === "derived" || line.lineEffect) continue;
+    const match = normalizePercentageText(String(line.text)).trim().match(/^Torment gains an additional effect:\s*\+(\d+(?:\.\d+)?)% additional Reaping Recovery Speed$/i);
+    if (!match) continue;
+    if (!tormentLines) { mark(line, "Inactive: no Torment source (\"Gains a stack of Torment when …\")"); continue; }
+    if (!reapSourceCount) { mark(line, "Inactive: no Reaping source"); continue; }
+    const value = Math.round(number(match[1]) * (line.multiplier ?? 1) * (1 + tormentEffectPercent / 100) * 10000) / 10000;
+    tormentAddedRecovery.push({ source: `Torment: added effect (${line.source})`, text: `+${value}% additional Reaping Recovery Speed`, value });
+    synthetic.push({ text: `+${value}% additional Reaping Recovery Speed`, source: `Torment: added effect (${line.source})`, origin: "derived", multiplier: 1 });
+    mark(line, `Torment's added effect: +${value}% additional Reaping Recovery Speed${tormentEffectPercent ? ` (× (1 + ${tormentEffectPercent}% Torment Effect), provisional)` : ""}`);
+  }
 
   const acuteness = focusBuffs.get("Precise: Acuteness");
   if (acuteness) {
@@ -398,34 +463,36 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   }
 
   // Curses (user-confirmed 2026-10-19, first in, first out by placement): the skill bar curses hold the first slots
-  // (src/curse-limit.js, `skillCurses` already cut to the limit); gear, pact and other triggered curses fill the slots left, in
-  // equipment slot order, then pacts, then the rest (triggeredCurseRank). A triggered curse past the limit is not applied: no
-  // effect and no "Cursed". A trigger for a curse a skill already applies adds nothing (one instance per curse). Inexorable
-  // Doom's Lv.20 Ominous uses a slot (user statement 2026-10-10).
+  // (src/curse-limit.js `skillCurses`, in bar order); gear, pact and other triggered curses take the slots after them, in
+  // equipment slot order, then pacts, then the rest (triggeredCurseRank). The limit never stops a curse (user decision
+  // 2026-10-21, replacing the 2026-10-19 "a curse past the limit is not applied"): every curse applies, and the triggered ones
+  // past the limit (`overLimitCurses`, slot order) only carry the warning. A trigger for a curse a skill already applies adds
+  // nothing (one instance per curse; a game rule, not the limit). Inexorable Doom's Lv.20 Ominous uses a slot (user statement
+  // 2026-10-10).
   const uniqueGearCurses = gearCurses.map((curse, index) => ({ curse, index })).sort((a, b) => triggeredCurseRank(a.curse) - triggeredCurseRank(b.curse) || a.index - b.index).map((entry) => entry.curse)
     .filter((curse, index, all) => all.findIndex((item) => item.name === curse.name) === index && !skillCurses.includes(curse.name));
   const freeSlots = Math.max(0, curseLimitMaximum - skillCurses.length);
-  const activeGearCurses = uniqueGearCurses.slice(0, freeSlots);
-  const droppedGearCurses = uniqueGearCurses.slice(freeSlots);
+  const activeGearCurses = uniqueGearCurses;
+  const appliedCurseNames = [...skillCurses, ...activeGearCurses.map((curse) => curse.name)];
+  const overLimitWarning = curseOverLimitWarning(curseLimitMaximum, appliedCurseNames);
+  const overLimitCurses = uniqueGearCurses.slice(freeSlots).map((curse) => ({ ...curse, warning: overLimitWarning }));
   const cursesCast = skillCurses.length + uniqueGearCurses.length;
   const curseOverLimit = cursesCast > curseLimitMaximum;
   const curseFactor = 1 + curseEffectPercent / 100;
-  const appliedCurseNames = [...skillCurses, ...activeGearCurses.map((curse) => curse.name)];
-  const limitReason = curseLimitReason(curseLimitMaximum, appliedCurseNames);
+  let gearScorch = null;
   // A trigger for a curse already applied by the skill bar or by an earlier trigger does nothing extra and takes no slot; it is
-  // not applied, like a limit-dropped curse, with its own reason (user decision 2026-10-19). Every trigger not applied carries
-  // `reason` (the text after "Not applied: ") and `kind` ("limit" or "duplicate"; a duplicate names `duplicateOf`).
+  // not applied, with its own reason (user decision 2026-10-19). Every trigger not applied carries `reason` (the text after
+  // "Not applied: "), `kind` "duplicate" and `duplicateOf`.
   const notAppliedCurses = gearCurses.filter((curse) => !activeGearCurses.includes(curse)).map((curse) => {
     if (skillCurses.includes(curse.name)) return { ...curse, kind: "duplicate", duplicateOf: "skill bar", reason: `${curse.name} is already applied by the skill bar` };
     const earlier = activeGearCurses.find((item) => item.name === curse.name);
-    if (earlier) return { ...curse, kind: "duplicate", duplicateOf: earlier.source, reason: `${curse.name} is already applied by ${earlier.source}` };
-    return { ...curse, kind: "limit", reason: limitReason };
+    return { ...curse, kind: "duplicate", duplicateOf: earlier?.source || "another trigger", reason: `${curse.name} is already applied by ${earlier?.source || "another trigger"}` };
   });
-  const duplicateGearCurses = notAppliedCurses.filter((curse) => curse.kind === "duplicate");
+  const duplicateGearCurses = notAppliedCurses;
   // Two items can carry the same trigger text; the applied copy keeps its label.
   for (const curse of activeGearCurses) recognized.set(normalizePercentageText(curse.text), `${curse.name} curse`);
   for (const curse of notAppliedCurses) { const key = normalizePercentageText(curse.text); if (!activeGearCurses.some((item) => normalizePercentageText(item.text) === key)) recognized.set(key, `Inactive: ${curse.reason}`); }
-  if (droppedGearCurses.length) notes.push(`Curse limit ${curseLimitMaximum}: ${droppedGearCurses.map((curse) => `${curse.name} (${curse.source})`).join(", ")} not applied, ${limitReason}.`);
+  if (overLimitCurses.length) notes.push(`Curse limit ${curseLimitMaximum}: ${overLimitCurses.map((curse) => `${curse.name} (${curse.source})`).join(", ")} past the limit, applied anyway (${overLimitWarning}).`);
   if (duplicateGearCurses.length) notes.push(`Duplicate curse triggers (no slot): ${duplicateGearCurses.map((curse) => `${curse.name} (${curse.source}), ${curse.reason}`).join("; ")}.`);
   for (const curse of activeGearCurses) {
     if (curse.name === "Entangled Pain") {
@@ -448,8 +515,14 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     } else if (NO_DUMMY_EFFECT_CURSES[curse.name]) {
       notes.push(`${curse.name}: ${NO_DUMMY_EFFECT_CURSES[curse.name]}, so it is not applied.`);
       recognized.set(normalizePercentageText(curse.text), `Not on dummy: ${NO_DUMMY_EFFECT_CURSES[curse.name]}`);
+    } else if (curse.name === "Scorch") {
+      // A gear-triggered Scorch (gear affix batch D, 2026-10-22): the Scorch model (conditions.scorch, curses.scorchDamagePercent) at
+      // the Lv.20 value × (1 + Curse Effect), as the other gear curses; src/planner.js applies it when no Scorch skill is on the board.
+      if (curse.level !== 20) notes.push(`Scorch Lv.${curse.level}: only the Lv.20 value is sourced; +${SCORCH_LEVEL20_FIRE_TAKEN}% used.`);
+      gearScorch ??= { level: curse.level, source: curse.source, text: curse.text, percent: round(SCORCH_LEVEL20_FIRE_TAKEN * curseFactor) };
+      recognized.set(normalizePercentageText(curse.text), `Scorch curse → +${gearScorch.percent}% additional Fire Damage taken`);
     } else if (curse.name !== "Entangled Pain") {
-      // Scorch's model reads the Scorch skill (conditions.scorch); a gear-triggered Scorch, or a curse with no table, is not applied.
+      // A curse with no table is not applied.
       recognized.set(normalizePercentageText(curse.text), `Not modeled: a gear-triggered ${curse.name} curse is not applied`);
     }
   }
@@ -485,6 +558,9 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: line.lineEffect.conditionText });
     if (activeNames.has("Scorching Beam")) hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)` });
   }
+  // Trinity (src/trinity.js): the beam's hits are Fire only, so Fire is chosen on every hit: ×N (legendary audit batch 5).
+  const trinity = activeNames.has("Scorching Beam") ? trinityState(modifierTexts) : null;
+  if (trinity) hit.push({ source: `${trinity.source}: Trinity`, bucket: "additional", percent: (trinity.multiple - 1) * 100, text: `${trinity.text} (the beam deals Fire only: ×${trinity.multiple})` });
   // Own timed buffs with an "additional Max Damage" body (Bitter Thunder; src/combat-states.js): the beam's upper hit roll.
   for (const line of modifierTexts) {
     if (line.lineEffect?.key !== "combatState" || !activeNames.has("Scorching Beam")) continue;
@@ -546,8 +622,8 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     for (const tag of setup.tags || []) { const type = ["Physical", "Fire", "Cold", "Lightning", "Erosion"].find((item) => item.toLowerCase() === String(tag).toLowerCase()); if (type) dealtTypes.add(type); }
   }
   const ailmentBaseLines = [...modifierTexts, ...scopedAilmentLines];
-  if (collectAilmentTypedSources("wilt", ailmentBaseLines).base.length) dealtTypes.add("Erosion");
-  if (collectAilmentTypedSources("trauma", ailmentBaseLines).base.length) dealtTypes.add("Physical");
+  if ((({ base, flatBase }) => base.length || flatBase.length)(collectAilmentTypedSources("wilt", ailmentBaseLines))) dealtTypes.add("Erosion");
+  if ((({ base, flatBase }) => base.length || flatBase.length)(collectAilmentTypedSources("trauma", ailmentBaseLines))) dealtTypes.add("Physical");
   const generic = collectGenericDamageLines({ modifierTexts, hitSkill, hitActive: Boolean(hitSkill) && activeNames.has("Scorching Beam"), dotMain: main, heroMemories, skip: (line) => recognized.has(normalizePercentageText(line.text)), dealtTypes: [...dealtTypes] });
   const ignitePenetration = [];
   const penetrationSources = [];
@@ -600,14 +676,14 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     critOnly, pendingPerStack,
     channel: { baseMax: BASE_MAX_CHANNELED_STACKS, baseMin: BASE_MIN_CHANNELED_STACKS, maxStacks, minStacks, startStacks, excessStacks, additionalMaxStacks, stackSources, lineMaxStacks, lineMinStacks, supportMaxStacks, supportMinStacks, perStackSupercharge, superchargeFlat },
     channelRamp,
-    curses: { effectPercent: curseEffectPercent, gear: gearCurses, active: activeGearCurses, dropped: droppedGearCurses, duplicates: duplicateGearCurses, notApplied: notAppliedCurses, limitDropped: notAppliedCurses.filter((curse) => curse.kind === "limit"), limitReason, limit: curseLimitMaximum, skill: skillCurses, cast: cursesCast, overLimit: curseOverLimit },
+    curses: { effectPercent: curseEffectPercent, gearScorch, gear: gearCurses, active: activeGearCurses, overLimitCurses, duplicates: duplicateGearCurses, notApplied: notAppliedCurses, overLimitWarning: overLimitCurses.length ? overLimitWarning : "", limit: curseLimitMaximum, skill: skillCurses, cast: cursesCast, overLimit: curseOverLimit },
     enemyAilments: { types: enemyAilments.types, count: enemyAilments.count },
     intelligence,
     hit,
     penetration,
     generic,
     grantedSupports,
-    ignite: { increased: igniteIncreased, additional: igniteAdditional, combatAdditional: igniteCombatAdditional, additionalAfflictionEffect, grantedSupports, combatTaken, penetration: ignitePenetration, base: igniteScoped.base, chance: [...igniteScoped.chance, ...scopedDamagingChance], igniteBlocked },
+    ignite: { increased: igniteIncreased, additional: igniteAdditional, combatAdditional: igniteCombatAdditional, additionalAfflictionEffect, afflictionEffect: derivedAfflictionEffect, additionalReapingRecovery: tormentAddedRecovery, maxAfflictionResistance, grantedSupports, combatTaken, penetration: ignitePenetration, base: igniteScoped.base, chance: [...igniteScoped.chance, ...scopedDamagingChance], igniteBlocked },
     scopedAilmentLines,
     syntheticTexts: synthetic,
     recognized,

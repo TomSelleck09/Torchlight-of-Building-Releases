@@ -14,8 +14,13 @@ const number = (value) => Number.isFinite(value) ? value : null;
 export const REPORT_CALCULATION_BUTTON = `<button type="button" class="stat-sheet-report" data-report-calculation title="Copy the build code and open a GitHub form to report a damage figure that differs in game">Report calculation issue</button>`;
 export const damagePathControlsMarkup = () => `<div class="stat-sheet-controls damage-path-controls">${REPORT_CALCULATION_BUTTON}</div>`;
 
+// The Spirit Magus summons keep the catalog's Aura role (they seal Mana like an Aura) in an Aura slot and, on Iris 1 / 2, in an
+// active slot (src/magus-active-slot.js), but deal damage through their Minion: a setup the planner lists as a Minion damage
+// source (src/skill-damage-profiles.js, engine "minion") is a damage skill here whatever its role (2026-10-21: a new Iris build
+// with only a Magus showed "No active skill" and an empty list).
 export function statSheetSkillOptions(planner) {
-  return planner.activation.setups.filter((setup) => setup.enabled && !["aura", "passive", "support"].includes(setup.role));
+  const minionSummons = new Set((planner.damageSources || []).filter((source) => source.profile?.engine === "minion").map((source) => source.setupKey));
+  return planner.activation.setups.filter((setup) => setup.enabled && (!["aura", "passive", "support"].includes(setup.role) || minionSummons.has(setup.setupKey)));
 }
 
 const sustainedModeledDps = ({ hitDps, dotDps, reapingDps }) => hitDps + dotDps + reapingDps;
@@ -297,7 +302,8 @@ export function statSheetModel(planner, selectedKey, resources = {}) {
     // Slot order (user-confirmed 2026-10-19): skill bar curses in bar order, then gear, then pacts and other triggers.
     { label: "Applied curses (slot order)", value: curseSlotSummary(planner).applied.map((curse) => curse.kind === "skill" ? curse.name : `${curse.name} (${curse.source})`).join(", ") || "None" },
     ...planner.curseLimit.sources.map(source => ({ label: source.source + " · " + source.text, value: "+" + source.value })),
-    ...curseSlotSummary(planner).leftOut.map((curse) => ({ label: curse.kind === "skill" ? curse.name : `${curse.name} (${curse.source})`, value: "Not applied · curse limit" }))
+    // Past the limit: applied all the same, listed as a warning (user decision 2026-10-21).
+    ...curseSlotSummary(planner).overLimit.map((curse) => ({ label: curse.kind === "skill" ? curse.name : `${curse.name} (${curse.source})`, value: "Over the curse limit · counted anyway" }))
   ] });
   if (planner.pact) defense.push({ title: "Pactspirit defenses", rows: [
     { label: "Elemental Resistance", value: planner.pact.totals.elementalResistancePercent, suffix: "%" },
@@ -325,6 +331,15 @@ export function statSheetModel(planner, selectedKey, resources = {}) {
   // defence lines (src/legendary-base-lines.js) are listed with the Effective HP pools they feed.
   const statTotals = characterStatTotals(planner, { legendaryBaseLines: true });
   return { options, skill, active, beam, paths, statTotals, ehp, totalDps: paths ? sustainedModeledDps({ hitDps: paths.sustained.beamDps + paths.sustained.hits.reduce((sum, hit) => sum + hit.dps, 0), dotDps: paths.sustained.dots.reduce((sum, dot) => sum + dot.dps, 0), reapingDps: paths.sustained.reaping.reapingDps }) + (paths.sustained.illOmen?.dps || 0) : totalDps, totalParts: paths ? undefined : totalParts, dummyDps: pathDummyDps, dummyFiveSecondDamage: pathFiveSecondDamage, dummyFiveSecondEquivalentFromTwentySecondDps, cards, defense };
+}
+
+// The selected skill's state beside the Active skill select. Energy never switches a skill off (user decision 2026-10-21): a
+// skill past the Energy budget is counted and carries the warning.
+export function statSheetSkillStatus(model, planner) {
+  if (!model.skill) return "No damage skill on the board";
+  if (!model.active) return "Inactive · switched off";
+  const entry = (planner.activation.allocation?.allocations || []).find((item) => planner.activation.setups[item.index]?.setupKey === model.skill.setupKey);
+  return entry?.status === "insufficient-energy" ? "Active · insufficient Energy (counted anyway)" : "Active";
 }
 
 export function renderStatSheet(planner, selectedKey, resources, format, escapeHtml) {
@@ -356,5 +371,5 @@ export function renderStatSheet(planner, selectedKey, resources, format, escapeH
   // Any modeled damage source (Scorching Beam, Wilting Beam, …) shows the build-wide recount panel.
   const modeledSource = (planner.damageSources || []).some((source) => source.status === "modeled" && source.name === model.skill?.name);
   const damage = (model.beam && planner.nativeHitCycle) || (recountTiles && modeledSource) ? dummyBlock : `<strong>Damage not modeled</strong><span>Known mechanics for this skill are shown below; its damage is not included in the planner total.</span>`;
-  return `<div class="stat-sheet-controls"><label for="stat-sheet-skill">Active skill</label><select id="stat-sheet-skill">${model.options.map((skill) => `<option value="${escapeHtml(skill.setupKey || skill.name)}" ${skill === model.skill ? "selected" : ""}>${escapeHtml(skill.name)}</option>`).join("")}</select>${REPORT_CALCULATION_BUTTON}<span>${model.active ? "Active" : "Inactive · insufficient Energy"}</span></div><section class="stat-sheet-banner stat-sheet-banner-wide"><h2>${escapeHtml(model.skill?.name || "No active skill")} <small>Level ${model.skill?.effectiveLevel ?? "—"}</small></h2>${damage}</section>${effectiveHpMarkup(model.ehp)}<div class="stat-sheet-layout">${statSheetPanelMarkup(statSheetPanelModel(model, planner, format), escapeHtml)}</div><p class="stat-sheet-note">The Character stats panel lists only what the build has: stat totals sum every recognized stat line from gear, talents, cores, prisms, slates, pacts, kismets, hero memories and traits, including lines with no dummy-damage effect, and each row opens to its lines by source (sums for flat and increased, products for additional). Life, Mana, Energy Shield, Armor and Evasion combine those lines with TLIDB's per-level base values at the Effective HP banner's assumed character level. Resistances show the applied value with the uncapped total and maximum. Values with incomplete formulas are omitted.</p>`;
+  return `<div class="stat-sheet-controls"><label for="stat-sheet-skill">Active skill</label><select id="stat-sheet-skill">${model.options.map((skill) => `<option value="${escapeHtml(skill.setupKey || skill.name)}" ${skill === model.skill ? "selected" : ""}>${escapeHtml(skill.name)}</option>`).join("")}</select>${REPORT_CALCULATION_BUTTON}<span>${escapeHtml(statSheetSkillStatus(model, planner))}</span></div><section class="stat-sheet-banner stat-sheet-banner-wide"><h2>${escapeHtml(model.skill?.name || "No active skill")} <small>Level ${model.skill?.effectiveLevel ?? "—"}</small></h2>${damage}</section>${effectiveHpMarkup(model.ehp)}<div class="stat-sheet-layout">${statSheetPanelMarkup(statSheetPanelModel(model, planner, format), escapeHtml)}</div><p class="stat-sheet-note">The Character stats panel lists only what the build has: stat totals sum every recognized stat line from gear, talents, cores, prisms, slates, pacts, kismets, hero memories and traits, including lines with no dummy-damage effect, and each row opens to its lines by source (sums for flat and increased, products for additional). Life, Mana, Energy Shield, Armor and Evasion combine those lines with TLIDB's per-level base values at the Effective HP banner's assumed character level. Resistances show the applied value with the uncapped total and maximum. Values with incomplete formulas are omitted.</p>`;
 }

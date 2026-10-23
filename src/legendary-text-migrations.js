@@ -11,6 +11,27 @@
 import { legendaryPlaceholderPoolsSs13 } from "./data/gear/legendary-placeholder-pools-ss13.generated.js";
 import { legendaryGearSs13 } from "./data/gear/legendary-gear-ss13.generated.js";
 import { legendaryCorrodedModifiersSs13 } from "./data/gear/legendary-corroded-modifiers-ss13.generated.js";
+import { legendaryBasesSs14 } from "./data/gear/legendary-bases-ss14.generated.js";
+import { equipmentBaseTypesBySlotSs13 } from "./data/gear/corrosion-implicits-ss13.js";
+
+// Legendary base types (legendary audit 2026-10-22): the crafter used to save the base guessed from the icon, every armour piece as
+// its STR type and the hammer / crossbow / musket icons as Claw. The game's own record gives the real base type
+// (src/data/gear/legendary-bases-ss14.generated.js). A saved legendary whose base is exactly that old guess, and differs from the
+// game's type, is moved to the game's type on read; a base the player picked otherwise stays.
+const LEGACY_ICON_TOKENS = [["2HSword", "Two-Handed Sword"], ["2HHammer", "Two-Handed Hammer"], ["2HAxe", "Two-Handed Axe"], ["Staff", "Tin Staff"], ["1HSword", "One-Handed Sword"], ["1HHammer", "One-Handed Hammer"], ["1HAxe", "One-Handed Axe"], ["FireCannon", "Fire Cannon"], ["Crossbow", "Crossbow"], ["Musket", "Musket"], ["Pistol", "Pistol"], ["Scepter", "Scepter"], ["Dagger", "Dagger"], ["Claw", "Claw"], ["Wand", "Wand"], ["Cane", "Cane"], ["Cudgel", "Cudgel"], ["Bow", "Bow"], ["Rod", "Rod"], ["Shield", "STR Shield"]];
+const catalogByName = new Map(legendaryGearSs13.map((entry) => [entry.name, entry]));
+function legacyGuessedBase(entry) {
+  if (entry.id === "Suns_Embrace") return "STR Helmet";
+  return LEGACY_ICON_TOKENS.find(([token]) => entry.remoteIcon.includes(token))?.[1] || equipmentBaseTypesBySlotSs13[entry.slot]?.[0] || "";
+}
+/** The game's base type for a saved legendary still on the crafter's old icon guess, else null. */
+export function migratedLegendaryBase(item) {
+  if (!item?.base || (item.rarity && !["legendary", "captured"].includes(item.rarity))) return null;
+  const name = String(item.name || "").replace(/ - Priceless$/i, "");
+  const entry = catalogByName.get(name), game = legendaryBasesSs14[name]?.type;
+  if (!entry || !game || item.base === game) return null;
+  return item.base === legacyGuessedBase(entry) ? game : null;
+}
 
 const RANGE = /\((-?\d+(?:\.\d+)?)\s*[–-]\s*(-?\d+(?:\.\d+)?)\)/;
 // Vorax / craft affix templates outside the legendary catalogs (craft-affixes-ss13.generated.js is not loaded here).
@@ -58,6 +79,8 @@ export function migrateLegendaryText(text) {
 export function migrateLegendaryItem(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return item;
   let changed = null;
+  const base = migratedLegendaryBase(item);
+  if (base) changed = { base };
   for (const [key, value] of Object.entries(item)) {
     if (!Array.isArray(value) || !value.some((entry) => typeof entry === "string")) continue;
     const migrated = value.map(migrateLegendaryText);

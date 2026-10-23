@@ -59,7 +59,7 @@ export function collectAllReapingSources(modifierTexts = []) {
   // (gear-pact batch chunk 3: it switched on "on Reap" Blessing and Blur gains in builds without the ailment).
   if (modifierTexts.some((line) => /^Cannot inflict Reap$/i.test(String(line.text).trim()))) return [];
   const present = new Map();
-  const hasBase = (key) => { if (!present.has(key)) present.set(key, collectAilmentTypedSources(key, modifierTexts).base.length > 0); return present.get(key); };
+  const hasBase = (key) => { if (!present.has(key)) present.set(key, (({ base, flatBase }) => base.length > 0 || flatBase.length > 0)(collectAilmentTypedSources(key, modifierTexts))); return present.get(key); };
   const seen = [];
   for (const line of modifierTexts) {
     const parsed = parseReapingSource(line.text, line.source);

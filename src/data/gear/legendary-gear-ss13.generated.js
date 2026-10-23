@@ -1,4 +1,4 @@
-// Generated from TLIDB Legendary Gear on 2026-10-15 (SS14).
+// Generated from TLIDB Legendary Gear on 2026-10-22 (SS14).
 export const legendaryGearSs13 = [
   {
     "id": "Crosser",

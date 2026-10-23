@@ -8,6 +8,7 @@ import { prismAreaBounds, prismMutationCoreEffects, prismMutationDownside, prism
 import { grantedCoreLine, nameReadCoreGrant, isNameReadCoreClause } from "./granted-core-lines.js";
 import { NAMED_GEAR_AFFIX_LINES } from "./named-gear-affixes.js";
 import { migrateSlateTalentText } from "./talent-text-migrations.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 
 // One flat list of every text modifier the build carries, tagged by origin.
 // `multiplier` scales numbers in `text` (talent ranks, Inverse Image ranges).
@@ -31,7 +32,7 @@ const splitClauses = (text) => normalizePercentageText(String(text || ""))
 
 export function collectModifierTexts({ equipment, disabledSlots = [], talents = [], slates = [], talentState = {}, pactState = {}, heroMemories = { lines: [] } } = {}) {
   const lines = [];
-  const push = (text, source, origin, multiplier = 1, slot = undefined, core = undefined) => {
+  const push = (text, source, origin, multiplier = 1, slot = undefined, core = undefined, extra = undefined) => {
     // Pactspirit level effects join two stats with "; " ("+7% additional damage; +7% additional Minion Damage", Cloudgatherer -
     // Violet): one clause each (frost-terra audit 2026-10-13; before, the joined line matched no reader).
     if (origin === "pact") text = String(text || "").replace(/;\s*(?=[+-]\d)/g, "\n");
@@ -40,7 +41,7 @@ export function collectModifierTexts({ equipment, disabledSlots = [], talents = 
       // (src/granted-core-lines.js), so [Stealth Stab] / [Divine Grace] / [Poisoned Relief] still count once.
       const granted = grantedCoreLine(clause);
       // Gear lines keep their slot ("when equipped in the left Ring slot" lines; residual batch).
-      const where = { ...(slot ? { slot } : {}), ...(core ? { grantedCore: core } : {}) };
+      const where = { ...(slot ? { slot } : {}), ...(core ? { grantedCore: core } : {}), ...(extra || {}) };
       // A clause a core applies by name ("[Affliction] +30 Affliction inflicted per second"; core audit batch B1) keeps its
       // bracket so no text reader counts it; the planner adds the core's name (src/planner.js grantedCoreNames).
       const nameRead = granted ? null : nameReadCoreGrant(clause);
@@ -55,6 +56,10 @@ export function collectModifierTexts({ equipment, disabledSlots = [], talents = 
       for (const line of NAMED_GEAR_AFFIX_LINES[String(text).trim()] || []) push(line, item.name, "gear", 1, item.slot);
     }
   }
+  // Core talents never stack (user rule 2026-10-21): an Ethereal Prism core whose name a panel core (or another prism) already
+  // grants adds nothing.
+  const panelCoreNames = new Set(talents.flatMap((panel) => (panel.activeCores || []).map((core) => core.name)));
+  const prismCoreNames = new Set();
   for (const panel of talents) {
     for (const node of panel.allocatedNodes || []) {
       if (!(node.rank > 0) || node.replacedBy) continue;
@@ -69,7 +74,8 @@ export function collectModifierTexts({ equipment, disabledSlots = [], talents = 
       if (downside) push(downside, `${panel.name} · ${prism.base} mutated core downside`, "prism");
       // The granted core's own text: the mutated-core affix's "[Core] effect" clause when it carries one, else the catalog copy.
       const points = (panel.allocatedNodes || []).reduce((sum, node) => sum + (node.rank > 0 ? node.rank : 0), 0);
-      if (prism.type === "ethereal" && !NAME_READ_PRISM_CORES.has(prism.base) && !["Haze", "Phantasmagoria"].includes(prism.base) && points > 0) {
+      if (prism.type === "ethereal" && !NAME_READ_PRISM_CORES.has(prism.base) && !["Haze", "Phantasmagoria"].includes(prism.base) && points > 0 && !panelCoreNames.has(prism.base) && !prismCoreNames.has(prism.base)) {
+        prismCoreNames.add(prism.base);
         const tag = `[${prism.base}]`;
         const affix = String(prism.legendaryAffix || "");
         // The "add the following to the Core Talent" affix carries the core's effect after its tag; the older "add [Core] to
@@ -95,7 +101,7 @@ export function collectModifierTexts({ equipment, disabledSlots = [], talents = 
     }
   }
   for (const slate of slates) {
-    for (const affix of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) {
+    for (const affix of slateTalentLines(slate)) {
       // A "Class: <Talent type>: " prefix ends at its own colon, so an effect with a colon of its own ("… on hit. Cooldown: 0.3 s",
       // Centralize) keeps its text; other affixes keep the last-colon split.
       const talentPrefix = String(affix).match(/^[^:·|]+:\s*[^:·|]*Talent[^:·|]*:\s*/i);
@@ -107,9 +113,14 @@ export function collectModifierTexts({ equipment, disabledSlots = [], talents = 
       if (coreName) {
         // A Pedigree of Gods core (core audit batch B1): its clauses carry the core's name; the ones the core applies by name
         // keep a "[Name]" bracket (src/granted-core-lines.js), so the name model counts them once and no text reader does.
+        // User rule 2026-10-21: a slate's core works exactly as the panel copy, so its clauses are core lines (origin "core",
+        // source "<slate> core: <Name>", as the panel's "<tree> core: <Name>"), read by the readers of panel cores and kept out of
+        // the slate totals (src/engine.js slateNumericEffects). `coreCarrier` / `slateName` name the slate.
+        const carrier = { coreCarrier: "slate", slateName: slate.name };
+        const coreSource = `${slate.name} core: ${coreName}`;
         for (const clause of splitClauses(migrateSlateTalentText(body.slice(body.indexOf(" — ") + 3)))) {
-          if (isNameReadCoreClause(coreName, clause)) lines.push({ text: `[${coreName}] ${clause}`, source: slate.name, origin: "slate", multiplier: 1, grantedCore: coreName, nameReadCore: true, bracketText: `[${coreName}] ${clause}` });
-          else push(clause, slate.name, "slate", 1, undefined, coreName);
+          if (isNameReadCoreClause(coreName, clause)) lines.push({ text: `[${coreName}] ${clause}`, source: coreSource, origin: "core", multiplier: 1, grantedCore: coreName, nameReadCore: true, bracketText: `[${coreName}] ${clause}`, ...carrier });
+          else push(clause, coreSource, "core", 1, undefined, coreName, carrier);
         }
         continue;
       }

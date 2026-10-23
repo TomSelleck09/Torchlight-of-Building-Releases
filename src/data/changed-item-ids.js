@@ -3,10 +3,11 @@
 // research/patch-ss14/game-diff.md "TOWER Sequence: the 19 replaced ids" and research/patch-ss14/tlidb-diff.md "Id changes".
 // The SS13 texts below are copied from the pre-SS14 snapshot (research/patch-ss14/before/src-data).
 //
-// Removed content (craft families suffix-1404024 / 1404124 / 1404224, Vorax donors vorax-head-donor-44 / vorax-neck-donor-44,
-// "Dual Kismet: Ribbon") has no migration: per the user (2026-10-15) saved builds are handled as the planner already handles
-// unknown entries (a kismet slot naming no catalog entry adds nothing; a craft family id with no catalog family keeps its
-// saved line text).
+// Removed content (craft families suffix-1404024 / 1404124 / 1404224, Vorax donors vorax-head-donor-44 / vorax-neck-donor-44)
+// has no migration: per the user (2026-10-15) saved builds are handled as the planner already handles unknown entries (a craft
+// family id with no catalog family keeps its saved line text). "Dual Kismet: Ribbon" was listed here too, but it was never
+// removed: TLIDB's SS14 Destiny page printed its icon only as alt2 and the importer skipped it. It is in the SS14 game tables
+// (item 350760, config_modifier 100350760) and back in the catalog with its SS13 name and text (kismet / pact audit 2026-10-21).
 
 // TOWER Sequence ids that kept their game id but roll a new affix in SS14 (config_modifier: same id, group, tier and type; new
 // affix class). The current entry (src/data/gear/tower-sequences-ss13.generated.js, same id) carries the SS14 text; a saved

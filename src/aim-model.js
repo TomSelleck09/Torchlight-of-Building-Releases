@@ -33,7 +33,7 @@ const supportText = (support) => {
   return normalizePercentageText(configured && /^Activation Medium:/.test(support.name) ? configured : effects.join(" | "));
 };
 
-export function calculateAim(setup, { enabled = true, uptimePercent, charges, battleStacks = 3, modifierTexts = [] } = {}) {
+export function calculateAim(setup, { enabled = true, uptimePercent, charges, battleStacks = 3, modifierTexts = [], itemTrigger = null } = {}) {
   if (!setup || setup.enabled === false || !enabled) return inactive();
   const level = Number(setup.effectiveLevel || setup.baseLevel || 20);
   // Aim's captured level-26 value is 38.5%; the database level-20 value is 35%.
@@ -98,6 +98,9 @@ export function calculateAim(setup, { enabled = true, uptimePercent, charges, ba
     const elite = text.match(/Elite within ([\d.]+) ?m\. Interval: ([\d.]+) ?s/i);
     if (elite && explicitRadiusHolds(Number(elite[1]))) trigger = { source: support.name, everySeconds: Number(elite[2]), text: `Elite trigger every ${Number(elite[2])} s` };
   }
+  // An item that casts Aim on its own clock ("Triggers Lv. 30 Aim while standing still. Interval: 1 s"; gear affix batch D): its interval,
+  // capped by Aim's cooldown like an Activation Medium trigger (src/planner.js).
+  if (!trigger && itemTrigger) trigger = { source: itemTrigger.source, everySeconds: itemTrigger.everySeconds, text: itemTrigger.text };
   // Build-wide lines: "+N% Skill Effect Duration" and "+N% Cooldown Recovery Speed".
   for (const line of modifierTexts) {
     const text = normalizePercentageText(String(line.text || "")).trim();

@@ -15,6 +15,8 @@ const fireOnlyText = /\b(?:fire|elemental|ignite|elemental ailment)\s+damage\b|\
 // 3. Otherwise the ledger's fixed source label (entries built from a dedicated Fire/Ignite model).
 const fireOnlySource = /\bfire damage\b|\belemental damage\b|\badditional fire\b|\badditional ignite\b|\bignite damage\b|\bdisintegrate\b|\bflame focus\b|^fire infiltration$|^scorch$|\bvs ignited\b/i;
 
+import { ALL_RESISTANCE_TYPES, maxAfflictionResistanceLayer } from "./max-affliction-resistance.js";
+
 export function isFireOnlyLedgerLine(line) {
   if (line.stat) return fireOnlyStats.has(line.stat);
   if (line.text) return fireOnlyText.test(line.text);
@@ -43,7 +45,12 @@ const AILMENT_DAMAGE_TYPE = { ignite: "Fire", trauma: "Physical", wilt: "Erosion
 // (src/ailment-applications.js `scale`).
 export const MAIN_SKILL_SCOPED_SOURCE = /^Support: |^Scorching Beam level \d+$/;
 
-export function buildAilmentSharedLayers({ theoretical, modifierTexts = [], conditions = {}, combat = {}, hasSealedLife = false, targetCursed = false, ailmentKey = "trauma", targetResistancePercent = 0, damageType = AILMENT_DAMAGE_TYPE[ailmentKey], penetration = null }) {
+// "−X% All Resistance when the enemy has max Affliction" (user decision 2026-10-21): every DoT of a type "All Resistance" writes
+// (Fire, Cold, Lightning, Erosion; src/max-affliction-resistance.js) takes it for the time the dummy sits at max Affliction, like
+// the Ignite path. `maxAfflictionResistance` = { reductionPercent, firstMaxSeconds, steadyFraction, sources } (src/planner.js), or
+// null without the line or Affliction.
+
+export function buildAilmentSharedLayers({ theoretical, modifierTexts = [], conditions = {}, combat = {}, hasSealedLife = false, targetCursed = false, ailmentKey = "trauma", targetResistancePercent = 0, damageType = AILMENT_DAMAGE_TYPE[ailmentKey], penetration = null, maxAfflictionResistance = null }) {
   const ledger = theoretical?.ledger || [];
   const penetrationLines = damageType && damageType !== "Physical" ? (penetration?.byType?.[damageType] || []).filter((line) => line.value) : [];
   // Ignite (generic path, when a skill other than Scorching Beam inflicts it) keeps the ledger's Fire lines.
@@ -52,7 +59,7 @@ export function buildAilmentSharedLayers({ theoretical, modifierTexts = [], cond
   // Daze ("+25% additional Ailment Damage while Blur is active") counts once, whatever carries it (slate, Warlock core,
   // gear): the Blur model (src/blur-effects.js) puts one "Daze · Blur active" line in the Ignite ledger, and the
   // modifier-text route below is used only when that line is absent. It is a combat (Blur) layer here, as before.
-  // Once-only across a slate and the core is provisional (talent batch Q7).
+  // Once-only across a slate and the core: cores never stack (user rule 2026-10-21; talent batch Q7).
   const isDazeLine = (line) => /^Daze · Blur active$/.test(line.source || "");
   const dazeLedgerLine = ledger.find((line) => line.category === "Additional damage" && isDazeLine(line));
   const additional = ledger.filter((line) => ["Additional damage", "Additional main-stat damage", "Additional ailment damage"].includes(line.category) && keep(line) && !isDazeLine(line));
@@ -92,6 +99,8 @@ export function buildAilmentSharedLayers({ theoretical, modifierTexts = [], cond
     targetResistancePercent,
     damageType,
     penetrationPercent: penetrationLines.reduce((sum, line) => sum + line.value, 0),
+    maxAfflictionResistance: maxAfflictionResistance && ALL_RESISTANCE_TYPES.has(damageType) ? maxAfflictionResistanceLayer({ resistancePercent: targetResistancePercent, penetrationPercent: penetrationLines.reduce((sum, line) => sum + line.value, 0), info: maxAfflictionResistance }) : null,
+    maxAfflictionResistanceSources: maxAfflictionResistance && ALL_RESISTANCE_TYPES.has(damageType) ? maxAfflictionResistance.sources || [] : [],
     // The pooled Intelligence main-stat line inside `additional` (gear-pact batch chunk 4: a skill's Strength / Dexterity
     // main-stat share is added to it before the final bonus, manual keyword text).
     intelligencePercent: additional.filter((line) => /^Total Intelligence/.test(line.source || "")).reduce((sum, line) => sum + line.value, 0),

@@ -167,19 +167,33 @@ export function summonCastSpeed(modifierTexts = []) {
 // Command-gated lines (Spider Tank's projectiles, Grim Phantom's damage per 20 Command) stay unread.
 const COMMAND_GAIN = /^\+ ?(\d+(?:\.\d+)?) Command per second$/i;
 export const COMMAND_CAP = 100;
+const COMMAND_ON_MINION_CRIT = /^Gains (\d+(?:\.\d+)?) Command every second for [\d.]+ ?s when Minions land a Critical Strike$/i;
+export const MAX_COMMAND = /^([+-]\d+(?:\.\d+)?) Max Command\b/i;
 export const COMMAND_DAMAGE_PER_POINT = 3;
 export const COMMAND_FAMILIES = Object.freeze(["synthetic-troop", "module"]);
 
 /** Command from "+N Command per second" lines: { sources, perSecond, full, points, lines (Minion layers) } or null. */
-export function commandState(modifierTexts = [], { full = true } = {}) {
+export function commandState(modifierTexts = [], { full = true, minionsCrit = false } = {}) {
   const sources = modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_GAIN); return match ? [{ source: line.source, text: norm(line.text), value: Number(match[1]) * (line.multiplier ?? 1) }] : []; });
+  // Cry of Divinity (legendary audit batch 8): "Gains 8 Command every second for 3 s when Minions land a Critical Strike": a Command
+  // source while a modeled Minion crits (it crits far more often than every 3 s; provisional).
+  if (minionsCrit) sources.push(...modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_ON_MINION_CRIT); return match ? [{ source: line.source, text: norm(line.text), value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }));
   if (!sources.length) return null;
   const perSecond = sources.reduce((total, item) => total + item.value, 0);
-  const points = full && perSecond > 0 ? COMMAND_CAP : 0;
+  // Iron Nest (legendary audit batch 8): "-20 Max Command" lowers the cap Command builds to (base 100; provisional). "Command Return
+  // Speed" only matters while no Command is gained, which the full-Command best case never reaches.
+  const capDelta = modifierTexts.reduce((total, line) => { const match = norm(line.text).match(MAX_COMMAND); return total + (match ? Number(match[1]) * (line.multiplier ?? 1) : 0); }, 0);
+  const points = full && perSecond > 0 ? Math.max(0, COMMAND_CAP + capDelta) : 0;
   const value = points * COMMAND_DAMAGE_PER_POINT;
   const text = `+${value}% additional Minion Damage (Command ${points} × +${COMMAND_DAMAGE_PER_POINT}% per point for Synthetic Troop Minions; ${perSecond} Command per second builds to the cap of ${COMMAND_CAP}: user-supplied 2026-10-19, best case)`;
-  return { sources, perSecond, full, points, value, lines: value ? [{ kind: "additional", value, source: `Command (${sources.map((item) => item.source).join(", ")})`, text }] : [] };
+  // "+X% additional damage for Synthetic Troop Minions when having at least N Command" (Tin Staff craft prefix; gear affix batch A,
+  // 2026-10-22): one more additional layer on the Command Minions while the Command held reaches N.
+  const gated = modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_GATED); return match ? [{ source: line.source, text: norm(line.text), value: Number(match[1]) * (line.multiplier ?? 1), min: Number(match[2]) }] : []; });
+  const gatedLines = gated.filter((item) => points >= item.min).map((item) => ({ kind: "additional", value: item.value, source: item.source, text: `${item.text} (Command ${points} ≥ ${item.min})` }));
+  return { sources, perSecond, full, points, value, gated: gated.map((item) => ({ ...item, active: points >= item.min })), lines: [...(value ? [{ kind: "additional", value, source: `Command (${sources.map((item) => item.source).join(", ")})`, text }] : []), ...gatedLines] };
 }
+// Iron Nest's "+35% additional damage for Minions when having at least 80 Command" (legendary audit batch 8) is the same gate.
+export const COMMAND_GATED = /^\+?(\d+(?:\.\d+)?)% additional damage for (?:Synthetic Troop )?Minions when having at least (\d+) Command$/i;
 
 // ---- Isomorphic Arms (God of Machines core) ----------------------------------------------------------------------------------
 // Game affix 103580002 "Minions gain the Main-Hand Weapon's bonuses." (node 358 copies the main-hand item, equip slot 2, to the
@@ -210,18 +224,43 @@ export function isomorphicArmsState(modifierTexts = [], { weaponAttack = null, i
   const main = weaponAttack?.mainHand?.weapon ? weaponAttack.mainHand : null;
   if (!main) return { source: line.source, weapon: null, lines: [], unread: [], reason: "no main-hand weapon is equipped" };
   const label = `Isomorphic Arms: the main-hand ${main.name} (user-supplied 2026-10-19, provisional)`;
-  const lines = [], unread = [], read = [];
+  const lines = [];
   for (const [type, range] of Object.entries(main.damage || {})) {
     if (!(range.max > 0)) continue;
     lines.push({ kind: "added", type, min: range.min, max: range.max, source: label, text: `Adds ${round(range.min)} - ${round(range.max)} ${type} Damage to Minions (the main-hand weapon's own ${type} damage: base and local affixes)` });
   }
+  const affixes = itemAffixesOnMinions(itemTexts, { classify, localKind, label, item: "weapon" });
+  return { source: line.source, weapon: { name: main.name, type: main.type, damage: main.damage }, lines: [...lines, ...affixes.lines], read: affixes.read, unread: affixes.unread, reason: null };
+}
+
+// An item's affixes as Minion lines (Isomorphic Arms' main-hand weapon, Comradeship's belt): each line in its Minion wording where the
+// Minion model has one (src/minion-damage-model.js classifyMinionLine), the rest listed unread. Lines that `skip` names (the weapon's
+// local speed / crit lines, the granting line itself) are not passed on.
+function itemAffixesOnMinions(itemTexts, { classify = null, localKind = null, skip = null, label, item }) {
+  const lines = [], unread = [], read = [];
   for (const raw of itemTexts) {
     const text = norm(raw);
-    if (!text || (localKind && localKind(text))) continue;
-    const parsed = classify ? minionWordings(text).map((wording) => ({ wording, parsed: classify(wording) })).find((item) => item.parsed) : null;
+    if (!text || (localKind && localKind(text)) || (skip && skip.test(text))) continue;
+    const parsed = classify ? minionWordings(text).map((wording) => ({ wording, parsed: classify(wording) })).find((entry) => entry.parsed) : null;
     if (!parsed || parsed.parsed.kind === "added" && !(parsed.parsed.max > 0)) { unread.push(text); continue; }
     read.push(text);
-    lines.push({ ...parsed.parsed, source: label, text: `${parsed.wording} (the weapon's "${text}")` });
+    lines.push({ ...parsed.parsed, source: label, text: `${parsed.wording} (the ${item}'s "${text}")` });
   }
-  return { source: line.source, weapon: { name: main.name, type: main.type, damage: main.damage }, lines, read, unread, reason: null };
+  return { lines, read, unread };
+}
+
+// ---- Comradeship (Aromatic belt blend) ------------------------------------------------------------------------------------------
+// TLIDB Belt / Blending Rituals: "[Comradeship] Minions gain the Belt's bonuses." Read like Isomorphic Arms' main-hand copy (belt blend
+// audit 2026-10-21, provisional by analogy; open question belt-comradeship-minions): every affix line of the equipped belt (its base,
+// crafted and blend lines, not this line) reaches the Minions in its Minion wording where the Minion model has one; the rest are listed
+// unread. A belt carries no weapon damage.
+const COMRADESHIP = /^Minions gain the Belt's bonuses\.?$/i;
+
+/** Comradeship on the Minions: { source, belt, lines (Minion layers), read, unread, reason } or null without the line. */
+export function comradeshipState(modifierTexts = [], { beltName = null, itemTexts = [], classify = null } = {}) {
+  const line = sourceOf(modifierTexts, COMRADESHIP);
+  if (!line) return null;
+  if (!beltName) return { source: line.source, belt: null, lines: [], read: [], unread: [], reason: "no belt is equipped" };
+  const affixes = itemAffixesOnMinions(itemTexts, { classify, skip: COMRADESHIP, label: `Comradeship: the belt ${beltName} (by analogy with Isomorphic Arms, provisional)`, item: "belt" });
+  return { source: line.source, belt: beltName, ...affixes, reason: null };
 }

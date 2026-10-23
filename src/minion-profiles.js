@@ -6,7 +6,10 @@ import { allSkillEffectsSs13 } from "./data/skills/all-skill-effects-ss13.genera
 // Minion sources (2026-10-11): which Minion each "% of Base Damage" skill belongs to, what that Minion does on a single
 // training dummy, and the summon-skill text that shapes it. One source per Minion type; a catalog setup of any of the
 // Minion's skills activates the whole Minion (in game the Module / Summon skill is one stone; the TLIDB catalog lists the
-// Minion's skills as separate "main" entries sharing the module icon).
+// Minion's skills as separate "main" entries sharing the module icon). Since 2026-10-21 (user decision) only the summon is a
+// board skill, as in game: every Minion's own skills are excluded from the skill picker and a saved setup of one migrates to
+// its summon (src/minion-skill-owners.js; ownership from the game files, src/data/skills/minion-skill-owners-ss13.generated.js,
+// which also supplies the module summons' catalog entries; tests/minion-skill-owners.test.js checks the lists below against it).
 //
 // Sourced:
 // - Skill rows: src/data/skills/minion-skill-damage-ss13.generated.js (config_skill_damage: percent of Base Damage per
@@ -50,7 +53,11 @@ const provisional = (note) => ({ basis: "provisional", note });
 const skill = (name, role, extra = {}) => ({ name, role, hitsPerUse: 1, ...text("one hit per use on the single dummy"), ...extra });
 
 const MODULE_SUMMON = { summonCastSeconds: 1.25, summonCastSource: "module tooltip Cast Speed 1.25 (user, 2026-10-11)", summonCooldownSeconds: 4, summonCooldownSource: "module tooltip Cooldown 4.0 s (user, 2026-10-11; same on every module checked)" };
-const MODULE_COUNT = { source: "one Minion assumed: the module text's Max Minion Quantity is a placeholder in the game text and TLIDB publishes no Module page", at: () => 1, assumed: true };
+// Module Minions (user-supplied 2026-10-21, Google AI Mode answer, not an in-game test): one per cast, up to 4 by default. The TLIDB
+// SS14 Module pages agree ("This skill summons up to 4 Minions"); the game text's Max Minion Quantity is a placeholder. The count
+// itself (lines that raise or cap it, the cold-start ramp, the "troopMaxMinions" switch) is resolved in src/minion-damage-model.js,
+// with the same rules for the Synthetic Troop summons (user decision 2026-10-21).
+const MODULE_COUNT = { source: "up to 4 Minions, one per cast (user-supplied 2026-10-21, Google AI Mode answer, not an in-game test; TLIDB SS14 Module pages: \"This skill summons up to 4 Minions\")", at: () => 4, max: 4, assumed: true };
 const SPIRIT_COUNT = { source: "TLIDB: \"This skill summons up to 1 Minions (Lv1:1)\"", at: () => 1 };
 
 const magusTiming = (name, cast, speedType, cooldown = 0) => ({ timingFallback: { useTime: cast, speedType, cooldown, source: `TLIDB ${name} cast speed ${cast} s (the linked Split is the summon's)${cooldown ? `; ${cooldown} s cooldown from the designer note on game group 692 (provisional)` : ""}` } });
@@ -78,7 +85,12 @@ const SPIRIT_MAGI = [
   magus("thunder-magus", "Thunder Magus", "Summon Thunder Magus", "attack-speed", conv("Physical", "Lightning", "TLIDB Summon Thunder Magus: Converts 100% of Spirit Magi's Physical Damage to Lightning Damage"), [
     skill("Lightning Star", "basic", magusTiming("Lightning Star", 0.8, "attack-speed")),
     skill("Thunderlight Arrow", "enhanced", { ...ENHANCED_NOTE("Thunderlight Arrow", "; at Stage 3+ its extra projectile can hit the same enemy with a 70% Shotgun falloff (1.7 hits) and adds +5% additional damage"), ...magusTiming("Thunderlight Arrow", 0.8, "attack-speed"), stageBonus: (stage) => stage >= 3 ? { additionalPercent: 5, hitsPerUse: 1 + 0.7, text: "+1 Base Projectile Quantity at Stage 3 or higher: +5% additional damage per +1 Projectile Quantity, and the projectiles can hit the same enemy (70% Shotgun falloff → 1.7 hits per cast)" } : null }),
-    skill("Thundercloud Surge", "special", { ...EMPOWER_NOTE("Thundercloud Surge", "+35% additional Attack Speed; +25% additional damage at Stage 4 or higher"), ...magusTiming("Thundercloud Surge", 0.6, "attack-speed", EMPOWER_COOLDOWN), buffOnly: true, selfBuff: (stage) => ({ attackSpeedAdditionalPercent: 35, additionalPercent: stage >= 4 ? 25 : 0, durationSeconds: 6, source: "TLIDB Thundercloud Surge: +35% additional Attack Speed while the skill lasts (6 s); at Stage 4 or higher +25% additional damage" }) }),
+    // Chain of Lightning (2026-10-21, user decision to model it): the game gives the Empower a damage row (config_skill_damage
+    // group 703, Physical → Lightning by the summon, 126% at Lv.20; tooltip line skill_des|des_config|19142 "Chain of Lightning:
+    // Deals … Damage equal to X of Base Damage"; stone 1916: Minion Skill, Empower, Chain). TLIDB's card omits it. No text gives
+    // its cadence: one Chain of Lightning hit per cast is read, landing on cast like Frost Release's own hit (provisional; open
+    // question "thunder-magus-chain-of-lightning").
+    skill("Thundercloud Surge", "special", { ...EMPOWER_NOTE("Thundercloud Surge", "+35% additional Attack Speed; +25% additional damage at Stage 4 or higher; one Chain of Lightning hit per cast (game row 703; cadence provisional)"), ...magusTiming("Thundercloud Surge", 0.6, "attack-speed", EMPOWER_COOLDOWN), selfBuff: (stage) => ({ attackSpeedAdditionalPercent: 35, additionalPercent: stage >= 4 ? 25 : 0, durationSeconds: 6, source: "TLIDB Thundercloud Surge: +35% additional Attack Speed while the skill lasts (6 s); at Stage 4 or higher +25% additional damage" }) }),
     skill("Lightning Surge", "ultimate", { ...ULTIMATE_NOTE("Lightning Surge"), ...magusTiming("Lightning Surge", 1.5, "attack-speed") })
   ]),
   magus("rock-magus", "Rock Magus", "Summon Rock Magus", "attack-speed", null, [
@@ -147,7 +159,7 @@ const DEFINITIONS = [
     skills: [skill("Aimed Shot", "basic", { ...text("TLIDB cast 0.7 s (the linked Split 521008 is the summon's 0.8 s; TLIDB is used, flagged)"), timingFallback: { useTime: 0.7, speedType: "attack-speed", cooldown: 0, source: "TLIDB Aimed Shot cast speed 0.7 s" } })],
     notes: ["Summon Spider Tank: \"+3% additional Spider Tank Damage for every Spider Tank summoned\" is applied per Minion summoned; the Command-gated projectile lines are not modeled (Command is not read)."],
     perMinionAdditionalPercent: 3 },
-  { key: "grim-phantom", minion: "Grim Phantom", summon: "Summon Grim Phantom", family: "synthetic-troop", count: countByLevelFromText("Summon Grim Phantom"), summonCastSeconds: 1, summonCastSource: "Split 841187 use time 1 s (fixed); the skill re-summons every 1 s",
+  { key: "grim-phantom", minion: "Grim Phantom", summon: "Summon Grim Phantom", family: "synthetic-troop", count: countByLevelFromText("Summon Grim Phantom"), summonCastSeconds: 1, summonCastSource: "Split 841187 use time 1 s (fixed); the skill re-summons every 1 s", autoSummonSeconds: 1,
     skills: [skill("High Energy Beam", "basic", provisional("TLIDB: the beams can hit the same enemy with a 70% Shotgun falloff; one beam in the base state")), skill("Destructive Light Cannon", "special", provisional("the 5 s cooldown decoded on the summon's Split (841187) is read as the cannon's"))],
     conversion: [conv("Physical", "Lightning", "TLIDB Summon Grim Phantom: Converts 100% of Physical Damage dealt by the Minions summoned by this skill to Lightning Damage")] },
   // --- Spirit Magi: 5 (2026-10-12: Base, Enhanced and Empower skills; the Ultimate needs Full Bloom) ---
@@ -156,11 +168,12 @@ const DEFINITIONS = [
   // 2, +30% chance"; "at Stage 3, the effect of Enhanced Skills is enhanced"), an Empower Skill ("a positive effect that
   // increases damage for a period of time and has a cooldown"; "at Stage 4, Empower Skills gain new effects") and an
   // Ultimate ("in Full Bloom, Spirit Magi use their Ultimate with extremely high strength and a cooldown"; only The Forsaken
-  // Iris – Growing Breeze gives Full Bloom, rule 1001012027). The Magus casts all of them on its own AI; a catalog setup of
-  // any of them activates the Magus here. Timing: the Magus skills link only the summon's Split (1 s fixed) — the Thunder
+  // Iris – Growing Breeze gives Full Bloom, rule 1001012027). The Magus casts all of them on its own AI; the summon setup
+  // activates the Magus (its alias below). Timing: the Magus skills link only the summon's Split (1 s fixed) — the Thunder
   // Magus pair links a Module's file (488960 is "模组-暗域壁垒", Nether Bulwark) — so TLIDB cast times are used (flagged).
   // The Empower cooldown is the designer note on game group 692 ("cooldown 4 s"; the same note reads a 3 s duration where
-  // TLIDB says 6 s), provisional. Attack-tagged Magi (Thunder, Rock) use attack-speed; Spell Magi cast-speed.
+  // TLIDB says 6 s). User-supplied 2026-10-21 (Google AI Mode answer, not an in-game test): the base Empower cooldown is 4 s in
+  // game; TLIDB's 10 s (SS13 and SS14 cards) is outdated. Attack-tagged Magi (Thunder, Rock) use attack-speed; Spell Magi cast-speed.
   ...SPIRIT_MAGI
 ];
 
@@ -184,10 +197,11 @@ function buildProfile(definition) {
   const notes = [...(definition.notes || [])];
   if (skills.length && !skills.some((item) => item.role === "basic" && item.timing)) notes.push(`${definition.summon}: every decoded skill of the ${definition.minion} has a cooldown (${skills.map((item) => `${item.name} ${item.timing?.cooldown ?? "?"} s`).join(", ")}), so the Minion idles between uses in the model; an unlisted basic attack, if it has one, is not in the catalog.`);
   for (const item of skills) if (item.timing && item.declaredRole !== item.role) notes.push(`${definition.summon}: ${item.name} is read as the ${item.role} skill from its Split timing (${item.timing.useTime} s, cooldown ${item.timing.cooldown} s), not as the ${item.declaredRole} the catalog order suggests.`);
-  // Alias setups that activate the Minion without a damage row of their own: the Synthetic Troop summon skill itself
-  // ("Summon Machine Guard" is the catalog setup; its Minion skills are what the cycle casts) and a Spirit Magus's
-  // Empower skill (Blazing Spin, Frost Release). They are damage sources of the Minion engine (src/skill-damage-profiles.js).
-  const aliases = [...(definition.family === "synthetic-troop" || definition.family === "spirit-magus" ? [definition.summon] : []), ...(definition.aliases || [])];
+  // Alias setups that activate the Minion without a damage row of their own: the summon skill itself ("Summon Machine Guard",
+  // "Summon Frost Magus", "Module: Goblin Priest" is the board setup; its Minion skills are what the cycle casts). Since
+  // 2026-10-21 the summon is the only board setup of a Minion (src/minion-skill-owners.js): its own skills are never picked.
+  // They are damage sources of the Minion engine (src/skill-damage-profiles.js).
+  const aliases = [...(["synthetic-troop", "spirit-magus", "module"].includes(definition.family) ? [definition.summon] : []), ...(definition.aliases || [])];
   return Object.freeze({ ...definition, notes, skills, aliases, skillNames: skills.map((item) => item.name), engine: skills.some((item) => item.percentByLevel) ? "minion" : null });
 }
 

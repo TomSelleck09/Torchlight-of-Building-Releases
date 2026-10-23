@@ -2,7 +2,9 @@ import { parseBlessingRecovery } from "./blessing-gear-effects.js";
 import { parseBlessingModifier } from "./blessing-model.js";
 import { parseBlockModifier } from "./block-model.js";
 import { namedGearAffixLines } from "./named-gear-affixes.js";
-import { collectNormalizedGearModifiers } from "./engine.js";
+import { collectNormalizedGearModifiers, splitStatSentences } from "./engine.js";
+import { isGearBaseStatLine } from "./gear-base-stats.js";
+import { splitJoinedLegendaryLines } from "./legendary-joined-lines.js";
 import { parseReapingSource } from "./reaping-sources.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { auraGainedLineStatus } from "./aura-gained-effects.js";
@@ -10,14 +12,16 @@ import { allHeroTraitsSs13 } from "./data/heroes/all-hero-traits-ss13.generated.
 import { baseTraitDescriptionForLevel, endsArtificialMoonSection } from "./hero-memory-rules.js";
 import { artificialMoonGate } from "./hero-memory-rules.js";
 import { heroTraitSlotLevel } from "./character-stats.js";
-import { refineCoverage, engineLineStatus, neutralStatuses, routeStatus, coverageContext, combineStatuses, dazeStatus, heroModuleLineStatus, skillLevelLineStatus, intelligenceLineStatus, mainStatLineStatus, nameReadCoreStatus } from "./line-coverage.js";
-import { isNameReadCoreClause, nameReadCoreGrant } from "./granted-core-lines.js";
+import { refineCoverage, engineLineStatus, neutralStatuses, routeStatus, coverageContext, combineStatuses, dazeStatus, heroModuleLineStatus, skillLevelLineStatus, intelligenceLineStatus, mainStatLineStatus, nameReadCoreStatus, CURSE_LIMIT_LINE, CURSE_LIMIT_LINE_REASON } from "./line-coverage.js";
+import { isNameReadCoreClause, nameReadCoreGrant, slateCoreName } from "./granted-core-lines.js";
 import { matchTalentTextClause, talentKeyRoute } from "./talent-text-effects.js";
 import { prismMutationDownside } from "./prism-crafting.js";
 import { residualNonDamageStatus } from "./line-families.js";
 import { resolveHeroModules } from "./hero-trait-modules.js";
 import { weaponLocalLineKind, weaponHands, weaponTypeOf, readWeapon } from "./weapon-damage-model.js";
 import { TRAIT_SLOT_GRANTS, YOUGA_ULTIMATE_ONE_ID } from "./trait-board-grants.js";
+import { authorityLineReading } from "./nether-king-authority.js";
+import { migrateSlateTalentText } from "./talent-text-migrations.js";
 
 export function coverageBadge(status, title = "") {
   const titleAttribute = title ? ` title="${String(title).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")}"` : "";
@@ -30,7 +34,7 @@ function baseGearLineCoverage(item, text, active, block, lowResources, blurEffec
   // batch B1): the core tooltip's rule, as on the panel.
   const nameRead = nameReadCoreGrant(String(text || "").split(/\r?\n/)[0]);
   if (nameRead) return nameReadCoreStatus(nameRead.name);
-  if (item.corrosionModifiers?.length && item.implicitModifiers?.includes(text)) return "Replaced by corrosion";
+  if (item.corrosionModifiers?.length && item.implicitModifiers?.includes(text) && !isGearBaseStatLine(text)) return "Replaced by corrosion";
   if (/^\+[\d.]+\s*%\s+(?:damage|Critical Strike Rating) if you have Blocked recently$/i.test(text)) return block?.recentlyActive ? "In calc" : "Inactive";
   // Movement Speed is summed by the stat sheet; no reader turns it into damage (src/attack-hit-profiles.js: "no Movement
   // Speed total"; survey 2026-10-13 §4.3), and movement-driven buffs are assumed held anyway.
@@ -68,10 +72,14 @@ function baseGearLineCoverage(item, text, active, block, lowResources, blurEffec
     if (/Gear Elemental Damage$/i.test(lines[0]) && !["Fire", "Cold", "Lightning"].some((type) => damage[type])) return "Inactive";
     const planner = coverageContext();
     if (!planner?.activation) return "In calc";
-    return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.speedType === "attack-speed") ? "In calc" : "Inactive";
+    // A weapon-scaled hit with a fixed cadence (Erika's Precise: Thunder Focus) reads the weapon too (legendary audit 2026-10-22:
+    // Twisted Branch's local lines moved Erika while they read Inactive); its windows also follow the attack rate.
+    return (planner.skillHits || []).some((hit) => hit.modeled && (hit.rate?.speedType === "attack-speed" || hit.profile?.weaponScaling)) ? "In calc" : "Inactive";
   }
   const recognized = new Set(collectNormalizedGearModifiers([{ ...item, modifiers: lines, corrosionModifiers: [] }]).map((entry) => entry.text));
-  for (const line of lines) if (parseBlockModifier(line) || /^You can (?:cast|inflict) \d+ additional Curses?$/i.test(line)) recognized.add(line);
+  // (The "+N additional Curses" lines left this set 2026-10-21: the curse limit no longer gates the calculation, so the coverage
+  // layer reads them No DPS effect, src/line-coverage.js CURSE_LIMIT_LINE.)
+  for (const line of lines) if (parseBlockModifier(line)) recognized.add(line);
   for (const line of lines) {
     // Trauma- / Wilt-only Reaps are left to the engine layer, which checks that the ailment is on the dummy (chunk 3).
     const reap = parseReapingSource(line, item.name);
@@ -169,6 +177,12 @@ function gearStatStatus(item, line) {
   // Skill levels by the build's skill tags (gear-pact batch G9), not a static In calc.
   const level = skillLevelLineStatus(normalizePercentageText(line).trim(), coverageContext());
   if (level) return level;
+  // "+X% Strength / Dexterity" (gear affix audit 2026-10-22: "+7% Dexterity" moved the Erika build while it read Counted in stats):
+  // main-stat damage where a modeled skill takes that main stat, as for the flat lines (src/line-coverage.js mainStatLineStatus).
+  if (/^[+-][\d.]+% (?:Strength|Dexterity)$/i.test(normalizePercentageText(line).trim())) {
+    const mainStat = mainStatLineStatus(normalizePercentageText(line).trim(), coverageContext());
+    if (mainStat) return mainStat;
+  }
   // Intelligence / All Stats: main-stat damage only where a ledger takes Intelligence (gear-pact batch chunk 2).
   if (collectNormalizedGearModifiers([{ ...item, modifiers: [line], corrosionModifiers: [] }]).some((entry) => entry.stat === "intelligence")) return mainStatLineStatus(normalizePercentageText(line).trim(), coverageContext()) ?? intelligenceLineStatus(coverageContext());
   const entries = collectNormalizedGearModifiers([{ ...item, modifiers: [line], corrosionModifiers: [] }]);
@@ -344,26 +358,22 @@ const danceLineState = (traitName, line, planner = coverageContext()) => levelle
 // Trait clauses that change the dummy's damage but wait for a hero engine (hero trait audit 2026-10-19 F5, batch B1): before
 // 2026-10-19 they badged No DPS effect / Not on dummy (a word match on "Movement Speed", "Trait Skill", "summoned", ...). They
 // read Not modeled and name the engine and the audit batch (§5) that builds it. Keyed by loadout, matched on the tooltip line.
-const ENGINE = {
-  b12bomb: ["B12", "Bing's bomb engine (Bomb Throwing Speed)"],
-  b12whimsy: ["B12", "Bing's Whimsy / Ingenuity Overload engine"],
-  b11: ["B11", "Rosa's No Guard / Mercury Pts engine"]
-};
+const ENGINE = {};
 const HERO_ENGINE_PENDING = {
   // Carino (Ranger of Glory, Lethal Flash, Zealot of War): modeled by hero trait audit B9 (src/carino-traits.js, src/hero-trait-modules.js
   // "ammo" / "specialAmmo" / "heatUp" / "deflection" / "ouroboros").
   // Erika – Lightning Shadow and Vendetta's Sting: modeled by hero trait audit B5 (src/erika-traits.js, src/hero-trait-modules.js).
   // Rehan (Anger, Seething Silhouette): modeled by hero trait audit B10 (src/rehan-traits.js, src/hero-trait-modules.js "rage" / "burst" /
   // "spirit"); Hysteria's Rage gains (left to B10 by B2) are read there, its Missing Life line by the generic reader (B2).
-  "bing-blast-nova": [[/^Base Bomb Throwing Speed is/i, "b12bomb"], [/additional Bomb Throwing Speed( while moving)?$/i, "b12bomb"]],
-  "bing-creative-genius": [[/^Gains 2 Inspiration Machines/i, "b12whimsy"], [/^Instantly restores 80 Ingenuity Essence/i, "b12whimsy"], [/^Effect of Whimsy Signal enhanced to/i, "b12whimsy"], [/Whimsy Essence Recovery Speed$/i, "b12whimsy"], [/^When casting Ingenuity Overload ?, gains Buff Effect/i, "b12whimsy"]],
+  // Bing (Blast Nova, Creative Genius): modeled by hero trait audit B12 (src/bing-traits.js, src/hero-trait-modules.js "bombs" /
+  // "whimsy").
   // Thea (Wisdom of The Gods, Incarnation of the Gods, Blasphemer): modeled by hero trait audit B7 (src/thea-traits.js,
   // src/hero-trait-modules.js "theaWisdom" / "theaIncarnation" / "theaBlasphemer").
   // Youga – Spacetime Elapse: modeled by hero trait audit B4 (src/hero-trait-modules.js "elapse").
   // Moto (Order Calling, Charge Calling) and Iris (Growing Breeze, Vigilant Breeze): modeled by hero trait audit B6
   // (src/moto-iris-traits.js; src/hero-trait-modules.js "overload" / "chargeCalling" / "irisGrowing" / "irisVigilant").
-  "rosa-high-court-chariot": [[/^For every 1 ?% Block Ratio, .*additional No Guard Effect/i, "b11"]],
-  "rosa-unsullied-blade": [[/^Mana can be consumed via methods other than Mystic Mercury/i, "b11"], [/^For every 1000 Max Mana you have, \+10 ?% Max Mercury Pts/i, "b11"]]
+  // Rosa (High Court Chariot, Unsullied Blade): modeled by hero trait audit B11 (src/rosa-traits.js, src/hero-trait-modules.js
+  // "holyDomain" / "mercury").
   // Sage – Licorice Note: modeled by hero trait audit B8 (src/sage-traits.js, src/hero-trait-modules.js "sageScent").
 };
 /** The engine a hero trait line waits for ({ batch, engine }), or null. */
@@ -396,6 +406,8 @@ export function heroTraitLineCoverageReason(heroId, traitName, line, selected) {
     const state = levelledLineState(heroId, traitName, line);
     if (state.status !== "In calc" && state.reason) return state.reason;
   }
+  // Sing with the Tide's Bard Song lines (hero trait audit B13): the cadence's reason (switched off, no skill, no Min line).
+  if (selected && heroId === "selena-sing-with-the-tide" && /Bard Song/i.test(squash(line))) return selenaBardSongLine(line).reason;
   // Dance of the Deep base trait (user-confirmed 2026-10-13): "+X% additional Terra Skill Damage" reaches Terra skills' hits
   // only, not a Terra skill's own damage over time (Frost Terra, Thornfield).
   if (selected && /additional Terra Skill Damage$/i.test(squash(line))) return "Terra Skill Damage reaches Terra skills' hits only, not their own damage over time (user-confirmed 2026-10-13)";
@@ -423,6 +435,26 @@ export function heroTraitLineCoverage(heroId, traitName, line, selected) {
 // src/theoretical-sources.js model: the Bard state (-20% additional Channeled Skill Damage), the Tide effect (+15%), damage
 // taken on the Tide, Wave Aria, Idyll stacks and Murmurs' Tide Effect, each In calc while its condition holds in the build.
 // Loud Song on its own is not modeled (the planner assumes Bard; Ceaseless Tide holds both).
+// Bard Song lines (Sing with the Tide's base trait, Sea Foam Nocturne): status and reason from planner.singWithTheTide.bardSong and the
+// skill hits that took the bubble cadence (hit.rate.bardSong).
+export function selenaBardSongLine(line, planner = coverageContext()) {
+  const text = normalizePercentageText(String(line || "")).replace(/\s+/g, " ").trim();
+  if (!planner) return { status: "In calc", reason: "" };
+  const bard = planner.singWithTheTide?.bardSong;
+  if (!bard?.selected) return { status: "Inactive", reason: "Sing with the Tide is not the selected loadout" };
+  const channeling = (planner.skillHits || []).filter((hit) => hit.rate?.bardSong);
+  const hits = channeling.filter((hit) => hit.rate.bardSong.bound === "bubble");
+  const main = !bard.enabled ? { status: "Inactive", reason: "switched off (Best-case assumptions: Bard Song cadence): these skills keep their normal casts" }
+    : !channeling.length ? { status: "Inactive", reason: "no skill in this build channels Bard Song (channeled, Mobility, triggered, rate-driven, Combo and Sentry skills keep their own use model)" }
+    : !hits.length ? { status: "Inactive", reason: `${channeling.map((hit) => `${hit.name}: its ${hit.rate.bardSong.bound === "cooldown" ? "cooldown" : "Terra duration"} sets the use rate (a bubble every ${hit.rate.bardSong.bubbleSeconds} s is faster)`).join("; ")}` }
+    : { status: "In calc", reason: `${hits.map((hit) => `${hit.name}: a bubble every ${hit.rate.bardSong.bubbleSeconds} s`).join("; ")} (provisional)` };
+  if (!/^Min Channeled Stacks takes effect twice on Bard Song$/i.test(text)) return main;
+  if (main.status !== "In calc") return main;
+  if (!bard.seaFoam) return { status: "Inactive", reason: "Sea Foam Nocturne is not active" };
+  if (!(bard.lineMin > 0)) return { status: "Inactive", reason: "no Min Channeled Stacks line in this build, so there is nothing to count twice" };
+  return { status: "In calc", reason: `Min Channeled Stacks ${bard.lineMin} × 2 = ${bard.minStacks}: ${bard.stacksPerBubble} stack(s) per bubble (provisional)` };
+}
+
 function selenaTideLineStatus(line, planner) {
   const text = normalizePercentageText(String(line || "")).replace(/\s+/g, " ").trim();
   const conditions = planner?.conditions || null;
@@ -445,10 +477,11 @@ function selenaTideLineStatus(line, planner) {
   if (/Skill Area and .*Skill Effect Duration when on the Tide$/i.test(text)) return !tide ? "Not modeled" : tide.artificialMoon.lines.length ? "In calc" : "Inactive";
   if (/^In the Bard state, it is possible to move while casting Spell Channeled Skills, and .*additional Channeled Skill Damage$/i.test(text)) return "In calc";
   if (/^In the Bard state, (?:Attack Channeled Skills and Attack Mobility Skills cannot be used|the Main Skill is auto channeled while moving|the bubble no longer leaves a Tide)/i.test(text) || /^After losing all Tides/i.test(text) || /^Tide ?'s area is no longer affected by Skill Area$/i.test(text)) return "No DPS effect";
-  // Bard Song channel: the planner's Bard residual is a measured stand-in, not a model of the song (src/scorching-beam-delivery.js).
-  // User-stated 2026-10-13 (uncertain): Bard Song turns non-channeled skills into channeled ones; its interval and max stacks
-  // are unknown, so those skills keep their normal casts (planner.singWithTheTide.bardSong lists them).
-  if (/Bard Song/i.test(text)) return "Partly modeled";
+  // Bard Song (hero trait audit B13; src/selena-leftover-traits.js bardSongState, provisional): the TLIDB keyword's 0.8 s channel
+  // interval and 4 stacks set the bubble cadence of the non-channeled skills the hit model casts manually; Sea Foam's "Min Channeled
+  // Stacks takes effect twice on Bard Song" moves it when a Min Channeled Stacks line holds. Scorching Beam keeps its measured Bard
+  // residual (src/scorching-beam-delivery.js). Before 2026-10-19 both read Partly modeled.
+  if (/Bard Song/i.test(text)) return selenaBardSongLine(text, planner).status;
   if (/^The bubble leaves a Tide/i.test(text)) return held("tideContact");
   if (/^When contacting a Tide ?, gains the following Tide Effect/i.test(text)) return held("tideContact");
   if (/additional damage taken by enemies on the Tide$/i.test(text)) return held("onTheTide");
@@ -468,8 +501,8 @@ export function heroTraitCoverage(heroId, traitName, lines, selected) {
   // Idyll of the Tide: its stacks persist while the Tide is up (user-confirmed 2026-10-09) and own buffs start built
   // (prebuiltSelfBuffs), so the planner applies the configured stacks (15, the cap) × per-level value × Tide Effect
   // (src/selena-tide.js); the line reads In calc while the Idyll condition holds, and the trait follows its lines.
-  // Sea Foam's "Min Channeled Stacks takes effect twice on Bard Song" belongs to the Bard Song channel (not modeled).
-  if (heroId === "selena-sing-with-the-tide" && traitName === "Sea Foam Nocturne") return "Partly modeled";
+  // Sea Foam's "Min Channeled Stacks takes effect twice on Bard Song" is read by the Bard Song cadence (hero trait audit B13); before
+  // 2026-10-19 the trait read Partly modeled. It now follows its lines (Inactive lines neutral, the rule below).
   // Undersea Ballad and Chantey of Sinking: user-confirmed readings 2026-10-13 (increased Tide Effect).
   if (heroId === "selena-sing-with-the-tide" && ["Sing with the Tide", "Wave Aria", "Murmurs of the Distant Tide", "Undersea Ballad", "Chantey of Sinking"].includes(traitName)) return "In calc";
   // Artificial Moon lines that are gated off are Inactive (heroTraitCoverageReason names what is missing); they do not
@@ -508,11 +541,54 @@ export function heroTraitCoverageReason(heroId, traitName, lines, selected) {
   return "";
 }
 
+// Core talents never stack (user rule 2026-10-21; src/granted-core-lines.js resolveCoreCopies): the planner's inactive copies
+// (planner.coreCopies.duplicates). A gear row matches a duplicate copy on the same slot when one of its lines is the copy's; a
+// slate affix matches by its core name (and the slate's id when the caller passes it).
+const squashCoreLine = (line) => String(line ?? "").replace(/\s+/g, " ").trim();
+function duplicateGearCoreCopy(item, text) {
+  const duplicates = coverageContext()?.coreCopies?.duplicates || [];
+  if (!duplicates.length || !item) return null;
+  const lines = String(text ?? "").split(/\r?\n/).map(squashCoreLine).filter(Boolean);
+  return duplicates.find((copy) => (copy.kind === "blend" || copy.kind === "item") && copy.slot === item.slot && (copy.lines || []).some((line) => lines.includes(squashCoreLine(line)))) || null;
+}
+function duplicateSlateCoreCopy(text, slateId = null) {
+  const planner = coverageContext();
+  const name = slateCoreName(text);
+  if (!name || !planner?.coreCopies) return null;
+  const duplicates = (planner.coreCopies.duplicates || []).filter((copy) => copy.kind === "slate" && copy.name === name);
+  if (slateId != null) return duplicates.find((copy) => copy.slateId === slateId) || null;
+  // Without the slate's id, a slate copy is the duplicate only when the kept copy is not a slate's.
+  return duplicates.length && planner.coreCopies.active?.[name]?.kind !== "slate" ? duplicates[0] : null;
+}
+const duplicateCoreReason = (copy) => copy ? `core already active from ${copy.activeFrom}` : "";
+// A "+N additional Curses" line (No DPS effect since 2026-10-21: the curse limit no longer gates the calculation).
+const curseLimitLineReason = (text) => String(text || "").split(/\r?\n|\s+\|\s+|\s+·\s+/).some((part) => CURSE_LIMIT_LINE.test(part.trim().replace(/^[^:|·]+:\s*[^:|·]*Talent[^:|·]*:\s*/i, ""))) ? CURSE_LIMIT_LINE_REASON : "";
+/** The badge title for a gear row that is an inactive duplicate core copy or a curse-limit line, else "". */
+export const gearLineCoverageReason = (item, text) => duplicateCoreReason(duplicateGearCoreCopy(item, text)) || curseLimitLineReason(text);
+// A Nether King Authority-conditioned line ("When Judgment is active, for every 1 Divinity Slate along the connecting line, gain: …",
+// the Banishment counts, the Effect Increase Multiplier and Projection Effect lines; slates audit 2026-10-22): its reading in this
+// build (src/nether-king-authority.js authorityLineReading), or null for any other line.
+const slateAuthorityContext = () => (coverageContext()?.resolvedSlates || []).find((slate) => slate.authorityContext)?.authorityContext || null;
+function authorityLine(text) {
+  const reading = authorityLineReading(String(text || ""), slateAuthorityContext());
+  return reading.status ? reading : null;
+}
+/** The badge title for a slate affix that is an inactive duplicate core copy, a curse-limit line or an Authority-conditioned line, else "". */
+export const slateLineCoverageReason = (text, slateId = null) => duplicateCoreReason(duplicateSlateCoreCopy(text, slateId)) || curseLimitLineReason(text) || (coverageContext() ? authorityLine(text)?.reason || "" : "");
+
 export function gearLineCoverage(item, text, active, block, lowResources, blurEffects) {
+  if (active && duplicateGearCoreCopy(item, text)) return "Inactive";
+  // A two-sentence stat line ("+74% Gear Attack Speed. -10% additional Attack Damage") is judged per sentence, as the engine reads
+  // it (src/engine.js splitStatSentences; gear affix audit 2026-10-22).
+  const sentences = /\n/.test(String(text || "")) ? [] : splitStatSentences(String(text || "").trim());
+  if (sentences.length > 1) return combineStatuses(sentences.map((sentence) => gearLineCoverage(item, sentence, active, block, lowResources, blurEffects)));
   // A named affix line ("Wield My Sword"): its badge summarizes its effect lines (src/named-gear-affixes.js), as a Dirge
   // keyword's badge summarizes the effect lines it carries.
   const named = namedGearAffixLines(text);
   if (named.length) return gearLineCoverage(item, named.join("\n"), active, block, lowResources, blurEffects);
+  // A legendary affix TLIDB prints joined (src/legendary-joined-lines.js): judged per line, as the engine reads it.
+  const split = splitJoinedLegendaryLines(String(text || ""));
+  if (split !== String(text || "")) return combineStatuses(split.split("\n").map((part) => gearLineCoverage(item, part, active, block, lowResources, blurEffects)));
   return refineCoverage(baseGearLineCoverage(item, text, active, block, lowResources, blurEffects), text, undefined, (clause) => baseGearLineCoverage(item, clause, active, block, lowResources, blurEffects));
 }
 
@@ -520,7 +596,11 @@ export function talentLineCoverage(text, active) {
   return refineCoverage(baseTalentLineCoverage(text, active), text, undefined, (clause) => baseTalentLineCoverage(clause, active));
 }
 
-export function slateLineCoverage(text, active) {
+export function slateLineCoverage(text, active, slateId = null) {
+  if (active && duplicateSlateCoreCopy(text, slateId)) return "Inactive";
+  // Authority-conditioned lines: Inactive while the Authority is off; otherwise the effect (× its count) reads as its reader does.
+  const authority = active && coverageContext() ? authorityLine(text) : null;
+  if (authority) return authority.status === "In calc" && authority.text ? slateLineCoverage(authority.text, active, slateId) : authority.status;
   // The engine looks lines up by their bare text: strip each clause's "Class: <Talent type>:" prefix before refining
   // (e.g. "Prophet: Legendary Medium Talent: +10% additional damage against Frozen enemies"), and a Pedigree of Gods core's
   // "Name — " lead ("Goddess of Hunting: Lv.2 Core Talent: Rushed — +30% additional damage …"). Before (core audit
@@ -528,7 +608,8 @@ export function slateLineCoverage(text, active) {
   // No DPS effect, and 4 unmodeled ones read In calc from the slate table.
   const raw = String(text || "");
   const coreName = raw.match(/Core Talent:\s*([A-Z][^—|·]*?) — /)?.[1]?.trim() || null;
-  const body = raw.split(/(\s+\|\s+|\s+·\s+)/).map((part) => part.replace(/^[^:|·]+:\s*[^:|·]*Talent[^:|·]*:\s*/i, "").replace(/^[A-Z][^—|·:]*? — /, "")).join("");
+  // Each clause in the wording the readers get (src/talent-text-migrations.js migrateSlateTalentText, as src/modifier-texts.js).
+  const body = raw.split(/(\s+\|\s+|\s+·\s+)/).map((part) => migrateSlateTalentText(part.replace(/^[^:|·]+:\s*[^:|·]*Talent[^:|·]*:\s*/i, "").replace(/^[A-Z][^—|·:]*? — /, ""))).join("");
   if (coreName && active) {
     // A Pedigree core's clauses read as the same core's on the panel (the core tooltip's per-clause rule): clauses the core
     // applies by name (Affliction, Starfire's Ignite limit …; src/granted-core-lines.js) by the core rule, Daze by its Blur

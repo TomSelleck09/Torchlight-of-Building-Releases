@@ -39,19 +39,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -253,7 +253,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Frenzy",
-      "effect": "+19% chance for Attacks to inflict Paralysis on hit +10% additional Attack Damage dealt to Nearby enemies",
+      "effect": "+19% chance for Attacks to inflict Paralysis on hit\n+10% additional Attack Damage dealt to Nearby enemies",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large4_Icon_64.webp"
     },
@@ -333,19 +333,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -547,7 +547,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Fallback",
-      "effect": "+20% additional Attack Speed when only 1 enemies are Nearby +9% Movement Speed when at least 2 enemies are Nearby",
+      "effect": "+20% additional Attack Speed when only 1 enemies are Nearby\n+9% Movement Speed when at least 2 enemies are Nearby",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large5_Icon_64.webp"
     },
@@ -627,19 +627,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -841,7 +841,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Eagle Eye",
-      "effect": "+16% additional Projectile Skill Critical Strike Damage against Distant enemies +40 Attack Projectile Skill Critical Strike Rating against Distant enemies",
+      "effect": "+16% additional Projectile Skill Critical Strike Damage against Distant enemies\n+40 Attack Projectile Skill Critical Strike Rating against Distant enemies",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large6_Icon_64.webp"
     },
@@ -921,19 +921,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -1135,7 +1135,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Fatal Illusion",
-      "effect": "+50 Spell Critical Strike Rating per Ailment on enemies, up to +100 +6% Critical Strike Damage per Ailment on enemies, up to +12%",
+      "effect": "+50 Spell Critical Strike Rating per Ailment on enemies, up to +100\n+6% Critical Strike Damage per Ailment on enemies, up to +12%",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large7_Icon_64.webp"
     },
@@ -1215,19 +1215,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -1429,7 +1429,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Malleable",
-      "effect": "+6% additional Cast Speed per second when an Elite is Nearby, up to +18% +3% Movement Speed when an Elite is Nearby, up to +9%",
+      "effect": "+6% additional Cast Speed per second when an Elite is Nearby, up to +18%\n+3% Movement Speed when an Elite is Nearby, up to +9%",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large8_Icon_64.webp"
     },
@@ -1509,19 +1509,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -1723,7 +1723,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Elemental Mastery",
-      "effect": "+14% additional Elemental Damage dealt by Spell Skills +1% Elemental Resistance Penetration when hitting an enemy with Elemental Damage, stacking up to 4 times",
+      "effect": "+14% additional Elemental Damage dealt by Spell Skills\n+1% Elemental Resistance Penetration when hitting an enemy with Elemental Damage, stacking up to 4 times",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large9_Icon_64.webp"
     },
@@ -1803,19 +1803,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -2017,7 +2017,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Bloodthirsty Reaping",
-      "effect": "Reaps 0.8 s of Damage Over Time when inflicting an Ailment. The effect has a 6 s Recovery Time against the same target +4% Reaping Duration for each recent Reaping. Stacks up to 4 time(s)",
+      "effect": "Reaps 0.8 s of Damage Over Time when inflicting an Ailment. The effect has a 6 s Recovery Time against the same target\n+4% Reaping Duration for each recent Reaping. Stacks up to 4 time(s)",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large10_Icon_64.webp"
     },
@@ -2097,19 +2097,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -2311,7 +2311,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Whispering Curse",
-      "effect": "+13% additional Ailment Damage against Cursed enemies 11.5% Curse effect",
+      "effect": "+13% additional Ailment Damage against Cursed enemies\n11.5% Curse effect",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large11_Icon_64.webp"
     },
@@ -2391,19 +2391,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -2605,7 +2605,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Unharmed Hunter",
-      "effect": "+80% Affliction effect at Full Life. 10.5 Affliction inflicted per second on Full Life.",
+      "effect": "+80% Affliction effect at Full Life.\n10.5 Affliction inflicted per second on Full Life.",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large12_Icon_64.webp"
     },
@@ -2685,19 +2685,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -2899,7 +2899,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Synthetic Troop Edge",
-      "effect": "+14% chance for Synthetic Troop Minions to deal Double Damage +6% Minion Attack and Cast Speed for 4 s when your Synthetic Troop Minions deal Double Damage",
+      "effect": "+14% chance for Synthetic Troop Minions to deal Double Damage\n+6% Minion Attack and Cast Speed for 4 s when your Synthetic Troop Minions deal Double Damage",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large13_Icon_64.webp"
     },
@@ -2979,19 +2979,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -3193,7 +3193,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Pure Spirit Magus",
-      "effect": "+40% Origin of Spirit Magus effect +5% additional Spirit Magus Skill Damage",
+      "effect": "+40% Origin of Spirit Magus effect\n+5% additional Spirit Magus Skill Damage",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large14_Icon_64.webp"
     },
@@ -3273,19 +3273,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -3487,7 +3487,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Greenhorn",
-      "effect": "+22% additional damage for recently summoned Minions +50 Critical Strike Rating for recently summoned Minions",
+      "effect": "+22% additional damage for recently summoned Minions\n+50 Critical Strike Rating for recently summoned Minions",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large15_Icon_64.webp"
     },
@@ -3781,7 +3781,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Sound Body",
-      "effect": "+10% additional LifeRegenerates 0.6% Life per second",
+      "effect": "+10% additional Life\nRegenerates 0.6% Life per second",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large16_Icon_64.webp"
     },
@@ -4075,7 +4075,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "High Energy Shield",
-      "effect": "+10% additional Max Energy Shield +6% Energy Shield Charge Speed",
+      "effect": "+10% additional Max Energy Shield\n+6% Energy Shield Charge Speed",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large17_Icon_64.webp"
     },
@@ -4369,7 +4369,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Graceful Pace",
-      "effect": "+30% Movement Speed if you haven't been hit recently +6% Movement Speed",
+      "effect": "+30% Movement Speed if you haven't been hit recently\n+6% Movement Speed",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large18_Icon_64.webp"
     },
@@ -4663,7 +4663,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Sound Body",
-      "effect": "-40% additional Physical Damage taken when there are only 1 enemies Nearby -3% additional damage taken",
+      "effect": "-40% additional Physical Damage taken when there are only 1 enemies Nearby\n-3% additional damage taken",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large16_Icon_64.webp"
     },
@@ -5301,19 +5301,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -5515,7 +5515,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Burning Heart",
-      "effect": "Covers targets within a 5m radius with flames and debuffs enemies within the area.Debuff: + 26% additional Fire Damage taken by the enemy for 3s.Cooldown: 5 s.",
+      "effect": "Covers targets within a 5m radius with flames and debuffs enemies within the area.\nDebuff: + 26% additional Fire Damage taken by the enemy for 3s.\nCooldown: 5 s.",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large20_Icon_64.webp"
     },
@@ -5595,19 +5595,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -5809,7 +5809,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Ice Cage",
-      "effect": "Focus energy to create an ice prison Near yourself and the Pact Holder, which debuffs Frostbitten enemies inside every second and makes them take +10% additional Cold Damage, up to 4 stacks, for 6s.Cooldown: 10s",
+      "effect": "Focus energy to create an ice prison Near yourself and the Pact Holder, which debuffs Frostbitten enemies inside every second and makes them take +10% additional Cold Damage, up to 4 stacks, for 6s.\nCooldown: 10s",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large21_Icon_64.webp"
     },
@@ -5889,19 +5889,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -6103,7 +6103,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Excruciating Thunder",
-      "effect": "Bestows the surging power of lightning to the pact holder, granting + 14% additional Lightning Damage and + 15% additional Max Damage for 5s.Cooldown: 10s.",
+      "effect": "Bestows the surging power of lightning to the pact holder, granting + 14% additional Lightning Damage and + 15% additional Max Damage for 5s.\nCooldown: 10s.",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large22_Icon_64.webp"
     },
@@ -6697,7 +6697,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Star-Plucking Dog",
-      "effect": "+5% additional Drop QuantityThe Star of Calamity boss has a 1.2% chance to drop an additional 1 Proof(s) of Star HunterThe Star of Calamity boss on the map has a 50% chance to replicate 1 times",
+      "effect": "+5% additional Drop Quantity\nThe Star of Calamity boss has a 1.2% chance to drop an additional 1 Proof(s) of Star Hunter\nThe Star of Calamity boss on the map has a 50% chance to replicate 1 times",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large3_Icon_64.webp"
     }
@@ -7141,7 +7141,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Plum Blossom Picking",
-      "effect": "+10% Elemental ResistanceConverts 2% of Physical Damage taken to random Elemental Damage",
+      "effect": "+10% Elemental Resistance\nConverts 2% of Physical Damage taken to random Elemental Damage",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large24_Icon_64.webp"
     },
@@ -7221,19 +7221,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -7435,7 +7435,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Poison Drinking",
-      "effect": "You can cast 1 additional Curses+4% Movement Speed if you have cast a Curse Skill recently",
+      "effect": "You can cast 1 additional Curses\n+4% Movement Speed if you have cast a Curse Skill recently",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large25_Icon_64.webp"
     },
@@ -7701,19 +7701,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -7915,7 +7915,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Unholy Throne",
-      "effect": "35% chance for Damage Over Time to spread to targets in Proximity+25% additional Reaping Recovery Speed",
+      "effect": "35% chance for Damage Over Time to spread to targets in Proximity\n+25% additional Reaping Recovery Speed",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large26_Icon_64.webp"
     },
@@ -7971,13 +7971,13 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage I",
-      "effect": "+10% damage +10% Minion Damage",
+      "effect": "+10% damage\n+10% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+10% damage +10% Minion Damage",
+      "effect": "+10% damage\n+10% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -7995,19 +7995,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -8069,13 +8069,13 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage I",
-      "effect": "+10% damage +10% Minion Damage",
+      "effect": "+10% damage\n+10% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+10% damage +10% Minion Damage",
+      "effect": "+10% damage\n+10% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -8099,7 +8099,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+20% damage +20% Minion Damage",
+      "effect": "+20% damage\n+20% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -8167,13 +8167,13 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage I",
-      "effect": "+10% damage +10% Minion Damage",
+      "effect": "+10% damage\n+10% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+10% damage +10% Minion Damage",
+      "effect": "+10% damage\n+10% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -8197,7 +8197,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+20% damage +20% Minion Damage",
+      "effect": "+20% damage\n+20% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -8307,7 +8307,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Gourd Spins, Luck Arrives",
-      "effect": "+5% additional Drop Quantity0% chance for an additional Gold Gladiator to appear in the stage",
+      "effect": "+5% additional Drop Quantity\n0% chance for an additional Gold Gladiator to appear in the stage",
       "ring": "outer",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Large3_Icon_64.webp"
     }
@@ -8537,19 +8537,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -8795,13 +8795,13 @@ export const pactspiritTreesSs13 = {
   "Awooawoo - Blue Sky": [
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -8831,19 +8831,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -8893,13 +8893,13 @@ export const pactspiritTreesSs13 = {
   "Hell Cavalry - Twilight": [
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -8929,7 +8929,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -8991,13 +8991,13 @@ export const pactspiritTreesSs13 = {
   "Witch Antelope of Lust": [
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -9027,7 +9027,7 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -9311,19 +9311,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -9605,19 +9605,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -9899,19 +9899,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -10565,19 +10565,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -10859,19 +10859,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -11711,19 +11711,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -12191,19 +12191,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -12485,19 +12485,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -12965,19 +12965,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -13259,19 +13259,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -13703,25 +13703,25 @@ export const pactspiritTreesSs13 = {
   "Meowth": [
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -13739,19 +13739,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -13801,25 +13801,25 @@ export const pactspiritTreesSs13 = {
   "Miss Melancholy": [
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -13837,13 +13837,13 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -13899,25 +13899,25 @@ export const pactspiritTreesSs13 = {
   "Elixir Fairies": [
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
     {
       "name": "Damage I",
-      "effect": "+12% damage +12% Minion Damage",
+      "effect": "+12% damage\n+12% Minion Damage",
       "ring": "inner",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Small1_Icon_64.webp"
     },
@@ -13935,13 +13935,13 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -14405,19 +14405,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
@@ -14885,19 +14885,19 @@ export const pactspiritTreesSs13 = {
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },
     {
       "name": "Damage II",
-      "effect": "+24% damage +24% Minion Damage",
+      "effect": "+24% damage\n+24% Minion Damage",
       "ring": "mid",
       "icon": "./src/assets/tli/pact-nodes/UI_Contract_Middle1_Icon_64.webp"
     },

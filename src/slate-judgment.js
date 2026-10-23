@@ -1,4 +1,5 @@
 import { slateCells } from "./slate-board.js";
+import { slateCoreName } from "./granted-core-lines.js";
 
 // Same cells as src/app.js godSlateCapturedShapes (the board draws those; pinned in tests/slate-shape-import.test.js).
 const godShapes = {
@@ -33,14 +34,17 @@ export const isActiveJudgment = (slate) => Boolean(slate) && isActive(slate);
  * -30%; everything else takes the link's +40% while the slate sits on a Judgment line (0 otherwise). Shared by the calc
  * (candidate-sources) and the slate tooltip / inspector so both show the same numbers.
  */
-export function judgmentAffixTargetPercent(slate, affix, { linked = false, ownAuthority = false } = {}) {
-  const linkPercent = linked ? JUDGMENT_LINK_EFFECT_PERCENT : 0;
+export function judgmentAffixTargetPercent(slate, affix, { linked = false, ownAuthority = false, linkPercent: boost = JUDGMENT_LINK_EFFECT_PERCENT } = {}) {
+  // `linkPercent`: the boost after Judgment's Effect Increase Multipliers (src/nether-king-authority.js judgmentLinkPercentFor).
+  const linkPercent = linked ? boost : 0;
   if (!ownAuthority) return linkPercent;
   const brand = (slate?.brands || []).includes(affix) || (slate?.affixGroups?.brand || []).filter(Boolean).includes(affix);
   return brand ? JUDGMENT_OWN_BRAND_EFFECT_PERCENT : linkPercent;
 }
 
-export function judgmentAffectedSlateIds(slates, placements, equippedIds) {
+// `includeExempt`: also the slates that sit on a line but take no boost (Space Rift), for the Ultimate nodes that count "every 1
+// Divinity Slate along the connecting line" (slates audit 2026-10-22, provisional).
+export function judgmentAffectedSlateIds(slates, placements, equippedIds, { includeExempt = false } = {}) {
   const equipped = new Set(equippedIds);
   const affected = new Set();
   for (const judgment of slates.filter((slate) => equipped.has(slate.id) && placements?.[slate.id] && isActive(slate))) {
@@ -53,7 +57,7 @@ export function judgmentAffectedSlateIds(slates, placements, equippedIds) {
     for (const slate of slates) {
       if (slate.id === judgment.id || !equipped.has(slate.id) || !placements[slate.id]) continue;
       // User-confirmed 2026-10-13: Space Rift does not receive Judgment's affix-effect bonus.
-      if (JUDGMENT_EXEMPT.has(slate.template || slate.name)) continue;
+      if (!includeExempt && JUDGMENT_EXEMPT.has(slate.template || slate.name)) continue;
       if (slateCells(slate, placements[slate.id]).some((cell) =>
         (cell.row === bend.row && between(cell.column, bend.column, horizontal.column)) ||
         (cell.column === bend.column && between(cell.row, bend.row, vertical.row)))) affected.add(slate.id);
@@ -76,11 +80,14 @@ export function judgmentWholeValue(base, percent = 0) {
   return base >= 1 && factor > 0 ? Math.max(1, rounded) : rounded;
 }
 
-export function scaleJudgmentAffix(affix, fromPercent = 0, toPercent = 0) {
+export function scaleJudgmentAffix(affix, fromPercent = 0, toPercent = 0, { sealedManaException = true } = {}) {
   if (!affix || fromPercent === toPercent) return affix;
   // User-confirmed 2026-10-13 (in-game panel: Sealed Mana Compensation 8%, not 13.6%): Judgment does not boost Sealed Mana
-  // Compensation lines; its other boosts stay as they are.
-  if (/Sealed Mana Compensation/i.test(affix)) return affix;
+  // Compensation lines; its other boosts stay as they are. A Contamination projection scales them (`sealedManaException` false).
+  if (sealedManaException && /Sealed Mana Compensation/i.test(affix)) return affix;
+  // User-confirmed 2026-10-21: Judgment boosts only a slate's non-core affixes; core talent lines (Pedigree form "<tree>: Lv.N Core
+  // Talent: Name — …" or a bare core name) are never boosted, same as a talent-panel core.
+  if (slateCoreName(affix)) return affix;
   const separator = affix.lastIndexOf(": ");
   const prefix = separator < 0 ? "" : affix.slice(0, separator + 2);
   const effect = separator < 0 ? affix : affix.slice(separator + 2);

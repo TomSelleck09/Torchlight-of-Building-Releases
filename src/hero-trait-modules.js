@@ -10,6 +10,9 @@ import { WISDOM, INCARNATION, BLASPHEMER, THEA_HEROES, theaClauseKey, theaLineRe
 import { SAGE, sageClauseKey, sageLineRead, sageRevivedLine } from "./sage-traits.js";
 import { CARINO_HEROES, RETURNING_SWITCH, carinoModuleOf, carinoLineRead, carinoRevivedLine } from "./carino-traits.js";
 import { REHAN_HEROES, rehanModuleOf, rehanLineRead, rehanRevivedLine } from "./rehan-traits.js";
+import { ROSA_HEROES, rosaModuleOf, rosaLineRead, rosaRevivedLine } from "./rosa-traits.js";
+import { BING_HEROES, bingModuleOf, bingLineRead, bingRevivedLine } from "./bing-traits.js";
+import { CRIMSON_SHADE_SWITCH, SELENA_B13_PATTERNS, cleanSelenaB13, selenaB13ClauseKey } from "./selena-leftover-traits.js";
 
 // Youga clause → badge module (src/youga-ultimate-one.js YOUGA_PATTERNS).
 const YOUGA_GROUPS = Object.freeze({
@@ -42,9 +45,13 @@ export const HERO_MODULES = Object.freeze([
     rule: "Deflection (provisional): held while a Deflection gain source holds (movement, Reaping, hit recently, not hit recently; Into the Night's 3 s met by its refresh); the dummy never attacks, so it is never consumed (best-case switch)." },
   { key: "ouroboros", heroes: /^carino-lethal-flash$/, label: "Carino: returning Projectiles", status: "Provisional",
     rule: "Evil Ouroboros (provisional): a Horizontal Projectile skill with at least 1 Penetration passes through the dummy, reaches its max range and returns over 75% of it, hitting the dummy once more as a full hit (best-case switch: the dummy on the return path)." },
-  // Bing – Blast Nova's Firepower Coverage (open question Q-H15, recommended reading; the bombs are batch B12).
-  { key: "firepower", heroes: /^bing-blast-nova$/, label: "Bing: Firepower Coverage", status: "Provisional",
-    rule: "Q-H15 recommended reading (provisional): \"Cannot use Main Skills\" is applied, so the Main Skill deals no damage of its own; the bombs that replace it are not modeled (hero trait audit B12). Best-case switch: off keeps the Main Skill's damage." },
+  // Bing (hero trait audit B12, 2026-10-19; src/bing-traits.js settles the states, src/skill-hit-model.js applies the bombs and the
+  // Ingenuity Overload casts to the Main Skill, src/planner.js Firepower Coverage's penalty (Q-H15); these entries carry the badges and
+  // the derived lines).
+  { key: "bombs", heroes: /^bing-blast-nova$/, label: "Bing: bombs", status: "Provisional",
+    rule: "Q-H14 recommended reading (provisional): a Non-channeling, Non-Sentry Main Attack Projectile Skill throws bombs instead of its own casts (2 per throw, + Blast Barrage's 2 at its chance) at the base 1 throw/s × (1 + the Attack Speed bonuses) × Π(1 + additional Bomb Throwing Speed); each bomb fires the skill's projectiles in all directions and one hits the dummy (Radiation Effect: the volley at the dummy, its Shotgun share); the Main Skill's hit model gives each bomb's damage, with the bomb lines (additional Bomb Damage, Dangerous Runaway's bombs in the last 4 s, Phantom Delivery's 10 bombs on the field, Frenzy Hound on the dummy, Big Bang Pack's Spare Bombs). Firepower Coverage (Q-H15): \"Cannot use Main Skills\" only matters for a Main Skill the bombs cannot replace (best-case switch)." },
+  { key: "whimsy", heroes: /^bing-creative-genius$/, label: "Bing: Whimsy / Ingenuity Overload", status: "Provisional",
+    rule: "Whimsy Essence 20/s (× Recovery Speed, + Inspiration Overflow's Spell Burst gains) → a Whimsy Explosion per 100 while the build deals Spell Damage (its own damage is not published: not modeled); Whimsy Signal (+20%, Trouble Maker's enhanced value, × Signal Effect) on the dummy at min(1, 5 s × explosions/s), Spell hits only; Mind Domain's Whimsy stacks while standing in the field (best-case switch); 25 Ingenuity Essence per explosion → Ingenuity Overload when the Trait Skill is pressed (switch) or Auto-Ingenuity fires it: the Main Skill once + Max Spell Burst × 3 Spell Burst casts; Contingency Inspiration Machines cast it every interval ÷ Cast Speed for 5 s (provisional)." },
   { key: "illusion", heroes: /^youga-spacetime-illusion$/, label: "Youga: Spacetime Illusion", status: "Provisional",
     rule: "\"The Spacetime Illusion uses your Main Skill once every 1.5 s. The Spacetime Illusion's castings are considered your castings\": an extra stream of Main Skill uses at (1 ÷ 1.5 s) × (1 + Spacetime Illusion Cast Frequency), each a full use of the Main Skill (modeled skill hits only); a Spell Main Skill that can Spell Burst does so on the Illusion's casts with its own charge. Hero trait audit B4 (src/youga-spacetime.js; provisional): Me and Myself's Cast Frequency per +5% Cooldown Recovery Speed or 2.5% additional, the moon's Cooldown Recovery Speed stacks per cast (you and the Illusion), Eeeendless Mana's rate (Q-H5: the Illusion's own casting action at your Main Skill cast rate; with Make it Quick as well the rate is an open question) and its damage per 4% Cast Frequency and 25% Mana seal, Make it Quick's Cast Speed share, I'm Out of Mana's stacks (Illusion casts in the last 4 s; Mana assumed sufficient), Telepathy Expert's shared Spell Burst." },
   { key: "elapse", heroes: /^youga-spacetime-elapse$/, label: "Youga: Twisted Spacetime", status: "Provisional",
@@ -62,8 +69,12 @@ export const HERO_MODULES = Object.freeze([
     rule: "\"Enemies within the Main Terra Skill's area are cursed with Lv. 1 Ominous\": with an active Main Terra Skill the dummy is Cursed, so \"against Cursed enemies\" lines hold. Ill Omen is modeled in src/ill-omen.js (best-case Elite loop). This Ominous does not take a curse slot (user-confirmed 2026-10-13)." },
   { key: "danceStep", heroes: /^selena-dance-of-the-deep$/, label: "Selena: Dance Step", status: "Not modeled",
     rule: "Crimson Endless Dance: \"Enters a random Dance Step state when casting a Main Terra Skill\" (game text 345425120: Crimson Dash, Agonizing Revival, Eternal Sleep). Left unmodeled by user decision (2026-10-13): the step is random. Only Eternal Sleep would touch damage (\"+X% additional damage taken ... Ends after taking damage equal to Y% of Max Life\"; X, Y and the stay time are not published)." },
-  { key: "crimsonShade", heroes: /^selena-dance-of-the-deep$/, label: "Selena: Crimson Shade", status: "Not modeled",
-    rule: "Keyword 80061: a Crimson Shade does not move and casts your Main Terra Skill once centred on itself. Whether its Terra reaches the dummy, whether it consumes or gains Terra Charge, and how many Shades stand at once over a cast cycle are not defined." },
+  // Selena leftovers (hero trait audit B13, 2026-10-19; src/selena-leftover-traits.js settles the states, src/skill-hit-model.js applies
+  // the Shades' casts; these entries carry the badges and Red Shoes' derived damage-taken line).
+  { key: "crimsonShade", heroes: /^selena-dance-of-the-deep$/, label: "Selena: Crimson Shade", status: "Provisional",
+    rule: "Lonely Ensemble (game record 1710013; keyword 80061: a Crimson Shade does not move and casts your Main Terra Skill once centred on itself; hero trait audit B13, provisional): each Main Terra cast, at most once per 1 s, summons min(Max Spell Burst, Max Crimson Shade Quantity) Shades; each Shade's Terra is a full extra use of the Main Terra on the dummy (best case: the Shade stands inside your Terra, the dummy inside it; switch crimsonShadeHits) at the trait's -X% additional damage, consuming no Terra Charge (no Terra Charge bonus). A Terra DoT is one instance on the dummy, so the Shades add no DoT." },
+  { key: "redShoes", heroes: /^selena-dance-of-the-deep$/, label: "Selena: Red Shoes of Cruelty", status: "Provisional",
+    rule: "Red Shoes of Cruelty (revived; hero trait audit B13, provisional): while the Main Terra Skill is active, the dummy inside it takes +min(cap, share% × Movement Speed bonus)% additional damage (hits and damage over time, like the Crimson Tide); the Movement Speed bonus is the stat sheet's (movement held in full, user rule 2026-10-14) less Activation Medium: Terra's -30% for 2 s at its trigger uptime." },
   { key: "cycleResist", heroes: /^selena-dance-of-the-deep$/, label: "Selena: The Cycle I Resist", status: "Provisional",
     rule: "TLIDB / game affixes 480006336, 591569216: 25% of the Critical Strike Rating increase is added to Terra Skill Duration; on a Terra cast while the previous Main Terra Skill lasts, Reap roll% (6–10) of its remaining duration (Reaping Duration applies). Modeled as a Reaping source at the Main Terra recast interval Δt: roll% × (T − Δt) s per Reap, T = 6 s × (1 + Terra Skill Duration % incl. the crit share); no internal cooldown, so every recast Reaps (user, 2026-10-13: the tooltip shows none; no cooldown node in either game record) (src/selena-dance.js resolveCycleResist). User-confirmed 2026-10-13: every Critical Strike Rating increase / decrease reaching the Main Terra counts (Minion and other skill types excluded), and the Reap settles every DoT on the dummy. Provisional: a skill-hit Terra's recast policy." },
   { key: "activationMediumTerra", heroes: /^selena-dance-of-the-deep$/, label: "Selena: Activation Medium: Terra", status: "Provisional",
@@ -116,10 +127,12 @@ export const HERO_MODULES = Object.freeze([
     rule: "Selves of All Realms pressed on cooldown: its Alternate Spacetime Youga effect on the supported skill at its uptime; I Am the Measure of All Time (cooldown extended by Cooldown Recovery Speed, capped at 24 s; +X% effect scales each value and cap; duration increases at 200%); I Need Not Lift a Finger's +X% additional Core damage while active and 4 s after. Provisional." },
   { key: "yougaOther", heroes: /^youga-the-ultimate-one$/, label: "Youga: other clauses", status: "Not modeled",
     rule: "A Youga clause this model has no reader for (a wording that differs from the TLIDB text)." },
-  // Rosa's Holy Domain (open question Q-H7, recommended reading; hero trait audit 2026-10-19 §6): only the base trait's Domain and its
-  // +44% are read; the other Holy Domain / Murderous Intent clauses wait for batch B11.
+  // Rosa (hero trait audit B11, 2026-10-19; src/rosa-traits.js settles the states, src/planner.js adds Mercury Baptism as a damage
+  // source, src/combat-states.js its Infiltration; these entries carry the badges and the derived lines). Q-H7's reading is kept.
   { key: "holyDomain", heroes: /^rosa-high-court-chariot$/, label: "Rosa: Holy Domain", status: "Provisional",
-    rule: "Q-H7 recommended reading (provisional): Murderous Intent restores 4 per second and a Holy Domain costs 15, so the Trait Skill (pressed whenever 15 are ready: the Trait Skill switch) recasts it every 3.75 s; the Domain is read as lasting at least that long (its duration is not in the trait text or the readable records: open question), so it is held at uptime 1, centred on you with the dummy pulled inside: \"While inside the Holy Domain, +44% additional damage\" holds. The other Holy Domain and Murderous Intent clauses (Unbreakable Stand, Invulnerability, Divine Intervention, Desperation, Improvision) are batch B11." },
+    rule: "Q-H7 recommended reading (provisional): Murderous Intent restores 4 per second and a Holy Domain costs 15, so the Trait Skill (pressed whenever 15 are ready: the Trait Skill switch) recasts it every 3.75 s; the Domain is read as lasting at least that long (TLIDB keyword: it closes 1 s after you leave it), so it is held at uptime 1, centred on you with the dummy pulled inside. Murderous Intent is held at its max 100 (TLIDB keyword; cast once and held, best-case switch) for Divine Intervention; the dummy (a Boss) counts as 5 enemies (Enemy Count keyword, switch) for Unbreakable Stand; blocks follow the hit-recently best case (Improvision at its cap, Repent to the Light's 15 Block Ratio stacks); Desperation keeps No Guard on the dummy: 10% × (1 + 100% for the 2 channeled stacks lost) × (1 + per-1% × Block Ratio, base 30%)." },
+  { key: "mercury", heroes: /^rosa-unsullied-blade$/, label: "Rosa: Mystic Mercury / Realm of Mercury", status: "Provisional",
+    rule: "Mystic Mercury (TLIDB keyword: 10% Unsealed Max Mana per non-Channeled Attack use for 10 Mercury Pts, 1% for 5 when short) fills Max Mercury Pts (100, config_char_field 2501122; Utmost Devotion raises it) at the measured attack rate; Realm of Mercury drains 30 Pts/s (+Baptism's Pts every 0.5 s), restores 15% Mana per use and gives +2% additional Attack Speed and Elemental Damage per 10% Unsealed Mana. Each bonus is time-averaged over the simulated cycle; Mercury Baptism re-deals its share of the non-Channeled Attack Elemental Hit Damage as True Damage while the Realm exists. Provisional." },
   // Gemma (hero trait audit B3, 2026-10-19; src/gemma-traits.js): the Frostfire Rampage cycle (Q-H4), Cold Pulse and the
   // Purgatory extensions. Before B3 the Rampage read Not modeled ("whether casts during the cooldown count is not in the text").
   { key: "frostfire", heroes: /^gemma-ice-fire-fusion$/, label: "Gemma: Frostfire Rampage", status: "Provisional",
@@ -215,7 +228,11 @@ const MODULE_LINES = {
   heatUp: { test: (text) => carinoModuleOf(text) === "heatUp" || carinoModuleOf(text, { revived: true }) === "heatUp" },
   deflection: { test: (text) => carinoModuleOf(text) === "deflection" || carinoModuleOf(text, { revived: true }) === "deflection" },
   ouroboros: { test: (text) => carinoModuleOf(text) === "ouroboros" },
-  firepower: /^Cannot use Main Skills$/i,
+  // Bing (B12): every clause src/bing-traits.js reads (its revived lines included); plain lines (Projectile Size, Movement Speed, the
+  // Life / Energy Shield restores, Empower and Defensive Skill Effect Duration, +1 Max Spell Burst, +20% additional Spell Damage, the
+  // Spell Burst hit line) stay with the generic readers.
+  bombs: { test: (text) => bingModuleOf(text) === "bombs" || bingModuleOf(text, { revived: true }) === "bombs" },
+  whimsy: { test: (text) => bingModuleOf(text) === "whimsy" || bingModuleOf(text, { revived: true }) === "whimsy" },
   // Rehan (B10): every clause src/rehan-traits.js reads (its revived lines included); plain lines (Hysteria's Missing Life, Split Form's
   // Max Life and Life Regain, Ritual's Movement Speed, Ancestral Hate's defensive lines) stay with the generic readers.
   rage: { test: (text) => rehanModuleOf(text) === "rage" || rehanModuleOf(text, { revived: true }) === "rage" },
@@ -227,7 +244,10 @@ const MODULE_LINES = {
   theaWisdom: { test: (text) => Boolean(theaClauseKey(WISDOM, text)) },
   theaIncarnation: { test: (text) => Boolean(theaClauseKey(INCARNATION, text)) },
   theaBlasphemer: { test: (text) => Boolean(theaClauseKey(BLASPHEMER, text)) },
-  holyDomain: /Holy Domain|Murderous Intent/i,
+  // Rosa (B11): every clause src/rosa-traits.js reads (its revived lines included); plain lines (Block Chance, Max Mana, the
+  // defensive Realm line, the area and on-kill lines of Boundless Sanctuary, Utmost Devotion's cost line) stay with the generic readers.
+  holyDomain: { test: (text) => rosaModuleOf(text) === "holyDomain" || rosaModuleOf(text, { revived: true }) === "holyDomain" },
+  mercury: { test: (text) => rosaModuleOf(text) === "mercury" || rosaModuleOf(text, { revived: true }) === "mercury" },
   // Sage (B8): the trait clauses and the revived Omni-Elixir Side Effect / Basic Pharmacology Manuscript lines.
   sageScent: { test: (text) => Boolean(sageClauseKey(text) || sageClauseKey(text, { revived: true })) },
   lightningShadow: { test: (text) => Object.values(LIGHTNING_PATTERNS).some((pattern) => pattern !== LIGHTNING_PATTERNS.numbedDuration && pattern.test(cleanErika(text))) },
@@ -261,6 +281,7 @@ const MODULE_LINES = {
   paradise: /are cursed with Lv\. \d+ Ominous/i,
   danceStep: /Dance Step/i,
   crimsonShade: /Crimson Shade/i,
+  redShoes: /^While Main Terra Skill is active, (?:additionally )?increases the damage taken by enemies within the Terra Skill Area/i,
   cycleResist: /Terra Skill Duration|previous Main Terra Skill/i,
   activationMediumTerra: /Activation Medium/i
 };
@@ -504,6 +525,12 @@ export function heroModuleRevivedLine(heroId, text) {
   if (CARINO_HEROES.has(heroId)) return carinoRevivedLine(heroId, clean);
   // Rehan (B10): Hero's Resourcefulness, Furious Roar, Ancestral Hate's Life cost, Starfall Wasteland.
   if (REHAN_HEROES.has(heroId)) return rehanRevivedLine(heroId, clean);
+  // Rosa (B11): Between the Holy Land and Hell, Mercury Purged.
+  if (ROSA_HEROES.has(heroId)) return rosaRevivedLine(heroId, clean);
+  // Bing (B12): Bing's Big Bang Pack, Genius Idea Generator.
+  if (BING_HEROES.has(heroId)) return bingRevivedLine(heroId, clean);
+  // Selena (B13): Red Shoes of Cruelty's damage-taken line (its self True Damage line has no DPS effect and stays with the generic reader).
+  if (heroId === "selena-dance-of-the-deep") return selenaB13ClauseKey(clean) === "redShoesTaken";
   return false;
 }
 
@@ -532,13 +559,17 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
   // Moto / Iris (B6): the best-case switches are listed once per call.
   const b6 = { switched: false };
   // Thea (B7): the settled state (Mountain of Sins reads the dummy's crowd control from the combat states) and its switches; Rosa's
-  // Holy Domain switch (Q-H7).
+  // switches (B11: the Trait Skill switch of Q-H7 and the best-case switches) once per call.
   const thea = { switched: false, state: settleTheaCrowdControl(state.thea || null, state.enemyCrowdControl || null) };
   const rosa = { switched: false };
   // Sage (B8): the best-case switches are listed once per call.
   const sage = { switched: false };
-  // Carino (B9) and Bing's Firepower Coverage (Q-H15): the best-case switches are listed once per call.
-  const carino = { switched: false, returning: false, firepower: false };
+  // Carino (B9): the best-case switches are listed once per call.
+  const carino = { switched: false, returning: false };
+  // Bing (B12): the best-case switches (Firepower Coverage, Mind Domain's field) once per call.
+  const bing = { switched: false };
+  // Selena (B13): the Crimson Shade switch once per call.
+  const selena = { shadeSwitched: false };
   // Rehan (B10): the best-case switches are listed once per call.
   const rehan = { switched: false };
   let takenConversion = null;
@@ -584,22 +615,21 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
       if (active) for (const body of read.bodies) derive(body, line.source, read.reason);
       continue;
     }
-    // Rosa – High Court Chariot's Holy Domain (open question Q-H7): the base trait's Domain and +44%; the rest waits for B11.
-    if (module.key === "holyDomain") {
-      const pressed = state.requestedConditions?.traitSkillOnCooldown !== false;
-      const domain = traits.some((item) => /^When having at least \d+ Murderous Intent, you can cast the Trait Skill and consume \d+ Murderous Intent to create a Holy Domain/i.test(item.clean)) && traits.some((item) => /^Restores \d+(?:\.\d+)? Murderous Intent per second$/i.test(item.clean));
-      const held = domain && pressed;
-      const why = !domain ? "the Holy Domain or Murderous Intent line is not in the build" : "the Trait Skill switch is off: the Holy Domain is never cast";
-      if (!rosa.switched && domain) { rosa.switched = true; timedEffects.push({ id: "traitSkillOnCooldown", label: "Holy Domain cast whenever 15 Murderous Intent are ready (Trait Skill)", source: module.label, target: "self", toggle: true, provisional: true, enabled: pressed, active: held, summary: "the Holy Domain held (a recast every 3.75 s; Q-H7: its duration assumed at least that long)", reason: held ? "best-case assumption" : why, parts: [] }); }
-      let match;
-      if ((match = line.clean.match(/^While inside the Holy Domain ?, \+(\d+(?:\.\d+)?) ?% additional damage$/i))) {
-        const body = `+${num(match[1])}% additional damage`;
-        entry(line, module, held, held ? `the Holy Domain is held at uptime 1 (a recast every 3.75 s from 4 Murderous Intent per second; its duration is not in the readable data and is read as at least 3.75 s: Q-H7, provisional), centred on you: ${body}` : why, [body]);
-        if (held) derive(body, line.source, "Holy Domain held (Q-H7)");
-      } else if (/^When having at least \d+ Murderous Intent, you can cast the Trait Skill/i.test(line.clean)) entry(line, module, held, held ? "cast whenever 15 Murderous Intent are ready (every 3.75 s at 4 per second), the dummy pulled inside: held at uptime 1 (Q-H7, provisional)" : why);
-      else if (/^Restores \d+(?:\.\d+)? Murderous Intent per second$/i.test(line.clean)) entry(line, module, held, held ? "4 Murderous Intent per second: a Holy Domain (15) every 3.75 s, which holds it (Q-H7, provisional)" : why);
-      else if (/^Restores \d+ Murderous Intent when Blocking$/i.test(line.clean) || /^For every \d+ Murderous Intent you currently have, \+\d+(?:\.\d+)? ?% Holy Domain radius/i.test(line.clean)) entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active: false, conditionText: `${module.label}: the Holy Domain is already held at uptime 1 from the 4 per second regeneration (Q-H7); radius and Block Chance change no dummy figure`, status: "No DPS effect", provisional: true, bodies: [], condition: "heroModule", group: null, module: module.key });
-      else entry(line, { ...module, status: "Not modeled" }, false, "this Holy Domain / Murderous Intent clause waits for Rosa's batch B11 (Murderous Intent level, Block-driven gains, No Guard)");
+    // Rosa (B11; src/rosa-traits.js rosaLineRead): each clause's status and its derived lines; the Trait Skill switch (Q-H7) and the
+    // best-case switches once per call.
+    if (module.key === "holyDomain" || module.key === "mercury") {
+      const rosaState = state.rosa || null;
+      if (!rosa.switched) {
+        rosa.switched = true;
+        const c = rosaState?.chariot;
+        if (c?.domainLines) timedEffects.push({ id: "traitSkillOnCooldown", label: "Holy Domain cast whenever 15 Murderous Intent are ready (Trait Skill)", source: module.label, target: "self", toggle: true, provisional: true, enabled: c.pressed, active: c.held, summary: "the Holy Domain held (a recast every 3.75 s; Q-H7: its duration assumed at least that long)", reason: c.held ? "best-case assumption" : c.why, parts: [] });
+        for (const item of rosaState?.switches || []) timedEffects.push({ ...item, source: module.label, target: "self", toggle: true, provisional: true, parts: [] });
+      }
+      const read = rosaLineRead(heroId, line.clean, rosaState, { revived: line.origin === "memory" });
+      if (!read) { entry(line, { ...module, status: "Not modeled" }, false, "this Rosa clause is not read"); continue; }
+      const active = read.status === "In calc";
+      entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active, conditionText: `${module.label}: ${read.reason}`, status: read.status, provisional: true, bodies: read.bodies.map((body) => ({ body, derivedText: active ? body : null, readers: ["hero"] })), condition: "heroModule", group: null, module: module.key });
+      if (active) for (const body of read.bodies) derive(body, line.source, read.reason);
       continue;
     }
     if (/^youga/.test(module.key)) {
@@ -636,12 +666,15 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
       if (active) for (const body of read.bodies) derive(body, line.source, read.reason, read.key === "tunnelPenalty" ? { rehanNonBurst: true } : { rehanPhase: "average" });
       continue;
     }
-    // Bing – Blast Nova's Firepower Coverage (Q-H15): "Cannot use Main Skills" (applied in src/planner.js) and its switch.
-    if (module.key === "firepower") {
-      const fire = state.firepowerCoverage || null;
-      const on = state.requestedConditions?.bingFirepowerNoMain !== false;
-      if (!carino.firepower) { carino.firepower = true; timedEffects.push({ id: "bingFirepowerNoMain", label: "Firepower Coverage: Cannot use Main Skills (applied)", source: module.label, target: "self", toggle: true, provisional: true, enabled: on, active: Boolean(fire?.applied), summary: `${fire?.mainName || "the Main Skill"} deals no damage of its own; the bombs that replace it are not modeled (B12)`, reason: fire?.applied ? "the penalty is applied so the build does not read stronger than it is (Q-H15, provisional)" : on ? "no Main Skill" : "switched off: the Main Skill keeps its damage", parts: [] }); }
-      entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active: Boolean(fire?.applied), conditionText: `${module.label}: ${fire?.applied ? `applied (Q-H15, provisional): ${fire.mainName} deals no damage of its own; the bombs that replace it are not modeled (hero trait audit B12)` : !on ? "switched off (best-case assumptions): the Main Skill keeps its damage" : "no Main Skill in the build"}`, status: fire?.applied ? "In calc" : "Inactive", provisional: true, bodies: [], condition: "heroModule", group: null, module: module.key });
+    // Bing (B12; src/bing-traits.js bingLineRead): each clause's status and its derived lines; the best-case switches once per call.
+    if (module.key === "bombs" || module.key === "whimsy") {
+      const bingState = state.bing || null;
+      if (!bing.switched) { bing.switched = true; for (const item of bingState?.switches || []) timedEffects.push({ ...item, source: module.label, target: "self", toggle: true, provisional: true, parts: [] }); }
+      const read = bingLineRead(heroId, line.clean, bingState, { revived: line.origin === "memory" });
+      if (!read) { entry(line, { ...module, status: "Not modeled" }, false, "this Bing clause is not read"); continue; }
+      const active = read.status === "In calc";
+      entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active, conditionText: `${module.label}: ${read.reason}`, status: read.status, provisional: true, bodies: read.bodies.map((body) => ({ body, derivedText: active ? body : null, readers: ["hero"] })), condition: "heroModule", group: read.group || null, module: module.key });
+      if (active) for (const body of read.bodies) derive(body, line.source, read.reason);
       continue;
     }
     if (module.key === "illusion") {
@@ -861,6 +894,28 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
         entry(line, module, active, !pulse ? off : !read.frostbitten ? "the dummy is not Frostbitten (a Cannot inflict Frostbite line), so it never fires" : `an extra Cold Pulse per Frostbite infliction, at most every ${match[1]} s on the dummy (${read.otherFrostbiteOnHit ? "another Frostbite source on hit: every 2 s from t = 0" : "the pulse's own Frostbite: with each base pulse"}): ${cadence} (provisional)`);
       } else if (PATTERNS.pulseArea.test(line.clean)) neutral("No DPS effect", "the pulse lands at the dummy's location; a larger area changes no single-target damage");
       else entry(line, { ...module, status: "Not modeled" }, false, "this Cold Pulse clause is not read");
+      continue;
+    }
+    // Selena leftovers (B13; src/selena-leftover-traits.js crimsonShadeState / redShoesState settle the states in src/planner.js).
+    if (module.key === "crimsonShade") {
+      const shade = state.crimsonShade || null;
+      if (shade && !selena.shadeSwitched && shade.why !== "no Crimson Shade summon line") {
+        selena.shadeSwitched = true;
+        timedEffects.push({ id: CRIMSON_SHADE_SWITCH, label: "Crimson Shades' Terras hit the dummy (Lonely Ensemble)", source: module.label, target: "self", toggle: true, provisional: true, parts: [], enabled: shade.enabled, active: Boolean(shade.active),
+          summary: shade.summary, reason: shade.active ? "best case: each Shade stands inside your Main Terra, which follows you with the dummy inside (provisional)" : shade.why || "no Shade" });
+      }
+      const active = Boolean(shade?.active);
+      const why = !shade ? "no Lonely Ensemble line" : shade.why || "no Shade";
+      if (SELENA_B13_PATTERNS.shadeSummon.test(cleanSelenaB13(line.clean))) entry(line, module, active, active ? `${shade.summary}; each Shade's Terra adds a full use of the Main Terra's hits on the dummy (no Terra Charge consumed, so no Terra Charge bonus; a Terra DoT is one instance, so no extra DoT; provisional)` : why);
+      else if (SELENA_B13_PATTERNS.shadeQuantity.test(cleanSelenaB13(line.clean))) entry(line, module, active, active ? `Max Crimson Shade Quantity ${shade.maxQuantity} caps the Shades per cast at ${shade.count} (Max Spell Burst ${shade.maxSpellBurst}); ${shade.additionalPercent}% additional damage on the Shades' Terras only (provisional)` : why);
+      else entry(line, { ...module, status: "Not modeled" }, false, "this Crimson Shade clause is not read");
+      continue;
+    }
+    if (module.key === "redShoes") {
+      const shoes = state.redShoes || null;
+      const active = Boolean(shoes?.active);
+      entry(line, module, active, active ? `${shoes.detail} → ${shoes.body} on the dummy inside the Main Terra Skill (hits and damage over time; provisional)` : shoes?.why || "no Red Shoes of Cruelty line", active ? [shoes.body] : []);
+      if (active) derive(shoes.body, line.source, "Red Shoes of Cruelty: Main Terra Skill active");
       continue;
     }
     if (module.key === "crimsonTide") {

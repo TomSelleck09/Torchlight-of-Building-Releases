@@ -45,5 +45,7 @@ export function activationMediumDotTrigger({ setup = null, castRate = null, cool
   const triggerIntervalSeconds = castSpeedScaled ? castSpeedScaledTriggerInterval(trigger.interval, { share, castIncreasedPercent, castAdditionalFactor, cooldownRecoveryPercent, cooldownAdditionalFactor }) : trigger.interval;
   const effectiveCooldownSeconds = cooldownSeconds > 0 ? cooldownSeconds / Math.max(0.0001, (1 + cooldownRecoveryPercent / 100) * cooldownAdditionalFactor) : 0;
   const intervalSeconds = Math.max(triggerIntervalSeconds, effectiveCooldownSeconds);
-  return { intervalSeconds, triggerIntervalSeconds, effectiveCooldownSeconds, castsPerSecond: 1 / intervalSeconds, cooldownSeconds: trigger.interval, skillCooldownSeconds: cooldownSeconds, castSpeedScaled, share, castIncreasedPercent, castAdditionalFactor: castSpeedScaled ? castAdditionalFactor : 1, cooldownRecoveryPercent, cooldownAdditionalFactor, cooldownSources, source: trigger.source, medium: trigger.support || String(trigger.source || "").replace(/^Support: /, "") };
+  return { intervalSeconds, triggerIntervalSeconds, effectiveCooldownSeconds, castsPerSecond: 1 / intervalSeconds, cooldownSeconds: trigger.interval, skillCooldownSeconds: cooldownSeconds, castSpeedScaled, share, castIncreasedPercent, castAdditionalFactor: castSpeedScaled ? castAdditionalFactor : 1, cooldownRecoveryPercent, cooldownAdditionalFactor, cooldownSources, source: trigger.source, medium: trigger.support || String(trigger.source || "").replace(/^Support: /, ""),
+    // "Always attempts to trigger" mediums start ready: the first trigger lands at engagement (user decision 2026-10-22).
+    startsReady: Boolean(trigger.startsReady) };
 }

@@ -40,7 +40,7 @@ function manualConditionsHtml(planner, probe, activeNames) {
     const active = sealed || (groupConditions[id] && id !== "moving" && id !== "nearTarget" ? planner.conditions?.[id] === true : planner.conditions?.[id] !== false);
     const skill = energySkills[id];
     const note = sealed ? `Sealed ${id === "lowLifeAssumed" ? "Life" : "Mana"} keeps it below 35%`
-      : skill && !activeNames.has(skill) ? `${skill} inactive: insufficient Energy or disabled`
+      : skill && !activeNames.has(skill) ? `${skill} inactive: switched off on the board`
       : active ? "On" : "Off";
     return toggleRow({ label, note, attrs: `data-combat-condition="${id}"`, checked: active, disabled: Boolean(sealed) });
   });

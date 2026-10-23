@@ -116,11 +116,15 @@ export function closestMemoryTier(tiers, value) {
     .sort((a,b) => Math.abs(memoryTierNumericValue(a.effect)-numeric)-Math.abs(memoryTierNumericValue(b.effect)-numeric))[0] || null;
 }
 
+// Wax and Wane (Memory Revival: "Increases Base Stat values"): ×1.3, the SS13 value. SS14's patch notes say the increase is about
+// 23% higher; its exact value is not in the readable game data (config_modifier, the language table) or on TLIDB (checked
+// 2026-10-21), so it stays until a logged Wax and Wane memory gives it (src/game-log-import.js lists the factor it sees).
+export const WAX_AND_WANE_FACTOR = 1.3;
 export function memoryImplicitText(baseStat, waxAndWane = false) {
   if (!waxAndWane) return baseStat;
   const match = String(baseStat || "").match(/^([+-]?)(\d+(?:\.\d+)?)(.*)$/);
   if (!match) return baseStat;
-  const scaled = Math.round(Number(match[2]) * 130) / 100;
+  const scaled = Math.round(Number(match[2]) * WAX_AND_WANE_FACTOR * 100) / 100;
   return `${match[1]}${scaled}${match[3]}`;
 }
 

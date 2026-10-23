@@ -33,6 +33,15 @@ const clean = (line) => String(line?.text ?? "").replace(/\s+/g, " ").replace(/(
 const MAX_CHARGE = /^(?:\+(\d+) Max Terra Charge Stacks?|Max Terra Charge Stacks? \+(\d+))$/i;
 const SPELL_BURST_SHARE = /^Any increase\/decrease on Max Spell Burst Stacks is also applied to Max Terra Charge Stacks, up to \+(\d+)$/i;
 const RECOVERY = /^\+?(-?\d+(?:\.\d+)?)% Terra Charge (?:Recovery|Restoration) Speed$/i;
+// Kingly Armor: "Terra Charge's Restoration Speed is set to N% of the default value" (legendary audit 2026-10-22, provisional): the
+// build's Recovery / Restoration Speed lines are replaced by N% - 100% (the highest such line wins); Crimson Gash's combat penalty
+// still applies on top (src/open-questions.js legendary-terra-restoration-set).
+export const RECOVERY_SET = /^Terra Charge ?'s Restoration Speed is set to (\d+(?:\.\d+)?) ?% of the default value$/i;
+// "100% chance to gain 1 charge stacks when using a Terra Skill" (Vorax affix; game affix 444624: on using a Terra skill (tag
+// 6000370), chance P1, node 2230 addRank P2 filtered to Terra skills; gear affix batch B, 2026-10-22). Read as Terra Charge gained at
+// the use and consumed by that same cast, up to the max (provisional: the order of the gain and the consumption is not published;
+// a cast that already holds the max, as under Activation Medium: Terra, gains nothing from it).
+export const TERRA_CHARGE_ON_USE = /^(\d+(?:\.\d+)?)% chance to gain (\d+) charge stacks when using a Terra Skill$/i;
 // Current text: "Each Terra Charge consumed by Terra skills now grants 32% Damage Bonus to that Terra skill" (TLIDB); the earlier
 // wording is kept for saved text.
 const MOON = /^(?:Increases damage provided by Terra Skills to (\d+(?:\.\d+)?)% for every 1 Terra Charge they consume|Each Terra Charge consumed by Terra skills now grants (\d+(?:\.\d+)?)% Damage Bonus to that Terra skill)$/i;
@@ -60,7 +69,8 @@ export function settleGash(charges, castIntervalSeconds = null, { minimum = 0 } 
   const held = (stacks) => {
     const interval = intervalAt(stacks);
     const cast = castIntervalSeconds > 0 ? castIntervalSeconds : interval;
-    const consumed = Math.max(minimum, Math.min(charges.maxCharges, cast / interval));
+    // The on-use charge (TERRA_CHARGE_ON_USE) joins a fixed recast's charges; a charge-bound recast already holds its charges.
+    const consumed = Math.max(minimum, Math.min(charges.maxCharges, cast / interval + (castIntervalSeconds > 0 ? charges.onUseGain || 0 : 0)));
     return Math.min(GASH.maxStacks, gash.perCharge * consumed / cast * GASH.durationSeconds);
   };
   let low = 0, high = GASH.maxStacks;
@@ -74,11 +84,13 @@ export function settleGash(charges, castIntervalSeconds = null, { minimum = 0 } 
 
 /** Terra Charge state from the build's lines (any hero; the Dance traits supply most of them). */
 export function resolveTerraCharges(modifierTexts = [], { maxSpellBurst = 0 } = {}) {
-  const maxSources = [], recoverySources = [];
-  let perChargePercent = TERRA_CHARGE_BASE_PERCENT, perChargeSource = null, gash = null;
+  const maxSources = [], recoverySources = [], onUseSources = [];
+  let perChargePercent = TERRA_CHARGE_BASE_PERCENT, perChargeSource = null, gash = null, recoverySet = null;
   for (const line of modifierTexts) {
     const text = clean(line), multiplier = line.multiplier ?? 1;
-    let match = text.match(GASH_GAIN);
+    let match = text.match(TERRA_CHARGE_ON_USE);
+    if (match) { onUseSources.push({ source: line.source, text, value: Math.min(1, num(match[1]) / 100) * num(match[2]) * multiplier }); continue; }
+    match = text.match(GASH_GAIN);
     if (match) {
       const perCharge = num(match[1]) / Math.max(1e-9, num(match[2])) * multiplier;
       gash = gash ? { ...gash, perCharge: gash.perCharge + perCharge, text: `${gash.text}; ${text}` } : { source: line.source, text, perCharge };
@@ -92,16 +104,20 @@ export function resolveTerraCharges(modifierTexts = [], { maxSpellBurst = 0 } = 
       if (value) maxSources.push({ source: line.source, text: `${text} (Max Spell Burst +${maxSpellBurst})`, value });
       continue;
     }
+    match = text.match(RECOVERY_SET);
+    if (match) { const value = num(match[1]); if (!recoverySet || value > recoverySet.value) recoverySet = { source: line.source, text, value }; continue; }
     match = text.match(RECOVERY);
     if (match) { recoverySources.push({ source: line.source, text, value: num(match[1]) * multiplier }); continue; }
     match = text.match(MOON);
     if (match && line.origin === "trait") { perChargePercent = num(match[1] ?? match[2]); perChargeSource = { source: line.source, text }; }
   }
   const maxCharges = Math.max(1, 1 + maxSources.reduce((sum, item) => sum + item.value, 0));
+  if (recoverySet) recoverySources.splice(0, recoverySources.length, { source: recoverySet.source, text: `${recoverySet.text} (replaces the other Recovery Speed lines)`, value: recoverySet.value - 100, fixed: true });
   const recoverySpeedPercent = recoverySources.reduce((sum, item) => sum + item.value, 0);
   const chargeIntervalSeconds = TERRA_CHARGE_INTERVAL_SECONDS / Math.max(0.01, 1 + recoverySpeedPercent / 100);
-  const charges = { perChargePercent, perChargeSource, maxCharges, maxSources, recoverySpeedPercent, combatRecoverySpeedPercent: recoverySpeedPercent, recoverySources, chargeIntervalSeconds, gash,
-    isDefault: perChargePercent === TERRA_CHARGE_BASE_PERCENT && maxCharges === 1 && !gash };
+  const onUseGain = onUseSources.reduce((sum, item) => sum + item.value, 0);
+  const charges = { perChargePercent, perChargeSource, maxCharges, maxSources, recoverySpeedPercent, combatRecoverySpeedPercent: recoverySpeedPercent, recoverySources, chargeIntervalSeconds, gash, onUseGain, onUseSources,
+    isDefault: perChargePercent === TERRA_CHARGE_BASE_PERCENT && maxCharges === 1 && !gash && !onUseGain };
   // Charge-bound cadence by default; a fixed recast interval re-settles it (terraChargesAtInterval).
   return settleGash(charges);
 }
@@ -134,7 +150,7 @@ export function terraChargesForSetup(modifierTexts = [], setup = null, options =
  */
 export function terraChargesConsumed(charges, castIntervalSeconds, { minimum = 1 } = {}) {
   if (!charges || !(castIntervalSeconds > 0)) return 1;
-  return Math.max(minimum, Math.min(charges.maxCharges, castIntervalSeconds / charges.chargeIntervalSeconds));
+  return Math.max(minimum, Math.min(charges.maxCharges, castIntervalSeconds / charges.chargeIntervalSeconds + (charges.onUseGain || 0)));
 }
 
 /** A Terra Charge additional line for `consumed` charges at the build's per-charge value. */
@@ -150,7 +166,9 @@ export function withTerraCharges(profile, charges) {
   const interval = profile.useModel?.kind === "terra" ? profile.useModel.durationSeconds || 6 : 6;
   const atInterval = terraChargesAtInterval(charges, interval);
   const consumed = terraChargesConsumed(atInterval, interval);
-  return { ...profile, terraCharge: terraChargeLine(profile.terraCharge, atInterval, consumed), terraChargesConsumed: consumed };
+  // Whether the on-use charge (TERRA_CHARGE_ON_USE) adds to what the cast consumes (not when the recast already holds the max).
+  const terraOnUseMoves = atInterval.onUseGain > 0 && terraChargesConsumed({ ...atInterval, onUseGain: 0 }, interval) < consumed;
+  return { ...profile, terraCharge: terraChargeLine(profile.terraCharge, atInterval, consumed), terraChargesConsumed: consumed, terraOnUseMoves };
 }
 
 /**
@@ -231,7 +249,9 @@ export function windRhythmTerraTrigger({ setup = null, castRate = null, modifier
   if (!wind?.castSpeedScaled) return null;
   const { intervalSeconds, share, castIncreasedPercent, castAdditionalFactor, cooldownRecoveryPercent, cooldownAdditionalFactor } = wind;
   const text = `${setup.name}: triggered by Activation Medium: Wind Rhythm every ${round(intervalSeconds)} s = ${wind.cooldownSeconds} s ÷ ((1 + ${round(cooldownRecoveryPercent)}% Cooldown Recovery Speed + ${round(share * 100)}% × ${round(castIncreasedPercent)}% Cast Speed) × ${round(castAdditionalFactor)} additional Cast Speed${cooldownAdditionalFactor !== 1 ? ` × ${round(cooldownAdditionalFactor)} additional Cooldown Recovery Speed` : ""}) (no use time; the creator's calc v0.3, user-provided 2026-10-13; provisional); ${round(1 / intervalSeconds)} casts/s. Triggered only, so the manual-use penalty does not apply.`;
-  return { intervalSeconds, castsPerSecond: 1 / intervalSeconds, cooldownSeconds: wind.cooldownSeconds, share, castIncreasedPercent, castAdditionalFactor, cooldownRecoveryPercent, cooldownAdditionalFactor, cooldownSources: wind.cooldownSources, source: wind.source, text };
+  // Wind Rhythm "Always attempts to trigger": the medium starts ready, so the first recast lands at engagement (user decision
+  // 2026-10-22; src/support-effects.js startsReady).
+  return { intervalSeconds, castsPerSecond: 1 / intervalSeconds, cooldownSeconds: wind.cooldownSeconds, share, castIncreasedPercent, castAdditionalFactor, cooldownRecoveryPercent, cooldownAdditionalFactor, cooldownSources: wind.cooldownSources, source: wind.source, text, startsReady: true };
 }
 
 /** The build's "±X% [additional] Cooldown Recovery Speed" lines ({ source, text, value, additional }). */

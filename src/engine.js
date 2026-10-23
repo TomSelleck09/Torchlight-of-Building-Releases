@@ -1,4 +1,4 @@
-import { normalizePercentageText } from "./percentage-text.js"; import { stripGrantedCore, carryNameReadBracket } from "./granted-core-lines.js"; import { averageRotatingBuffs, expandScriptedItemLine } from "./gear-unique-modules.js";
+import { normalizePercentageText } from "./percentage-text.js"; import { stripGrantedCore, carryNameReadBracket, withoutSlateCoreName, isInactiveCoreLine, slateCoreName } from "./granted-core-lines.js"; import { averageRotatingBuffs, expandScriptedItemLine } from "./gear-unique-modules.js";
 import { matchTalentTextClause } from "./talent-text-effects.js";
 import { activeKismetEffects, parseKismetEffect } from "./kismet-effects.js";
 import { auraBaseEffects, auraSupportEffects, auraSupportSealedManaCompensation } from "./aura-effects.js";
@@ -8,6 +8,9 @@ import { nativePactspiritNodeEffect, orderedPactspiritNodes, pactspiritEffectsAt
 import { pactspiritTreesSs13 } from "./data/pacts/pactspirit-trees-ss13.js";
 import { pactspiritLevelsSs13 } from "./data/pacts/pactspirit-levels-ss13.js";
 import { kismetCatalogSs13 } from "./data/pacts/kismet-catalog-ss13.js";
+import { isGearBaseStatLine } from "./gear-base-stats.js";
+import { splitJoinedLegendaryLines } from "./legendary-joined-lines.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 const round = (value, places = 2) => Number(value.toFixed(places));
 
 export function calculateActionRate({ baseInterval, increasedPercent = 0, additionalPercent = 0 }) {
@@ -264,15 +267,19 @@ export function energyCostForSupportPositions(role, occupiedSlots, profile) {
  */
 export function auraSealedManaCompensation(setup, enabledSupports, options = {}) {
   const support = auraSupportSealedManaCompensation(enabledSupports);
-  const additionalPercents = [...support.additionalPercents, ...(setup.name === "Precise: Deep Pain" ? (options.deepPainCompensationPercents ?? [options.deepPainCompensationPercent]).filter(Number.isFinite) : [])];
+  // Named-Aura lines (src/aura-effects.js namedAuraSealedManaCompensation; gear affix batch D): the Aura family's own tag.
+  const named = options.namedCompensation?.[String(setup.name || "").replace(/^Precise: /, "")] || null;
+  const additionalPercents = [...support.additionalPercents, ...(setup.name === "Precise: Deep Pain" ? (options.deepPainCompensationPercents ?? [options.deepPainCompensationPercent]).filter(Number.isFinite) : []), ...(named?.additional || []).map((item) => item.percent)];
   const globalPercent = Number(options.globalCompensationPercent) || 0;
   const additionalMultiplier = additionalPercents.reduce((factor, percent) => factor * (1 + percent / 100), 1);
   // "+X% Sealed Mana Compensation for <Tag> Skills" (core audit B7: Knowledgeable's Focus Skills, game affix 787774 attr 1304 mod 3 on
   // the Focus tag 6000290; the Spirit Magus wording): the same SMC attribute, for the Auras that carry the tag (src/planner.js).
   const tagged = (options.taggedCompensation || []).filter((item) => (setup.tags || []).includes(item.tag));
   const taggedPercent = tagged.reduce((sum, item) => sum + item.percent, 0);
-  const localPercent = support.localPercent + taggedPercent;
-  return { globalPercent, localPercent, additionalPercents, additionalMultiplier, ownPercent: (globalPercent + localPercent) * additionalMultiplier, sources: [...support.sources, ...tagged.map((item) => ({ source: item.source, text: item.text, percent: item.percent, tag: item.tag }))], tagged };
+  const namedLocal = (named?.local || []).reduce((sum, item) => sum + item.percent, 0);
+  const localPercent = support.localPercent + taggedPercent + namedLocal;
+  const namedSources = [...(named?.local || []), ...(named?.additional || []).map((item) => ({ ...item, additional: true }))];
+  return { globalPercent, localPercent, additionalPercents, additionalMultiplier, ownPercent: (globalPercent + localPercent) * additionalMultiplier, sources: [...support.sources, ...tagged.map((item) => ({ source: item.source, text: item.text, percent: item.percent, tag: item.tag })), ...namedSources], tagged, named: namedSources };
 }
 
 export function calculateAuraLedger(setups, options) {
@@ -309,9 +316,14 @@ export function calculateAuraLedger(setups, options) {
     if (gainedEffects?.stats) for (const [key, value] of Object.entries(gainedEffects.stats)) baseEffects[key] = (baseEffects[key] || 0) + value;
     const auraAmplification = setup.supports.find((support) => support.name === "Aura Amplification" && support.enabled !== false);
     const auraAmplificationPercent = auraAmplification ? 5 + 0.25 * Math.min(40, auraAmplification.effectiveLevel ?? auraAmplification.level) : 0;
-    const deepPainAuraEffectPercent = setup.name === "Precise: Deep Pain" ? options.deepPainAuraEffectPercent : 0;
-    // "+X% <this aura> Aura Effect" gear lines (planner: namedAuraEffectPercents), e.g. Decaying Blessing's Erosion Amplification.
-    const namedAuraEffectPercent = Number(options.namedAuraEffectPercents?.[setup.name]) || 0;
+    // "+X% Deep Pain Aura" gear lines (game affix 530992: attr 3401 Aura Effect, mod 3, tags Aura 5100305 + Deep Pain 5100412)
+    // reach the Deep Pain family: Precise: Deep Pain (in-game panel 2026-09-08) and the plain Deep Pain.
+    const deepPainAuraEffectPercent = /^(?:Precise: )?Deep Pain$/.test(setup.name) ? Number(options.deepPainAuraEffectPercent) || 0 : 0;
+    // "+X% <this aura> Aura (Effect)" lines (planner: namedAuraEffectPercents), e.g. Decaying Blessing's Erosion Amplification or a
+    // Belt corrosion's "+25% Spell Amplification Aura". The game tags each with the Aura and the aura family (Cruelty 5100419, …),
+    // which the Precise: version shares, as Deep Pain's does: the line raises both.
+    const familyName = setup.name.replace(/^Precise: /, "");
+    const namedAuraEffectPercent = (Number(options.namedAuraEffectPercents?.[setup.name]) || 0) + (familyName !== setup.name ? Number(options.namedAuraEffectPercents?.[familyName]) || 0 : 0);
     // Deep Pain receives the global Aura Effect pool like every other aura (user,
     // 2026-10-09; the panel's Affliction per second 735.575 = 725.375 + 30 × 0.34
     // on tests/fixtures/selena-dummy-54s-build.txt). An earlier rule dropped it.
@@ -327,7 +339,7 @@ export function calculateAuraLedger(setups, options) {
     const perSmc = Number(options.auraEffectPerSealedManaCompensation) || 0;
     const globalCompensation = compensation.globalPercent;
     const ownCompensationPercent = compensation.ownPercent;
-    const sealedManaCompensation = { globalPercent: globalCompensation, localPercent: compensation.localPercent, additionalPercents: compensation.additionalPercents, ownPercent: round(ownCompensationPercent, 6), auraEffectPerPercent: perSmc, auraEffectPercent: round(perSmc * ownCompensationPercent, 6), globalAuraEffectPercent: round(perSmc * globalCompensation, 6), sources: compensation.sources };
+    const sealedManaCompensation = { globalPercent: globalCompensation, localPercent: compensation.localPercent, additionalPercents: compensation.additionalPercents, ownPercent: round(ownCompensationPercent, 6), auraEffectPerPercent: perSmc, auraEffectPercent: round(perSmc * ownCompensationPercent, 6), globalAuraEffectPercent: round(perSmc * globalCompensation, 6), sources: compensation.sources, named: compensation.named || [] };
     // The town context (the in-game panel: no target, no Elite): conditional Aura Effect does not reach the Aura's own values.
     // Observed: Lone Walker's "+30% Aura effect when affected by 4 or more Auras" is in the panel's Aura Effect field (130.98333)
     // but in none of Deep Pain, Swiftness or Frigid Domain; Malleable is in neither branch (auraSupportEffects). The dummy
@@ -348,31 +360,34 @@ export function calculateAuraLedger(setups, options) {
 }
 
 /**
- * Allocates the build's Energy to its setups in list order; `allocations` keeps that order (entry.index = the setup's index).
- * `priorityIndex` (the planner's Main Skill: src/planner.js energyPriorityIndex) is allocated first and is never switched off
- * for Energy: when its cost exceeds the budget it stays active with `overBudget` and its `shortfall`, and the other setups share
- * what is left (nothing). The planner cannot confirm the game's Energy (the log's dump carries no Energy value, and an import
- * whose gear the log printer cut has only the non-equipment Energy), and switching the Main Skill off hides every damage figure.
+ * The build's Energy against its setups' costs; `allocations` keeps the setups' order (entry.index = the setup's index).
+ * Resource limits never stop anything in the calculation (user decision 2026-10-21): every enabled setup is `counted` (the
+ * planner's activeNames read it), and Energy only drives the warnings. The fit walk in list order, `priorityIndex` (the planner's
+ * Main Skill: src/planner.js energyPriorityIndex) first, marks a setup the budget left at its turn cannot pay
+ * `insufficient-energy` with `overBudget` and its `shortfall` (a warning: still counted); a setup whose cost is unknown is
+ * `uncaptured` (counted too). knownAllocated is every counted setup's known cost (it can exceed the budget), remaining what the
+ * budget keeps after all of them (0 when over) and shortfall the total over the budget. Before 2026-10-21 a setup past the
+ * budget was switched off (the Main Skill alone was kept on from 2026-10-15).
  */
 export function allocateSkillEnergy(setups, availableEnergy, { priorityIndex = null } = {}) {
-  let remaining = availableEnergy;
+  let left = availableEnergy;
+  let demand = 0;
   let hasUnknownCosts = false;
-  let shortfall = 0;
   const priority = Number.isInteger(priorityIndex) && priorityIndex >= 0 && priorityIndex < setups.length ? priorityIndex : null;
   const allocate = (setup, index) => {
     const entry = { index, name: setup.name, role: setup.role, ...(index === priority ? { priority: true } : {}) };
-    if (setup.enabled === false) return { ...entry, cost: 0, status: "disabled" };
-    if (!Number.isFinite(setup.energyCost)) { hasUnknownCosts = true; return { ...entry, cost: null, status: "uncaptured" }; }
-    if (setup.energyCost <= remaining) { remaining -= setup.energyCost; return { ...entry, cost: setup.energyCost, status: "active" }; }
-    if (index !== priority) return { ...entry, cost: setup.energyCost, status: "insufficient-energy" };
-    const short = setup.energyCost - remaining;
-    shortfall += short; remaining = 0;
-    return { ...entry, cost: setup.energyCost, status: "active", overBudget: true, shortfall: short };
+    if (setup.enabled === false) return { ...entry, cost: 0, status: "disabled", counted: false };
+    if (!Number.isFinite(setup.energyCost)) { hasUnknownCosts = true; return { ...entry, cost: null, status: "uncaptured", counted: true }; }
+    demand += setup.energyCost;
+    if (setup.energyCost <= left) { left -= setup.energyCost; return { ...entry, cost: setup.energyCost, status: "active", counted: true }; }
+    const short = setup.energyCost - left;
+    if (index === priority) left = 0;
+    return { ...entry, cost: setup.energyCost, status: "insufficient-energy", counted: true, overBudget: true, shortfall: short };
   };
   const allocations = new Array(setups.length);
   if (priority !== null) allocations[priority] = allocate(setups[priority], priority);
   setups.forEach((setup, index) => { if (index !== priority) allocations[index] = allocate(setup, index); });
-  return { availableEnergy, knownAllocated: availableEnergy - remaining + shortfall, remaining, shortfall, priorityIndex: priority, hasUnknownCosts, allocations };
+  return { availableEnergy, knownAllocated: demand, remaining: Math.max(0, availableEnergy - demand), shortfall: Math.max(0, demand - availableEnergy), priorityIndex: priority, hasUnknownCosts, allocations };
 }
 
 const modifierPatterns = [
@@ -391,7 +406,7 @@ const modifierPatterns = [
   ["castSpeedPercent", "increased", /^([+-]\d+(?:\.\d+)?)% (?:Attack and )?Cast Speed$/i],
   ["castSpeedPercent", "more", /^([+-]\d+(?:\.\d+)?)% additional (?:Attack and )?Cast Speed$/i],
   ["auraEffectPercent", "increased", /^\+(\d+(?:\.\d+)?)% Aura Effect$/i],
-  ["deepPainAuraEffectPercent", "increased", /^\+(\d+(?:\.\d+)?)% Deep Pain Aura$/i],
+  ["deepPainAuraEffectPercent", "increased", /^\+(\d+(?:\.\d+)?)% Deep Pain Aura(?: Effect)?$/i],
   // Game affix 439527584: attr 1304 (Sealed Mana Compensation) mod 4 (additional) tagged Deep Pain (6101412).
   ["deepPainSealedManaCompensationPercent", "more", /^([+-]\d+(?:\.\d+)?)% additional Deep Pain Sealed Mana Compensation$/i],
   ["sealedManaCompensationPercent", "increased", /^([+-]\d+(?:\.\d+)?)% Sealed Mana Compensation$/i],
@@ -425,10 +440,25 @@ const modifierPatterns = [
   ,["erosionResistancePercent", "increased", /^\+(\d+(?:\.\d+)?)% Erosion Resistance$/i]
 ];
 
+// Two stats in one line as two sentences ("+74% Gear Attack Speed. -10% additional Attack Damage", "+90% additional Attack Damage
+// after standing still for 0.1s. -20% additional Attack Speed", "+18% Max Mana. +140 Skill Cost": T0+ craft affixes; gear affix
+// audit 2026-10-22). The readers get each sentence as its own line, without its full stop, from the joined-clause split
+// (src/gear-unique-modules.js splitJoinedClauses; before, it kept "+74% Gear Attack Speed." with its stop, which no reader
+// matched, so only the penalty was read). This helper gives the same sentences to the gear badge (src/calculation-coverage.js).
+// A split happens only where every sentence starts with a signed number ("Lv. 20", "Interval: 1 s" and "0.3s" never split).
+const STAT_SENTENCE_BREAK = /\.\s+(?=[+-]\d)/;
+export function splitStatSentences(line) {
+  const parts = String(line).split(STAT_SENTENCE_BREAK).map((part) => part.trim()).filter(Boolean);
+  return parts.length > 1 && parts.every((part) => /^[+-]\d/.test(part)) ? parts : [line];
+}
+
 export function effectiveGearModifierTexts(item) {
   const modifiers=[...(item.modifiers||[])];
-  if((item.corrosionModifiers||[]).length) for(const implicit of item.implicitModifiers||[]){ const index=modifiers.indexOf(implicit); if(index>=0)modifiers.splice(index,1); }
-  return [...modifiers,...(item.corrosionModifiers||[])].flatMap((text) => carryNameReadBracket(averageRotatingBuffs(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean))).flatMap((line) => expandScriptedItemLine(item.name, line)); // two-line rows of scripted uniques (gear-pact batch chunk 4)
+  if((item.corrosionModifiers||[]).length) for(const implicit of item.implicitModifiers||[]){ if(isGearBaseStatLine(implicit))continue; const index=modifiers.indexOf(implicit); if(index>=0)modifiers.splice(index,1); }
+  const lines=[...modifiers,...(item.corrosionModifiers||[])].flatMap((text) => carryNameReadBracket(averageRotatingBuffs(splitJoinedLegendaryLines(text)).split(/\r?\n/).map((line) => line.trim()).filter(Boolean))).flatMap((line) => expandScriptedItemLine(item.name, line));
+  // A duplicate copy of a core talent (another source already grants it; src/granted-core-lines.js resolveCoreCopies, user rule
+  // 2026-10-21: cores never stack) reaches no reader.
+  return item.inactiveCoreLines?.length ? lines.filter((line) => !isInactiveCoreLine(item, line)) : lines; // two-line rows of scripted uniques (gear-pact batch chunk 4)
 }
 
 export function collectNormalizedGearModifiers(items, disabledSlots = []) {
@@ -474,8 +504,10 @@ export function applyEquipmentOverrides(items, overrides = {}) {
   });
 }
 
-export function calculateEquipmentCandidate(baselineItems, overrides, snapshot, disabledSlots = []) {
-  const allItems = applyEquipmentOverrides(baselineItems, overrides);
+// `inactiveCoreLines` (optional): Map item slot → Set of lines that are duplicate core copies (src/granted-core-lines.js
+// resolveCoreCopies); the candidate items carry them, so effectiveGearModifierTexts drops them for every reader.
+export function calculateEquipmentCandidate(baselineItems, overrides, snapshot, disabledSlots = [], inactiveCoreLines = null) {
+  const allItems = applyEquipmentOverrides(baselineItems, overrides).map((item) => inactiveCoreLines?.get(item.slot)?.size ? { ...item, inactiveCoreLines: [...inactiveCoreLines.get(item.slot)] } : item);
   const candidateItems = allItems.filter((item) => !disabledSlots.includes(item.slot));
   const baselineModifiers = collectNormalizedGearModifiers(baselineItems);
   const candidateModifiers = collectNormalizedGearModifiers(candidateItems);
@@ -545,7 +577,12 @@ function slateNumericEffects(slate, additionalFireLines = null) {
   // Penetration / Infiltration vs Ignited). Read by scorching-beam-critical.js (crit, e.g. "Warrior: Micro Talent: +15%
   // Critical Strike Rating", Judgment-scaled; Nether King "+15% Critical Strike Damage"), scorching-beam-cast-rate.js
   // and theoretical-sources.js. Daze is a state, so it is set, not summed.
-  for (const affix of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) for (const clause of affix.split(/\s+\|\s+|\s+·\s+/)) {
+  // User rule 2026-10-21 (cores never stack; a core from a slate works exactly as the panel copy): a slate's core talent ("Class: Lv.N
+  // Core Talent: Name — …") stays out of these summed totals altogether. Its clauses reach the readers as the panel core's do
+  // (src/modifier-texts.js gives them origin "core"; the Blessing, Block, Blur, curse, low-resource and resistance models read the
+  // slate text as they read the panel core's), so Dirt and Impermanence are their own multipliers, not a share of the "Slates" sum.
+  for (const raw of slateTalentLines(slate)) for (const clause of withoutSlateCoreName(raw).split(/\s+\|\s+|\s+·\s+/)) {
+    if (slateCoreName(raw)) continue;
     const separator = clause.lastIndexOf(": ");
     const text = normalizePercentageText(separator < 0 ? clause : clause.slice(separator + 2));
     const matched = matchTalentTextClause(text, "slate");

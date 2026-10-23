@@ -1,4 +1,6 @@
+import { isInactiveCoreLine } from "./granted-core-lines.js";
 import { ACTIVE_SLOT_MAGUS_LEVEL_NOTE } from "./magus-active-slot.js";
+import { slateTalentLines } from "./nether-king-authority.js";
 
 const levelPattern = /([+-]\d+)\s+(?:to\s+)?([A-Za-z]+(?:\s+[A-Za-z]+){0,2})\s+(?:Skill Levels?\b|Skills['’]? Levels?\b)/gi;
 
@@ -21,7 +23,10 @@ function matchingBonusDetail(text, skill) {
     // Level": Spell and Projectile skills); a multi-word tag ("Spirit Magus", "Synthetic Troop") matches whole first.
     // Before 2026-10-18 a compound category matched no skill (On the Sublime's line read Inactive on Homing Frost Bolt).
     const words = category.split(/\s+/);
-    const tagged = tags.has(category) || (words.length > 1 && words.every((word) => tags.has(word)));
+    // "+N Minion Skill Level" raises Summon skills (user decision 2026-10-22: Spirit Magus and Synthetic Troop summons, modules and
+    // every other Summon skill); no catalog skill carries a Minion tag, so the word reads as the Summon tag.
+    const hasTag = (word) => tags.has(word) || (word === "minion" && tags.has("summon"));
+    const tagged = hasTag(category) || (words.length > 1 && words.every(hasTag));
     // "+N <tag> Active Skill Level": the Active part is the role, the other words are tags the skill needs. Each match counts
     // once, so a line is never added twice through two categories.
     const activeTagged = words.length > 1 && words.includes("active") && takesActiveLevels(skill) && words.filter((word) => word !== "active").every((word) => tags.has(word));
@@ -66,7 +71,8 @@ export function skillLevelBonus(skill, sources) {
     if (levels) contributions.push({ name: detail.activeSlot ? `${name} · ${ACTIVE_SLOT_MAGUS_LEVEL_NOTE}` : name, text, levels, ...(detail.activeSlot ? { activeSlotMagus: true } : {}) });
   };
   for (const item of sources.gear || []) {
-    for (const modifier of [...(item.modifiers || []), ...(item.corrosionModifiers || [])]) add(modifier, item.name);
+    // A duplicate core copy's lines (src/granted-core-lines.js resolveCoreCopies; cores never stack, 2026-10-21) are left out.
+    for (const modifier of [...(item.modifiers || []), ...(item.corrosionModifiers || [])]) add(item.inactiveCoreLines?.length ? String(modifier).split(/\r?\n/).filter((line) => !isInactiveCoreLine(item, line)).join("\n") : modifier, item.name);
   }
   for (const panel of sources.talents || []) {
     for (const node of panel.allocatedNodes || []) {
@@ -75,7 +81,7 @@ export function skillLevelBonus(skill, sources) {
     for (const core of panel.activeCores || []) add(core.description, `${panel.name} core talent`);
   }
   for (const slate of sources.slates || []) {
-    for (const affix of [...(slate.fixed || []), ...(slate.brands || []), ...(slate.copiedTalents || [])]) add(affix, slate.name);
+    for (const affix of slateTalentLines(slate)) add(affix, slate.name);
   }
   return { total: contributions.reduce((sum, entry) => sum + entry.levels, 0), contributions };
 }

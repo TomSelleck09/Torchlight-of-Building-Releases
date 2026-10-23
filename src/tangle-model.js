@@ -46,6 +46,12 @@ const clean = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+
 export const isDormantEntanglementLine = (text) => /^Has Dormant Entanglement$/i.test(clean(text));
 export const isTangleAttachLine = (text) => ATTACH_LINE.test(clean(text));
 export const isTangleDurationLine = (text) => DURATION_LINE.test(clean(text));
+// Tangle Damage Enhancement (gear affix batch B, 2026-10-22): game affix 13977477 "+P1% Tangle Damage Enhancement" writes field 2006249
+// (damage enhancement) with the Tangle tag 6400008, the field of Focus / Combo / Terra Damage Enhancement, whose manual rule
+// (1001012926 / 1001013030) adds the Enhancement lines up into one additional multiplier on that skill type's damage. Here: the
+// Tangle Skills' hits and own DoT (the Clockwork Core skill too: its casts are Tangle-fired).
+const ENHANCEMENT_LINE = /^\+(\d+(?:\.\d+)?)% Tangle Damage Enhancement$/i;
+export const isTangleEnhancementLine = (text) => ENHANCEMENT_LINE.test(clean(text));
 
 /** Setups cast as Tangles: active Spell setups with an enabled Tangle support. */
 export function tangleSetups(setups = [], activeNames = new Set()) {
@@ -86,6 +92,10 @@ export function resolveTangles({ setups = [], activeNames = new Set(), modifierT
       : !inactivated ? `no inactivated Tangle (Max Tangle Quantity ${maxQuantity}, ${activated} attached to the dummy; ${attachText})`
         : `+${DORMANT_ENTANGLEMENT_PER_INACTIVATED}% additional Tangle Damage × ${inactivated} inactivated Tangle${inactivated === 1 ? "" : "s"} (Max Tangle Quantity ${maxQuantity}: base ${BASE_MAX_TANGLE_QUANTITY}${quantitySources.length ? ` + ${quantitySources.reduce((sum, line) => sum + line.value, 0)}` : ""}, cap ${HIGHEST_MAX_TANGLE_QUANTITY}; ${activated} attached to the single dummy, ${attachText}) on ${tangle.map((setup) => setup.name).join(", ")}`;
   // Trigger cadence (core audit B8, switch tangleTriggers): every activated Tangle triggers the Spell at its casting interval.
+  const enhancementSources = modifierTexts.flatMap((line) => { const match = clean(line.text).match(ENHANCEMENT_LINE); return match ? [{ source: line.source, text: clean(line.text), value: Number(match[1]) * (line.multiplier ?? 1) }] : []; });
+  const enhancementPercent = round(enhancementSources.reduce((sum, item) => sum + item.value, 0));
+  const tangleSkills = [...tangle, ...(core ? [core] : [])];
+  const enhancementLine = enhancementPercent && tangleSkills.length ? { source: `Tangle Damage Enhancement (${enhancementSources.map((item) => item.source).join(", ")})`, text: `+${enhancementPercent}% additional Tangle Damage (Tangle Damage Enhancement: ${enhancementSources.length} line${enhancementSources.length === 1 ? "" : "s"} added up into one additional multiplier; game field 2006249 with the Tangle tag, the Focus / Combo Damage Enhancement rule of manual 1001012926 / 1001013030)`, value: enhancementPercent, category: "Additional damage" } : null;
   const reading = conditions.tangleTriggers !== false;
   const rateFactor = reading && activated > 1 ? activated : 1;
   const cadence = !tangle.length ? "no Tangle skill in the build"
@@ -104,7 +114,8 @@ export function resolveTangles({ setups = [], activeNames = new Set(), modifierT
     dormant: { present: hasDormant, sources: dormantSources.map((item) => item.source), additionalPercent, active: Boolean(additionalPercent), reason },
     // Additional-damage lines per Tangle setup key, for that setup's hits and its own DoT (plain data: the planner result is
     // compared structurally across save / reload).
-    linesBySetup: Object.fromEntries(line ? tangle.map((setup) => [setup.setupKey, [line]]) : [])
+    enhancement: { percent: enhancementPercent, sources: enhancementSources, active: Boolean(enhancementLine), reason: !enhancementSources.length ? "no Tangle Damage Enhancement line" : enhancementLine ? `+${enhancementPercent}% additional damage on ${tangleSkills.map((setup) => setup.name).join(", ")} (hits and own DoT)` : "no Tangle skill in the build (Spell Tangle, Activation Medium: Tangle or Manifold Entanglement on an active Spell, or Clockwork Core)" },
+    linesBySetup: Object.fromEntries(tangleSkills.map((setup) => [setup.setupKey, [...(line && setup !== core ? [line] : []), ...(enhancementLine ? [enhancementLine] : [])]]).filter(([, lines]) => lines.length))
   };
 }
 
@@ -146,6 +157,7 @@ export function tangleLineEntries(tangles, modifierTexts = []) {
   return modifierTexts.flatMap((line) => {
     if (isTangleAttachLine(line.text)) { const { status, reason } = tangleAttachStatus(tangles); return [entry(line, "tangleAttach", status, reason, status === "In calc")]; }
     if (isTangleDurationLine(line.text)) { const { status, reason } = tangleDurationStatus(tangles); return [entry(line, "tangleDuration", status, reason)]; }
+    if (isTangleEnhancementLine(line.text)) { const active = Boolean(tangles?.enhancement?.active); return [entry(line, "tangleEnhancement", active ? "In calc" : "Inactive", tangles?.enhancement?.reason || "no Tangle skill in the build")]; }
     return [];
   });
 }

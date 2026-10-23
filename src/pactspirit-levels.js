@@ -48,6 +48,10 @@ export function nativePactspiritNodeEffect(node) {
     "affliction effect": "afflictionEffectPercent",
     "ailment duration": "ailmentDurationPercent",
     "chance to inflict damaging ailments": "damagingAilmentChancePercent",
+    // "+10% / +20% Critical Strike Damage" nodes (Hell Cavalry - Glow, Luluri - Amethyst, The Bone worm's Daughter): the pact
+    // totals' crit damage, which every crit model reads as "Pacts" (src/scorching-beam-critical.js), as a kismet's copy does
+    // (src/kismet-effects.js parseKismetEffect). Before (kismet / pact audit 2026-10-21) the node read In calc but nothing took it.
+    "critical strike damage": "criticalStrikeDamagePercent",
     "additional damage taken": "additionalDamageTakenPercent",
     "xp earned": "experienceEarnedPercent",
     "xp lost upon death": "experienceLossPercent"

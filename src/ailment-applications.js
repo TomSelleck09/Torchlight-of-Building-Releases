@@ -161,14 +161,28 @@ export function ailmentAppliersFor({ ailmentKey, candidates = [], modifierTexts 
     // its scoped lines) unless the caller supplied the build-wide sources (Ignite: the ledger's), in which case
     // every skill, the main one included, is the same computation: build-wide + its own scoped lines.
     let chancePercent = null, chanceSources = null, rawChancePercent = null;
-    if (!isMain || globalChanceSources) {
-      const chance = skillAilmentChance({ ailmentKey, globalSources: globalChance, setup: candidate.setup });
+    // "+X% chance for Attacks to inflict Damaging Ailments" (gear affix batch D; game affix 101080109: the three chance fields
+    // 2006480 / 2006510 / 2006520 on the Attack tag 6001090): an Attack Skill's applications only, the main one included.
+    const attackChance = tags.has("attack") ? attackAilmentChanceLines(ailmentKey, modifierTexts) : [];
+    if (!isMain || globalChanceSources || attackChance.length) {
+      const chance = skillAilmentChance({ ailmentKey, globalSources: [...globalChance, ...attackChance], setup: candidate.setup });
       ({ sources: chanceSources, percent: chancePercent, rawPercent: rawChancePercent } = chance);
     }
     // B8: the skill's own scoped base and its supports' extra stacks belong to its applications only.
     const ownBase = skillScopedAilmentBase(candidate.setup, ailmentKey);
     const extraStacks = skillExtraAilmentStacks(candidate.setup, ailmentKey);
     return { key: candidate.key, name: candidate.name, setupKey: candidate.setupKey, main: isMain, beam: candidate.beam, tags: candidate.tags || [], level: candidate.level, applicationsPerSecond: candidate.applicationsPerSecond, critChancePercent: candidate.critChancePercent, chancePercent, rawChancePercent, chanceSources, blocked, scale, scaleSources, baseExtra: ownBase, extraStacks: extraStacks.value, extraStackSources: extraStacks.sources };
+  });
+}
+
+// Attack-scoped ailment chance lines ("+15% chance for Attacks to inflict Damaging Ailments", a corrosion affix; also the
+// per-ailment wording): the chance sources an Attack Skill's applications add (gear affix batch D, 2026-10-22).
+export const ATTACK_AILMENT_CHANCE = /^\+?([+-]?\d+(?:\.\d+)?)% chance for Attacks to inflict (Damaging Ailments|Ignite|Trauma|Wilt)$/i;
+export function attackAilmentChanceLines(ailmentKey, modifierTexts = []) {
+  const name = String(ailmentDefinitions[ailmentKey]?.name || "").toLowerCase();
+  return modifierTexts.flatMap((line) => {
+    const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(ATTACK_AILMENT_CHANCE);
+    return match && (/^Damaging Ailments$/i.test(match[2]) || match[2].toLowerCase() === name) ? [{ source: line.source, text: `${line.text} (Attack Skills)`, value: Number(match[1]) * (line.multiplier ?? 1) }] : [];
   });
 }
 

@@ -1,4 +1,4 @@
-// "% of Base Damage" rows of the 54 Minion skills from the SS13 client's config_skill_damage (ConfigLogic), one entry
+// "% of Base Damage" rows of the 55 Minion skills from the SS13 client's config_skill_damage (ConfigLogic), one entry
 // per skill: the game damage group (research/base-damage-skills-2026-10-11.md resolves the per-Minion family numbering),
 // the row kind (hit / persistent), the typed entry's damage type, and the percent of the Minion's Base Damage per level
 // 1–20 (index = level − 1; frozen past Lv.20). addedEffectivenessByLevel is the hit rows' "mode 2" entry (read as the
@@ -702,6 +702,56 @@ export const minionSkillDamageSs13 = {
    288,
    294,
    301
+  ],
+  "levels": 20
+ },
+ "Thundercloud Surge": {
+  "groupId": 703,
+  "kind": "hit",
+  "type": "Physical",
+  "percentByLevel": [
+   84,
+   86,
+   88,
+   90,
+   92,
+   94,
+   96,
+   98,
+   100,
+   102,
+   104,
+   107,
+   109,
+   111,
+   114,
+   116,
+   119,
+   121,
+   124,
+   126
+  ],
+  "addedEffectivenessByLevel": [
+   84,
+   86,
+   88,
+   90,
+   92,
+   94,
+   96,
+   98,
+   100,
+   102,
+   104,
+   107,
+   109,
+   111,
+   114,
+   116,
+   119,
+   121,
+   124,
+   126
   ],
   "levels": 20
  },

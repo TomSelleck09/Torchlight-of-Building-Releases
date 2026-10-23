@@ -232,7 +232,9 @@ export function compileScorchingBeamIgniteSources({ blurEffects, blessings = { d
     // Slate "+X% Affliction Effect" (talent batch T2: the slate parser had no key, so these were dropped).
     entry("Slates", slate.afflictionEffectPercent || 0, "Affliction effect"),
     entry("Equipment", value(gear, "afflictionEffectPercent", "increased"), "Affliction effect"),
-    entry("Pacts", pact.totals.afflictionEffectPercent || 0, "Affliction effect")
+    entry("Pacts", pact.totals.afflictionEffectPercent || 0, "Affliction effect"),
+    // Resolved conditional "+X% Affliction Effect" bodies (build-mechanics.js; the revived "For every enemy within 20 m nearby" family).
+    ...(extraSources.afflictionEffect || []).map((line) => entry(line.source, line.value, "Affliction effect", undefined, { text: line.text }))
   ].filter((item) => item.value);
   // An installed Cataclysm and an item-granted one ("Main Skill is supported by Lv. N Cataclysm",
   // build-mechanics.js grantedSupports) are one support on the skill: the higher level applies.
@@ -351,7 +353,9 @@ export function compileScorchingBeamIgniteSources({ blurEffects, blessings = { d
   ].filter((item) => item.value);
   // "+X% additional Reaping Recovery Speed" (affix 4110, 6009 mod 4) multiplies; reaping-model.js does the same.
   const reapingAdditionalRecoverySources = [
-    entry("Pacts: additional Reaping Recovery Speed (multiplies)", pact.totals.additionalReapingRecoverySpeedPercent || 0, "Additional Reaping Recovery Speed")
+    entry("Pacts: additional Reaping Recovery Speed (multiplies)", pact.totals.additionalReapingRecoverySpeedPercent || 0, "Additional Reaping Recovery Speed"),
+    // Torment's added effect (build-mechanics.js; the revived Torment family): one multiplier per line, like the pact line.
+    ...(extraSources.additionalReapingRecovery || []).map((line) => entry(`${line.source} (multiplies)`, line.value, "Additional Reaping Recovery Speed", undefined, { text: line.text }))
   ].filter((item) => item.value);
   const reapingDurationPercent = reapingDurationSources.reduce((sum, item) => sum + item.value, 0);
   const reapingRecoverySpeedPercent = reapingRecoverySources.reduce((sum, item) => sum + item.value, 0);
@@ -361,10 +365,16 @@ export function compileScorchingBeamIgniteSources({ blurEffects, blessings = { d
   // mod 1 while the enemy has state 4000900). Applied to the dummy's Fire Resistance only for the share of
   // time the dummy sits at 100 Affliction (max-affliction-resistance.js). Order follows calculateTheoreticalIgnite:
   // the reduction changes target resistance before penetration; negative resistance is allowed there.
-  const maxAfflictionReductionSources = coreTalents.fixesFireResistance || coreTalents.fixedFireResistancePercent != null ? [] : [
+  // Every origin's copy, before the Fire-specific rules below: the generic DoT paths (Wilt, Cold / Lightning / Erosion / Fire skill
+  // DoTs; src/planner.js maxAfflictionResistanceInfo) read the same list for their own resistance (user decision 2026-10-21).
+  const allMaxAfflictionReductionSources = [
     entry("Talents", talent.enemyAllResistanceAtMaxAfflictionPercent || 0, "Resistance at max Affliction"),
-    entry("Divinity Slates", slate.enemyAllResistanceAtMaxAfflictionPercent || 0, "Resistance at max Affliction")
+    entry("Divinity Slates", slate.enemyAllResistanceAtMaxAfflictionPercent || 0, "Resistance at max Affliction"),
+    // Gear, kismet, pact and memory copies (src/build-mechanics.js; belt blend audit 2026-10-21).
+    ...(extraSources.maxAfflictionResistance || []).map((line) => entry(line.source, line.value, "Resistance at max Affliction", undefined, { text: line.text }))
   ].filter((item) => item.value);
+  const fireResistanceFixed = Boolean(coreTalents.fixesFireResistance || coreTalents.fixedFireResistancePercent != null);
+  const maxAfflictionReductionSources = fireResistanceFixed ? [] : allMaxAfflictionReductionSources;
   const maxAfflictionReductionPercent = maxAfflictionReductionSources.reduce((sum, item) => sum + item.value, 0);
   const afflictionRemovers = reapingSources.filter((source) => source.trigger === "full Affliction" && source.afflictionRemovedPercent > 0)
     .map((source) => ({ source: source.source, afflictionRemovedPercent: source.afflictionRemovedPercent, recoverySeconds: source.baseRecoverySeconds / ((1 + reapingRecoverySpeedPercent / 100) * reapingAdditionalRecoverySpeedPercents.reduce((factor, value) => factor * (1 + value / 100), 1)) }));
@@ -511,5 +521,5 @@ export function compileScorchingBeamIgniteSources({ blurEffects, blessings = { d
   warnings.push("The standard Ignite path assumes equal-damage stacks. The separate target-Ignite estimate retains strongest rolls up to the stack limit and is experimental; multiple stacks from one application are assumed to share a roll.");
   warnings.push("Aura base effects use selected skill-level records; Aura Amplification and equipped Aura Effect are recalculated from selected sources.");
   if (rawPassiveAfflictionPerSecond < 0) warnings.push(`Affliction per second sums to ${Math.round(rawPassiveAfflictionPerSecond * 100) / 100} (a negative line such as "Affliction Per Second for every +X% Affliction Effect"); the build inflicts no Affliction per second (provisional floor at 0).`);
-  return { calculation, townTooltip: { ...townTooltip, passiveAfflictionPerSecond, rawPassiveAfflictionPerSecond, projectedAfflictionRating: projectedTooltipAffliction }, combat: { sustained, peak, strongestOneStack, expectedActiveIgnite, reaping, fullAfflictionScale, fullAfflictionResistanceScale, afflictionPerPoint, maxAffliction, afflictionRemovers, ledger: combatLedger }, ledger, inactiveSources, totals: { baseIgniteDamage: baseRange, increasedDamagePercent: increasedSources.reduce((sum, item) => sum + item.value, 0), additionalInflictedStacks: Math.max(0, flatAdditionalStacks), applicationChancePercent: commonInput.applicationChancePercent, notIgnitedApplicationChancePercent, igniteDurationSeconds: durationSeconds, supportedSkillAfflictionPerSecond: cataclysmEffect?.afflictionPerSecond || 0 }, warnings };
+  return { calculation, townTooltip: { ...townTooltip, passiveAfflictionPerSecond, rawPassiveAfflictionPerSecond, projectedAfflictionRating: projectedTooltipAffliction }, combat: { sustained, peak, strongestOneStack, expectedActiveIgnite, reaping, fullAfflictionScale, fullAfflictionResistanceScale, afflictionPerPoint, maxAffliction, maxAfflictionAllResistance: { sources: allMaxAfflictionReductionSources, reductionPercent: allMaxAfflictionReductionSources.reduce((sum, item) => sum + item.value, 0), fireResistanceFixed }, afflictionRemovers, ledger: combatLedger }, ledger, inactiveSources, totals: { baseIgniteDamage: baseRange, increasedDamagePercent: increasedSources.reduce((sum, item) => sum + item.value, 0), additionalInflictedStacks: Math.max(0, flatAdditionalStacks), applicationChancePercent: commonInput.applicationChancePercent, notIgnitedApplicationChancePercent, igniteDurationSeconds: durationSeconds, supportedSkillAfflictionPerSecond: cataclysmEffect?.afflictionPerSecond || 0 }, warnings };
 }

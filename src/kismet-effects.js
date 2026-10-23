@@ -112,19 +112,90 @@ export function kismetSlotDisplayTexts(state = {}, key, rolls = undefined) {
   return kismetAffixesWithRolls(entry, rolls ?? normalizeKismetRolls(entry, slot.rolls)).map((text) => boostedKismetAffixText(text, boost));
 }
 
+export const isDualKismet = (name) => /^Dual Kismet:/.test(String(name ?? ""));
+
+/**
+ * Dual Kismets (game manual, language table manual_rule_des 2005030228, SS14 2026-10-18: "Dual Kismets ... can only be activated by
+ * installing 2 of the same Dual Kismet at the same time. Each type of Dual Kismet can only be activated once"; the kismet's own first
+ * line: "Activates the following effects when there are 2 of this Kismet on the same pact page"). The pact page is the combat page:
+ * every allocated slot of the three selected spirits, Fate slots included. Per name: the allocated copies (slot keys, page order),
+ * whether it is active (2 or more) and the one copy whose lines apply. Before (kismet / pact audit 2026-10-21) each copy applied
+ * its lines on its own: one copy gave the effect, two copies gave it twice (the stat sheet and the Focus Buff already counted it once).
+ */
+export function dualKismetCopies(state = {}) {
+  const copies = new Map();
+  for (const spirit of state.selectedSpirits || []) {
+    if (!spirit || state.activeSpirits?.[spirit] === false) continue;
+    for (const key of activeKismetSlotKeys(state, spirit)) {
+      const name = state.kismetSlots?.[key]?.name;
+      if (!isDualKismet(name) || !kismetCatalogSs13.some((item) => item.name === name)) continue;
+      if (!copies.has(name)) copies.set(name, []);
+      copies.get(name).push(key);
+    }
+  }
+  return new Map([...copies].map(([name, keys]) => [name, { keys, active: keys.length >= 2, appliedKey: keys.length >= 2 ? keys[0] : null }]));
+}
+
+/** Whether the kismet in `key` adds its lines: every kismet but a Dual Kismet's second copy or a lone Dual Kismet. */
+export function kismetSlotApplies(state = {}, key, copies = dualKismetCopies(state)) {
+  const name = state.kismetSlots?.[key]?.name;
+  if (!isDualKismet(name)) return true;
+  return copies.get(name)?.appliedKey === key;
+}
+
+// Dual Kismet: Hot Ice's "-2% Max Cold Resistance and +35 to Max Frostbite Rating" (one game affix_class template with two
+// parameters, two attribute writes) is read as its two lines, so the Max Frostbite Rating reader (src/combat-states.js) and the
+// resistance model each take theirs (kismet / pact audit 2026-10-21; before, the joined text matched no reader).
+const JOINED_KISMET_STATS = /^([+-]?\d+(?:\.\d+)?% Max (?:Fire|Cold|Lightning|Erosion|Elemental) Resistance) and ([+-]\d+(?:\.\d+)? to Max Frostbite Rating)$/i;
+/** The lines a kismet affix reads as (one, or the two halves of a joined stat line). */
+export function kismetAffixParts(text) {
+  const match = normalizePercentageText(String(text ?? "")).trim().match(JOINED_KISMET_STATS);
+  return match ? [match[1], match[2]] : [text];
+}
+
+// Dual Kismet: Great Library: "Additionally increases damage by 2% (stacks) for every unique Kismet installed" (game affix_class
+// text). Read as one "+X% additional damage" line of 2% × the number of different Kismets and Dual Kismets installed on the pact page
+// (every allocated slot of the three spirits, Fate slots included, whether or not a Dual Kismet is active; Great Library itself
+// counts). Provisional (open question kismet-great-library-count): whether Micro / Medium Fates count, and whether the stacks
+// multiply instead of adding. Before (kismet / pact audit 2026-10-21) it read Not modeled.
+export const GREAT_LIBRARY = /^Additionally increases damage by (\d+(?:\.\d+)?)% \(stacks\) for every unique Kismet installed$/i;
+/** The distinct Kismet and Dual Kismet names installed on the pact page (Great Library's count). */
+export function installedKismetNames(state = {}) {
+  const names = new Set();
+  for (const spirit of state.selectedSpirits || []) {
+    if (!spirit || state.activeSpirits?.[spirit] === false) continue;
+    for (const key of activeKismetSlotKeys(state, spirit)) {
+      const name = state.kismetSlots?.[key]?.name;
+      if (/^(?:Dual )?Kismet:/.test(String(name ?? "")) && kismetCatalogSs13.some((item) => item.name === name)) names.add(name);
+    }
+  }
+  return [...names];
+}
+
 export function activeKismetEffects(state = {}) {
   const lines = [];
+  const copies = dualKismetCopies(state);
+  let uniqueKismets = null;
   for (const spirit of state.selectedSpirits || []) {
     if (!spirit || state.activeSpirits?.[spirit] === false) continue;
     for (const key of activeKismetSlotKeys(state, spirit)) {
       const slot = state.kismetSlots?.[key];
       const entry = slot && kismetCatalogSs13.find(item => item.name === slot.name);
-      if (!entry) continue;
+      if (!entry || !kismetSlotApplies(state, key, copies)) continue;
       // A Micro Fate in a spirit with Star Trail carries its boosted value; `baseText` keeps the rolled one (pact badge audit 2026-10-13).
       const boost = microFateEffectScale(state, key);
-      for (const baseText of kismetAffixesWithRolls(entry, normalizeKismetRolls(entry, slot.rolls))) {
-        const text = scaleKismetAffix(baseText, boost.scale);
-        lines.push({ source: `${spirit} · ${entry.name}`, name: entry.name, text, key, ...(boost.scale !== 1 ? { baseText, effectScale: boost.scale, starTrail: boost.sources } : {}) });
+      for (const rolled of kismetAffixesWithRolls(entry, normalizeKismetRolls(entry, slot.rolls))) {
+        const library = normalizePercentageText(rolled).trim().match(GREAT_LIBRARY);
+        if (library) {
+          uniqueKismets ??= installedKismetNames(state);
+          const value = Math.round(Number(library[1]) * uniqueKismets.length * 10000) / 10000;
+          lines.push({ source: `${spirit} · ${entry.name}`, name: entry.name, text: `+${value}% additional damage`, key, baseText: rolled, uniqueKismets, provisional: true });
+          continue;
+        }
+        for (const baseText of kismetAffixParts(rolled)) {
+          const text = scaleKismetAffix(baseText, boost.scale);
+          lines.push({ source: `${spirit} · ${entry.name}`, name: entry.name, text, key, ...(boost.scale !== 1 ? { baseText, effectScale: boost.scale, starTrail: boost.sources } : {}) });
+        }
       }
     }
   }

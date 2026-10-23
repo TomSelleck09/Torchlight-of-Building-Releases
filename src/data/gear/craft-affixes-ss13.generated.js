@@ -39946,6 +39946,43 @@ export const craftAffixesSs13={
         ]
       },
       {
+        "id": "prefix-1403230",
+        "label": "[Basic Affix] +#% chance to # to Barrage Skill Total Waves when casting a Barrage Skill",
+        "library": "Basic Affix",
+        "tiers": [
+          {
+            "tier": "0+",
+            "level": 100,
+            "weight": 0,
+            "template": "+(57–65)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "0",
+            "level": 100,
+            "weight": 0,
+            "template": "+(39–49)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "1",
+            "level": 86,
+            "weight": 100,
+            "template": "+(33–38)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "2",
+            "level": 82,
+            "weight": 200,
+            "template": "+(20–27)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "3",
+            "level": 76,
+            "weight": 800,
+            "template": "+(16–19)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          }
+        ]
+      },
+      {
         "id": "prefix-1093200",
         "label": "[Advanced Affix] +# Intelligence",
         "library": "Advanced Affix",
@@ -42376,7 +42413,7 @@ export const craftAffixesSs13={
     ],
     "suffix": [
       {
-        "id": "suffix-ss14-7759996ea1",
+        "id": "suffix-1073300",
         "label": "[Basic Affix] +#% Physical Damage for Minions",
         "library": "Basic Affix",
         "tiers": [
@@ -42437,7 +42474,7 @@ export const craftAffixesSs13={
         ]
       },
       {
-        "id": "suffix-ss14-a7b111b607",
+        "id": "suffix-1073302",
         "label": "[Basic Affix] +#% Minion Elemental Damage",
         "library": "Basic Affix",
         "tiers": [
@@ -42498,7 +42535,7 @@ export const craftAffixesSs13={
         ]
       },
       {
-        "id": "suffix-ss14-3fc2476f50",
+        "id": "suffix-1073306",
         "label": "[Basic Affix] +#% Minion Erosion Damage",
         "library": "Basic Affix",
         "tiers": [
@@ -46669,6 +46706,43 @@ export const craftAffixesSs13={
             "level": 1,
             "weight": 6250,
             "template": "Reaps 0.04 s of Wilt Damage when dealing Damage Over Time. The effect has a 1 s Recovery Time against the same target"
+          }
+        ]
+      },
+      {
+        "id": "prefix-1402626",
+        "label": "[Basic Affix] +#% chance to # to Barrage Skill Total Waves when casting a Barrage Skill",
+        "library": "Basic Affix",
+        "tiers": [
+          {
+            "tier": "0+",
+            "level": 100,
+            "weight": 0,
+            "template": "+(57–65)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "0",
+            "level": 100,
+            "weight": 0,
+            "template": "+(39–49)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "1",
+            "level": 86,
+            "weight": 100,
+            "template": "+(33–38)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "2",
+            "level": 82,
+            "weight": 200,
+            "template": "+(20–27)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "3",
+            "level": 76,
+            "weight": 800,
+            "template": "+(16–19)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
           }
         ]
       },
@@ -53905,6 +53979,43 @@ export const craftAffixesSs13={
         ]
       },
       {
+        "id": "prefix-1401220",
+        "label": "[Basic Affix] +#% chance to # to Barrage Skill Total Waves when casting a Barrage Skill",
+        "library": "Basic Affix",
+        "tiers": [
+          {
+            "tier": "0+",
+            "level": 100,
+            "weight": 0,
+            "template": "+(114–130)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "0",
+            "level": 100,
+            "weight": 0,
+            "template": "+(78–98)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "1",
+            "level": 86,
+            "weight": 100,
+            "template": "+(66–76)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "2",
+            "level": 82,
+            "weight": 200,
+            "template": "+(40–54)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "3",
+            "level": 76,
+            "weight": 800,
+            "template": "+(32–38)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          }
+        ]
+      },
+      {
         "id": "prefix-1091200",
         "label": "[Advanced Affix] +# Intelligence",
         "library": "Advanced Affix",
@@ -60885,6 +60996,43 @@ export const craftAffixesSs13={
         ]
       },
       {
+        "id": "prefix-1402727",
+        "label": "[Basic Affix] +#% chance to # to Barrage Skill Total Waves when casting a Barrage Skill",
+        "library": "Basic Affix",
+        "tiers": [
+          {
+            "tier": "0+",
+            "level": 100,
+            "weight": 0,
+            "template": "+(114–130)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "0",
+            "level": 100,
+            "weight": 0,
+            "template": "+(78–98)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "1",
+            "level": 86,
+            "weight": 100,
+            "template": "+(66–76)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "2",
+            "level": 82,
+            "weight": 200,
+            "template": "+(40–54)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "3",
+            "level": 76,
+            "weight": 800,
+            "template": "+(32–38)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          }
+        ]
+      },
+      {
         "id": "prefix-1072700",
         "label": "[Advanced Affix] +#% Gear Physical Damage",
         "library": "Advanced Affix",
@@ -62564,6 +62712,43 @@ export const craftAffixesSs13={
             "level": 1,
             "weight": 6250,
             "template": "Reaps 0.08 s of Wilt Damage when dealing Damage Over Time. The effect has a 1 s Recovery Time against the same target"
+          }
+        ]
+      },
+      {
+        "id": "prefix-1402829",
+        "label": "[Basic Affix] +#% chance to # to Barrage Skill Total Waves when casting a Barrage Skill",
+        "library": "Basic Affix",
+        "tiers": [
+          {
+            "tier": "0+",
+            "level": 100,
+            "weight": 0,
+            "template": "+(114–130)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "0",
+            "level": 100,
+            "weight": 0,
+            "template": "+(78–98)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "1",
+            "level": 86,
+            "weight": 100,
+            "template": "+(66–76)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "2",
+            "level": 82,
+            "weight": 200,
+            "template": "+(40–54)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
+          },
+          {
+            "tier": "3",
+            "level": 76,
+            "weight": 800,
+            "template": "+(32–38)% chance to +1 to Barrage Skill Total Waves when casting a Barrage Skill"
           }
         ]
       },
@@ -66162,7 +66347,7 @@ export const craftAffixesSs13={
         ]
       },
       {
-        "id": "suffix-ss14-2a46ef30a7",
+        "id": "suffix-1158103",
         "label": "[Basic Affix] Restores #% Life on Block. Interval: #s",
         "library": "Basic Affix",
         "tiers": [

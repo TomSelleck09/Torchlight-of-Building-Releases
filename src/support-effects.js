@@ -63,6 +63,8 @@ const TYPES = ["Physical", "Fire", "Cold", "Lightning", "Erosion"];
 const ELEMENTAL = ["Fire", "Cold", "Lightning"];
 const num = (value) => Number(String(value).replace("−", "-"));
 const round = (value) => Math.round(value * 10000) / 10000;
+// Max Fervor Rating (keyword Fervor, game hyperlink 740: "The Max Fervor Rating is 100"), for Attack Focus's per-Rating lines.
+const FERVOR_MAX_RATING = 100;
 
 // Supports the calibrated Scorching Beam path models in dedicated modules (src/build-mechanics.js separatelyModeledSupports).
 export const SCORCHING_BEAM_DEDICATED_SUPPORTS = new Set(["Control Spell", "Guard", "Refracted Prism", "Additional Ignite", "Scorching Beam: Disintegrate (Noble)", "Fire Explosion", "Added Fire Damage", "Cataclysm"]);
@@ -213,10 +215,15 @@ export const SUPPORT_CLAUSE_RULES = [
   { family: "conditionalAdditional", pattern: new RegExp(`^Auto-used supported skills ${N}% additional damage$`, "i"), build: (m) => ({ value: num(m[1]), condition: "standingStill", autoUsed: true }) },
   { family: "conditionalAdditional", pattern: new RegExp(`^The next skill triggered by the supported skill ${N}% additional damage for every \\d+m of movement made during the trigger interval, up to ${N}%$`, "i"), build: (m) => ({ value: num(m[2]), perMeter: num(m[1]), condition: "moving", triggeredOnly: true }) },
   { family: "conditionalAdditional", pattern: /^The supported skill is supported by Lv\. (\d+) Willpower$/i, build: (m) => ({ value: 6, condition: "standingStill", multiplies: true, grantedWillpower: num(m[1]) }) },
-  { family: "trigger", pattern: new RegExp(`^Always attempts to trigger the supported skill\\. Interval: ${N}\\s*s$`, "i"), build: (m) => ({ kind: "interval", interval: num(m[1]) }) },
-  { family: "trigger", pattern: new RegExp(`^Always attempts to trigger the supported skill when there is an? (boss|Elite) within ${N} m\\. Interval: ${N}\\s*s$`, "i"), build: (m) => ({ kind: "target", target: m[1].toLowerCase(), meters: num(m[2]), interval: num(m[3]) }) },
+  // First trigger after engaging (user decision 2026-10-22: skills start ready; a trigger that only fires after a delay waits for
+  // it): an "Always attempts to trigger …" medium (Perpetual Motion, Boss / Elite, Wind Rhythm) starts ready like the skill, so it
+  // fires at engagement (`startsReady`; its Interval / Cooldown spaces the later triggers; provisional reading, open question
+  // "activation-medium-first-trigger"); a "Triggers … every X s" medium (Instruction, Rhythm) fires first X s in; Multistrike at
+  // the first Max Multistrike Count event (src/skill-hit-model.js firstUseSeconds).
+  { family: "trigger", pattern: new RegExp(`^Always attempts to trigger the supported skill\\. Interval: ${N}\\s*s$`, "i"), build: (m) => ({ kind: "interval", interval: num(m[1]), startsReady: true }) },
+  { family: "trigger", pattern: new RegExp(`^Always attempts to trigger the supported skill when there is an? (boss|Elite) within ${N} m\\. Interval: ${N}\\s*s$`, "i"), build: (m) => ({ kind: "target", target: m[1].toLowerCase(), meters: num(m[2]), interval: num(m[3]), startsReady: true }) },
   { family: "trigger", pattern: new RegExp(`^Triggers the supported skill on the closest enemy within ${N}\\s*m every ${N}\\s*s\\.?$`, "i"), build: (m) => ({ kind: "interval", meters: num(m[1]), interval: num(m[2]) }) },
-  { family: "trigger", pattern: new RegExp(`^Always attempts to trigger the supported skill on the closest enemy within ${N}\\s*m\\. Cooldown: ${N}\\s*s$`, "i"), build: (m) => ({ kind: "interval", meters: num(m[1]), interval: num(m[2]), castSpeedScaled: true }) },
+  { family: "trigger", pattern: new RegExp(`^Always attempts to trigger the supported skill on the closest enemy within ${N}\\s*m\\. Cooldown: ${N}\\s*s$`, "i"), build: (m) => ({ kind: "interval", meters: num(m[1]), interval: num(m[2]), castSpeedScaled: true, startsReady: true }) },
   // Activation Medium: Multistrike (TLIDB, 2026-10-14): one trigger per Max Multistrike Count event of the build's multistriking
   // skills, at most one per Interval; capped by the supported skill's cooldown (rate = 1 / max(trigger interval, effective
   // cooldown), the rule user-confirmed for Activation Medium: Boss on 2026-10-12). The event rate comes from the planner's hit
@@ -263,6 +270,28 @@ export const SUPPORT_CLAUSE_RULES = [
   { family: "spellBurst", pattern: new RegExp(`^${N}% (additional )?Spell Burst Charge Speed(?: for the supported skills?)?$`, "i"), build: (m) => ({ value: num(m[1]), kind: m[2] ? "chargeAdditional" : "chargeIncreased" }) },
   { family: "combo", pattern: new RegExp(`^${N}% Combo Finisher Amplification for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "amplification" }) },
   { family: "combo", pattern: new RegExp(`^${N} Combo Points gained from Combo Starters for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "points" }) },
+  // Gear affix batch B (2026-10-22): Haunt's Shadow Quantity (game field 2012000) and Carpet Bombardment's per-wave damage (field
+  // 2501029), read by src/skill-hit-model.js shadowState / barrageWaveState with the gear lines of the same stat.
+  { family: "shadow", pattern: new RegExp(`^${N} (?:to )?Shadow Quantity for (?:the supported skill|this skill)$`, "i"), build: (m) => ({ value: num(m[1]), kind: "quantity" }) },
+  { family: "barrage", pattern: new RegExp(`^The supported skill ${N}% damage increase per wave$`, "i"), build: (m) => ({ value: num(m[1]), kind: "perWave" }) },
+  // Gear affix batch C (2026-10-22): supports gear lines grant ("Main Skill is supported by Lv. N <Support>"), TLIDB texts.
+  // Attack Focus: Fervor Rating on hit (game affix 201391632: +P1 to resource 1, Fervor Rating, when the supported skill hits) and
+  // per-10-Rating damage / Critical Strike Rating, settled from the held Rating in resolveSupportEffects (`fervorScaled`).
+  { family: "fervorScaled", pattern: new RegExp(`^Gains ${N} Fervor Rating when the supported skill hits an enemy$`, "i"), build: (m) => ({ value: num(m[1]), kind: "gain" }) },
+  { family: "fervorScaled", pattern: new RegExp(`^The supported skill ${N}% additional damage for every ${N} Fervor Rating$`, "i"), build: (m) => ({ value: num(m[1]), every: num(m[2]), kind: "damage" }) },
+  { family: "fervorScaled", pattern: new RegExp(`^For every ${N} Fervor Rating, the supported skill ${N}% Critical Strike Rating$`, "i"), build: (m) => ({ value: num(m[2]), every: num(m[1]), kind: "crit" }) },
+  // Dual Onslaught (game affix 381754400: while Dual Wielding (tag 4000530), the supported skill's casts alternate: the 1st takes
+  // the speed, the 2nd the additional damage and Skill Area).
+  { family: "buffHeader", pattern: /^While Dual Wielding:$/i, build: () => ({ dualWieldHeader: true }) },
+  { family: "alternating", pattern: new RegExp(`^${N}% Attack and Cast Speed for every 1st cast of the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "speed" }) },
+  { family: "alternating", pattern: new RegExp(`^${N}% additional damage and ${N}% Skill Area for every 2nd cast of the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "damage" }) },
+  // Empowered Insight / Empowered Channeling (conditions in src/line-conditions.js).
+  { family: "conditionalAdditional", pattern: new RegExp(`^${N}% additional damage for the supported skill while affected by at least ${N} Empower Skill\\(s\\)$`, "i"), build: (m) => ({ value: num(m[1]), condition: "empowerSkills", min: num(m[2]) }) },
+  { family: "conditionalAdditional", pattern: new RegExp(`^${N}% additional damage for the supported skill for every 1 s spent channeling, up to ${N} time\\(s\\)$`, "i"), build: (m) => ({ value: num(m[1]), condition: "channelSeconds", cap: num(m[2]) }) },
+  { family: "nonDamage", pattern: /^This effect lasts up to [\d.]+ ?s longer when channeling stops$/i, build: () => ({}) },
+  // Precise Restrain / Restrain on an Aura: "X% Sealed Mana Compensation for the supported skill" reaches the Aura reservation
+  // (src/aura-effects.js auraSupportSealedManaCompensation reads it from the support's own text and progression).
+  { family: "sealedManaCompensation", pattern: new RegExp(`^${N}% (additional )?Sealed Mana Compensation for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), additional: Boolean(m[2]) }) },
   // Grudge (TLIDB; leveled Lv1 31 … Lv40 70): Paralysis on a Cursed target when the supported skill deals damage (manual rule
   // 1002020420: +15% damage taken, 4 s base duration, 1 stack). src/combat-states.js chanceParalysis reads it at the planner's hit rate.
   { family: "paralysis", pattern: new RegExp(`^When the supported skill deals damage to a Cursed target, there is a ${N}% chance to Paralyze it$`, "i"), build: (m) => ({ chancePercent: num(m[1]) }) },
@@ -397,6 +426,9 @@ function clauseStatus(clause, support, ctx) {
   }
   // A curse support's enemy debuff (Deepened Curse): the planner adds it while the supported curse is on the dummy (src/planner.js).
   if (clause.family === "curseTaken") return !tags.size || tags.has("Curse") ? s("Provisional", `+${clause.value}% additional damage taken by the dummy once the supported curse has been on it for ${clause.delaySeconds} s (skill hits; the 5 s / 20 s windows start it at ${clause.delaySeconds} s)`, ["planner"]) : s("Inactive", "the supported skill is not a Curse");
+  // Sealed Mana Compensation on an Aura (Restrain, Precise Restrain, Seal Conversion; gear affix batch C): the Aura reservation reads
+  // it (src/aura-effects.js auraSupportSealedManaCompensation, src/engine.js), whatever the damage engine.
+  if (clause.family === "sealedManaCompensation") return tags.has("Aura") || ctx.role === "aura" ? s("In calc", "the Aura's Sealed Mana: Σ local compensation and Π additional compensation (src/aura-effects.js auraSupportSealedManaCompensation; the progression table at the support's level)", ["aura"]) : s("No DPS effect", "the supported skill reserves no Mana");
   if (!["scorching-beam", "skill-hit", "skill-dot", "minion"].includes(engine)) return s("Not modeled", "the setup's own damage has no engine that reads support clauses");
   // Residual (C) wordings with no dummy-damage effect (src/line-families.js; residual batch 2026-10-12 §6).
   const residual = residualNonDamageStatus(clause.text);
@@ -626,8 +658,25 @@ function clauseStatus(clause, support, ctx) {
       if (ctx.conditions && !(ctx.conditions.maxSpellBurst >= 1)) return s("Inactive", "the build has no Max Spell Burst (game manual: Spell Burst needs Max Spell Burst of at least 1)");
       if (clause.kind === "chargeIncreased" || clause.kind === "chargeAdditional") return s("In calc", "Spell Burst full charge time 2 s ÷ (1 + Σ Charge Speed) ÷ Π(1 + additional Charge Speed) (game manual)", ["skill-hit"]);
       return s("In calc", "Spell Burst casts: the activating cast and one automatic cast per stack consumed are cast by Spell Burst (game manual); automatic casts take no manual cast time and the activation period is not rounded (user-confirmed 2026-10-12)", ["skill-hit"]);
+    case "shadow":
+      if (!tags.has("Shadow Strike")) return s("Inactive", "the supported skill is not a Shadow Strike skill (only Shadow Strike skills summon Shadows: game manual 1001010820)");
+      if (engine !== "skill-hit") return s("Not modeled", "Shadows are read for skill hits only");
+      return s("Provisional", "each Shadow repeats the skill's attack on the dummy; on one target each Shadow after the first takes the 70% Shotgun falloff (game manual 1001010820 / 1001010821; TLIDB Phantom), as the Shadows' own hits (src/skill-hit-model.js shadowState; provisional)", ["skill-hit"]);
+    case "barrage":
+      if (!tags.has("Barrage")) return s("Inactive", "the supported skill is not a Barrage skill");
+      if (engine !== "skill-hit") return s("Not modeled", "Barrage waves are read for skill hits only");
+      return s("Provisional", "wave k (the first 0) deals ×(1 + k × the per-wave %) over the skill's waves (game field 2501029; the per-wave formula is provisional: src/skill-hit-model.js barrageWaveState)", ["skill-hit"]);
+    case "fervorScaled":
+      if (engine !== "skill-hit") return s("Not modeled", "Attack Focus is read on skill hits only");
+      if (!attack) return s("Inactive", "the supported skill is not an Attack");
+      if (clause.kind === "gain") return s("Provisional", `holds the Fervor Rating its per-Rating lines read: ${clause.ratingSource} (2 per hit while the skill keeps hitting the dummy; whether Rating builds without Fervor itself is not published: provisional)`, ["skill-hit"]);
+      return s("Provisional", `${clause.value}${clause.kind === "crit" ? "% Critical Strike Rating" : "% additional damage"} × ${clause.steps} (every ${clause.every} of ${clause.ratingSource}) = +${clause.appliedValue}%${clause.kind === "crit" ? " increased Critical Strike Rating on the skill's attacks" : " additional damage for the supported skill"} (provisional)`, ["skill-hit"]);
+    case "alternating":
+      if (engine !== "skill-hit") return s("Not modeled", "the alternating casts are read on skill hits only");
+      if (ctx.conditions && !ctx.conditions.dualWielding) return s("Inactive", "not Dual Wielding (the effect needs two one-handed weapons)");
+      return s("Provisional", clause.kind === "speed" ? "every other cast (the 1st) takes the speed: the use interval averages the two casts' (src/skill-hit-model.js; provisional)" : "every other cast (the 2nd) takes the additional damage: half the casts, so +half the value on average; the Skill Area has no effect on one dummy (provisional)", ["skill-hit"]);
     case "combo":
-      if (clause.kind === "points") return s("Not modeled", "Combo Point gains are read per skill profile only");
+      if (clause.kind === "points") return engine === "skill-hit" && ctx.combo ? s("Provisional", "added to the 1 Combo Point per Starter observed on Crescent Slash (game field 2012116, shared with the gear line): the Finisher consumes 2 Starters × points, up to 4, which sets its Amplification and its hit / Clone count (src/combo-points.js comboPointState; provisional)", ["skill-hit"]) : s(engine === "skill-hit" ? "Inactive" : "Not modeled", engine === "skill-hit" ? "the supported skill has no modeled Combo cycle" : "Combo Points are read for skill hits only");
       return engine === "skill-hit" && ctx.combo ? s("Provisional", "adds to the skill's own Combo Finisher Amplification: its Finisher Hit Damage is additionally increased by consumed Combo Points × Amplification (game manual 1001013024; 2 consumed points read, provisional)", ["skill-hit"]) : s("No DPS effect", "the skill has no Combo Finisher");
     case "paralysis":
       if (clause.fissure) {
@@ -750,7 +799,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
     crit: [], speed: [], cooldown: [], duration: [], channel: { max: [], min: [] },
     ailment: { chance: [], base: [], extraStacks: [], additional: [], blocks: [], inflicts: [] },
     dotAdditional: [], conditionalAdditional: [], trigger: [], triggerDetail: [], manualPenalty: [], multistrike: [], steepStrike: [], spellBurst: [], combo: [], selfDebuff: [], paralysis: [], targetTaken: [], curseTaken: [], minion: [], target: [], conditionalTyped: [], affliction: [], reaping: [], quantity: [], tags: { add: [], remove: [] },
-    maxAfflictionDot: [], terraCharge: [], empower: [], allElementalAdditional: [], movementCharges: [],
+    maxAfflictionDot: [], terraCharge: [], empower: [], allElementalAdditional: [], movementCharges: [], alternating: [],
     clauses: []
   };
   for (const support of setup?.supports || []) {
@@ -760,6 +809,17 @@ export function resolveSupportEffects(setup, ctx = {}) {
       const parsed = classifySupportClause(raw.text);
       const clause = { support: support.name, source, text: raw.text, baseText: raw.baseText, origin: raw.origin, level: raw.level ?? null, tier: raw.tier ?? null, stars: raw.stars ?? null, ...parsed };
       if (clause.family === "conditionalAdditional") Object.assign(clause, resolveCondition(clause, support, full.conditions));
+      // Empowered Channeling (gear affix batch C): a skill that does not channel takes nothing.
+      if (clause.family === "conditionalAdditional" && clause.condition === "channelSeconds" && !full.channeled && !full.tags.has("Channeled")) Object.assign(clause, { active: false, appliedValue: 0, conditionText: "the supported skill is not channeled" });
+      // Attack Focus (gear affix batch C, provisional): the held Fervor Rating, the build's own (combat state) or else the Max
+      // Fervor Rating (100) the support's Fervor Rating on hit builds while the skill keeps hitting the dummy.
+      if (clause.family === "fervorScaled") {
+        const own = Number(full.conditions?.fervorRating) || 0;
+        clause.rating = own > 0 ? own : FERVOR_MAX_RATING;
+        clause.ratingSource = own > 0 ? `the build's Fervor Rating ${own}` : `the Max Fervor Rating ${FERVOR_MAX_RATING}, built by the support's Fervor Rating on hit`;
+        clause.steps = clause.every ? Math.floor(clause.rating / clause.every) : 0;
+        clause.appliedValue = round(clause.value * clause.steps);
+      }
       if (clause.family === "triggerDetail" && clause.kind === "castSpeedShare") clause.share = clause.value / 100;
       // 2026-10-15 patch update: Elemental Impact needs all three Elemental types (the planner refines this from the final hit
       // parts); Hunting Tempo is per metre moved, so it follows the Movement group (unresolved without a state).
@@ -798,6 +858,15 @@ export function resolveSupportEffects(setup, ctx = {}) {
         case "steepStrike": effects.steepStrike.push({ ...entry, value: clause.value, kind: clause.kind, ...(clause.meters != null ? { meters: clause.meters } : {}), ...(clause.seconds != null ? { seconds: clause.seconds } : {}), ...(clause.attempts != null ? { attempts: clause.attempts } : {}) }); break;
         case "spellBurst": effects.spellBurst.push({ ...entry, value: clause.value, kind: clause.kind }); break;
         case "combo": effects.combo.push({ ...entry, value: clause.value, kind: clause.kind }); break;
+        // Attack Focus's per-Rating damage and Critical Strike Rating join the support's additional damage and crit lines.
+        case "fervorScaled":
+          if (["In calc", "Provisional"].includes(clause.status) && clause.appliedValue) {
+            const read = { ...entry, text: `${clause.text} × ${clause.steps} (${clause.ratingSource})` };
+            if (clause.kind === "damage") effects.additional.push({ ...read, value: clause.appliedValue, typed: null, scope: null });
+            else if (clause.kind === "crit") effects.crit.push({ ...read, value: clause.appliedValue, kind: "ratingPercent" });
+          }
+          break;
+        case "alternating": effects.alternating.push({ ...entry, value: clause.value, kind: clause.kind }); break;
         case "paralysis": if (clause.status !== "Not on dummy") effects.paralysis.push({ ...entry, chancePercent: clause.chancePercent, ...(clause.fissure ? { fissure: true, needsCurse: false } : {}) }); break;
         case "selfDebuff": effects.selfDebuff.push({ ...entry, value: clause.value, chancePercent: clause.chancePercent, durationSeconds: clause.durationSeconds }); break;
         case "targetTaken": effects.targetTaken.push({ ...entry, value: clause.value, typed: clause.typed }); break;
@@ -805,7 +874,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
         case "reaping": effects.reaping.push({ ...entry, value: clause.value, kind: clause.kind, ailment: clause.ailment ?? null }); break;
         case "beams": effects.quantity.push({ ...entry, value: clause.value, kind: "beams" }); break;
         case "tags": effects.tags[clause.kind].push({ ...entry, tag: clause.tag }); break;
-        case "trigger": effects.trigger.push({ ...entry, kind: clause.kind, interval: clause.interval ?? null, meters: clause.meters ?? null, target: clause.target ?? null, castSpeedScaled: Boolean(clause.castSpeedScaled) }); break;
+        case "trigger": effects.trigger.push({ ...entry, kind: clause.kind, interval: clause.interval ?? null, meters: clause.meters ?? null, target: clause.target ?? null, castSpeedScaled: Boolean(clause.castSpeedScaled), startsReady: Boolean(clause.startsReady) }); break;
         case "triggerDetail": effects.triggerDetail.push({ ...entry, kind: clause.kind, share: clause.share ?? null }); break;
         case "manualPenalty": effects.manualPenalty.push({ ...entry, value: clause.value }); break;
         case "minion": effects.minion.push({ ...entry, value: clause.value }); break;

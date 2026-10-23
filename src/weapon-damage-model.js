@@ -1,6 +1,7 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { effectiveGearModifierTexts } from "./engine.js";
-import { rareBaseForItem } from "./rare-base-lookup.js";
+import { rareBaseForItem, rareBaseByName } from "./rare-base-lookup.js";
+import { legendaryBasesSs14 } from "./data/gear/legendary-bases-ss14.generated.js";
 import { legendaryGearSs13 } from "./data/gear/legendary-gear-ss13.generated.js";
 import { defaultBaseForItem } from "./data/gear/corrosion-implicits-ss13.js";
 
@@ -95,16 +96,37 @@ const BASE_CRIT = /^(\d+(?:\.\d+)?) Critical Strike Rating$/i;
 const BASE_SPEED = /^(\d+(?:\.\d+)?) Attack Speed$/i;
 const LOCAL_PHYSICAL = new RegExp(`^${NUM}% Gear Physical Damage$`, "i");
 const LOCAL_ELEMENTAL = new RegExp(`^${NUM}% Gear Elemental Damage$`, "i");
-const LOCAL_ADDED = new RegExp(`^Adds ${NUM}\\s*[-–]\\s*${NUM} (Physical|Fire|Cold|Lightning|Erosion) Damage to the gear$`, "i");
+// "Elemental" (Claw / Dagger craft prefix, gear affix batch D 2026-10-22): game affix 899716224 adds the same range to the gear's Fire,
+// Cold and Lightning damage (three node-363 writes in parallel, attrs 5107 / 5108 / 5109 on Attacks), so each type gets it.
+const LOCAL_ADDED = new RegExp(`^Adds ${NUM}\\s*[-–]\\s*${NUM} (Physical|Fire|Cold|Lightning|Erosion|Elemental) Damage to the gear$`, "i");
 const LOCAL_SPEED = new RegExp(`^${NUM}% gear Attack Speed$`, "i");
 const LOCAL_CRIT = new RegExp(`^${NUM}% Attack Critical Strike Rating for this gear$`, "i");
+// Flat local rating (Incorrect Arbitration, corroded: "+10000 Critical Strike Rating for this gear"; legendary audit batch 1): added to
+// the weapon's base rating before its local increased rating.
+const LOCAL_CRIT_FLAT = new RegExp(`^\\+${NUM} (?:Attack )?Critical Strike Rating for this gear$`, "i");
 
 /** "base" / "local" for a weapon base or weapon-local line that readWeapon reads, else null (coverage badges). */
 export function weaponLocalLineKind(text) {
   const line = clean(text);
   if ([BASE_DAMAGE, BASE_CRIT, BASE_SPEED].some((pattern) => pattern.test(line))) return "base";
-  if ([LOCAL_PHYSICAL, LOCAL_ELEMENTAL, LOCAL_ADDED, LOCAL_SPEED, LOCAL_CRIT].some((pattern) => pattern.test(line))) return "local";
+  if ([LOCAL_PHYSICAL, LOCAL_ELEMENTAL, LOCAL_ADDED, LOCAL_SPEED, LOCAL_CRIT, LOCAL_CRIT_FLAT].some((pattern) => pattern.test(line))) return "local";
   return null;
+}
+
+// A legendary weapon's base lines (base damage, Critical Strike Rating, Attack Speed) when the item carries none: the legendary
+// crafter saves only the legendary lines, while a game-log import keeps the base attributes as implicitModifiers. The base is the
+// game's own record (src/data/gear/legendary-bases-ss14.generated.js: config_item_gold base id → item_base name), and its lines
+// are that base's (src/data/gear/rare-base-items-ss13.generated.js; Scorching Words: Rusted Wooden Hammer "8 - 8 Physical Damage",
+// "500 Critical Strike Rating", "1.5 Attack Speed"). Legendary audit 2026-10-22: before, a crafted legendary weapon had no
+// weapon damage, so its Attack skills dealt only added damage.
+export function legendaryWeaponBaseLines(item) {
+  if (!item || (item.rarity && !["legendary", "captured"].includes(item.rarity))) return [];
+  const entry = legendaryBasesSs14[String(item.name || "").replace(/ - Priceless$/i, "")];
+  if (!entry) return [];
+  const carried = effectiveGearModifierTexts(item).map(clean);
+  if (carried.some((line) => [BASE_DAMAGE, BASE_CRIT, BASE_SPEED].some((pattern) => pattern.test(line)))) return [];
+  const base = rareBaseByName(entry.base, entry.type);
+  return (base?.modifiers || []).filter((line) => [BASE_DAMAGE, BASE_CRIT, BASE_SPEED].some((pattern) => pattern.test(clean(line))));
 }
 
 /** One equipped weapon: base lines, its own local affixes, and the resulting per-hit damage / speed / crit. */
@@ -114,8 +136,8 @@ export function readWeapon(item) {
   const hands = weaponHands(type);
   if (!hands || hands === "shield") return { slot: item.slot, name: item.name, type, hands, weapon: false, damage: {}, attackSpeed: null, critRating: null, sources: [], notes: hands === "shield" ? [`${item.name}: a shield, no weapon damage.`] : [`${item.name}: base type ${type || "unknown"} is not a weapon type.`] };
   const base = {}, added = {}, sources = [];
-  let physicalPercent = 0, elementalPercent = 0, speedPercent = 0, critPercent = 0, attackSpeed = null, critRating = null;
-  for (const raw of effectiveGearModifierTexts(item)) {
+  let physicalPercent = 0, elementalPercent = 0, speedPercent = 0, critPercent = 0, attackSpeed = null, critRating = null, critFlat = 0;
+  for (const raw of [...effectiveGearModifierTexts(item), ...legendaryWeaponBaseLines(item)]) {
     const text = clean(raw);
     let match;
     if ((match = text.match(BASE_DAMAGE))) { const type = match[3][0].toUpperCase() + match[3].slice(1).toLowerCase(); base[type] = { min: number(match[1]), max: number(match[2]) }; sources.push({ kind: "base", text, type }); }
@@ -123,9 +145,10 @@ export function readWeapon(item) {
     else if ((match = text.match(BASE_SPEED))) { attackSpeed = number(match[1]); sources.push({ kind: "base", text }); }
     else if ((match = text.match(LOCAL_PHYSICAL))) { physicalPercent += number(match[1]); sources.push({ kind: "local", text }); }
     else if ((match = text.match(LOCAL_ELEMENTAL))) { elementalPercent += number(match[1]); sources.push({ kind: "local", text }); }
-    else if ((match = text.match(LOCAL_ADDED))) { const type = match[3][0].toUpperCase() + match[3].slice(1).toLowerCase(); added[type] = { min: (added[type]?.min || 0) + number(match[1]), max: (added[type]?.max || 0) + number(match[2]) }; sources.push({ kind: "local", text, type }); }
+    else if ((match = text.match(LOCAL_ADDED))) { const named = match[3][0].toUpperCase() + match[3].slice(1).toLowerCase(); for (const type of named === "Elemental" ? ["Fire", "Cold", "Lightning"] : [named]) { added[type] = { min: (added[type]?.min || 0) + number(match[1]), max: (added[type]?.max || 0) + number(match[2]) }; sources.push({ kind: "local", text, type }); } }
     else if ((match = text.match(LOCAL_SPEED))) { speedPercent += number(match[1]); sources.push({ kind: "local", text }); }
     else if ((match = text.match(LOCAL_CRIT))) { critPercent += number(match[1]); sources.push({ kind: "local", text }); }
+    else if ((match = text.match(LOCAL_CRIT_FLAT))) { critFlat += number(match[1]); sources.push({ kind: "local", text }); }
   }
   // Local layers: "Gear Physical Damage" multiplies the weapon's Physical damage (base + Physical added to the gear);
   // "Gear Elemental Damage" multiplies the elemental damage added to the gear (reading of attr 5002 / 5107–5109).
@@ -141,7 +164,7 @@ export function readWeapon(item) {
     base, added, local: { physicalPercent, elementalPercent, attackSpeedPercent: speedPercent, critRatingPercent: critPercent },
     damage, hasWeaponDamage: Object.keys(damage).length > 0,
     attackSpeed: attackSpeed != null ? attackSpeed * (1 + speedPercent / 100) : null, baseAttackSpeed: attackSpeed,
-    critRating: critRating != null ? critRating * (1 + critPercent / 100) : null, baseCritRating: critRating,
+    critRating: critRating != null ? (critRating + critFlat) * (1 + critPercent / 100) : null, baseCritRating: critRating,
     sources, notes: []
   };
 }
@@ -151,7 +174,8 @@ export function readWeapon(item) {
 const ATTACK_SPEED = new RegExp(`^${NUM}% (additional )?(?:Attack and Cast Speed|Attack Speed)$`, "i");
 const ATTACK_SPEED_DUAL = new RegExp(`^${NUM}% (additional )?Attack Speed while Dual Wielding$`, "i");
 const MAIN_HAND_SPEED = new RegExp(`^${NUM}% Main-Hand Weapon Attack Speed$`, "i");
-const CRIT_FLAT = new RegExp(`^\\+${NUM} (?:Attack|Attack and Spell) Critical Strike Rating$`, "i");
+// The plain "+N Critical Strike Rating" (the general rating; the revived Frostbitten Critical Strike Rating family's body) too.
+const CRIT_FLAT = new RegExp(`^\\+${NUM} (?:(?:Attack|Attack and Spell) )?Critical Strike Rating$`, "i");
 const CRIT_PERCENT = new RegExp(`^${NUM}% (?:Attack |Attack and Spell )?Critical Strike Rating$`, "i");
 // "+X% additional Critical Strike Rating" (Cohesion's next-Main-Skill buff × its share, core audit batch B3; game node 624 on
 // attr 4802): its own multiplier on the rating after the increased layer.
@@ -159,7 +183,8 @@ const CRIT_ADDITIONAL = new RegExp(`^${NUM}% additional (?:Attack |Attack and Sp
 const CRIT_MAIN_HAND = new RegExp(`^${NUM}% Critical Strike Rating for the Main-Hand Weapon$`, "i");
 const CRIT_TWO_HANDED = new RegExp(`^${NUM}% Attack Critical Strike Rating when holding a Two-Handed Weapon$`, "i");
 const ADDED_ATTACKS = new RegExp(`^Adds ${NUM}\\s*[-–]\\s*${NUM} (Physical|Fire|Cold|Lightning|Erosion) Damage to (?:Attacks|Attacks and Spells|your Attacks and Spells|your and your Minions['’] Attacks and Spells)$`, "i");
-const ADDED_MAIN_HAND = new RegExp(`^Adds ${NUM}\\s*[-–]\\s*${NUM} (Physical|Fire|Cold|Lightning|Erosion) Damage to the Main-Hand Weapon$`, "i");
+// Legendary audit batch 1 (2026-10-22): Boor's Iron Crown writes "… to Main-Hand Weapon" without "the" (one game wording).
+const ADDED_MAIN_HAND = new RegExp(`^Adds ${NUM}\\s*[-–]\\s*${NUM} (Physical|Fire|Cold|Lightning|Erosion) Damage to (?:the )?Main-Hand Weapon$`, "i");
 const TWO_HANDED_BASE = new RegExp(`^${NUM}% additional Base Damage for Two-Handed Weapons$`, "i");
 const OFF_HAND_BASE = new RegExp(`^${NUM}% additional Base Damage for Off-Hand Weapons$`, "i");
 const MAIN_HAND_DAMAGE = new RegExp(`^${NUM}% additional damage for Main-Hand Weapons$`, "i");
@@ -170,7 +195,9 @@ const WEAPONS_DAMAGE = new RegExp(`^${NUM}% additional damage for Weapons$`, "i"
 const DUAL_DAMAGE = new RegExp(`^${NUM}% (additional )?Attack Damage while Dual Wielding$`, "i");
 const OFF_HAND_SHARE = new RegExp(`^Adds ${NUM}% of the damage of the Off-Hand Weapon to the final damage of the Main-Hand Weapon$`, "i");
 // Joined Force (Bladerunner 24-point core, TLIDB text): "Off-Hand Weapons do not participate in Attacks while Dual Wielding".
-const OFF_HAND_NO_ATTACK = /^Off-Hand Weapons do not participate in Attacks while Dual Wielding$/i;
+const WEAPON_CRIT_FIXED = /^The Critical Strike Rating is fixed at (\d+(?:\.\d+)?) for the Weapon$/i;
+const WEAPON_SPEED_FIXED = /^Weapon Attack Speed is fixed at (\d+(?:\.\d+)?)$/i;
+const OFF_HAND_NO_ATTACK =/^Off-Hand Weapons do not participate in Attacks while Dual Wielding$/i;
 // Twinblade Onslaught (Erika – Vendetta's Sting; hero trait audit B2, 2026-10-19): "No additional Attack Speed bonus is granted
 // while Dual Wielding. Instead, +X% additional Attack Damage". Read as the Dual Wielding status's +10% additional Attack Speed
 // being dropped (its sibling line drops the status's Attack Block Chance); "+X% Attack Speed while Dual Wielding" lines from
@@ -204,6 +231,11 @@ export function classifyWeaponAttackLine(text) {
   if ((match = line.match(DUAL_DAMAGE))) return { kind: "dualDamage", value: number(match[1]), additional: Boolean(match[2]) };
   if ((match = line.match(OFF_HAND_SHARE))) return { kind: "offHandShare", value: number(match[1]) };
   if (OFF_HAND_NO_ATTACK.test(line)) return { kind: "offHandNoAttack", value: 0 };
+  // Legendary audit batch 1 (2026-10-22): a weapon's Critical Strike Rating or Attack Speed fixed by another item (Death's Touch "The
+  // Critical Strike Rating is fixed at 500 for the Weapon", Demons' Touch "Weapon Attack Speed is fixed at 1.35"): every held weapon's
+  // own value (its base and local lines) is replaced; the build-wide lines still apply on top (provisional).
+  if ((match = line.match(WEAPON_CRIT_FIXED))) return { kind: "weaponCritFixed", value: number(match[1]) };
+  if ((match = line.match(WEAPON_SPEED_FIXED))) return { kind: "weaponSpeedFixed", value: number(match[1]) };
   return null;
 }
 
@@ -220,8 +252,12 @@ const addRange = (into, type, range) => { into[type] = { min: (into[type]?.min |
  */
 export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierTexts = [], dualWieldMode = "alternate" } = {}) {
   const items = (equipment?.candidateItems || []).filter((item) => !disabledSlots.includes(item.slot));
-  const mainHand = readWeapon(items.find((item) => item.slot === "mainHand") || null);
-  const offHand = readWeapon(items.find((item) => item.slot === "secondaryHand") || null);
+  // Fixed weapon values from other items (WEAPON_CRIT_FIXED / WEAPON_SPEED_FIXED): the lowest fixed value wins when several apply.
+  const fixedOf = (kind) => { const values = modifierTexts.map((line) => classifyWeaponAttackLine(line.text)).filter((parsed) => parsed?.kind === kind).map((parsed) => parsed.value); return values.length ? Math.min(...values) : null; };
+  const fixedCrit = fixedOf("weaponCritFixed"), fixedSpeed = fixedOf("weaponSpeedFixed");
+  const fixWeapon = (weapon) => (weapon?.weapon && (fixedCrit != null || fixedSpeed != null) ? { ...weapon, ...(fixedCrit != null ? { critRating: fixedCrit, fixedCritRating: fixedCrit } : {}), ...(fixedSpeed != null ? { attackSpeed: fixedSpeed, fixedAttackSpeed: fixedSpeed } : {}) } : weapon);
+  const mainHand = fixWeapon(readWeapon(items.find((item) => item.slot === "mainHand") || null));
+  const offHand = fixWeapon(readWeapon(items.find((item) => item.slot === "secondaryHand") || null));
   const notes = [], warnings = [];
   const dualWielding = Boolean(mainHand?.weapon && offHand?.weapon && mainHand.hands === "one" && offHand.hands === "one");
   const twoHanded = mainHand?.hands === "two";
