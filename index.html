@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="An auditable Torchlight: Infinite build calculator prototype." />
+    <title>Torchlight of Building</title>
+    <link rel="icon" href="./src/assets/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="./src/assets/favicon-32.png">
+    <link rel="apple-touch-icon" href="./src/assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body class="unified-planner layout-tabs">
+    <!-- Overview tree emblems: the emblem files fade out towards their right / bottom edge (alpha 72 → ~10 of 255); this filter boosts
+         the emblem's alpha (x8, capped) before the family tint so the faded side reads; the solid x30 version was reverted (user, 2026-10-30:
+         "You just made them bolder. Undo that last change"). -->
+    <svg class="svg-filter-defs" width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden"><filter id="overview-emblem-alpha" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="linear" slope="8" intercept="0"/></feComponentTransfer></filter></svg>
+    <header class="site-header">
+      <div class="header-left">
+      <a class="brand" href="./" aria-label="Torchlight of Building home">
+        <img class="brand-image" src="./src/assets/torchlight-build-planner-logo.png" alt="Torchlight Infinite Build Planner" />
+      </a>
+      </div>
+      <div class="season-heading" aria-label="SS14 TartarUS">
+        <span>SS14</span>
+        <img src="./src/assets/tartarus-wordmark.png" alt="TartarUS" />
+      </div>
+      <div class="header-actions">
+        <span id="planner-search-chip" class="planner-search-chip" hidden><button type="button" class="planner-search-chip-text" data-planner-search-reopen></button><button type="button" class="planner-search-chip-clear" data-planner-search-clear aria-label="Clear search highlights" title="Clear highlights">&times;</button></span>
+        <button class="button button-secondary command-button" type="button" data-view="builds" aria-label="Builds" title="Open the Builds library"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="7" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/><rect x="13" y="13" width="8" height="7" rx="1"/></svg><span>Builds</span></button>
+        <button id="import-game-log" class="button button-secondary command-button" type="button" aria-label="Import from game" title="Import a build from the game log"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v6M14 3v4h4M6 3v18h6"/><path d="M18 15v6m-3-3 3 3 3-3"/></svg><span>Import from game</span></button>
+        <div class="header-menu-wrap"><button class="button button-secondary command-button" type="button" data-header-menu="import-menu" aria-label="Import" aria-haspopup="true" aria-expanded="false" aria-controls="import-menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4"/></svg><span>Import ▾</span></button><div id="import-menu" class="header-menu" role="menu" hidden><button id="import-build" type="button" role="menuitem" title="Import a build code"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4"/></svg>Import code</button><button id="import-build-file" type="button" role="menuitem" title="Import a build file saved with Backup"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M12 10v7m-3-3 3 3 3-3"/></svg>Import from file</button></div><input id="import-build-file-input" type="file" accept=".txt,text/plain" hidden></div>
+        <button id="export-build" class="button button-secondary command-button" type="button" aria-label="Export" title="Copy build code to clipboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 17v4h16v-4"/></svg><span>Export</span></button>
+        <button id="backup-build" class="button button-secondary command-button" type="button" aria-label="Backup" title="Save this build as a file (Import ▾ › Import from file reads it back)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></svg><span>Backup</span></button>
+      </div>
+    </header>
+    <div class="section-tab-row">
+      <div class="tab-row-build"><div class="loadout-tab active" tabindex="0" title="Right-click to rename"><strong>Loading build…</strong></div></div>
+      <nav id="section-tabs" class="section-tabs hero-panel-tab-list" role="tablist" aria-label="Build sections"><button type="button" role="tab" id="section-tab-overview" aria-controls="section-panel-overview" aria-selected="false" tabindex="-1" data-section-tab="overview">Overview</button><button type="button" role="tab" id="section-tab-hero" aria-controls="section-panel-hero" aria-selected="false" tabindex="-1" data-section-tab="hero" aria-label="Hero and Follower">Hero<span class="tab-sep" aria-hidden="true">/</span>Follower</button><button type="button" role="tab" id="section-tab-skills" aria-controls="section-panel-skills" aria-selected="false" tabindex="-1" data-section-tab="skills">Skills</button><button type="button" role="tab" id="section-tab-gear" aria-controls="section-panel-gear" aria-selected="false" tabindex="-1" data-section-tab="gear">Gear</button><button type="button" role="tab" id="section-tab-talents" aria-controls="section-panel-talents" aria-selected="false" tabindex="-1" data-section-tab="talents" aria-label="Talents and Slates">Talents<span class="tab-sep" aria-hidden="true">/</span>Slates</button><button type="button" role="tab" id="section-tab-pacts" aria-controls="section-panel-pacts" aria-selected="false" tabindex="-1" data-section-tab="pacts">Pacts</button><button type="button" role="tab" id="section-tab-calculations" aria-controls="section-panel-calculations" aria-selected="false" tabindex="-1" data-section-tab="calculations">Calculations</button><button type="button" role="tab" id="section-tab-config" aria-controls="section-panel-config" aria-selected="false" tabindex="-1" data-section-tab="config">Config</button></nav>
+      <div class="tab-row-actions"><button type="button" class="button button-secondary report-bug-button" data-report-bug aria-label="Report bug" title="Open a GitHub form to report a planner bug"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8V6a3 3 0 0 1 6 0v2"/><rect x="7" y="8" width="10" height="11" rx="5"/><path d="M12 12v7M4 10l3 2M20 10l-3 2M4 18l3-2M20 18l-3-2"/></svg><span>Report bug</span></button><button id="reset-build" class="button command-button" type="button" aria-label="Reset build" title="Reset this build (asks first)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11a8 8 0 1 1 2.3 6M4 4v7h7"/></svg><span>Reset build</span></button></div>
+    </div>
+
+    <div class="app-body">
+      <aside id="stats-sidebar" class="panel stats-sidebar" aria-label="Build stats"></aside>
+    <main>
+      <div id="overview-view" class="app-view" hidden>
+      <section class="hero-panel">
+        <div>
+          <p class="eyebrow">Build workspace</p>
+          <h1 id="build-name">Loading build…</h1>
+          <p class="muted" id="build-meta"></p>
+        </div>
+        <div class="hero-skill">
+          <span class="skill-icon"><img src="./src/assets/tli/ui-skillicon-skill-fireray-icon-128.webp" alt="Scorching Beam"></span>
+          <div><small>Main skill</small><strong id="skill-name">—</strong></div>
+        </div>
+      </section>
+
+      <div class="notice calibrated-notice" role="note">
+        Town baseline calibration. Observed values are exact; unresolved game-order factors are labeled in the audit trail.
+      </div>
+
+      <section class="stat-grid" aria-label="Build summary">
+        <article class="stat-card featured"><span>Ignite DPS</span><strong id="full-dps">—</strong><small id="dps-detail">town baseline</small></article>
+        <article class="stat-card"><span>Spell DPS</span><strong id="average-hit">—</strong><small>town baseline</small></article>
+        <article class="stat-card"><span>Cast rate</span><strong id="life">—</strong><small>casts per second</small></article>
+        <article class="stat-card"><span>Base Ignite</span><strong id="armor">—</strong><small>captured character stat</small></article>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel controls-panel">
+          <div class="panel-heading"><div><p class="eyebrow">Calibration state</p><h2>Town baseline</h2></div></div>
+          <div id="conditions" class="condition-list"></div>
+          <input id="enemy-level" type="hidden" />
+        </section>
+
+        <section class="panel breakdown-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Audit trail</p><h2>Damage calculation</h2></div>
+            <span class="live-badge">Audited</span>
+          </div>
+          <ol id="damage-trace" class="trace"></ol>
+        </section>
+      </div>
+
+      <section class="panel modifier-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Collected inputs</p><h2>Active modifiers</h2></div><span id="modifier-count" class="count"></span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Source</th><th>Stat</th><th>Type</th><th>Value</th><th>Status</th></tr></thead>
+            <tbody id="modifier-table"></tbody>
+          </table>
+        </div>
+      </section>
+      </div>
+
+      <section id="section-panel-overview" class="section-panel" role="tabpanel" aria-labelledby="section-tab-overview" data-section-panel="overview" hidden>
+        <div id="overview-board" class="overview-board" aria-label="Build overview"></div>
+      </section>
+      <section id="section-panel-skills" class="section-panel" role="tabpanel" aria-labelledby="section-tab-skills" data-section-panel="skills" hidden>
+        <section id="skills-view" class="app-view" hidden>
+          <div class="talent-page-heading"><div><p class="eyebrow">Captured build</p><h1>Skills<button type="button" class="qol-help" data-qol-help="skills" aria-label="Skills controls">?</button></h1><p class="muted">Active skills, supports, effective levels, and observed in-game values for Selena's Scorching Beam setup.</p></div></div>
+          <section class="panel energy-panel compact-energy-panel"><div class="panel-heading"><div><p class="eyebrow">Activation budget</p><h2>Energy allocator</h2></div><div class="energy-total"><strong id="energy-total">—</strong><span>used / available</span></div></div><div id="energy-meter" class="energy-meter"><i></i></div><div hidden><div id="energy-source-list"></div><div id="energy-allocation"></div></div></section>
+          <section class="panel catalogue-skill-panel">
+            <div class="catalogue-tabs"><button type="button" class="active" data-skill-board-tab="skills">Skills</button><button type="button" data-skill-board-tab="auras">Auras</button></div>
+            <div class="skill-energy-scale"><span></span><span></span><span>0</span><span>10</span><span>15</span><span>50</span><span>100</span><strong>Energy</strong></div>
+            <div id="skill-groups" class="catalogue-skill-rows"></div>
+            <section id="aura-reservation-summary" class="aura-reservation-summary" hidden aria-live="polite">
+              <div class="aura-resource-card mana"><span>Sealed Mana</span><strong id="aura-sealed-mana">0 / 0</strong><small id="aura-mana-percent">0% sealed</small><i><b id="aura-mana-meter"></b></i></div>
+              <div class="aura-resource-card life"><span>Sealed Life</span><strong id="aura-sealed-life">0 / 0</strong><small id="aura-life-percent">0% sealed</small><i><b id="aura-life-meter"></b></i></div>
+              <div id="aura-reservation-status" class="aura-reservation-status"></div>
+            </section>
+            <footer><button class="button button-secondary" type="button" data-reset-skills>Reset Skills</button></footer>
+          </section>
+          <div class="skill-calculation-data" hidden><div id="skill-inspector"></div><div id="support-heading"></div><div id="support-count"></div><div id="support-grid"></div><div id="skill-comparison"></div><div id="mana-reserved"></div><div id="mana-remaining"></div><div id="life-reserved"></div><div id="life-remaining"></div><div id="reservation-model-status"></div><div id="aura-ledger"></div></div>
+        </section>
+      </section>
+      <section id="section-panel-gear" class="section-panel" role="tabpanel" aria-labelledby="section-tab-gear" data-section-panel="gear" hidden>
+        <section id="equipment-view" class="app-view" hidden>
+          <div class="talent-page-heading"><div><p class="eyebrow">Build gear</p><h1>Gear<button type="button" class="qol-help" data-qol-help="gear" aria-label="Gear controls">?</button></h1><p class="muted">Craft rare, legendary, and Vorax items, then equip them from Inventory.</p></div></div>
+          <div class="gear-workbench panel">
+            <aside><div id="equipment-grid" class="equipment-grid" aria-label="Equipped items"></div></aside>
+            <section class="gear-inventory" aria-label="Inventory"><header><button class="button gear-reset" type="button" data-reset-equipment>Reset Gear</button><div><button class="button" type="button" data-open-equipment-craft="rare">Craft Rare Item</button><button class="button" type="button" data-open-equipment-craft="legendary">Craft Legendary</button><button class="button" type="button" data-open-equipment-craft="vorax">Craft Vorax Item</button></div></header><div id="equipment-inventory"></div></section>
+          </div>
+          <aside class="panel equipment-inspector" aria-live="polite"><p class="eyebrow">Item inspector</p><div id="equipment-inspector"></div></aside>
+          <section class="panel equipment-comparison"><div class="panel-heading"><div><p class="eyebrow">Predictive comparison</p><h2>Current equipment delta</h2></div><span id="comparison-status" class="count"></span></div><div id="equipment-comparison"></div></section>
+          <section class="panel catalog-panel" hidden><div id="equipment-catalog-results"></div></section>
+        </section>
+      </section>
+      <section id="section-panel-talents" class="section-panel" role="tabpanel" aria-labelledby="section-tab-talents" data-section-panel="talents" hidden>
+        <section id="talents-view" class="app-view">
+          <div class="talent-page-heading">
+            <div>
+              <p class="eyebrow">Captured build</p>
+              <h1>Talent trees</h1>
+              <p class="muted">Left-click a node to add a point. Right-click to remove one. Hover for its exact effect.</p>
+            </div>
+            <div class="talent-total"><span>Total allocated</span><strong id="talent-total">—</strong></div>
+          </div>
+          <div id="talent-board-tabs" class="talent-board-tabs" role="tablist" aria-label="Talent boards"></div>
+          <div class="talent-layout">
+            <section class="panel talent-tree-panel">
+              <div class="talent-board-heading">
+                <div><p class="eyebrow" id="talent-board-kind">Talent panel</p><h2 id="talent-board-name">—</h2></div>
+                <div class="talent-board-header-side">
+                  <div class="talent-board-actions" aria-label="Talent tree actions">
+                    <button type="button" class="talent-action talent-action-prism" data-install-prism>Install Prism</button>
+                    <button type="button" class="talent-action talent-action-reselect" data-reselect-tree>Reselect</button>
+                    <button type="button" class="talent-action talent-action-reset" data-reset-talents title="Reset points on the open talent tree">Reset</button>
+                    <button type="button" class="qol-help" data-qol-help="talents" aria-label="Talents controls">?</button>
+                  </div>
+                </div>
+              </div>
+              <div id="prism-placement-prompt" class="prism-placement-prompt" hidden><span>Click a talent node to install <strong id="prism-placement-name"></strong>.</span><button type="button" data-cancel-prism-placement>Cancel</button></div>
+              <div id="core-talents" class="core-talents"></div>
+              <div class="talent-stage-wrap">
+                <div class="talent-thresholds" aria-hidden="true"><span>0</span><span>3</span><span>6</span><span>9</span><span>12</span><span>15</span><span>18</span></div>
+                <div id="talent-stage" class="talent-stage" role="grid" aria-label="Allocated talent nodes"></div>
+              </div>
+            </section>
+          </div>
+          <section class="panel allocation-audit">
+            <div class="panel-heading"><div><p class="eyebrow">Verification</p><h2>Allocated effects</h2></div></div>
+            <div id="talent-audit"></div>
+          </section>
+        </section>
+        <section id="slates-view" class="app-view" hidden>
+          <div class="talent-page-heading"><div><p class="eyebrow">Captured build</p><h1>Divinity Slates</h1><p class="muted">Inspect the equipped Statue of the New God layout. Copy effects remain flagged until their exact adjacent last-talents are confirmed.</p></div><div class="talent-total"><span>Equipped slates</span><strong id="slate-count">—</strong></div></div>
+          <div class="slate-layout">
+            <section class="panel slate-board-panel"><div class="panel-heading"><div><p class="eyebrow">Statue layout</p><h2>Statue of The New God</h2></div><span class="count">SS13 capture</span></div><div id="slate-board" class="slate-board" role="grid" aria-label="Equipped Divinity Slates"></div></section>
+            <aside class="panel slate-inspector" aria-live="polite"><p class="eyebrow">Slate inspector</p><div id="slate-inspector"></div></aside>
+          </div>
+          <section class="panel slate-audit"><div class="panel-heading"><div><p class="eyebrow">Calculation safety</p><h2>Slate effect audit</h2></div><span id="slate-audit-status" class="live-badge"></span></div><div id="slate-audit"></div></section>
+        </section>
+      </section>
+      <section id="section-panel-hero" class="section-panel" role="tabpanel" aria-labelledby="section-tab-hero" data-section-panel="hero" hidden>
+        <div class="hero-follower-panels">
+        <aside class="planner-hero-panel hero-tab-panel">
+          <div class="planner-section-title hero-panel-tabs"><h2 class="section-panel-title">Hero</h2><button type="button" class="qol-help" data-qol-help="hero" aria-label="Hero controls">?</button></div>
+          <div id="hero-panel-hero" class="hero-panel-content">
+          <div class="hero-showcase">
+            <div class="hero-portrait" id="selected-hero-portrait"></div>
+            <div class="hero-identity"><span id="selected-hero-name">Selena</span><strong id="selected-hero-trait">Sing with the Tide</strong><button type="button" class="change-hero-button" data-change-hero>Change Hero</button></div>
+          </div>
+          <div class="hero-trait-area">
+          <div id="hero-detail-tabs" class="hero-detail-tabs" hidden><button type="button" data-hero-detail-tab="traits">Hero Trait</button><button type="button" data-hero-detail-tab="scent">Scent Bottle</button></div>
+          <div id="hero-trait-tree" class="hero-trait-tree" aria-label="Selena hero traits and memories"></div>
+          </div>
+          </div>
+        </aside>
+        <aside class="planner-hero-panel follower-tab-panel">
+          <div class="planner-section-title hero-panel-tabs"><h2 class="section-panel-title">Follower</h2><button type="button" class="qol-help" data-qol-help="follower" aria-label="Follower controls">?</button></div>
+          <div id="follower-panel" class="hero-panel-content follower-panel"></div>
+        </aside>
+        </div>
+      </section>
+      <section id="section-panel-pacts" class="section-panel" role="tabpanel" aria-labelledby="section-tab-pacts" data-section-panel="pacts" hidden>
+        <section id="pacts-view" class="app-view" hidden>
+          <div class="talent-page-heading"><div><p class="eyebrow">Build setup</p><h1>Pactspirits<button type="button" class="qol-help" data-qol-help="pacts" aria-label="Pactspirits controls">?</button></h1><p class="muted">Choose the spirits in each pact slot.</p></div><div class="talent-total"><span>Pactspirits</span><strong id="pactspirit-count">3/3</strong></div></div>
+          <div id="pactspirits" class="pactspirit-grid"></div>
+          <div id="pact-kismet-summary" class="pact-kismet-summary" aria-live="polite"></div>
+        </section>
+      </section>
+      <section id="section-panel-calculations" class="section-panel" role="tabpanel" aria-labelledby="section-tab-calculations" data-section-panel="calculations" hidden>
+        <section id="character-view" class="app-view" hidden>
+          <div class="talent-page-heading"><div><p class="eyebrow">Candidate build</p><h1>Stats</h1><p class="muted">See modeled damage first. Open the sections below for sources, defense, and calculations.</p></div><div class="talent-total"><span>Build status</span><strong id="character-status">—</strong><small id="character-status-detail"></small></div></div>
+          <div id="stats-panel-options" class="stats-panel-options" role="tablist" aria-label="Stats layout"><button type="button" role="tab" data-stats-panel="sheet" aria-selected="true" class="active">Stat sheet</button><button type="button" role="tab" data-stats-panel="damage-path" aria-selected="false">Damage path</button></div>
+          <div id="stat-sheet" hidden></div>
+          <div id="damage-path" hidden></div>
+        </section>
+      </section>
+      <section id="section-panel-config" class="section-panel" role="tabpanel" aria-labelledby="section-tab-config" data-section-panel="config" hidden>
+        <section id="configuration-view" class="app-view" hidden>
+          <div id="combat-conditions" class="configuration-card"></div>
+        </section>
+      </section>
+      <section id="section-panel-notes" class="section-panel" role="region" aria-label="Builds" data-section-panel="notes" hidden>
+        <section id="builds-view" class="app-view builds-page" hidden>
+          <a class="eyebrow builds-back-link" href="#" data-builds-back>← Back to build</a>
+          <div class="builds-page-header builds-heading-bar"><h1>Builds</h1><div class="builds-page-header-actions"><button class="button" type="button" data-new-build>New Build</button></div></div>
+          <div class="build-library-layout">
+            <section class="panel build-collection" aria-label="Your builds"><div class="panel-heading build-collection-head"><div class="build-actions"><button class="button button-secondary" type="button" data-duplicate-build>Duplicate current</button><button class="button button-secondary" type="button" data-backup-builds>Back up all builds</button><button class="button button-secondary" type="button" data-restore-builds>Restore from backup</button><button class="button build-delete-all" type="button" data-delete-all-builds>Delete all builds</button></div></div><div id="build-list" class="build-list"></div></section>
+            <aside class="panel build-details-panel"><div class="panel-heading"><div><p class="eyebrow">Current build</p><h2>Details</h2></div></div><div id="build-editor"></div></aside>
+          </div>
+        </section>
+      </section>
+      <footer class="site-disclaimer"><p>Torchlight of Building is an unofficial fan-made planner. It is not affiliated with, endorsed by, or connected to XD Inc. or the Torchlight: Infinite developers. Torchlight: Infinite and its names, art and data are the property of their respective owners.</p></footer>
+    </main>
+    </div>
+
+    <dialog id="pactspirit-selector" class="pactspirit-selector-dialog" aria-labelledby="pactspirit-selector-title">
+      <header><h2 id="pactspirit-selector-title">Select Pactspirit</h2><button type="button" data-close-pactspirit-selector aria-label="Close">×</button></header>
+      <div class="pactspirit-selector-filters"><input type="search" data-pactspirit-search placeholder="Search pactspirits…" aria-label="Search pactspirits"><select data-pactspirit-category aria-label="Pactspirit category"></select></div>
+      <div id="pactspirit-selector-results"></div>
+    </dialog>
+    <dialog id="kismet-crafter" class="kismet-crafter-dialog" aria-labelledby="kismet-crafter-title">
+      <header><h2 id="kismet-crafter-title">Select Kismet</h2><button type="button" data-close-kismet-crafter aria-label="Close Kismet crafter">×</button></header>
+      <div class="kismet-crafter-layout"><div class="kismet-choice-pane"><input id="kismet-search" type="search" placeholder="Search kismets…" aria-label="Search kismets"><div id="kismet-choice-list"></div></div><div class="kismet-detail-pane"><div id="kismet-roll-controls"></div><div id="kismet-preview"></div></div></div>
+      <footer><button type="button" data-clear-kismet-slot>Clear Slot</button><button type="button" data-confirm-kismet>Confirm</button><button type="button" data-close-kismet-crafter>Cancel</button></footer>
+    </dialog>
+    <dialog id="fate-slot-selector" class="fate-slot-dialog" aria-labelledby="fate-slot-title">
+      <header><h2 id="fate-slot-title">Unlock Fate Slots</h2><button type="button" data-close-fate-slot aria-label="Close Fate slot selector">×</button></header>
+      <p>Select how to expand this Undetermined Fate slot:</p>
+      <div id="fate-slot-options"></div>
+      <button type="button" class="button button-secondary" data-clear-fate-slots>Clear Fate slots</button>
+    </dialog>
+    <dialog id="prism-inventory-dialog" class="prism-inventory-dialog" aria-labelledby="prism-inventory-title">
+      <header><h2 id="prism-inventory-title">Install Prism</h2><button type="button" data-close-prism-inventory aria-label="Close Prism inventory">×</button></header>
+      <div id="prism-inventory-list"></div>
+      <footer><button type="button" data-open-prism-crafter>Craft Prism</button></footer>
+    </dialog>
+    <dialog id="prism-crafter-dialog" class="prism-crafter-dialog" aria-labelledby="prism-crafter-title">
+      <header><h2 id="prism-crafter-title">Craft Prism</h2><button type="button" data-close-prism-crafter aria-label="Close Prism crafter">×</button></header>
+      <div class="prism-crafter-layout"><div id="prism-crafter-form"></div><aside><span>Preview</span><div id="prism-crafter-preview"></div></aside></div>
+      <footer><button type="button" data-cancel-prism-crafter>Cancel</button><button type="button" data-confirm-prism-craft>Craft</button></footer>
+    </dialog>
+    <dialog id="hero-selector" class="hero-selector-dialog" aria-labelledby="hero-selector-title">
+      <header><h2 id="hero-selector-title">Select Hero</h2><button type="button" data-close-hero-selector aria-label="Close hero selector">×</button></header>
+      <label class="hero-search"><span aria-hidden="true">⌕</span><input id="hero-selector-search" type="search" placeholder="Search heroes..." autocomplete="off" aria-label="Search heroes"></label>
+      <div id="hero-selector-grid" class="hero-selector-grid"></div>
+    </dialog>
+    <dialog id="follower-selector" class="hero-selector-dialog follower-selector-dialog" aria-labelledby="follower-selector-title">
+      <header><h2 id="follower-selector-title">Select Follower</h2><button type="button" data-close-follower-selector aria-label="Close follower selector">×</button></header>
+      <label class="hero-search"><span aria-hidden="true">⌕</span><input id="follower-selector-search" type="search" placeholder="Search followers..." autocomplete="off" aria-label="Search followers"></label>
+      <div id="follower-selector-grid" class="hero-selector-grid follower-selector-grid"></div>
+    </dialog>
+    <dialog id="hero-memory-selector" class="hero-memory-dialog" aria-labelledby="hero-memory-title">
+      <header><h2 id="hero-memory-title">Hero Memories</h2><button type="button" data-close-hero-memory aria-label="Close hero memories">×</button></header>
+      <div id="hero-memory-content"></div>
+    </dialog>
+    <dialog id="sage-scent-selector" class="sage-scent-dialog" aria-labelledby="sage-scent-title">
+      <header><h2 id="sage-scent-title">Select Elixir Skill</h2><button type="button" data-close-sage-scent aria-label="Close selector">×</button></header>
+      <label class="hero-search"><span aria-hidden="true">⌕</span><input id="sage-scent-search" type="search" placeholder="Search skills..." autocomplete="off" aria-label="Search scent choices"></label>
+      <div id="sage-scent-options" class="sage-scent-options"></div>
+      <footer><button type="button" class="button button-secondary" data-clear-sage-scent>Clear Slot</button><button type="button" class="button button-secondary" data-close-sage-scent>Cancel</button></footer>
+    </dialog>
+    <dialog id="carino-ammo-selector" class="sage-scent-dialog carino-ammo-dialog" aria-labelledby="carino-ammo-title">
+      <header><div><p class="eyebrow">Ranger of Glory</p><h2 id="carino-ammo-title">Select Special Ammo Support</h2></div><button type="button" data-close-carino-ammo aria-label="Close selector">×</button></header>
+      <label class="hero-search"><span aria-hidden="true">⌕</span><input id="carino-ammo-search" type="search" placeholder="Search projectile supports..." autocomplete="off" aria-label="Search projectile supports"></label>
+      <p class="carino-ammo-help">Choose a support that can support a Projectile skill and is not installed on the skill panel.</p>
+      <div id="carino-ammo-options" class="sage-scent-options carino-ammo-options"></div>
+      <footer><button type="button" class="button button-secondary" data-clear-carino-ammo>Clear Slot</button><button type="button" class="button button-secondary" data-close-carino-ammo>Cancel</button></footer>
+    </dialog>
+    <dialog id="talent-panel-picker" class="talent-panel-picker" aria-labelledby="talent-picker-title">
+      <div class="talent-picker-heading">
+        <div><p class="eyebrow">Talent trees</p><h2 id="talent-picker-title">Select a talent tree</h2><p class="muted">Choose one panel to view and edit.</p></div>
+        <button type="button" class="picker-close" data-close-talent-picker aria-label="Close talent tree selector">×</button>
+      </div>
+      <div id="talent-panel-picker-grid" class="talent-panel-picker-grid"></div>
+    </dialog>
+    <dialog id="core-talent-picker" class="talent-panel-picker core-talent-picker" aria-labelledby="core-picker-title">
+      <div class="talent-picker-heading">
+        <div><p class="eyebrow">Core talent</p><h2 id="core-picker-title">Select a core talent</h2><p id="core-picker-status" class="muted"></p></div>
+        <button type="button" class="picker-close" data-close-core-picker aria-label="Close core talent selector">×</button>
+      </div>
+      <div id="core-talent-picker-grid" class="core-talent-picker-grid"></div>
+    </dialog>
+    <dialog id="slate-inventory" class="slate-inventory" aria-labelledby="slate-inventory-title">
+      <div id="slate-inventory-header" class="slate-inventory-tabs"></div>
+      <div id="slate-crafter-body"></div>
+    </dialog>
+    <dialog id="slate-editor" class="slate-inventory slate-editor" aria-labelledby="slate-editor-title">
+      <div class="slate-inventory-tabs"><strong id="slate-editor-title">Edit Divinity Slate</strong><button type="button" class="picker-close" data-close-slate-editor aria-label="Close slate editor">×</button></div>
+      <div id="slate-editor-content"></div>
+    </dialog>
+    <dialog id="equipment-crafter" class="equipment-crafter" aria-labelledby="equipment-crafter-title">
+      <header><div><p class="eyebrow">Inventory workshop</p><h2 id="equipment-crafter-title">Craft Rare Item</h2></div><button type="button" data-close-equipment-craft aria-label="Close">×</button></header>
+      <div id="equipment-crafter-body"></div>
+      <footer><button class="button button-secondary" type="button" data-close-equipment-craft>Cancel</button><button class="button" type="button" data-add-crafted-equipment>Add to Inventory</button></footer>
+    </dialog>
+    <dialog id="inventory-item-dialog" class="equipment-crafter inventory-item-dialog" aria-labelledby="inventory-item-title">
+      <header><div><p class="eyebrow">Inventory item</p><h2 id="inventory-item-title">Item</h2></div><button type="button" data-close-inventory-item aria-label="Close">×</button></header>
+      <div id="inventory-item-body"></div>
+      <footer><button class="button button-secondary" type="button" data-delete-inventory-item>Delete</button><button class="button button-secondary" type="button" data-edit-inventory-item>Edit</button><button class="button" type="button" data-equip-selected-item>Equip</button><button class="button button-secondary" type="button" data-close-inventory-item>Cancel</button></footer>
+    </dialog>
+    <dialog id="skill-selector" class="skill-selector-dialog" aria-labelledby="skill-selector-title">
+      <header><h2 id="skill-selector-title">Select Active Skill</h2><button type="button" data-close-skill-selector aria-label="Close selector">×</button></header>
+      <div class="skill-selector-body">
+        <section class="skill-selector-list"><label><span aria-hidden="true">⌕</span><input id="skill-selector-search" type="search" placeholder="Search skills…" autofocus><button type="button" data-clear-skill-search aria-label="Clear search">×</button></label><div id="skill-selector-results"></div></section>
+        <section id="skill-selector-detail" class="skill-selector-detail"><p>Select a skill to configure</p></section>
+      </div>
+      <footer><button class="button button-secondary" type="button" data-clear-skill-slot>Clear slot</button><span></span><button class="button" type="button" data-confirm-skill-selector disabled>Confirm</button><button class="button button-secondary" type="button" data-close-skill-selector>Cancel</button></footer>
+    </dialog>
+
+    <dialog id="import-build-dialog" class="reset-build-confirm import-build-dialog" aria-labelledby="import-build-title">
+      <h2 id="import-build-title">Import build</h2>
+      <label>Paste a build code<textarea id="import-build-code" rows="4" placeholder="Paste a Torchlight of Building build code"></textarea></label>
+      <div><button type="button" data-cancel-import-build>Cancel</button><button type="button" data-import-build-code>Import Code</button></div>
+    </dialog>
+    <dialog id="feedback-dialog" class="reset-build-confirm import-build-dialog feedback-dialog" aria-labelledby="feedback-dialog-title"></dialog>
+    <dialog id="import-game-log-dialog"class="reset-build-confirm import-build-dialog import-game-log-dialog" aria-labelledby="import-game-log-title">
+      <h2 id="import-game-log-title">Import from game</h2>
+      <p id="import-game-log-found" class="game-log-found" hidden></p>
+      <p id="import-game-log-auto-privacy" class="game-log-privacy" hidden>Read from the game's log folder on this computer by the planner. Only build data is kept; nothing is uploaded or stored.</p>
+      <p class="game-log-choose" hidden><button type="button" class="game-log-link" data-game-log-choose-file>Choose a different file…</button></p>
+      <p class="game-log-picker" hidden>Pick <code>UE_game.log</code> from <code>&lt;Torchlight Infinite&gt;\UE_game\TorchLight\Saved\Logs</code> (with Steam, by default <code>C:\Program Files (x86)\Steam\steamapps\common\Torchlight Infinite\UE_game\TorchLight\Saved\Logs</code>). The game writes your build to it each time you log in to a character.</p>
+      <label class="game-log-picker" hidden>Game log<input id="import-game-log-file" type="file" accept=".log"></label>
+      <p class="game-log-picker game-log-privacy" hidden>The log is read in this browser only. It is not uploaded or stored.</p>
+      <p id="import-game-log-reason" class="game-log-reason" hidden></p>
+      <p id="import-game-log-status" class="game-log-status" role="status" aria-live="polite"></p>
+      <div id="import-game-log-snapshots"></div>
+      <div id="import-game-log-summary"></div>
+      <div><button type="button" data-cancel-import-game-log>Cancel</button><button type="button" data-import-game-log-build disabled>Import as new build</button></div>
+    </dialog>
+    <dialog id="reset-build-confirm" class="reset-build-confirm" aria-labelledby="reset-build-confirm-title" aria-describedby="reset-build-confirm-message">
+      <h2 id="reset-build-confirm-title">Reset this build?</h2>
+      <p id="reset-build-confirm-message">This will clear the current build’s hero, skills, talents, gear, and other selections. Other saved builds will remain available.</p>
+      <div><button type="button" data-cancel-reset-build autofocus>Keep Build</button><button type="button" data-confirm-reset-build>Reset Build</button></div>
+    </dialog>
+    <dialog id="delete-all-builds-confirm" class="reset-build-confirm" aria-labelledby="delete-all-builds-title" aria-describedby="delete-all-builds-message">
+      <h2 id="delete-all-builds-title">Delete all builds?</h2>
+      <p id="delete-all-builds-message">This will permanently delete every saved build and its autosaves from this browser. This cannot be undone.</p>
+      <div><button type="button" data-cancel-delete-all-builds autofocus>Keep Builds</button><button type="button" data-confirm-delete-all-builds>Delete All Builds</button></div>
+    </dialog>
+    <dialog id="delete-build-confirm" class="reset-build-confirm" aria-labelledby="delete-build-title" aria-describedby="delete-build-message">
+      <h2 id="delete-build-title">Delete this build?</h2>
+      <p id="delete-build-message"></p>
+      <div><button type="button" data-cancel-delete-build autofocus>Keep Build</button><button type="button" data-confirm-delete-build>Delete Build</button></div>
+    </dialog>
+
+    <dialog id="planner-search" class="planner-search" aria-label="Search this build">
+      <div class="planner-search-head">
+        <label class="planner-search-field"><span aria-hidden="true">&#8981;</span><input id="planner-search-input" type="text" role="combobox" aria-expanded="true" aria-controls="planner-search-results" aria-autocomplete="list" aria-label="Search this build" placeholder="Search this page…" spellcheck="false" autocomplete="off"></label>
+        <span id="planner-search-count" class="planner-search-count" aria-live="polite"></span>
+        <button type="button" class="planner-search-close" data-planner-search-close aria-label="Close search" title="Close (Esc)">&times;</button>
+      </div>
+      <div id="planner-search-results" class="planner-search-results" role="listbox" aria-label="Search results"></div>
+    </dialog>
+
+    <div id="planner-tooltip" class="planner-tooltip" role="tooltip" aria-hidden="true"><strong></strong><span></span><small>Click to edit</small></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <input id="restore-builds-file" type="file" accept="application/json,.json" hidden />
+    <script type="module" src="./src/boot.js"></script>
+  </body>
+</html>

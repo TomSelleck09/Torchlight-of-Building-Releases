@@ -1,0 +1,58 @@
+name: Report a planner bug
+description: Something in the planner is broken, missing or wrong (not a damage figure).
+title: "[Bug] "
+labels: [planner-bug]
+body:
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      description: "One of: Gear, Talents, Prisms, Slates, Skills, Hero, Pacts, Followers, Import from game, Build library & codes, Damage path, Desktop app, Other."
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshot or video links (you can also paste images here)
+    validations:
+      required: false
+  - type: textarea
+    id: build_code
+    attributes:
+      label: Build code
+      description: Optional. Use Export in the planner and paste the code here.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: app_version
+    attributes:
+      label: Planner version
+      description: Filled in by the planner.
+    validations:
+      required: false
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Filled in by the planner (web or desktop).
+    validations:
+      required: false

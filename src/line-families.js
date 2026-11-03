@@ -1,0 +1,141 @@
+// Mechanic families of the gear / pact / slate / memory / prism / aura batch (research/gear-pact-batch-2026-10-12.md §3):
+// keyword rules over one clause, first match wins (the families were reviewed by hand for the larger groups).
+// bucket: a = only a text pattern / wiring for an existing family; b = new mechanic; c = non-damage (badge fix);
+// n = cannot happen on the dummy (status fix: Not on dummy). `hook` = existing reader or missing engine.
+// src/line-coverage.js uses the c and n buckets as its last resort for lines no engine claims (chunk 1). They are keyword
+// rules, so a line an engine reads is decided by that engine first; the families only label what is left. Two parts of the
+// batch's census classifier are not used for badges: the short-title rule of c-meta (any 1–4 word Title Case line, which
+// also matched unique mechanic names such as "Poisoned Relief") was dropped here, and c-other (any line without a damage
+// word) is not turned into a status. "Hero Trait Level" is not meta here either (it raises the hero traits' values).
+// User decision 2026-10-12: being hit / blocking recently is a best-case assumption, so n-taken lines with a damage effect
+// are not "Not on dummy" (src/line-coverage.js keeps only their non-damage part as "No DPS effect"); on-defeat lines stay
+// Not on dummy (the dummy never dies).
+const F = (id, bucket, name, hook, dummy, re, guard = null) => ({ id, bucket, name, hook, dummy, re, guard });
+// Outgoing-damage signal: a line with one is never filed as non-damage.
+const DMG = /(?:damage|Damage)(?! taken| Mitigation| Reflection| received| you take| that you take)|Critical Strike(?! Damage Mitigation)|Attack Speed|Cast Speed|Attack and Cast|Penetrat|\bLucky\b|Affliction|Ailment|Ignite|\bWilt\b|Trauma|Frostbite|Numbed|Multistrike|Spell Burst|Aura Effect/;
+const noDmg = (clause) => !DMG.test(clause);
+const NOT_PURE = /Trigger|Blessing|Sealed Mana|Aura|Curse|Regain|Elixir|Fervor|Warcry is cast|Mobility Skill|Main Skill|Skill Level|Lucky|Reap|Barrage|Tangle|Terra|Aiming|Arena|Life Sealed|Cannot inflict|Vendetta|Phantom/i;
+const pure = (clause) => noDmg(clause) && !NOT_PURE.test(clause);
+const metaGuard = (clause) => /Drop|replicat|Member Services|Netherrealm|Carjack|Chest|Antidote|Overrealm|Nightmare|Vigil|Wraiths|Hero Trait|Base Traits|Copies the|Equipment Energy|raid|trade|laborer|Aeterna|Bounty|Cube|Micro Fates|within the area/i.test(clause) || !/Cannot|Lucky|Reap|Immune|Damage|Warcry|Curse/i.test(clause);
+export const FAMILIES = [
+  F("a-core-grant", "a", "Gear lines that grant a core talent: \"[Core name] effect\" (belt blends, legendary donors)", "core-talent-model (by name) and the core's text through modifier-texts; the \"[Name] \" prefix is not stripped for gear, so no reader sees the body", "as the core talent", /^\[[^\]]+\] /),
+  F("c-meta", "c", "Names, headers, gameplay-mode and meta lines (drops, XP, raids, slate copy rules, memory slots)", "none (No DPS effect / Planner only)", "—",
+    /Drop Quantity|drop Rarity|Drop Rarity|\bXP\b|Experience|replicated|Reward Quantity|reward units|Items dropped|Chest of|\bBond\b|Pickup|Securities|Memory Shards|Lunari|Overrealm|Wraiths|Splendor|Antidote Vial|Folklores|Divinity Stone|Drop Quantity|Desire Crystal|Mistville|Pages of Aeterna|Colored Snow|Destiny dropped|Nightmare|Hero Trait Exclusive|Base Traits|Copies the|Equipment Energy|raid|laborer|City of Aeterna|Dark Surge|Candelabrum|Paint phase|Strumming|painting|Bounty|Cube of Rapacity|Member Services|Carjack|TOWER Co|Netherrealm|Brushstroke|Micro Fates|within the area can ignore|Medium Talent within the area/, metaGuard),
+  F("n-defeat", "n", "On defeat / on kill / culling / explode on death", "line-coverage notOnDummyRules", "never: the training dummy is never defeated", /\bdefeat|\bon kill\b|Eliminat|explode when|killed\b|fatal damage/i),
+  F("n-taken", "n", "When hit / taking damage / evading / blocking / reflection (the dummy never attacks)", "line-conditions hitByEnemy (Not on dummy)", "never: the dummy does not attack", /when (?:taking|you take|being hit|hit by)|after taking a hit|on taking Damage|upon taking damage|taking (?:Erosion |Fire |Cold |Lightning |Physical )?Damage|when Evading|on Evade|Damage Reflection|when Blocking|haven't been hit|you are hit|hit by a Cursed|blocked (?:a Spell|an Attack) recently|Blocked recently/i),
+  F("b-minion", "b", "Minion / Spirit Magus / Sentry / Synthetic Troop / Command / Growth", "minion-damage-model (classifyMinionLine) reads plain Minion lines; Spirit Magus Ultimate, Origin, Growth, Command, Sentry quantity have no reader", "only the modeled summon", /Minion|Spirit Magi|Spirit Magus|Sentr(?:y|ies)|Synthetic Troop|\bCommand\b|Growth|Summons? \d|Companion|Reconjur|Magus/i),
+  F("a-debuff", "a", "Enemy debuffs and enemy damage taken (Frail, Infiltrations, curses, 'taken by Nearby / Cursed enemies', enemy damage dealt)", "combat-states (Frail, Infiltrations, Paralysis), build-mechanics gear curses (Vulnerability, Entangled Pain); line-effects handledElsewhere skips every 'damage taken' line", "within 10 m (dummy profile); one enemy; a debuff the build applies is on the dummy",
+    /\bFrail\b|Infiltration|Weaken|Curse\b|cursed by|Vulnerability Curse|Ominous|taken by (?:Nearby |Cursed |the )?enem|Cursed enemies .*taken|taken for enemies|damage taken \(multiplies\) for enemies|damage dealt by (?:Nearby|Blinded)|enemies in proximity to|within \d+ ?m have|Intimidat|\bBlind|the enemy has|cast \d+ (?:additional )?Curses/i),
+  F("a-resist", "a", "Enemy resistance shred and penetration variants", "resistance-model, damage-line-classifier penetration (plain wording only)", "the dummy's resistances", /Penetrat|Resistance (?:for|of) (?:the )?(?:target|enem)|enemies'? (?:\w+ )?Resistance|ignores enemy|Resistance for the target/i),
+  F("a-aura", "a", "Aura effect lines (named aura effect, aura count, Sealed Mana of a named aura)", "engine.js aura ledger (namedAuraEffectPercent, globalAuraEffectPercent); line-conditions auraCount", "the active auras", /Aura(?! Damage)/i),
+  // "Effect received" (pact badge audit 2026-10-13): an ailment / control effect the character receives, such as the Micro Fate
+  // "-52% Paralysis Effect received" (it read Not modeled through the ailment family below).
+  F("c-defense", "c", "Defence, regeneration, resistances, Barrier, Deflection, Life / Mana / ES pools, immunities", "character-stats / effective-hp: Counted in stats (parsed) or No DPS effect", "—",
+    /Regenerat|Restores|Resistance|Max Life|Max Mana|Energy Shield|\bArmor\b|Evasion|Evade|Deflection|Barrier|Mitigation|damage taken|Damage taken|taken from Mana|Block|Fortitude|Immune|Effect received|Slow|Injury Buffer|Life Cost|Mana Cost|Physique|Eternal (?:Guard|Morale|Nightmare|Shadow)|Life Regain|Leech|Stoneskin|Frost Shield|Delayed Pain|\bCage\b|\bDefense\b|cannot restore|Cannot restore|True Damage every|Loses \d+ Life|Control Effects/i, pure),
+  F("c-utility", "c", "Movement, skill area, knockback, Restoration and Warcry utility, cost, charges", "line-coverage noDpsRules: No DPS effect", "—",
+    /Movement Speed|Knockback|Skill Area|Area\b|Projectile Speed|Beam Length|Cost|Warcry|Intimidat|Charge Restoration|Restoration|Charging Progress|\bSlow\b|Max Charges|Taunt|Duration|Cooldown|Interval|Speed|Mana\b|Life\b|Range/i, pure),
+  F("b-trigger", "b", "Triggered or granted skills, 'supported by Lv. N <support>' grants, auto-casts", "support trigger family (Activation Medium cadence), gear-curse model for curse grants; no damage model for a granted skill", "on-hit and per-interval triggers hold; on Mobility, on move, on defeat do not", /\bTriggers?\b|triggering|is supported by Lv\.|supported by a Lv\.|Casts this skill|chance to trigger|Main Active Skill every|You have a Lv\.|have a Lv\. \d+ Precise|gains the following buffs by turns|gains the following effects in turn|alternate between gaining/i),
+  F("a-weapon-local", "a", "Weapon base and weapon-local lines (Gear Physical / Elemental Damage, to the gear, gear Attack Speed, for this gear, base damage, Main-Hand Weapon)", "weapon-damage-model readWeapon (base and local regexes), classifyWeaponAttackLine (Main-Hand)", "the equipped weapon", /Gear Physical Damage|Gear Elemental Damage|to the gear$|gear Attack Speed|for this gear|^\d+(?:\.\d+)? - \d+(?:\.\d+)? (?:Physical|Fire|Cold|Lightning|Erosion) Damage$|^[\d.]+ (?:Critical Strike Rating|Attack Speed)$|Main-Hand Weapon|Weapon Attack Speed is fixed/i),
+  F("a-weapon-cond", "a", "Weapon and stance conditions (Unarmed, Wand / Tin Staff, One- / Two-Handed, Dual Wielding, for Weapons, Off-Hand)", "weapon-damage-model held / dual lines; line-conditions shield / dualWieldTypes", "the held weapons (state)", /Unarmed|Wand|Tin Staff|Two-Handed|One-Handed|Dual Wield|for Weapons|Off-Hand|wielding|holding a/i),
+  F("a-added-flat", "a", "Added flat damage to Attacks / Spells / Attacks and Spells (plain)", "skill-hit-lines ADDED_LINE (spells), weapon ADDED_ATTACKS (attacks), scorching-beam-added-damage (beam)", "always", /^Adds [\d.]+ - [\d.]+ (?:Physical|Fire|Cold|Lightning|Erosion|Cold, Fire, Lightning, and Physical) Damage to (?:Attacks|Spells|Attacks and Spells|your Attacks and Spells)$/i),
+  F("a-conversion", "a", "Conversion and added-as (Adds X% of A as B, Converts X% of A to B)", "support-effects conversion / addedAs families (support chunk 4); not read from passive lines", "always", /Converts? [\d.]+% of (?:the )?(?:\w+'s )?\w+ Damage (?:in)?to|^Adds [\d.]+% of (?:\w+ )+Damage (?:as|to) \w+ Damage|Adds [\d.]+% (?:\w+ )+Damage as|can't be converted|Gains [\d.]+% of (?:\w+ )+Damage as/i),
+  F("a-added-flat-cond", "a", "Added flat damage with a stat, threshold or state condition (per 10 Strength, at 600 Intelligence, while Barrier, per Life consumed)", "line-conditions perStat / statCompare + the added-damage readers", "stat totals; Barrier and consumption need models", /^Adds [\d.]+ - [\d.]+ /i),
+  F("a-multistrike", "a", "Multistrike chance, increasing damage, initial count, speed while Multistriking", "support multistrike family (skill-hit-model reads support effects only)", "attacks only (reference data glossary)", /Multistrike/i),
+  F("a-spellburst", "a", "Spell Burst (Max Spell Burst, Charge gain, Hit Damage for Spell Burst casts, per stack)", "skill-hit-model Spell Burst model (game manual 2026-10-12: Max Spell Burst, Charge Speed, activating cast + N automatic casts; 'cast by Spell Burst' lines); line-conditions files the scope as unmodeled", "Spell skills that Spell Burst", /Spell Burst|Burst Charge/i),
+  F("a-projectile", "a", "Projectile Quantity, Jumps, Splits, returning projectiles, projectile penetrations", "support projectileQuantity (Shotgun, provisional); no Jump / Split / return model", "single target: extra projectiles hit only when they converge (provisional)", /Projectile Quantity|Jumps?\b|Jump\(s\)|Split Quantity|Projectile Penetration|Returning Projectile|Parabolic|Horizontal Projectile|Shadow Quantity|Projectiles will return|return after reaching/i),
+  F("a-beams", "a", "+N Beams", "support beams family; Scorching Beam beams; skill-DoT 'No DPS effect' rule", "single target: user-confirmed extra beams add no DoT statuses", /\bBeams?\b/i),
+  F("a-channel", "a", "Channeled stacks (Max / Min, per excess stack, while channeling, per additional Max stack)", "build-mechanics channel stacks (Max / Min Channeled Stacks)", "channel held full (own buffs pre-built)", /Channeled Stack|channeled stack|while channeling|when channeling|for Channeled Skills|Channeled Skill/i),
+  F("a-blessing", "a", "Blessings (gain, cap, per stack, at max stacks, 'at least N stacks', duration, random Blessing, base change)", "blessing-model (gain, cap, per stack), line-conditions blessingActive / blessingPerStack", "own buffs pre-built: stacks held at the cap where a gain source holds", /Blessing/i),
+  F("a-buff-state", "a", "Buff states: Fervor, Aggression, Hasten, Elixir, Torment, Fortitude, Ash, Focus Buff, Rage, Interest", "combat-states (Fervor, Aggression, Hasten, Fortitude, Elixir in part)", "own buffs pre-built", /Fervor|Aggression|Hasten|Elixir|Torment|Fortitude|\bAsh\b|Focus Buff|Agility Effect|\bRage\b|Berserk|Interest/i),
+  F("b-reap-affliction", "b", "Reaping and Affliction variants (new triggers, Affliction on a timer, True Flame, Reap blocks)", "reaping-model, theoretical-sources (Affliction); these wordings have no reader", "DoT on the dummy", /\bReap|Affliction/i),
+  F("a-ailment", "a", "Ailment mechanics (Frostbite, Freeze, Numbed, Shock, Deterioration, Paralysis, limits, durations, 'cannot inflict', 'on enemies with')", "enemy-ailments, combat-states (Frostbite, Numbed, Deterioration), ailment-model, support ailmentBlock", "the build's ailments on the dummy", /Frostbit|Freeze|Frozen|Numbed|Shock|Deterioration|Ignite|Wilt|Trauma|Ailment|Paralys/i),
+  F("a-crit", "a", "Scoped or conditional crit (Ranged, Cold / Erosion Skill, Combo Finisher, per Ailment, against Distant, on Critical Strike)", "scorching-beam-critical, weapon crit, skill-hit crit; scope tokens and conditions missing", "hits", /Critical Strike/i),
+  F("b-double", "b", "Double / Triple Damage chance, min / max damage, Lucky", "none for Double / Triple / min damage (Lucky in combat-states)", "always (expected value)", /Double Damage|Triple Damage|min damage|max damage|Max (?:\w+ )?Damage|\bLuck|Lucky|Unlucky/i),
+  F("b-skill-mech", "b", "Skill-type mechanics: Combo, Demolisher, Steep Strike, Barrage, Focus skills and Focus Pts, Tangle, Terra charges, Mark, Regain, Empower, Mobility, Aiming, Sweep, Sealed Mana of a named aura", "support combo family only; no Demolisher / Barrage / Focus / Tangle / Terra-charge / Regain model", "depends on the skill", /Combo|Demolisher|Steep Strike|Barrage|Focus (?:Damage|Speed|Skill|Pts)|Thunder Focus|Tangle|Terra Charge|Terra Skill|Shadow|\bMark\b|Sweep|Aiming|Regain|Empower|Mobility Skill|Dormant|Sealed Mana Compensation for|Steadfast|Fearless|Precise Projectiles|Ice Storm|Corrosion Orb|Twisted Spacetime|Modularization|Charged Flames|Life sealed|Life Sealed|Sealed Mana/i),
+  F("b-hero-state", "b", "Hero- or item-specific states (Desecration, Squidnova, Feline Stimulant, Valkyrie's Hymn, Pure Heart, windfield, Heat Up, Scent Bottles)", "none (per-module, like hero-trait-modules)", "depends on the state", /Desecration|Squidnova|Feline|Valkyrie|Pure Heart|Repentance|Mirrored Shade|windfield|Storm\b|Heat Up|Tough Guy|Ingredient|Scent Bottle|Seething Spirit|Spacetime|Kismet installed/i),
+  F("b-resource", "b", "Resource consumption and pool scaling ('Mana / Life consumed recently', 'per 100 Max Mana', 'when Max Life is higher')", "character-stats totals; no consumption-rate model", "own resources; consumption needs the skill's cost", /consumed recently|consum|Max Mana|Max Life|Mana consumed|Life consumed/i),
+  F("a-per-stat", "a", "Per-stat and per-level scaling (stats, levels, highest / lowest stat, 'per 27 stats', 'when X > Y', main attribute)", "line-conditions perStat / statCompare; planner perLevel", "stat sheet totals", /\bper \d+ (?:stats|Strength|Dexterity|Intelligence)|for every \d+ (?:of the highest stat|Strength|Dexterity|Intelligence)|per \d+ of the lowest stat|level\(s\)|greater than|no less than|All Stats|main attribute|main stat|Intelligence/i),
+  F("a-cond-self", "a", "Self-state, event and slot conditions (Full Life, Low Life, recently, standing still, moving, on crit, after Mobility, ring / support slots, enemy count)", "line-conditions keys (lowLife, critRecently, standingStill, moving, mobility, nextMainSkill)", "best case: Full Life, standing still or moving (exclusive group), crit recently when the build crits", /Full Life|Low Life|recently|standing still|moving|on Critical Strike|after using|when using|when casting|Ring is equipped|Ring slot|Support Skill slot|empty|Skill Slot|for \d+(?:\.\d+)? ?s\b|Nearby|proximity|Distant|in the last|at least \d+ enemies|enemies nearby/i),
+  F("a-scope-token", "a", "Plain damage / speed lines with a scope or wording the classifiers lack (Terra, Shadow, Active Skill, Melee Skill, 'Elemental and Erosion', 'for this skill', 'for Attack Skills', against Elites)", "damage-line-classifier TOKENS / skill-hit-lines / weapon speed", "always", /Damage\.?$|damage\.?$|damage for this skill|damage increase|Damage Enhancement|for (?:Attack|Spell) Skills|dealt by Spell Skills|against Elites|Triggered Skills|Attack Speed$|Cast Speed$/i),
+  F("c-other", "c", "Other non-damage lines", "No DPS effect", "—", /./, noDmg),
+];
+export function familyOf(clause) {
+  for (const f of FAMILIES) if (f.re.test(clause) && (!f.guard || f.guard(clause))) return f;
+  return null;
+}
+
+/**
+ * A conditional line's body that cannot change dummy damage whatever the condition (residual batch P3): no outgoing-damage
+ * word and none of the buff / grant words whose effect is damage (Fervor, Aggression, Fortitude, granted skills).
+ */
+export const isNonDamageBody = (clause) => pure(clause) && !/Amplification|Fortitude|Aggression|Hasten|\bLv\.\s*\d|Focus|Tenacity|Agility|Rating|Charge|Stack/i.test(clause);
+
+/** Does the clause name an outgoing-damage quantity (damage, crit, speed, ailments, …)? */
+export const hasDamageSignal = (clause) => DMG.test(clause);
+
+// ---- Residual batch (C) statuses (research/residual-batch-2026-10-12.md §6) --------------------------------------------
+// Lines that cannot change dummy damage but read Not modeled because a damage-adjacent word (Trigger, Blessing, Reap, Elixir,
+// Mobility, Jump) kept them out of the keyword families above. Each rule names its status and the reason; they are explicit
+// wordings, so a line an engine reads is not caught (src/line-coverage.js asks them after the carried-line notes).
+// Item, trait and lunar-effect names printed as their own line (headers): no effect of their own.
+const HEADER_NAMES = new Set(["Absolve My Sin", "Almighty", "Anger", "Blast Nova", "Castling", "Cause Without Effect", "Conspire", "Corona", "Corroded Heart", "Dance of the Deep", "Edict of Trinity", "Extreme Coldness", "Flame of Pleasure", "Growing Breeze", "Hatred of the Last Dragon", "Incarnation of the Gods", "Law of Trinity", "Licorice Note", "Lightning Shadow", "Mantra of the Saints", "No Gray Between", "Oracle of the Saints", "Power of Conviction", "Reap What You Sow", "Seething Silhouette", "Solar Ring", "Spacetime Elapse", "Spacetime Illusion", "Stray Bird", "Unsullied Blade", "Vendetta's Sting", "Wield My Sword", "Zealot of War", "Piece for the Crown"]);
+const R = (status, reason, re) => ({ status, reason, re });
+export const RESIDUAL_C_RULES = [
+  // Headers and list intros.
+  R("No DPS effect", "a header: the effect lines follow", /^(?:Artificial Moon:?|[A-Z][A-Za-z ]*'s Dirge|Casts this skill and gains an Elixir Effect:|Level \d+|Gains the following buffs by turns\. Each buff lasts for [\d.]+ ?s:|Randomly triggers one of the following effects every [\d.]+ ?s for [\d.]+ ?s)$/i),
+  // Trait UI and controls.
+  R("No DPS effect", "trait control or UI rule", /^(?:Click the Trait (?:Skill|Slot)\b.*|Spirit Magus Skills can be equipped to Active Skill slots|Always auto- ?reloading ammo;.*|Allows movement while channeling .+|Changes the Base Trait to Holding .+|Reload Special Ammo slots in order|\d+ Special Ammo slot\(s\)\..*)$/i),
+  // Map, trade and pick-up meta.
+  R("No DPS effect", "map, trade or pick-up rule", /Star of Calamity|Twinightmare|Surgical (?:Preparation|Instrument)|Tarot Path|When starting a trade|Pick-Up Radius|^[+-]?[\d.]+% Projectile Size$|^[+-]?[\d.]+% Defensive Skill Effect$/i),
+  // Jumps (game manual 1001011521 / 1001011023 / 1001011027: a Jump goes to another enemy within the Jump area; Penetrate >
+  // Jump > Return). One dummy has no other enemy, so Jumps, damage per Jump and Horizontal Penetration change nothing.
+  R("Not on dummy", "a Jump goes to another enemy (game manual: Jumps); the dummy is the only enemy", /^[+-]?\d+ Jumps?$|Horizontal Projectile Penetration|additional damage for every Jump|after each Jump|for every Jump$|Jump\(s\)(?: when| for the skill)|every time the supported skill Jumps|^Projectiles can Jump off the ground/i),
+  R("No DPS effect", "Combo Finisher movement range", /^The max jump distance of the supported skill's Combo Finisher/i),
+  // Enemy damage dealt (the dummy never attacks).
+  R("No DPS effect", "changes the enemy's damage or accuracy; the dummy never attacks", /^(?:[+-]?[\d.]+% additional damage dealt by Nearby enemies|Nearby enemies are guaranteed to land Critical Strikes)$/i),
+  // Blind (user decision 2026-10-25): inflicting Blind, its chance, duration and effect, and Blinded enemies' damage. The Attack
+  // Projectile Blind line stays with src/combat-states.js (a crowd control type for "per type of crowd control" lines).
+  R("No DPS effect", "Blind only lowers enemy accuracy; the dummy never attacks", /^(?:\+?[\d.]+% chance to Blind (?:the target )?(?:on hit|when the supported skill hits)|[+-]?[\d.]+% Blind(?:ing)? (?:Duration|Effect)(?: caused by the supported skill)?|[+-]?[\d.]+% additional damage dealt by Blinded enemies|Blinds (?!nearby enemies when using an Attack Projectile Skill$)[\w ]+)$/i),
+  // Refractions (user decision 2026-10-25): a refracted beam never hits the same enemy; the dummy is the only enemy.
+  R("Not on dummy", "refractions don't hit the same enemy", /^[+-]?\d+ additional (?:beam )?refraction(?:s|\(s\))?(?: for (?:the supported|the|this) Beam Skill| for this skill's Combo Starters per [+-]?\d+ Beam\(s\))?$/i),
+  // Spread to other enemies.
+  R("Not on dummy", "spreads to other enemies; the dummy is alone", /^Damage Over Time statuses inflicted by the supported skill can't spread|^When Ignite is inflicted, it spreads to enemies within/i),
+  // Defence and recovery that a trigger or condition word kept out of c-defense.
+  R("No DPS effect", "defence or recovery", /^(?:[+-]?[\d.]+% of damage is taken from Mana before [Ll]ife|(?:If only 1 Ring is equipped, )?[+-]?[\d.]+% additional Regain Interval|Regenerates [\d.]+% (?:of )?(?:Life|Mana|Life and Mana) per second .+|While Reconjuring, Spirit Magi regenerate .+|\+?[\d.]+% chance to trigger Lv\. \d+ Frost Shield and Delayed Pain on hit.*|Gains \d+ stack\(s\) of Deflection when Reaping.*|Restores [\d.]+% of Max Life and (?:Mana|Energy Shield) .+|Takes [\d.]+ True Damage every [\d.]+ ?s.*|You take .*(?:Secondary Physical|True) Damage .+|The Restoration Effect from Elixir Skills cannot be removed|When casting an Elixir Skill, \+?[\d.]+% Injury Buffer.*|When Max Life is higher than [\d.]+ ?, creates a Barrier .+|Spirit Magi take [\d.]+ Secondary Physical Damage .+|You cannot restore Life or Mana .+|\+?[\d.]+% chance to gain a Barrier when taking damage.*|Adds [\d.]+ Max Energy Shield for every [\d.]+ Mana consumed recently|Always attempts to trigger the supported skill when Energy Shield is lower than .+|If you have recently moved more than [\d.]+ m, gains Barrier when using a Mobility skill|Triggers Lv\. \d+ Safeguard Field every [\d.]+ ?s|Transfers [\d.]+% of damage taken to the Minions .+|Triggers the supported skill when suffering a Severe Injury|Gains immunity to .+ after casting the supported skill|While Realm of Mercury is in effect, [\d.]+% of damage is taken from Mana before Life|Whenever a Merged Spirit Magus casts an Enhanced Skill, restores .+)$/i),
+  // Absolve My Sin (named gear affix, src/named-gear-affixes.js): own Damage Over Time taken per Block Ratio, defence only.
+  R("No DPS effect", "defence: own Damage Over Time taken", /^[+-]?[\d.]+% additional Damage Over Time taken for every \+?[\d.]+% Block Ratio(?: owned)?$/i),
+  // Rotted Taboo (belt blend 094; census §2.4, 2026-10-27): True Damage the player takes on each cast, self-damage only.
+  R("No DPS effect", "self-damage: the player takes it", /^Takes [\d.]+ True Damage when casting a skill\.(?: Interval: [\d.]+ ?s)?$/i),
+  // Gear affix audit 2026-10-22 (Vorax chest / waist / boots, corrosion): the player's own damage taken, damage transferred to a Minion
+  // and pools while an Elixir is active. The dummy never attacks, so none changes dummy damage.
+  R("No DPS effect", "defence: own damage taken", /^-[\d.]+% additional (?:Damage Over Time|damage) taken(?: when an Elixir Skill is active| for \d+(?:\.\d+)? ?s after using Mobility Skills| while standing still)?$/i),
+  // Intimidated (game buff 35063: "The owner takes 12% additional damage and deals -12% damage for 4s when at Low Life"): the dummy
+  // never loses Life (Q-H9), so it never acts (gear affix batch A, 2026-10-22).
+  // 2026-11-02: an Intimidated source holding Wings of Light's added base effect reads In calc from src/combat-states.js; since
+  // 2026-11-03 Intimidating effect scales that added effect (game affix 21655) and reads In calc there (src/line-coverage.js).
+  R("Not on dummy", "Intimidated's own effects act only on enemies at Low Life (game buff 35063); the training dummy never loses Life. Only Wings of Light's added base effect (no Low Life gate) acts on the dummy, and Intimidating effect scales it where the build has it", /^(?:Adds Intimidated when you or Minions deal damage|\+[\d.]+% Intimidating effect)$/i),
+  R("No DPS effect", "the curse limit never stops a curse (user decision 2026-10-21), so a Minion curse slot adds nothing", /^Minions can cast \d+ additional Curse\(s\)$/i),
+  R("No DPS effect", "defence: damage taken is moved to a Minion", /^[\d.]+% of damage taken is transferred to a random Minion$/i),
+  R("No DPS effect", "Life, Mana and Energy Shield pools", /^\+[\d.]+% additional Max Life, Max Mana, and Max Energy Shield when an Elixir Skill is active$/i),
+  // Movement and mobility: Stoneskin and Dark Gate are defensive and mobility skills; Mobility charges and Agility spent on a
+  // Mobility reset need a Mobility Skill, which a stationary dummy run does not use.
+  R("No DPS effect", "a defensive or mobility skill", /^Triggers Lv\. \d+ (?:Stoneskin|Dark Gate) when moving\..*$/i),
+  R("Not on dummy", "needs a Mobility Skill, which a stationary dummy run does not use", /^(?:\+\d+ Max Mobility Skill Charges|Mobility Skills gain \d+ Charge for every \d+ time\(s\) you channel|When using a Mobility Skill, you can use \d+ stacks?(?:\(s\))? of Agility Blessing to reset the Mobility Skill's cooldown.*)$/i),
+  R("No DPS effect", "Sentry movement or tracking", /^(?:[+-]?[\d.]+% tracking distance for Sentries|Sentries deployed by the supported skill (?:can move|gain [+-]?[\d.]+% additional Movement Speed).*|Enhances the tracking ability of the supported skill.*)$/i),
+  // Granted movement / regeneration auras (reference data: Precise: Swiftness "20.5% Movement Speed", Precise: Rejuvenation "Regenerates
+  // 8% Life per second").
+  R("No DPS effect", "a movement or regeneration aura", /^(?:You have a|Obtain a|Has) Lv\. \d+ Precise: (?:Swiftness|Rejuvenation)(?: buff)?$/i),
+  // Resources and Warcry timing.
+  R("No DPS effect", "resource or Warcry timing; own buffs are pre-built", /^(?:\+?[\d.]+% Mana Regeneration Speed for every [\d.]+ Mana consumed recently.*|[+-]?[\d.]+% Curse Duration|Loses [\d.]+% of current Mana when Spell Burst is consumed|Warcry is cast immediately|[+-]?[\d.]+% Warcry Cast Speed(?: for the supported skill)?|Buffs grant [+-]?[\d.]+% Warcry Cast Speed for the next Warcry|Consumes [\d.]+% of current Mana when casting a Main Skill\. Interval: [\d.]+ ?s)$/i)
+];
+
+/** The (C) status of a residual non-damage line: { status, reason } or null. */
+export function residualNonDamageStatus(clause) {
+  const text = String(clause ?? "").replace(/\s+/g, " ").replace(/^\[[^\]]+\] /, "").trim();
+  if (HEADER_NAMES.has(text)) return { status: "No DPS effect", reason: "an item, trait or lunar-effect name (header)" };
+  const rule = RESIDUAL_C_RULES.find((item) => item.re.test(text));
+  if (rule) return { status: rule.status, reason: rule.reason };
+  // A Movement Speed buff with no damage part, whatever its trigger (on channel start, while reloading, on cast).
+  if (/Movement Speed/i.test(text) && !DMG.test(text) && !/Blessing|Aggression|Fervor|Hasten|Skill Level/i.test(text)) return { status: "No DPS effect", reason: "movement only" };
+  return null;
+}

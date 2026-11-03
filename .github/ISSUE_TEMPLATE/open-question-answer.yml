@@ -1,0 +1,71 @@
+name: Answer an open question
+description: Answer one of the planner's open questions (Character → Damage path → Open questions).
+title: "[Answer] "
+labels: [open-question-answer]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! The planner's "Submit an answer" button fills in the first fields. Please say how you tested it: in-game dummy runs, tooltips or panel numbers, game data or patch notes.
+  - type: input
+    id: question_id
+    attributes:
+      label: Question id
+      description: Filled in by the planner. Leave it as it is.
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Filled in by the planner.
+    validations:
+      required: false
+  - type: textarea
+    id: planner_now
+    attributes:
+      label: What the planner assumes now
+      description: Filled in by the planner.
+    validations:
+      required: false
+  - type: textarea
+    id: answer
+    attributes:
+      label: Your answer
+      description: What happens in game, in your own words.
+    validations:
+      required: true
+  - type: input
+    id: how_tested
+    attributes:
+      label: How did you find out?
+      description: "One of: In-game dummy test, In-game tooltip or panel, Game data, Patch notes or developer statement, Other."
+    validations:
+      required: true
+  - type: textarea
+    id: test_details
+    attributes:
+      label: Test details
+      description: Setup, numbers and durations (for example skill level, supports, dummy level, run length, average and last-5 s figures).
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshot or video links (you can also paste images here)
+    validations:
+      required: false
+  - type: textarea
+    id: build_code
+    attributes:
+      label: Planner build code used, if any
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: app_version
+    attributes:
+      label: Planner version
+      description: Filled in by the planner.
+    validations:
+      required: false
