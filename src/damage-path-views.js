@@ -333,12 +333,12 @@ function criticalStrikeStep(ailment, { format }) {
   const crit = ailment.crit || {};
   const typed = ailment.sources.typed;
   const chance = crit.criticalChancePercent || 0;
-  const town = crit.criticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT;
-  const combat = crit.combatCriticalDamagePercent ?? town;
+  const town = crit.ailmentCriticalDamagePercent ?? crit.criticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT;
+  const combat = crit.ailmentCombatCriticalDamagePercent ?? crit.combatCriticalDamagePercent ?? town;
   const plus = (value) => signed(format, value);
   const inputs = [
     { source: "Base spell Critical Strike Damage", display: `${format(crit.baseCriticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT)}%` },
-    ...(crit.increasedCriticalDamageSources || []).map((item) => ({ source: `${item.source}: Critical Strike Damage`, display: plus(item.value) })),
+    ...(crit.increasedCriticalDamageSources || []).map((item) => ({ source: `${item.source}: Critical Strike Damage`, ...((crit.ailmentExcludedCriticalDamageSources || []).includes(item) ? { text: "scoped to a skill type or tag: not read by the ailment (its record carries no skill-type tag; provisional)" } : {}), display: plus(item.value) })),
     ...(crit.fireResistanceSources || []).map((item) => ({ source: item.source, text: item.text, display: plus(item.value) })),
     ...(crit.conditionalSources || []).map((item) => ({ source: item.source, text: item.stacks != null ? `${item.text} — ${format(item.stacks)} expected stacks from ${item.reason || "recent Critical Strikes"} (combat only)` : `${item.text} (combat only)`, display: plus(item.value) })),
     { source: "Critical strike chance", text: `${format(crit.rating || 0)} rating · ${format(crit.critsPerSecond || 0)} crits/s`, display: `${format(chance)}%` }

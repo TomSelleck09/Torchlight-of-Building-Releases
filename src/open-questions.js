@@ -15,6 +15,7 @@
 //
 // Pure module: reads the planner result and the state, never recomputes damage.
 
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { isTowerSequenceLine } from "./gear-unique-modules.js";
 import { allProfessionTalentCatalogueSs13 } from "./data/talents/all-profession-trees-ss13.generated.js";
 
@@ -50,7 +51,8 @@ export function openQuestionContext(planner, state = planner?.state) {
     components: skillHits.flatMap((hit) => (hit.components || []).map((component) => ({ hit, component }))),
     minions: Array.isArray(planner?.minions) ? planner.minions : [],
     ailments: planner?.ailments || {},
-    enemyAilments: new Set(names(planner?.mechanics?.enemyAilments?.types)),
+    // The dummy's ailments from its unit buff set (W8 step 2), the same names as the enemy-ailment model's list.
+    enemyAilments: new Set(enemyBuffSet(planner?.mechanics?.enemyAilments)?.types() ?? names(planner?.mechanics?.enemyAilments?.types)),
     lineState: planner?.lineEffects?.state || {},
     state: state || {},
     planner: planner || {}
@@ -107,34 +109,6 @@ const traitPicked = (ctx, heroId, name) => ctx.heroId === heroId && ctx.texts.so
 
 export const OPEN_QUESTIONS = Object.freeze([
   {
-    id: "youga-recall-falloff",
-    title: "Recall: does Shotgun falloff hit Recalled passes?",
-    question: "When a bolt is Recalled and hits the same target again, does the Shotgun Effect count it as a repeat hit (60%), or is it a full hit?",
-    evidence: "provisional",
-    current: "Provisional: every Recalled pass is a full hit; only the first cast's own bolts take the Shotgun falloff. Game data shows no built-in Return penalty, but the repeat-hit counter was not traced (R2).",
-    alternatives: [
-      { reading: "Each Recall wave takes the cast's falloff (2.2 of 3 bolts per wave)", effect: "about ×0.76 on the total (Homing Frost Bolt build)" },
-      { reading: "Every hit after the first from one cast deals 60%", effect: "about ×0.64 on the total" }
-    ],
-    test: "Dummy run with and without the Jump support (Recalls 3 → 1). Full Recalls predict about ×1/2.74; the falloff reading about ×1/2.61.",
-    source: `${YOUGA_NOTES} (R2, audit Q3)`,
-    appliesWhen: (ctx) => recalls(ctx)
-  },
-  {
-    id: "youga-recall-rehit",
-    title: "Recall: do Recalled bolts hit the dummy again?",
-    question: "Does each Recalled bolt hit the dummy again as a fresh hit with full damage, at most once per Recall pass?",
-    evidence: "user-supplied",
-    current: "User-supplied (2026-10-18): yes, a full-damage fresh hit per Recall pass. Game code supports it (the return routine clears the bolt's hit list), but the hit component's last step was not traced (R7).",
-    alternatives: [
-      { reading: "Recalled bolts never hit the dummy (Centralization still builds)", effect: "about ×0.1 on the total" },
-      { reading: "They never hit and Centralization is lost too", effect: "about ×0.07 on the total" }
-    ],
-    test: "Run the dummy without pressing Stasis Vault. The planner predicts a drop of about ×7 to ×10; a small drop means the Recall share is overstated.",
-    source: `${YOUGA_NOTES} (R7)`,
-    appliesWhen: (ctx) => recalls(ctx)
-  },
-  {
     id: "youga-core-manual-casts",
     title: "Clockwork Core: do your own casts fire bolts?",
     question: "While the Clockwork Core exists, does casting the supported skill also fire it, or does it only place or move the Core?",
@@ -147,28 +121,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "Cast once to place the Core with Stasis Vault up, then stop casting for 5 s. The recount's 5 s average should stay the same; it halves if your casts also fire.",
     source: `${YOUGA_NOTES} (R1)`,
     appliesWhen: (ctx) => coreApplied(ctx)
-  },
-  {
-    id: "youga-core-tangles",
-    title: "Clockwork Core: how many Tangles fire per interval?",
-    question: "Does every Tangle on the Core (Max Tangle Quantity, 2 at base) trigger the skill each casting interval, or only one?",
-    evidence: "user-supplied",
-    current: "User-supplied (2026-10-18): every attached Tangle triggers it. The skill text and the Tangle fields (base 2, highest 4) support it (R1b).",
-    alternatives: [{ reading: "One Tangle triggers per casting interval", effect: "about ×0.75 on the total (×0.5 of the Core triggers)" }],
-    test: "Count the bolt volleys the Core fires over a few seconds against the casting interval (the Config switch \"Clockwork Core: every Tangle triggers the skill\" shows the planner's two readings).",
-    source: `${YOUGA_NOTES} (R1b)`,
-    appliesWhen: (ctx) => coreApplied(ctx) && youga(ctx)?.tangles?.reading !== false
-  },
-  {
-    id: "youga-core-activated-tangles",
-    title: "Do the Clockwork Core's Tangles count as activated Tangles?",
-    question: "Do \"for each activated Tangle\" lines (Malign Embrace), Witch of the Night's Night Feather Entanglement (\"for every 1 active Tangle\") and its Focus Blessing gain count the Tangles attached to the Clockwork Core?",
-    evidence: "provisional",
-    current: "Provisional (2026-10-27): yes, every Tangle on the Core (Max Tangle Quantity) is activated (game field 2006287 \"number of activated Tangles\"; the Core always holds them, as the trigger cadence reads). Malign Embrace: +P1 Spell Critical Strike Rating and +P2% additional damage on crit × that count (game recipe 6853461), an added effect of Dormant Entanglement (game text 51425731).",
-    alternatives: [{ reading: "Only Tangles attached to enemies count (the Core's count 0)", effect: "Malign Embrace's line, Night Feather Entanglement and its Focus Blessing gain all off: about ×0.1 on a Core build" }],
-    test: "With Clockwork Core and Malign Embrace, read the Spell crit chance on the panel while the Core is out vs before it is summoned; check the Night Feather Entanglement and Focus Blessing buff icons during a dummy run.",
-    source: "research/youga-bolt-gap-2026-10-27.md F1 / F2; src/line-conditions.js activatedTangles; src/tangle-model.js nightFeatherState",
-    appliesWhen: (ctx) => coreApplied(ctx) && ctx.hasText(/for each activated Tangle|Night Feather Entanglement/i)
   },
   {
     id: "youga-forking-thunder-recent-projectiles",
@@ -194,15 +146,50 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && ctx.setupNames.has("Moon Strike")
   },
   {
-    id: "node-114-source-tags",
-    title: "Which lines a stat conversion reads",
-    question: "A conversion (\"X% of the bonus to Attack Speed is also applied to …\") names no source tags. Does it read the source with the tags of the stat it writes?",
+    // Replaces node-114-source-tags (closed 2026-11-04, W9 step 4: the SS14 client reads a conversion's source with the reader's own query,
+    // both tag lists, fromTags never read; research/node-114-trace-2026-11-03.md §2, §9). The one link that stays inferred:
+    id: "ailment-record-skill-tags",
+    title: "Which tags an ailment or skill DoT carries",
+    question: "When an ailment (Ignite, Trauma, Wilt) or a skill's own DoT is applied, does its record carry the inflicting skill's own id and no skill-type tag (Spell, Attack, Fire Skill, Projectile …)?",
+    evidence: "game code (not tested)",
+    current: "Game code (SS14 client, research/oq-r1-r2-rea-2026-11-04.md \"Instant Smash first\"): when a hit inflicts an ailment, the request's tags pass a filter (0x141f54e30) that keeps only the per-skill dynamic ids (99,000,001–99,999,999: \"this skill\" written at write time) and the 6,000,001–6,999,999 rows on a config_skill_tag whitelist (7 rows: 6000001–6000003, 6000084, 6300059, 6020011, 6020012; src/ailment-record-tags.js); Hit, crit, Double Damage, Spell, Attack, the damage-type skill tags, Channeled, Projectile, Area, Persistent, Terra and Main Skill are dropped (proven). The DoT record takes those tags plus the attacker unit's own and label 3001110 (two links inferred: the unit's tag list, no later tag source). Applied 2026-11-04 (user decision): Instant Smash (11688709) read in the Trauma record admits untagged crit damage, Trauma-tagged lines, the inflicting skill's own \"supported skill\" lines, the Fire Resistance crit damage and the recent-strike stacks, never a Spell- or tag-scoped Critical Strike Damage line (src/scorching-beam-critical.js, default \"record\"; TLI_AILMENT_CRIT_SCOPE=legacy keeps the old reading). Moved: Selena Trauma SS14 ×0.919 (its in-game 60 s average error ×0.9346 → ×0.859: another gap remains on that build), trauma-build ×0.867, ss21-trauma ×0.877. The application amount is a different read (attr 3604 on the hit's holder with its full tags), so Spell-, Channeled- or crit-scoped attr 3604 lines do reach it.",
+    alternatives: [{ reading: "The record carries the inflicting skill's tags (TLI_AILMENT_CRIT_SCOPE=legacy)", effect: "Instant Smash keeps the Spell- and Fire Skill-scoped Critical Strike Damage lines: Selena Trauma SS14 ×1.088, trauma-build ×1.153, ss21-trauma ×1.140" }],
+    test: "Selena Trauma SS14 (Instant Smash): read the Trauma panel's additional damage, or a 20 s dummy run, with and without the Memory of Progress line \"+38% Spell Critical Strike Damage\". The Trauma should not move.",
+    source: "research/oq-r1-r2-rea-2026-11-04.md; node 114 handler 0x141bf07e0 / evaluator 0x141d7bba0 (SS14); ailment filter 0x141f54e30, whitelist 0x141f493d0; recipes 11688709, 483321632",
+    appliesWhen: (ctx) => ctx.hasText(/additional Trauma Damage for every \+?[\d.]+% Critical Strike Damage/i)
+  },
+  {
+    id: "added-damage-same-text-records",
+    title: "Added damage \"to Attacks and Spells\" with no game id",
+    question: "Two records share the wording \"Adds X - Y <Type> Damage to Attacks and Spells\": one untagged (101010147, 101010630: every hit of yours), one with an Attack and a Spell write (200000042, 200000043). Which does a line with no game id carry?",
     evidence: "game data (partial)",
-    current: "Game data (partial; research/core-formulas-chunk0-2026-10-31.md §14.4). 66 of 67 speed rows have empty source tags, including rows whose text says \"the supported skill's Attack Speed\", so empty cannot mean character lines only. Read: the source is read with the write's own tags. That fits Blast Nova's throws and Play Safe (character lines) and Wind Rhythm's row (the skill's lines). The runtime of node 114 was not found.",
-    alternatives: [{ reading: "Every conversion reads the character's lines only", effect: "A supported skill's own speed lines would add nothing to the conversions that name it" }],
-    test: "Rehan, Rampaging, no gear: read Burst's cooldown with and without an Attack Speed support on the Main Skill.",
-    source: "config_affix_effect node 114; game affixes 4881501, 8855, 649220224, 240821552",
-    appliesWhen: (ctx) => ctx.heroId === "bing-blast-nova" || ctx.hasText(/of the bonus(?:es)? (?:and additional bonus(?:es)? )?(?:to|for) (?:Attack|Cast) Speed/i)
+    current: "W9 step 4 (src/attribute-pool-hit.js): a line that resolves by its game id reads its record's writes; one that does not (the wording alone) is read as one Attack and one Spell write, so a hit that is neither (a Sentry, a skill with no Attack or Spell tag) takes none, and one that is both takes it twice.",
+    alternatives: [{ reading: "The untagged record", effect: "every hit of yours takes the line once, Attack and Spell alike" }],
+    test: "A Sentry skill with an \"Adds X - Y Cold Damage to Attacks and Spells\" item: read the Sentry's damage with and without it.",
+    source: "config_affix_effect 101010147, 101010630, 200000042, 200000043, 200000232",
+    appliesWhen: (ctx) => ctx.hasText(/^Adds [\d.]+ ?[-–] ?[\d.]+ \w+ Damage to Attacks and Spells$/i)
+  },
+  {
+    id: "empower-count-held",
+    title: "Empower Skills counted as held",
+    question: "\"While affected by at least N Empower Skill(s)\" and Multi-Coupling Equation count the held buffs tagged Empower (5100311). Does a board Empower Skill whose buff lapses between casts count all the time?",
+    evidence: "game data (partial)",
+    current: "W9 step 4 (src/unit-buff-set.js empowerTagCount): the records count GetBuffCfgIdCountByTag([5100311]) at the moment (972411968, 53529464). Read: a board Empower Skill counts (own buffs pre-built, best case), Aim only when up all the time, a board skill whose record lacks the tag never.",
+    alternatives: [{ reading: "Only while each buff is up", effect: "the gate holds the share of time all N buffs overlap (lower with lapsing Empowers)" }],
+    test: "Empowered Insight (at least 2) with two Empower Skills, one on a long cooldown: compare the supported skill's damage while that buff is up and after it lapses.",
+    source: "config_affix_effect 972411968, 53529464; config_char_buff tags 5100311 / 5100304",
+    appliesWhen: (ctx) => ctx.hasText(/affected by at least [\d.]+ Empower Skill|Empower or Defensive Skill\(s\) affecting you/i)
+  },
+  {
+    id: "buff-second-affix-list",
+    title: "A buff record's second affix list",
+    question: "config_char_buff rows hold a second affix list outside the JSON \"affixList\" (u32 count + affix ids, no arguments). Is it read as the buff's own affixes at their default parameters?",
+    evidence: "game data (partial)",
+    current: "W9 step 4 (scripts/build-affix-recipes.mjs): the Blessings' per-stack additional damage sits there (Agility 320 571337024, Focus 380 821039424, Tenacity 340 471084, the variant rows 234047 / 206122), which src/blessing-model.js already reads (2 / 5 per stack). The layout (after the field 1001 and a \"<affix>{P1:…}\" string) is inferred from three records; the recipes are in the table, no reader moved.",
+    alternatives: [{ reading: "The list is something else (a display or a removal list)", effect: "the Blessings' per-stack damage would come from elsewhere; the Blessing model's values stand either way" }],
+    test: "None needed for damage today (the Blessing model's values match the keyword text).",
+    source: "config_char_buff 320 / 340 / 380 (gamedata-2026-10-31)",
+    appliesWhen: () => false
   },
   {
     id: "trigger-1000031-part-tags",
@@ -275,7 +262,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Clockwork Core: is \"distance traveled\" (Rapid Shots) measured from the Core, and can the Core sit 6 m from the dummy?",
     question: "The Core fires the supported skill's projectiles. Does \"Projectile Damage increases with the distance traveled, dealing up to +X% … to Distant enemies\" read the Core's distance to the dummy, and can the Core stay 6 m or more away while you stand next to the dummy (inside the follower's Tidewell Water Area, Nearby)?",
     evidence: "provisional",
-    current: "Provisional (combat audit 2026-10-27, best case): yes. The game recipe (200000434: node 136 on the damage entity, 0 → 6 m) measures the projectile's own travel, and your cast summons or moves the Core (Clockwork Core keyword text). When every modeled Projectile hit is the Core's skill, the travel lines read the Core's distance (\"Clockwork Core distance\" choice, default 6 m from the dummy, flippable), apart from where you stand (the Distance group keeps you close). Forking Thunder build: Rapid Shots +35% and Tidewell's Spell Double Damage both hold (×1.136); Homing Frost Bolt build: the +48% travel line and the +60% proximity line both hold (×1.0995).",
+    current: "Provisional (combat audit 2026-10-27, best case): yes. The game recipe (200000434: node 136 on the damage entity, 0 → 6 m) measures the projectile's own travel, and your cast summons or moves the Core (Clockwork Core keyword text). When every modeled Projectile hit is the Core's skill, the travel lines read the Core's distance (\"Clockwork Core distance\" choice, default 6 m from the dummy, flippable), apart from where you stand (the Distance group keeps you close). Forking Thunder build: Rapid Shots +35% and Tidewell's Spell Double Damage both hold (×1.136); Homing Frost Bolt build: the +48% travel line and the +60% proximity line both hold (×1.0995). Game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md, 2026-11-04; two links inferred, the best case kept by decision): node 136 (0x141bf4ce0, distance helper 0x141ec0010) measures the straight-line distance from the line's holder to the victim at the event, or a smaller per-victim value stored on the holder (tryUsedDamageEntity, set on Rapid Shots 200000434); it never reads the projectile's flown path. If the holder is you (inferred) the travel lines follow your own distance: the first alternative.",
     alternatives: [
       { reading: "The travel lines follow your own distance (as before: Distant vs close is one choice)", effect: "×0.880 on the Forking Thunder build (Tidewell or Rapid Shots, not both), ×0.910 on the Homing Frost Bolt build" },
       { reading: "The Core is summoned on the dummy or at you, so it never fires from 6 m", effect: "Rapid Shots off: ×0.741 on the Forking Thunder build" }
@@ -323,7 +310,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Do Clockwork Core bonuses reach the supported skill's own DoT?",
     question: "The Core lines write attr 5719 on tag 6300059 (casts released by the Core's Tangle). Does a Core-fired skill's own DoT carry that tag?",
     evidence: "game data (partial)",
-    current: "Game data (partial): the writes are read. Provisional: Core bonuses reach the skill's hits only, not its own DoT or ailments. Ailments carry no skill-type tags (user-confirmed 2026-10-11 for Spell), so they stay out; the own DoT is open, as open question skill-dot-skill-type-tags.",
+    current: "Game data (partial): the writes are read. Game code (SS14 client, research/oq-r1-r2-rea-2026-11-04.md R2, proven filter): an ailment's request keeps only the per-skill dynamic tags and 7 config_skill_tag rows flagged for it, and 6300059 (a cast released by the Core's Tangle) is one of them, so a Core-fired cast's ailments take the Core's attr 5719 lines: applied 2026-11-04 (src/youga-ultimate-one.js markCore, src/ailment-applications.js; every hit of a Core-supported skill is Core-fired; no fixture inflicts a damaging ailment from a Core cast). Still open: a skill's own DoT does not go through that filter and its request tags were not traced (as skill-dot-skill-type-tags); provisional, the Core bonuses do not reach it.",
     alternatives: [{ reading: "They reach its own DoT", effect: "up to ×(1 + Core bonuses) on a Core skill's own DoT; no fixture has one" }],
     test: "A Tanglable Spell with its own DoT on Clockwork Core: floating DoT tick with and without I Need Not Lift a Finger.",
     source: "research/hero-youga-chunk1-2026-10-31.md",
@@ -456,20 +443,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "With Mana sealed by Auras, check whether an \"at Full Mana\" line shows as active on the character panel.",
     source: "CLAUDE.md (Full Life, 2026-10-12); src/line-conditions.js",
     appliesWhen: (ctx) => ctx.hasText(/\bFull Mana\b/i) && (ctx.lineState.manaRemainingPercent ?? 100) < 95
-  },
-  {
-    id: "centralize-fixed-fervor",
-    title: "Centralize on a fixed Fervor Rating",
-    question: "When hit, can Centralize consume half of a fixed Fervor Rating (Unmatched Valor's 130), and can its +25% Rating on hit raise a fixed Rating?",
-    evidence: "provisional",
-    current: "Best case not hit. With the \"Centralize: not hit\" switch off, half of the held Rating is assumed consumed (provisional); whether part 1 raises a fixed Rating is unconfirmed. Its \"-0.8% additional damage\" line is additional damage taken from hits (game recipe 570574; user decision 2026-10-25), a defence with no DPS effect.",
-    alternatives: [
-      { reading: "A fixed Rating cannot be consumed", effect: "no Fervor loss when hit" },
-      { reading: "Part 1 raises a fixed Rating", effect: "a higher Fervor Rating when hit" }
-    ],
-    test: "With a fixed Fervor Rating, get hit and watch the Fervor Rating number on the panel.",
-    source: "CLAUDE.md (Centralize, 2026-10-14); research/recipe-interpreter-step1-2026-10-25.md §17",
-    appliesWhen: (ctx) => ctx.cores.has("Centralize")
   },
   {
     id: "support-star-intermediate",
@@ -785,16 +758,15 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "blade-cluster-hits",
     title: "Blade Cluster: extra Steep Strike hits",
-    question: "Does \"Generates 2 additional Steep Strikes when the supported skill launches a Steep Strike\" mean two more Steep Strike hits on the same target per launch?",
-    evidence: "user-supplied",
-    current: "User-supplied reading (2026-10-15): yes, the Steep Strike part hits 3 times per launch. The Split proves the count: 352391 branches on label 3100401 into reaction_normal, reaction_extra1 and reaction_extra2, row 821 each. It does not prove the same target: each reaction's hit rule has bHitBrother 0 in hitBrotherGroup 1, which on a projectile fan means siblings cannot hit one enemy. Whether the three reactions count as siblings is not in the data.",
+    question: "Does \"Generates 2 additional Steep Strikes when the supported skill launches a Steep Strike\" give more Steep Strike hits on one dummy?",
+    evidence: "game code (not tested)",
+    current: "Game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md blade-cluster-hits; applied 2026-11-04, replacing the user-supplied 2026-10-15 reading of 3 hits per launch): Split 352391 fires reaction_normal, reaction_extra1 and reaction_extra2 together (label 3100401), each with hit rule group 1, bHitBrother 0, bHitBrotherLabelValid 1. The three hit states are siblings in the casting instance, so once one lands the allow check (0x1423e4d80) refuses the other two on the same victim unless the skill has Shotgun Effect (label 3050340); with it all three land at full damage (empty falloff tables). So one Steep Strike hit per launch on the dummy (src/skill-hit-model.js steepStrikeState). Still inferred: that a Split's reactions spawn into the casting instance (every spawn path read does).",
     alternatives: [
-      { reading: "The hit rule holds across the three reactions: one hit on one dummy", effect: "about ×0.35 on the Erika fixture's sustained figure" },
-      { reading: "2 more stored attempts instead (the earlier reading)", effect: "about ×0.35 on the Erika fixture's sustained figure" }
+      { reading: "The three reactions are not siblings: three hits per launch (the 2026-10-15 reading)", effect: "about ×2.79 on the Erika fixture's sustained figure" }
     ],
     test: "Count the Steep Strike damage numbers per launch on the dummy.",
-    source: "SkillEditor Split 352391; recipe 66682944; CLAUDE.md (Erika batch, 2026-10-14); research/supports-chunk8-2026-11-01.md §5",
-    appliesWhen: (ctx) => ctx.skillHits.some((hit) => (hit.steepStrike?.clusterHits || 0) > 0)
+    source: "research/oq-r3-r4-rea-2026-11-04.md; SkillEditor Split 352391; recipe 66682944; research/supports-chunk8-2026-11-01.md §5",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => (hit.steepStrike?.clusterGenerated || 0) > 0)
   },
   {
     id: "rate-driven-buffs",
@@ -996,10 +968,10 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Reaps and \"additional damage applied to Life\"",
     question: "A Reap is a True Damage event. Does it take the \"+X% additional damage applied to Life\" term?",
     evidence: "game code (not tested)",
-    current: "Yes (SS14 client, 2026-10-31; replaces the 2026-10-26 Google answer): the hurt tail multiplies the part reaching Life by 1 + field 2010024 unless the record or the attacker holds label 3000128. Only node 1018 with skipHpIncrease (5 recipes, the patch note's items) and affix 327053056 on damage rows 200000002 / 80010 give that label; a Reap's event carries the tags Reap / Reaped and no such label. One inferred link: nothing in encrypted Lua grants the player the label.",
+    current: "Yes (SS14 client, 2026-10-31; replaces the 2026-10-26 Google answer): the hurt tail multiplies the part reaching Life by 1 + field 2010024 unless the record or the attacker holds label 3000128. Only node 1018 with skipHpIncrease (5 recipes, the patch note's items) and affix 327053056 on damage rows 200000002 / 80010 give that label; a Reap's event carries the tags Reap / Reaped and no such label. One inferred link: no script grants the player the label. Supporting (encrypted-scripts survey 2026-11-03, finding 10): a search of the 1,205 decrypted combat scripts finds 3000128 only as an enum name (\"skip the additional damage to Life\"), never granted; native code and the UI folders outside the set could still grant it, so this is not a full proof.",
     alternatives: [{ reading: "Reaps skip the term (the 2026-10-26 Google answer)", effect: "Reap parts ÷ the term: ÷1.08 to ÷1.136 on the fixtures" }],
     test: "20 s recount on a Reap build with and without one damage-to-Life line.",
-    source: "research/core-formulas-chunk0-2026-10-31.md §3",
+    source: "research/core-formulas-chunk0-2026-10-31.md §3; research/encrypted-scripts-survey-2026-11-03.md (finding 10)",
     appliesWhen: (ctx) => ctx.hasText(/applied to Life/i) && ctx.hasText(/\bReap/i)
   },
   {
@@ -1077,13 +1049,12 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "follower-affix-pain-amplification",
-    title: "Pain Amplification (follower): whose Affliction, and does the DoT taken reach you?",
-    question: "The follower skill's Pain Amplification clears 10 Affliction when it deals damage (every 2 s) and gives +12% additional Damage Over Time taken for 8 s. Does it clear your Affliction on the dummy, and does the +12% reach your damage over time?",
+    title: "Pain Amplification (follower): which damage events clear the Affliction?",
+    question: "The follower skill's Pain Amplification clears 10 Affliction when it deals damage (Interval: 2 s) and gives +12% additional Damage Over Time taken for 8 s. Does every damage event of the skill (each tick of a held Terra area) open the 2 s gate, and does node 309 hold a gate of its own?",
     evidence: "game data (partial)",
-    current: "Game record 1033360284 (chunk 14, 2026-11-01): on this skill's damage, behind a 2 s gate, if the event's other unit holds at least 10 Affliction (node 309 on fight resource 6) it changes that resource by the same 10 and puts an 8 s buff on the unit, attr 58131 mod 4. Read: +12% additional Damage Over Time taken at min(1, 8 s × casts per second), on a build with damage over time; the 10 Affliction taken off every 2 s is not taken off the rating, and the gate is read as met.",
+    current: "Game record 1033360284 (chunk 14): on this skill's damage, behind a 2 s gate, if the event's other unit holds at least 10 Affliction (node 309 on fight resource 6) it changes that resource by 10 and puts an 8 s buff on the unit, attr 58131 mod 4. Game code (SS14 client, research/oq-r1-r2-rea-2026-11-04.md R1.9, proven): the Affliction rating is one resource on the dummy's damage component that every attacker's gain adds to and node 627 changes, so the clear comes off your rating and the follower's own Affliction is not a separate gate. Applied 2026-11-04: +12% additional Damage Over Time taken at min(1, 8 s × casts per second), and 10 off your rating at the skill's first damage event of each 2 s gate while the rating is at least 10 (src/affliction-rating.js, the tick engine and the recount; a skill whose area deals damage every second for longer than its cast period clears every 2 s, else once per cast). Selena Trauma SS14: 5 Affliction a second, rating 100 → 99.68 on average, figures ×0.996. Still inferred: node 309's handler was not traced (it may hold its own gate), and an area tick counting as \"deals damage\".",
     alternatives: [
-      { reading: "The clear also comes off your rating: 5 Affliction a second", effect: "your Affliction average drops; the net effect depends on your Affliction rate" },
-      { reading: "Fight resource 6 on the dummy is per source, so the follower's own Affliction opens the gate", effect: "no debuff without a follower Affliction source" }
+      { reading: "Only the cast's first hit counts as the skill dealing damage", effect: "a Terra cast every 2.27 s clears 4.4 a second instead of 5" }
     ],
     test: "Dummy run with a DoT build: the follower skill with and without Pain Amplification, comparing the Affliction readout and the damage.",
     source: FOLLOWER_AFFIX_NOTES,
@@ -1480,7 +1451,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Lightning Shadow: does Feline Figure really fire only once on the dummy?",
     question: "Feline Figure marks an enemy with buff 82163 (state 4030302), and the automatic triggers skip marked enemies. The buff's duration field is -1, and no recipe or Split file removes it. Does the mark last for the enemy's whole life, or does something clear it (Electrify ending, a Trait Skill reset)?",
     evidence: "game data (partial)",
-    current: "Game data (partial; research/hero-erika-chunk1-2026-10-31.md). Proven: game affix 264779 row 1 marks the enemy, rows 0 and 2 skip a marked enemy, and Charging Equation (978270) retriggers only on Numbed that is not Feline Figure's own. Inferred: the mark never ends, because nothing in the recipes or Split 413779 / 654661 removes it, though row 3 is written for its removal. So Feline Figure fires once on the dummy: its stacks last 2 s (4 s with Electroplated Motif) from the start of the fight, and the sustained dummy holds none unless another source Numbs it. Replaces the Q-H10 reading (once per 10 s Electrify window).",
+    current: "Game data (partial; research/hero-erika-chunk1-2026-10-31.md). Proven: game affix 264779 row 1 marks the enemy, rows 0 and 2 skip a marked enemy, and Charging Equation (978270) retriggers only on Numbed that is not Feline Figure's own. Inferred: the mark never ends, because nothing in the recipes or Split 413779 / 654661 removes it, though row 3 is written for its removal. So Feline Figure fires once on the dummy: its stacks last 2 s (4 s with Electroplated Motif) from the start of the fight, and the sustained dummy holds none unless another source Numbs it. Replaces the Q-H10 reading (once per 10 s Electrify window). W8 step 3 (2026-11-03): its Numbed is the Numbed buff itself (game affix 520462624 row 2: node 343 adds buff 170, Electrify stacks − 1 layers), so while its stacks last the dummy holds the Numbed, Elemental Ailment and Ailment states for every reader (before, only their Lightning Damage taken was read).",
     alternatives: [
       { reading: "The mark clears when Electrify ends or resets, so it fires once per 10 s window (the reading before 2026-10-31)", effect: "×1.05 on Lightning damage at LV.5 without Charging Equation (0.6 average stacks × 5% × 1.68)" }
     ],
@@ -1648,12 +1619,29 @@ export const OPEN_QUESTIONS = Object.freeze([
     source: "research/hero-thea-chunk1-2026-11-01.md §6",
     appliesWhen: (ctx) => ctx.heroId === "thea-wisdom-of-the-gods" && ctx.hasText(/^God's Boon ?: Consumes all Focus Blessings/i)
   },
+  // Blessing stacks as layers on their own timers (user decision 2026-11-04, game code against the manual).
+  {
+    id: "blessing-layer-timers",
+    title: "Does each Blessing stack keep its own timer, or does a gain refresh them all?",
+    question: "The game manual says every Blessing gain refreshes the duration of all stacks and all are lost at the end. The client adds each gain as its own layer with its own full duration, refreshing none, and removes the oldest at the cap. Which one does the server run?",
+    evidence: "game code (not tested)",
+    current: "User decision 2026-11-04 (research/oq-blessing-refresh-2026-11-04.md, SS14 client): every Blessing gain (Focus, Agility, Tenacity) adds one layer with its own full duration (the layer add 0x141d02810) and refreshes nothing; each layer counts down on its own (the layer timer pass 0x141d15bc0); at the cap the oldest layer is removed, then the new one added (the subtype-2 strategy 0x141d01450); the Blessing ends with its newest layer. Every gain path read ends in the same add (nodes 301, 307, 374, the Split add-buff node, the post-add hook 0x141f733b0). The planner holds min(max stacks, gains in the last D s): the tick engine runs every Blessing gain as a layer (src/tick-engine.js layered buffs; src/tick-layers.js, src/trigger-bus.js, src/tick-ledger.js), and the steady model holds the time average where every gain states its interval (\"every N s\", Thea's Divine Blessing cycle: 1.67 of 4 at base), else the max (event gains: hits, uses, Reaps, moving), assuming they come at max ÷ D per second or faster (src/blessing-model.js, src/blessing-layers.js). \"At max stacks\" / \"at least N stacks\" lines read the share of time a periodic-only Blessing holds that count. This replaces the manual's reading (manual 1002010120 Tenacity, 1002010220 Agility, 1002010320 Focus). Provisional, not traced: which layers a node 623 consumption takes (read as the oldest first). No fixture figure moved in the default mode (every fixture's gains arrive at 1 per second or faster).",
+    alternatives: [
+      { reading: "Every gain refreshes all stacks (the game manual)", effect: "Thea's cycle holds every Blessing at its max (×2.4 on per-stack terms), God's Boon at max Focus fires every max(cooldown, Max Focus × 6 s); gains every T s with T × max > D hold the max; no fixture moves" },
+      { reading: "Node 623 consumes the newest layers first", effect: "only a consumption followed by a lapse differs; no fixture spends a layered Blessing on the loop in the default mode" }
+    ],
+    test: "One Blessing source you trigger one stack at a time, no Blessing Duration bonus (D = 10 s), no other source of that Blessing. Gain one stack, wait 8 s, gain one more (the count reads 2), then stop: own timers drop to 1 at 10 s after the first gain and the icon goes at 18 s; refresh-all stays at 2 until both go at 18 s. Or Thea with no other Focus source, for 30 s: own timers never show more than 2 Focus; refresh-all reaches 4 by about 24 s.",
+    source: "research/oq-blessing-refresh-2026-11-04.md; research/oq-aeterna-stack-modes-2026-11-04.md (R7, the Blessing conflict: settled by this note); src/blessing-layers.js; src/tick-engine.js addBuffLayers",
+    // Shown where the two readings differ: a Blessing whose every gain is periodic and too slow to hold its max (Thea's cycle), or one the loop
+    // holds below its max at some point after the opening (its peak or its average under the planner's stacks).
+    appliesWhen: (ctx) => ctx.heroId.startsWith("thea-") || (ctx.planner.blessings?.entries || []).some((entry) => entry.stacks > 0 && entry.layers?.reading === "periodic" && entry.layers.mean < entry.layers.maxStacks)
+  },
   {
     id: "thea-gods-boon-cycle",
     title: "Wisdom of The Gods: God's Boon's cadence and the Focus it consumes",
     question: "God's Boon consumes every Focus Blessing (cooldown 15 s, auto-cast at max Focus). The clock is in the game files. What is still read from the text: the stacks its buffs add, and The Place of Oracle?",
     evidence: "provisional",
-    current: "Game files (2026-11-01): Split 879174 gives each Blessing a stack every 6 s, each stack 10 s, a gain refreshing all (manual); the cooldown takes every Cooldown Recovery Speed line, the buffs Skill Effect Duration; Prophecy of Purity doubles the read caps; overlapping God's Boons pile the stacks up to the read cap (the stacks' shared timer is inferred from their stack mode). Read from the text: each God's Boon adds one stack per Focus consumed (GetMoonGirlCostRank, its routine not traced). God's Boon fires at max Focus every max(its cooldown, Max Focus × 6 s); Focus then refills one stack per 6 s, so its time average is (3·F·(F − 1) + F·(interval − 6·F)) ÷ interval (another Focus gain source holds it at max and God's Boon fires on its cooldown). The 10 s buffs (game data buff 82115) are up min(1, 10 s ÷ interval): Wisdom's +52%, Predicted Reincarnation's +11% and Farewell Prophecy's +8% Double Damage chance per Focus consumed, The Place of Oracle's +2% per Tenacity and Agility stack (each Blessing's Effect applies). Prophecy of Revelation holds while Focus is above 0; Prophecy of Punishment while Focus equals Agility (Lucky as a part-time window). Farewell Prophecy's Double Damage chance is time-averaged and its Quadruple Damage reads the averaged chance. Prophecy of Revelation's Blessing Talents on the 4th panel are not read (server_affix 10064 prints only the text): chunk 6 places them, the 48 config_talent records ending 01, each beside the node one id below it on the Might, Hunting and Knowledge panels; no readable table says which replacement applies, so no node is swapped.",
+    current: "Game files (2026-11-01): Split 879174 gives each Blessing a stack every 6 s, each stack 10 s on its own timer, refreshing none (user decision 2026-11-04, SS14 client: open question blessing-layer-timers), so from the cycle alone a type holds 2 stacks for 4 s and 1 for 2 s of every 6 s (1.67 on average) and Focus reaches max only when ⌈Blessing duration ÷ 6 s⌉ does (else God's Boon at max Focus never fires); the cooldown takes every Cooldown Recovery Speed line, the buffs Skill Effect Duration; Prophecy of Purity doubles the read caps; overlapping God's Boons pile the stacks up to the read cap (the stacks' shared timer is inferred from their stack mode). Read from the text: each God's Boon adds one stack per Focus consumed (GetMoonGirlCostRank, its routine not traced). God's Boon fires on the first frame Focus is at max with its cooldown ready; Focus then refills one layer per 6 s, each its own duration (a frame simulation, src/thea-traits.js godsBoonCycle; another Focus gain source holds it at max and God's Boon fires on its cooldown). The 10 s buffs (game data buff 82115) are up min(1, 10 s ÷ interval): Wisdom's +52%, Predicted Reincarnation's +11% and Farewell Prophecy's +8% Double Damage chance per Focus consumed, The Place of Oracle's +2% per Tenacity and Agility stack (each Blessing's Effect applies). Prophecy of Revelation holds while Focus is above 0; Prophecy of Punishment while Focus equals Agility (Lucky as a part-time window). Farewell Prophecy's Double Damage chance is time-averaged and its Quadruple Damage reads the averaged chance. Prophecy of Revelation's Blessing Talents on the 4th panel are not read (server_affix 10064 prints only the text): chunk 6 places them, the 48 config_talent records ending 01, each beside the node one id below it on the Might, Hunting and Knowledge panels; no readable table says which replacement applies, so no node is swapped.",
     alternatives: [
       { reading: "The Place of Oracle's +2% is per Blessing, not per stack", effect: "a much smaller bonus" },
       { reading: "Prophecy of Revelation's Talents add Blessing lines", effect: "unknown, no record readable" }
@@ -1690,20 +1678,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     source: `${HERO_TRAIT_AUDIT} (§6 Q-H9, §5 B7)`,
     appliesWhen: (ctx) => (ctx.heroId === "thea-incarnation-of-the-gods" && traitPicked(ctx, "thea-incarnation-of-the-gods", "Incarnation")) || (ctx.heroId === "thea-blasphemer" && traitPicked(ctx, "thea-blasphemer", "Extreme Desecration"))
   },
-  {
-    id: "thea-desecration",
-    title: "Blasphemer: how many Desecration stacks does the dummy hold?",
-    question: "Desecration (+15% per stack, multiplies; initial max 3; 5 s) is inflicted by the Trait Skill, triggered on every Blessing gain. How many stacks does the dummy hold, and do the stacks share one duration?",
-    evidence: "provisional",
-    current: "Game records (2026-11-01): recipe 853846848 on your own buff writes attr 5402, additional Erosion Damage on your damage, so Minions and the follower take none (the keyword prints \"taken\"); the Split's cooldown is 2 s (the text prints 5 s). Provisional: applied on every Blessing gain (every 2 s; the trigger ignores the cooldown) or on the cooldown when pressed, ⌈max ÷ 3⌉ stacks each, every application refreshing the shared 5 s duration, so the dummy holds max stacks from the 3rd application (the dummy starts clean). Blasphemer turns each +1 Max Blessing Stack into -1 and +1 Max Desecration Stack (up to 4 per Blessing type); Extreme Desecration converts the rest once every Blessing max is 0, up to 25. Sacrificial Pawn (the dummy alone) adds +10% Erosion Damage taken and is a crowd control type; Mountain of Sins (-20% Erosion Resistance) is read as Erosion Penetration; Tarnished Sage's speed and Inverted Shrine's +50% are held while the dummy is Desecrated.",
-    alternatives: [
-      { reading: "Each stack keeps its own 5 s timer", effect: "2–3 applications alive: fewer stacks with a large max" },
-      { reading: "A gain at max Blessing stacks does not trigger the Trait Skill", effect: "no figure while the Trait Skill is pressed: its 2 s cooldown holds them" }
-    ],
-    test: "With Blasphemer on the dummy, read Desecration's stack count and timer after 10 s, with and without a +1 Max Blessing Stacks item.",
-    source: `${HERO_TRAIT_AUDIT} (§5 B7)`,
-    appliesWhen: (ctx) => ctx.heroId === "thea-blasphemer" && ctx.hasText(/^Click the Trait Skill to inflict Desecration/i)
-  },
   // Hero trait audit B11 (2026-10-19; src/rosa-traits.js, src/hero-trait-modules.js "holyDomain" / "mercury", src/planner.js Mercury
   // Baptism, src/combat-states.js its Infiltration): Rosa (High Court Chariot, Unsullied Blade) and its revived affixes. Shown only for Rosa.
   // Closed by the game records 2026-11-01 (research/hero-rosa-chunk1-2026-11-01.md): the Domain's duration, Murderous Intent's level, the enemy count.
@@ -1736,30 +1710,87 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.heroId === "rosa-unsullied-blade" && Boolean(ctx.lineState.rosa?.mercury?.active)
   },
   {
-    id: "rosa-mercury-baptism",
-    title: "Unsullied Blade: Mercury Baptism's damage and Infiltration",
-    question: "Is Mercury Baptism's record the damage after the dummy's resistances?",
-    evidence: "game code (not tested)",
-    current: "Game code (research/hero-rosa-chunk1-2026-11-01.md, SS13 copy): the record holds X% of each Elemental type dealt by a non-Channeled Attack hit; a Baptism sums every type, deals it as True Damage, clears the record and restarts its 0.5 s, and it casts only with a record held (the 4 s sliding window never bites at 0.5 s). The largest type picks the Infiltration, +13% × Infiltration Effect for 10 s (Split 991760). The record's value is the dealt one, read as after the dummy's mitigation: the event opens after the damage (one link inferred).",
-    alternatives: [
-      { reading: "The record is taken before the dummy's resistances", effect: "Baptism higher by the resistance factor, ×1.43 on Fire at the dummy's 30%" }
-    ],
-    test: "With Baptism of Purity in the Realm, read a floating hit and the next True Damage number on the dummy, with one attack between two Baptisms.",
-    source: "research/hero-rosa-chunk1-2026-11-01.md §6",
-    appliesWhen: (ctx) => ctx.heroId === "rosa-unsullied-blade" && Boolean(ctx.lineState.rosa?.mercury?.baptism)
-  },
-  {
     id: "rosa-mercury-purged",
     title: "Mercury Purged: are the Baptism buffs held on the dummy?",
     question: "Mercury Purged grants Baptism: Rage / Indolent / Impassive for 8 s on inflicting Ignite / Numbed / Frostbite. Are they held as long as the build keeps that ailment on the dummy?",
     evidence: "provisional",
-    current: "Provisional on the hold; the values are game data (research/hero-rosa-chunk1-2026-11-01.md): records 5228877, 16423821, 7730245 add buffs 81934, 81935, 81936 on each infliction, one record each, so all three can be up. Each is held while the build keeps the matching ailment on the dummy: Rage +30% additional damage on Critical Strike, Indolent +30% additional Max Damage, Impassive +60% Skill Area; the -30% additional damage taken on you is defensive.",
+    current: "Provisional on the hold; the values are game data (research/hero-rosa-chunk1-2026-11-01.md, research/rosa-build-followups-2026-11-05.md §2): records 5228877, 16423821, 7730245 add buffs 81934, 81935, 81936 for 8 s on trigger 1000150 (you inflict the ailment; the follower's and Minions' inflictions do not count), one record each, so all three can be up. Each is held while the build keeps the matching ailment on the dummy: Rage +30% additional damage on Critical Strike, Indolent +30% additional Max Damage, Impassive +60% Skill Area (the hit's Skill Area readers take it); the -30% additional damage taken on you is defensive. With a proc skill pressed once every 3 s (press-rotation) the note's press-schedule estimate gives them 1.00 uptime at 3 s presses (0.98 to 0.99 at 4 s), so they stay held.",
     alternatives: [
       { reading: "A build that inflicts less than once in 8 s lets the buff lapse", effect: "uptime = 8 s × inflictions per second" }
     ],
     test: "With Mercury Purged, ignite the dummy and read the Baptism buff's timer over 20 s.",
     source: "research/hero-rosa-chunk1-2026-11-01.md §6",
     appliesWhen: (ctx) => ctx.heroId === "rosa-unsullied-blade" && (ctx.lineState.rosa?.purged || []).length > 0
+  },
+  {
+    id: "press-rotation",
+    title: "Other active skills pressed: how often, and how long a press takes",
+    question: "With \"Cast other active skills on the dummy\" on (Config, default on), the other skills you press take casting time from your Main Skill. The planner infers when each is pressed from its type: a proc skill once per Demolisher Charge (Groundshaker beside Berserking Blade), a curse when it lapses (5 s by its Split, unless Terrain of Malice holds it), a buff skill (Empower, Warcry, Aim, Elixir) when its buff would lapse, every max(cooldown, duration), a damage skill with a cooldown on its cooldown, a Mobility skill only when a line needs it (every max(cooldown, the line's window or Periodic Burst's 6 s)). Is that how they are pressed in a dummy run, and does each press cost its Split use time?",
+    evidence: "provisional",
+    current: "Rotation estimate (src/press-schedule.js; research/rosa-build-followups-2026-11-05.md §3): each press costs the skill's use time (a hit model's effective use time, else the Split header's: 1 s \"fixed\" on the curses, Empowers, Speed Phantom and the Mobility skills, not scaled by Cast Speed; a leap's fixed time when longer), and the Main Skill keeps 1 − Σ press time ÷ interval of its action time (a channeled beam or DoT loses it from its channel; a cooldown- or Terra-bound Main Skill keeps its rate while its casts fit). A Main Skill you do not cast (Clockwork Core-, Tangle-, Wind Rhythm-, Activation Medium- or item-triggered) loses nothing. Triggered skills (an Activation Medium, Preparation, Clockwork Core, a Tangle) take no time; a summon, a Terrain of Malice curse and a buff with no timer take one press before the fight; a buff skill whose buff is inactive on the dummy (Speed Phantom beside a channel) is not pressed; a damage skill with no cooldown keeps its own rate beside the Main Skill (Erika's Spiral Strike); Vendetta keeps its own time model; a Mobility skill no line needs is not pressed. On the fixtures no figure moves: their pressed skills sit beside a Main Skill they cannot slow (Speed Phantom beside Frost Terra's Wind Rhythm / Silencing Severance recasts and Gemma's Tangle casts; Shadow Dash, Blink, Aim, Timid and Stasis Vault beside Youga's Clockwork Core) or are triggered. Off: every effect counts and nothing takes time (the Groundshaker rotation too).",
+    alternatives: [
+      { reading: "A press of a Persistent skill (curse, Empower, Mobility) is near-instant, not its 1 s header time", effect: "a manually pressed curse or Empower costs almost nothing: a probe Ice Lances beside Arcane Circle ×0.9 → ×1.0, a Wilting Beam or Scorching Beam beside a plain Timid ×0.8 → ×1.0" },
+      { reading: "The proc skill pressed every 6.67 s (Pure Heart only)", effect: "Rosa build: the Main Skill keeps 93.9% of its time instead of 86.5%" },
+      { reading: "A Mobility skill pressed on its cooldown whatever needs it", effect: "on Main Skills you cast: 1 s per cooldown off the Main Skill (no fixture: their Mobility skills sit beside a Core- or trigger-cast Main Skill or no line needs them)" },
+      { reading: "Nothing shares time (the switch off; the planner before 2026-11-05)", effect: "Rosa build ×1.23 (the Groundshaker rotation)" }
+    ],
+    test: "Rosa build on the dummy for 60 s: Berserking Blade only, then with one Groundshaker every 3 s; and any build with a manually pressed curse or Empower: count the presses and time one press.",
+    source: "research/rosa-build-followups-2026-11-05.md §3; src/press-schedule.js",
+    appliesWhen: (ctx) => Boolean(ctx.planner?.pressRotation?.assumptions?.some((item) => item.id === "pressRotation" || item.id === "pressRotation:unresolved"))
+  },
+  {
+    id: "press-rotation-leap-time",
+    title: "A leap's fixed time and the press rotation",
+    question: "Groundshaker with Wrathful Vault is a leap whose Split header carries a fixed time of 0.406 s beside its 0.12 s use time. Does one press take the use time, the fixed time, or their sum?",
+    evidence: "provisional",
+    current: "Provisional: the longer of the two, 0.406 s a press (Splits 189074 / 895434; the client's header reader is not traced, the same open link as minion-once-fixed-time). At one press every 3 s the Main Skill keeps 86.5% of its time.",
+    alternatives: [
+      { reading: "The use time alone (0.12 s)", effect: "Rosa build: the Main Skill keeps 96.0% of its time (×1.11 on its share)" },
+      { reading: "The sum (0.53 s)", effect: "Rosa build: the Main Skill keeps 82.5% (×0.95 on its share)" }
+    ],
+    test: "Rosa build: press Groundshaker with Wrathful Vault repeatedly for 10 s and count the leaps.",
+    source: "research/rosa-build-followups-2026-11-05.md §3.2; SkillEditor Split headers",
+    appliesWhen: (ctx) => Object.values(ctx.planner?.pressRotation?.bySetup || {}).some((item) => item?.pressSeconds > 0.2)
+  },
+  {
+    id: "follower-thunder-slash-steep-stacks",
+    title: "Follower Thunder Slash: which follower casts give its Steep Strike stacks?",
+    question: "Origin Thunder Slash gives the follower and nearby allies +X% additional Steep Strike Damage per Steep Strike the follower cast in the last 4 s (up to 8). Its stones start at 0% Steep Strike chance, so only a skill with a Steep Strike affix (Raging Slash on Icy Blade) launches them. Does that affix make its own skill's casts Steep Strikes, and does the follower cast at the planner's cadence?",
+    evidence: "game code (not tested)",
+    current: "Game code (research/oq-rosa-client-2026-11-05.md §3): record 14163733, an own 4 s per layer, the least-remaining one renewed at 8; trigger 1000069 on the follower's own casts only (yours never count); field 2011002 defaults to 0. Inferred: the attempt goes to the skill whose affix rolled it (filter 106's error text). The planner holds E[(1 + X%)^min(8, N)], N Poisson over the follower's Steep Strike casts in 4 s; the 5 s / 20 s windows read the steady expectation (the loop does not build the layers from 0 yet).",
+    alternatives: [
+      { reading: "An attempt goes to the follower's next cast of any skill", effect: "the same rate here (one striking skill)" },
+      { reading: "Held at 8 (the planner before 2026-11-05)", effect: "Rosa build ×1.55" }
+    ],
+    test: "With the Mammoth follower (Raging Slash on Icy Blade), read the buff's stack count on you over 20 s.",
+    source: "research/oq-rosa-client-2026-11-05.md §3; src/follower-model.js followerThunderSlash",
+    appliesWhen: (ctx) => ctx.texts.some((entry) => /Origin Tartarus: Thunder Slash/.test(String(entry.source || "")) && /Steep Strike Damage$/.test(String(entry.text || "")))
+  },
+  {
+    id: "life-lost-drain-level",
+    title: "Life lost under a self-drain refilled by Regain",
+    question: "Ghost Slaughter drains 2.2% of current Life every 0.2 s while Fervor is up, and Regain refills a share of missing Life once per interval. The planner holds current Life at the unsealed share less half the drain between two Regains. Is that the level the game's \"per 1% Life lost\" lines read?",
+    evidence: "game code (not tested)",
+    current: "Game code for the parts (research/rosa-build-followups-2026-11-05.md §1: record 824274; the missing-Life stat at 0x141f623c0 uses the full Max Life, so sealed Life counts as Life lost, user decision 2026-11-05; Regain at 0x142061f10); the held level is an average over the saw-tooth (provisional: the HP step that applies the pending consumption is not traced). Rosa build: 87.16% Life lost (86.80% sealed).",
+    alternatives: [
+      { reading: "Readers see Life just after each Regain (the unsealed level)", effect: "Rosa build: 86.8% Life lost; Desperation stays capped, Warrior's speed ×0.999" }
+    ],
+    test: "Rosa build on the dummy: read the Life globe between Regains, and the attack speed with and without Ghost Slaughter.",
+    source: "research/rosa-build-followups-2026-11-05.md §1; src/planner.js lifeLostState",
+    appliesWhen: (ctx) => Boolean(ctx.lineState?.lifeLostDrain)
+  },
+  {
+    id: "dealt-type-readers",
+    title: "Which types does a hit \"deal\" for its triggers?",
+    question: "\"Inflicts Numbed when the supported skill deals Hit Lightning Damage\" and the other \"deals <Type> Damage\" readers: the planner reads the types the hit really deals after conversion, weapon and added damage, Trinity and \"-100% Gear Physical Damage\" (a converted part counts as its final type), while the hit's scaling lines also read a converted part's source types. Is a converted part's source type also \"dealt\" for these triggers?",
+    evidence: "game code (not tested)",
+    current: "Inferred from the client's typed damage map (a trigger reads the per-type values after conversion; the source-type mask is a scaling query, SS14 0x141fc3a80). Rosa build: Berserking Blade and Groundshaker deal Fire, Cold and Lightning (an all-Elemental weapon, no Physical), so High Voltage, Glacial Freeze and the Lightning readers hold.",
+    alternatives: [
+      { reading: "A converted part also deals its source type", effect: "Youga Forking Thunder (Lightning → Cold): 10 Numbed stacks from your hits, ×1.43" }
+    ],
+    test: "A Lightning skill fully converted to Cold with High Voltage: check whether the dummy shows Numbed.",
+    source: "src/planner.js hitDealtTypes; research/build-5t-claim-audit-2026-11-04.md gap 1",
+    appliesWhen: (ctx) => (ctx.planner?.skillHits || []).some((hit) => hit.modeled && (hit.components || []).some((component) => component.converted && component.perUse > 0))
   },
   {
     id: "rosa-cleanse-filth-steps",
@@ -1776,19 +1807,6 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   // Hero trait audit B8 (2026-10-19; src/sage-traits.js, src/elixir-model.js, src/hero-trait-modules.js "sageScent"): Sage – Licorice
   // Note's Scent Bottles. Shown only for Sage.
-  {
-    id: "sage-scent-bottle-slots",
-    title: "Sage: a non-Elixir skill in Active slot 2",
-    question: "The Basic bottle is Active slot 2 (game recipes read the skill by position). Can a non-Elixir skill sit in that slot and be cast?",
-    evidence: "game data (partial)",
-    current: "Game files (research/hero-sage-chunk1-2026-10-31.md): node 2410 makes the slot a bottle, and every Ingredient and preparation recipe reads the skill in that position (tag 6300052). So the Elixir in slot 2 is the Basic bottle's, the Hero tab's choice first. A non-Elixir skill in slot 2 stays on the board (not settled).",
-    alternatives: [
-      { reading: "The slot holds Elixirs only, so a damage skill placed in slot 2 cannot be used", effect: "a damage skill placed in slot 2 would stop counting" }
-    ],
-    test: "With Sage, try to equip a damage skill in Active slot 2 and note whether the game takes it and it can be cast.",
-    source: "research/hero-sage-chunk1-2026-10-31.md (§3, §6); game recipe 377007008",
-    appliesWhen: (ctx) => ctx.heroId === "sage-licorice-note" && Boolean(ctx.lineState.sage?.bottleElixir)
-  },
   {
     id: "sage-ingredient-effects",
     title: "Sage: Scattered Spore's stack timers and Twinspine Flower's second Reap",
@@ -1956,15 +1974,15 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "carino-special-ammo",
     title: "Ranger of Glory: Special Ammo's level and its effects on damage over time",
-    question: "At what level does a consumed Special Ammo support act, and do its effects on ailments and damage over time apply?",
+    question: "A Special Ammo slot carries a level (client reload component). Which level lines does it take, and do a consumed support's effects on ailments and damage over time apply?",
     evidence: "game code (not tested)",
-    current: "Game code (research/hero-carino-chunk1-2026-11-01.md, SS13 copy): each bullet a reload loads rolls the chance once and takes a magazine place, so a consumed bullet is Special with chance p (Ammo Expert 30%, Artificial Moon +20%, Crushing Gale Trigger's share), of one of the k loaded slots at random or in order. A bullet whose support is on the skill panel or does not fit the skill is spent with no effect. Provisional: the client builds the support from the stone in the slot; a planner slot stores only the name, so it reads Lv. 20. The supports' hit effects apply on those casts; their ailment and DoT effects are not modeled.",
+    current: "Game code (research/hero-carino-chunk1-2026-11-01.md, SS13 copy; encrypted-scripts survey 2026-11-03 finding 6): each bullet a reload loads rolls the chance once and takes a magazine place, so a consumed bullet is Special with chance p (Ammo Expert 30%, Artificial Moon +20%, Crushing Gale Trigger's share), of one of the k loaded slots at random or in order. A bullet whose support does not fit the skill is spent with no effect. Settled by the client's reload script: a slot carries a level (its stone level plus the levels read with the ammo tags 5006050–5006053); an ammo copy of a support socketed on the skill is ignored when its level is not higher than the socketed copy's, and replaces it on that cast when higher. Provisional: a planner slot stores no level, so it reads Lv. 20 with the same support level lines as the socketed copy (no level line in the data is scoped to the ammo tags), so it acts only over a socketed copy below Lv. 20; the highest socketed copy in the build decides. The supports' hit effects apply on those casts; their ailment and DoT effects are not modeled.",
     alternatives: [
-      { reading: "The support takes the build's Support Skill Level lines, as a socketed one", effect: "higher values with those lines" },
+      { reading: "The ammo copy takes no support level lines (Lv. 20 flat)", effect: "it acts only over a socketed copy whose effective level, its +N lines included, is below 20, at lower values" },
       { reading: "A consumed support's ailment and DoT effects apply too", effect: "more on a skill with ailments or a DoT" }
     ],
-    test: "With Ammo Expert and one Added Damage support in the slot, no gear: read a floating hit with and without Special Ammo, then with a \"+1 Support Skill Level\" line.",
-    source: "research/hero-carino-chunk1-2026-11-01.md §6",
+    test: "With Ammo Expert and one Added Damage support in the slot, no gear: read a floating hit with and without Special Ammo, then with a \"+1 Support Skill Level\" line; then socket the same support at a lower level and read whether the Special casts hit harder.",
+    source: "research/hero-carino-chunk1-2026-11-01.md §6; research/encrypted-scripts-survey-2026-11-03.md (finding 6)",
     appliesWhen: (ctx) => ctx.heroId === "carino-ranger-of-glory" && (ctx.lineState.carino?.special?.slots || []).length > 0
   },
   {
@@ -1999,7 +2017,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Evil Ouroboros: do returning projectiles hit the dummy again?",
     question: "\"After reaching their max range, Projectiles will return … hitting the enemies on their path again\": on one dummy, does a projectile that hits it ever reach its max range (only with Penetration), and does the return path cross the dummy?",
     evidence: "provisional",
-    current: "Provisional (hero trait audit B9): a Horizontal Projectile skill with at least 1 Penetration passes through the dummy, reaches its max range and returns over 75% of it, hitting the dummy once more as a full hit (no Shotgun falloff; best-case switch: the dummy on the return path). Without Penetration the projectiles stop at the dummy and nothing returns.",
+    current: "Provisional (hero trait audit B9): a Horizontal Projectile skill with at least 1 Penetration passes through the dummy, reaches its max range and returns over 75% of it, hitting the dummy once more as a full hit (no Shotgun falloff; best-case switch: the dummy on the return path). Without Penetration the projectiles stop at the dummy and nothing returns. Game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md, 2026-11-04): a Return gives the projectile a new, empty hit state (0x1422544a0 → 0x1423e1690), so it can hit the dummy again, at most once per return; its brother group carries the returning flag, so the returning projectiles of one cast are siblings among themselves and their Shotgun falloff counts the return wave only, never the outbound hits. Not applied yet: a fan's returning hits still read as full hits (the per-wave falloff would lower them; no fixture). Not traced: whether a projectile stopped by the dummy Returns, or only one that reaches max range.",
     alternatives: [
       { reading: "Projectiles that hit the dummy also return", effect: "every projectile hits twice, Penetration or not" },
       { reading: "The returning hit takes the Shotgun falloff", effect: "less damage from fans" }
@@ -2398,7 +2416,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Starfall Wasteland: the Spirit's Ranged casts",
     question: "With Starfall Wasteland, which skill does the Seething Spirit cast (your Main Skill if it is a Ranged Projectile Skill?), do its extra projectile and Penetration reach the dummy, and do its returning projectiles (33%) hit it again?",
     evidence: "provisional",
-    current: "Game records and provisional (chunk 1, 2026-11-01): the Spirit casts your Main Skill when it is a Ranged Projectile Skill (not Channeled or Parabolic; node 808 itself asks for Ranged, which on the catalog differs only for two Mobility skills) with +1 Projectile Quantity and +1 Horizontal Penetration; 33% of its projectiles pass through the dummy and return through it, hitting it once more (best-case switch \"Starfall Wasteland: the Spirit's returning projectiles hit the dummy\"). Ranged Skill uses generate 15 Rage each, in and out of Berserk: row 4 has no notMine, so the Spirit's casts do too (inferred, as `rehan-spirit-rage-cost`).",
+    current: "Game records and provisional (chunk 1, 2026-11-01): the Spirit casts your Main Skill when it is a Ranged Projectile Skill (not Channeled or Parabolic; node 808 itself asks for Ranged, which on the catalog differs only for two Mobility skills) with +1 Projectile Quantity and +1 Horizontal Penetration; 33% of its projectiles pass through the dummy and return through it, hitting it once more (best-case switch \"Starfall Wasteland: the Spirit's returning projectiles hit the dummy\"). Ranged Skill uses generate 15 Rage each, in and out of Berserk: row 4 has no notMine, so the Spirit's casts do too (inferred, as `rehan-spirit-rage-cost`). Game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md, 2026-11-04): a Return gives the projectile a new, empty hit state (0x1422544a0 → 0x1423e1690), so it can hit the dummy again, at most once per return; its brother group carries the returning flag, so the returning projectiles of one cast are siblings among themselves and their Shotgun falloff counts the return wave only, never the outbound hits. Not applied yet: a fan's returning hits still read as full hits (the per-wave falloff would lower them; no fixture). Not traced: whether a projectile stopped by the dummy Returns, or only one that reaches max range.",
     alternatives: [
       { reading: "The Spirit's casts generate no Rage", effect: "uptime 100% → 71% on the probe" },
       { reading: "Returning projectiles miss the dummy", effect: "no returning hits" }
@@ -2408,27 +2426,13 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.heroId === "rehan-seething-silhouette" && Boolean(ctx.lineState.rehan?.spirit?.starfall)
   },
   {
-    id: "slate-import-o1-anchor",
-    title: "Import from game: the anchor cell of a square (O) crafted slate",
-    question: "The login dump names one cell per slate, the cell the game turns it about. For the square (O) crafted slate that cell has not been seen on a board yet: which of its four cells is it at each Direction?",
-    evidence: "game data (partial)",
-    current: "Game data (partial): ShapeId 1051 is read as the square (the game lists each god's crafted bases as Z1, Z2, L1, L2, O1, T1, and the other five ids are confirmed on logged boards). Its 2 x 2 footprint matches the in-game previews of all six gods' squares (reference/slates). Its anchor is unknown (a preview shows no logged cell), so an imported square is placed only where a single 2 x 2 position fits beside the other slates, and parked beside the board otherwise.",
-    alternatives: [
-      { reading: "A fixed corner (for example the top-left cell at Direction 0)", effect: "every imported square would be placed straight from its logged cell" }
-    ],
-    test: "Equip a square crafted slate with free cells around it, screenshot the board, log in again and import: send the screenshot with the import report's slate lines.",
-    source: SLATE_IMPORT,
-    appliesWhen: (ctx) => importedSlates(ctx).some((slate) => slate.rarity === "magic" && /-2$/.test(String(slate.shape)))
-  },
-  {
     id: "slate-import-unlogged-legendaries",
-    title: "Import from game: Space Rift, Residence of Stars and Contamination anchors",
-    question: "These slates have not been seen in a game log yet. Which of their cells does the game log as the anchor, and can Space Rift lie flat (a quarter turn)?",
-    evidence: "unknown",
-    current: "Unknown anchors. The footprints match the in-game previews (reference/slates): Space Rift a column of six, Residence of Stars an eight-cell pinwheel that is the same at every quarter turn (so any logged Direction is drawn as is), Contamination two cells in a column. The importer tries every cell of the slate as the anchor and places it only when one position fits beside the other slates (Space Rift always fills its logged column); otherwise it is parked. Space Rift is drawn upright only: a logged half turn is drawn as the column, a quarter turn parks it. Game text: a Nether King's Divinity is placed by its Source cell (the anchor) and changes shape with the Source's location.",
+    title: "Import from game: Residence of Stars and Contamination anchors",
+    question: "Residence of Stars and Contamination have not been seen in a game log yet. Which of their cells does the game log as the anchor?",
+    evidence: "game data (partial)",
+    current: "Game data (encrypted-scripts survey 2026-11-03, finding 8): the client's shape table gives Space Rift one shape (2080, a column of six turning about its fourth cell from the top as the game logs it, rotation forbidden); the importer places it from its logged cell. The flat row of six (2081) is Last God's Revelation's, a retired template (full pass 2026-11-03, finding 7), not a flat Space Rift. Residence of Stars (an eight-cell pinwheel, the same at every quarter turn) and Contamination (two cells in a column) have unknown anchors: the importer tries every cell as the anchor and places the slate only when one position fits beside the other slates; otherwise it is parked. Game text: a Nether King's Divinity is placed by its Source cell (the anchor) and changes shape with the Source's location.",
     alternatives: [
-      { reading: "A fixed anchor cell per slate", effect: "these slates would always be placed from the log" },
-      { reading: "Space Rift can lie flat", effect: "a quarter-turned one would need a turned drawing in the planner" },
+      { reading: "A fixed anchor cell for Residence of Stars and Contamination", effect: "these slates would always be placed from the log" },
       { reading: "Contamination covers three cells with three Brand slots (game text: 2-3 Brand slots, one Offspring cell each; the preview shows two)", effect: "a third cell the planner does not draw" }
     ],
     test: "Log in with one of these slates equipped, then send a screenshot of the board with the import report's slate lines.",
@@ -2490,7 +2494,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Minion ailments",
     question: "Minions inflict ailments only with \"Adds 10 - 10 Base Ailment Damage to Minions\" (Machinist 3,3), the one source of a Minion's base in the game's tables. How does that ailment scale?",
     evidence: "game data (partial)",
-    current: "Not modeled. The lines read Inactive without the base. Recipes give the base (attrs 5821, 5823, 5824 tagged Minion), the chances (fields 2006480, 2006510, 2006520 routed to the Minions) and Affliction (field 2006467, attr 5724). Which Minion damage lines reach the ailment is not read.",
+    current: "Not modeled. The lines read Inactive without the base. Recipes give the base (attrs 5821, 5823, 5824 tagged Minion), the chances (fields 2006480, 2006510, 2006520 routed to the Minions) and Affliction (field 2006467, attr 5724). Which Minion damage lines reach the ailment is not read. The same limit holds for a Minion skill's own Ignite: Summon Fire Magus: Flowing Flames (671071552) replaces the Ultimate with Melting Explosion, whose Ignite is the Magus's (no readable value; census batch 6), so the dummy is not Ignited by it (26 rows of the states audit, W8 step 3).",
     alternatives: [{ reading: "Base 10 per second × the Minion's damage lines, Wilt as independent stacks", effect: "about ×1.02 for Ignite or Trauma and ×1.08 for Wilt at 100% chance on a Lv20 Huge Ember, less at the talents' 24 to 60% chance" }],
     test: "Machinist 3,3 with a Minion chance line, one Minion, no gear: read the dummy's floating DoT numbers with and without a \"+X% Minion Damage\" line.",
     source: "research/talents-chunk3-2026-11-01.md",
@@ -2619,16 +2623,16 @@ export const OPEN_QUESTIONS = Object.freeze([
   // Belt blend audit 2026-10-21 (research/belt-blends-pedigree-cores-2026-10-21.md): blend lines read for the first time.
   {
     id: "belt-caged-fury-movement",
-    title: "Caged Fury: is \"moved less than 12 m in the last 1 s\" standing still?",
-    question: "Caged Fury gives +15% additional Attack Speed after moving 12 m or more in the last 1 s, and +35% additional damage and +35% Physique after moving less than 12 m. Does ordinary movement (below 12 m per second) already count as \"less than 12 m\", so the damage half holds while you walk?",
+    title: "Caged Fury: does ordinary movement reach 12 m in 1 s?",
+    question: "Caged Fury's record (belt blend 270393984) gates its halves on the distance moved in the last 1 s: less than 12 m gives +35% additional damage and +35% Physique (standing still and walking below 12 m per second both hold it), 12 m or more gives +15% additional Attack Speed and +15% Movement Speed. Does a character moving normally (no Mobility Skill) cover 12 m per second, so the speed half can hold while moving?",
     evidence: "provisional",
-    current: "Provisional: the two halves are read as the Movement group's alternatives (12 m or more = moving, less than 12 m = standing still), and the planner keeps the one that gives more damage, listed in the assumptions.",
+    current: "Game record (2026-11-05, research/caged-fury-audit-2026-11-05.md): a distance gate, not Stand Still. Standing still keeps the damage half. While moving, the \"Distance moved in the last 1 s\" choice compares the damage half (below 12 m per second) with the speed half (12 m per second or more) and keeps the one that gives more damage, listed in the assumptions. Open: the character's movement speed in m/s, which the planner does not model, decides whether the speed half can hold at all.",
     alternatives: [
-      { reading: "Walking below 12 m/s counts as \"less than 12 m\"", effect: "the +35% damage holds while moving too, so moving builds keep it" },
-      { reading: "Only standing still counts", effect: "as now" }
+      { reading: "Ordinary movement covers 12 m per second", effect: "the speed half is a real choice while moving (as now)" },
+      { reading: "Ordinary movement stays below 12 m per second", effect: "only the damage half holds without a Mobility Skill; the speed-half choice would need a speed source" }
     ],
-    test: "Equip Caged Fury, walk (no Mobility Skill) and watch whether the +35% damage buff stays up; then compare with standing still.",
-    source: "research/belt-blends-pedigree-cores-2026-10-21.md",
+    test: "Equip Caged Fury and walk steadily (no Mobility Skill): watch whether the +15% Attack Speed buff appears and the +35% damage buff drops; note the character's Movement Speed.",
+    source: "research/caged-fury-audit-2026-11-05.md",
     appliesWhen: (ctx) => ctx.hasText(/^If you have moved (?:less than )?\d+(?:\.\d+)? ?m (?:or more )?in the last \d+(?:\.\d+)? ?s, /i)
   },
   {
@@ -2665,12 +2669,12 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Wax and Wane: is a flat boosted base stat rounded or floored?",
     question: "Wax and Wane is +60% on Ultimate memories only (user-confirmed 2026-10-27: Ultimate 50/50 Discipline \"+1027 Max Energy Shield (+60%)\", Ultimate 50/50 Progress \"+48% Movement Speed (+60%)\"). Epic (stored rarity legendary, the lowest rarity with Wax and Wane) is +30% (user-confirmed 2026-10-27). Is a flat boosted value rounded or floored?",
     evidence: "provisional",
-    current: "Ultimate ×1.6 and Epic ×1.3 are user-confirmed. Provisional: a flat base stat is rounded to a whole number (Math.round; 1027.2 → 1027 does not tell floor from round), a % stat keeps 2 decimals.",
+    current: "Ultimate ×1.6 and Epic ×1.3 are user-confirmed, and the client's memory revival recipes agree (config_memory_awaken_recipe_s14: Wax and Wane +60% on Ultimate, +30% on Epic, none on Rare; encrypted-scripts survey 2026-11-03, finding 9). The recipes do not say how the value is rounded. Provisional: a flat base stat is rounded to a whole number (Math.round; 1027.2 → 1027 does not tell floor from round), a % stat keeps 2 decimals.",
     alternatives: [
       { reading: "The boosted value is floored", effect: "values with a fraction of .5 or more read one lower" }
     ],
     test: "Hover a memory revived with Wax and Wane whose boosted flat base stat has a fraction of .5 or more and compare the printed value.",
-    source: "research/revived-affixes-2026-10-21.md §8.2",
+    source: "research/revived-affixes-2026-10-21.md §8.2; research/encrypted-scripts-survey-2026-11-03.md (finding 9)",
     appliesWhen: (ctx) => {
       const hero = ctx.state?.hero || {};
       const ids = new Set(Object.values(hero.equippedMemoryIds || {}).filter(Boolean));
@@ -2719,15 +2723,16 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "pact-point-budget",
-    title: "Pact Points: when the quest's +3 arrives",
-    question: "The game text gives 30 Pact Points at Lv. 90 and \"The upper limit increases to 33 points after completing the quest\". At which level can that quest be done?",
+    title: "Pact Points: the two progress steps behind the +3",
+    question: "The +3 Pact Points come from two progress steps (+1, then +2). Which in-game steps are they, and does a build that has not done them read 30?",
     evidence: "game data (partial)",
-    current: "Game data 2026-11-01: a Rare Battle Pactspirit unlocks 1 Pact Node in advance and a Legendary one 2 (config_servant field 0 / 1 / 2 on every Battle spirit by quality, 0 on Drop; Func_Pet_ExtraPointDescription \"Unlock %s Pact Nodes in advance\"), so they add points below the cap and never past it: up to 30 before the quest and 33 after. Provisional: the quest's +3 counts from Lv. 90 (where the 30 cap is reached); no readable table holds it. A page past the budget keeps its outermost nodes but leaves them out of the calculation.",
+    current: "Game data (encrypted-scripts survey 2026-11-03, finding 7): config_contract_level matches the planner's schedule from Lv. 1 to Lv. 89 and gives 30 from Lv. 90 on; config_contract_point_tattoo_slot adds +1 (condition 1006, with one Undetermined Fate slot) and +2 (condition 1007, with two), both progress conditions (config_cond_event), not a character level; each also unlocks pact points 111 / 211, 311 (read as the sections' Undetermined Fate Slots nodes, inferred). A Rare Battle Pactspirit unlocks 1 Pact Node in advance and a Legendary one 2 (config_servant, chunk 13), never past the cap. Best case: both steps done at any level, so the budget reaches 33 (the Pacts page's Pact Points line says \"+3 from the two progress steps (+1, +2; assumed done)\"). The steps' own text is not in the readable language table. A page past the budget keeps its outermost nodes but leaves them out of the calculation.",
     alternatives: [
-      { reading: "The quest's +3 comes only with more levels past 90 (33 at Lv. 96)", effect: "a smaller budget at Lv. 90–95: outer nodes left out" }
+      { reading: "Neither step done", effect: "a cap of 30: the three Undetermined Fate Slots nodes left out of a full page" },
+      { reading: "Only the first step done", effect: "a cap of 31" }
     ],
-    test: "At Lv. 90–95, read the Pact Points (\"%d Pact Points not allocated\") before and after the quest.",
-    source: "research/pacts-chunk13-2026-11-01.md; research/kismets-pacts-audit-2026-10-21.md",
+    test: "On a character that has not finished the progress behind the steps, read the Pact Points (\"%d Pact Points not allocated\") before and after each step.",
+    source: "research/encrypted-scripts-survey-2026-11-03.md (finding 7); research/pacts-chunk13-2026-11-01.md; research/kismets-pacts-audit-2026-10-21.md",
     appliesWhen: (ctx) => Boolean(ctx.pactLimits?.applies && ctx.pactLimits.points.allocated > ctx.pactLimits.points.base)
   },
   {
@@ -2856,13 +2861,14 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Shadow Quantity and \"+X% additional Shadow Damage\" on one dummy",
     question: "With N Shadows and a single target, does every Shadow strike the dummy with the full attack, each after the first at the 70% Shotgun falloff (1 + 0.7 × (N − 1) Shadow hits per use), and does Wilt Spike's \"Shadow Quantity +1 when buff reaches max stacks\" hold while it keeps hitting?",
     evidence: "provisional",
-    current: "Provisional: each use adds the use's hits × (1 + 0.7 × (N − 1)) as the Shadows' own hits (game manual 1001010820 / 1001010821; reference data Phantom: \"If no other targets are present, it will strike the character's target\", falloff 70%), with the player's layers plus the Shadow-only lines; Wilt Spike's own +1 is held with its 5 buff stacks (own buffs pre-built).",
+    current: "Provisional: each use adds the use's hits × (1 + 0.7 × (N − 1)) as the Shadows' own hits (game manual 1001010820 / 1001010821; reference data Phantom: \"If no other targets are present, it will strike the character's target\", falloff 70%), with the player's layers plus the Shadow-only lines; Wilt Spike's own +1 is held with its 5 buff stacks (own buffs pre-built). The game files disagree on the 70% (2026-11-03): the Phantom hover (config_hyperlink 136) fills \"Shotgun Effect falloff coefficient is {%s:1}%\" with 70 (each further Shadow deals 70%, the meaning Chromatic Shot's in-game runs proved for its coefficient), while manual rule 1001010821's parameter in the client's encrypted table is −70 (\"will additionally −70%\": each further Shadow deals 30%, 1 + 0.3 × (N − 1)). No Split carries a Shadow hit rule (no readable hit rule has repeatDmgDecPercent 70; the Shadows reuse the player's skill), so the records do not settle it and 70% is kept.",
     alternatives: [
+      { reading: "Each Shadow after the first deals 30% (the manual's additional −70%)", effect: "Shadow hits ×0.85 at N = 2 with the player's hit, ×0.76 at N = 3, ×0.67 at N = 5" },
       { reading: "Shadows prefer other targets and only some reach a lone dummy", effect: "fewer Shadow hits" },
       { reading: "The falloff applies to the player's hit too", effect: "a lower total per use" }
     ],
     test: "Use a Shadow Strike skill on the dummy for 20 s with 0, 1 and 2 Shadow Quantity (one change at a time) and compare the averages.",
-    source: "research/gear-affixes-audit-2026-10-22.md §8; game manual 1001010820 / 1001010821; reference data Phantom (game hyperlink 136)",
+    source: "research/gear-affixes-audit-2026-10-22.md §8; research/encrypted-scripts-full-pass-2026-11-03.md finding 1; game manual 1001010820 / 1001010821; reference data Phantom (game hyperlink 136)",
     appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.shadows?.count > 0)
   },
   {
@@ -3054,19 +3060,6 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   // ---- Legendary audit 2026-10-22 (research/legendary-items-audit-2026-10-22.md §5): provisional readings of legendary lines ----
   {
-    id: "legendary-guaranteed-crit",
-    title: "Pantheon's Elegy: God of War's Dirge \"Guaranteed to land Critical Strikes\"",
-    question: "Does \"Guaranteed to land Critical Strikes\" make every hit crit even with a \"-100% Critical Strike Rating\" line (Genius Battlegear) or a \"Cannot inflict Critical Strike\" effect?",
-    evidence: "game data (partial)",
-    current: "Game data (partial): game affix 937538880 is a flag (node 107, label 3001120). Every player hit crits (chance 100%), whatever the rating; ailments and Reaps never crit (user-confirmed). A rule that forbids crits is not read.",
-    alternatives: [
-      { reading: "A \"-100% Critical Strike Rating\" or \"Cannot inflict Critical Strike\" line wins", effect: "no crits on such builds" }
-    ],
-    test: "Equip the Dirge with Genius Battlegear and hit the dummy: check whether the floating numbers show crits.",
-    source: "research/legendary-items-audit-2026-10-22.md §5; src/scorching-beam-critical.js hasGuaranteedCrit",
-    appliesWhen: (ctx) => ctx.hasText(/^Guaranteed to land Critical Strikes$/i)
-  },
-  {
     id: "legendary-enemy-resistance-radius",
     title: "Legendary: \"-35% Elemental Resistance for enemies within 20m\" and the like",
     question: "Elementalist's Dirge (-35% Elemental), Corroded Heart (-40% Elemental and Erosion) and Grasp of Truth (+20% Elemental, a penalty) change the resistance of enemies around you: is that the same as the same amount of Resistance Penetration on the dummy?",
@@ -3122,12 +3115,11 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "resource-consumption-rate",
     title: "Mana / Life consumed recently: what counts as consumed",
-    question: "Which casts pay a cost that the \"for every N Mana / Life consumed recently\" lines count: do triggered casts (Activation Mediums, item triggers), Spell Burst's automatic casts and Multistrike repeats pay the skill's Mana cost, does the cost grow with skill level, and does a channeled skill pay its cost once per use interval?",
+    question: "Which casts pay a cost that the \"for every N Mana / Life consumed recently\" lines count: do triggered casts (Activation Mediums, item triggers), Spell Burst's automatic casts and Multistrike repeats pay the skill's Mana cost, and does a channeled skill pay its cost once per use interval?",
     evidence: "provisional",
-    current: "Provisional (census #4, 2026-10-27): Mana per second = the player-cast uses per second (Multistrike repeats, triggered uses and Spell Burst's automatic casts pay nothing) × (game stone Mana cost at level 1 + flat Skill Cost) × (1 + Σ% Skill Cost) × Π additional × Π support Mana Multipliers; a channeled skill pays once per use interval. Life consumed: the cost share converted to Life plus Recklessness-style \"% of current Life\" consumption. Empower / Warcry / curse casts and Sealed Mana are not counted. Stacks = consumed in the last 4 s ÷ N (game recipes: 4 s stacks), not rounded.",
+    current: "Provisional (census #4, 2026-10-27): Mana per second = the player-cast uses per second (Multistrike repeats, triggered uses and Spell Burst's automatic casts pay nothing) × (game stone Mana cost at the effective level + flat Skill Cost) × (1 + Σ% Skill Cost) × Π additional × Π support Mana Multipliers; a channeled skill pays once per use interval. Life consumed: the cost share converted to Life plus Recklessness-style \"% of current Life\" consumption. Empower / Warcry / curse casts and Sealed Mana are not counted. Stacks = consumed in the last 4 s ÷ N (game recipes: 4 s stacks), not rounded. Settled 2026-11-03 (encrypted-scripts full pass finding 15, the tooltip path): the stone cost is a level map read at the item level + extra levels, linear between keys; every catalog stone's map is flat but Resurrection Warcry's (Lv1 10, Lv21+ 20), which consumption does not count.",
     alternatives: [
       { reading: "Triggered and Spell Burst casts also pay the cost", effect: "more Mana consumed, more stacks on trigger builds" },
-      { reading: "The Mana cost grows with skill level", effect: "more Mana consumed at Lv. 20+" },
       { reading: "Channeled skills pay per second rather than per use interval", effect: "different Mana consumed for beams" }
     ],
     test: "With Compensatory Life equipped, cast one skill at a known rate and read the Spell Damage buff stacks; repeat with the skill triggered by an Activation Medium.",
@@ -3304,7 +3296,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Dual Kismet: Hunter's Hand trigger rate",
     question: "With 2 copies of Dual Kismet: Hunter's Hand, do the three lines (0.5 s / 1 s / 1.5 s after the use, each Interval 1 s) all fire, and does a Multistrike repeat count as a use?",
     evidence: "game data (partial)",
-    current: "Game record 2026-11-01 (overrides the 2026-10-26 Google answer of one shared gate): the set's config_modifier row 100350823 holds three instances of affix 448225344, (0.5, 1), (1, 1), (1.5, 1), so each line has its own trigger, its own 1 s gate (node 206) and its own Wait: the Main Skill gains 3 × min(1/s, uses/s), the first triggers 0.5, 1 and 1.5 s after the first qualifying use. One link is inferred: that a gate's clock sits on its own instance, as the client's class 206 keeps it on its object and as Transition's three instances of 943144 run apart. Trigger 1000074 is a player's use, so triggered casts of that skill do not count. Provisional: a Multistrike sequence is one use. The dummy recount keeps the merged rate from the Main Skill's own first use.",
+    current: "Game record 2026-11-01 (overrides the 2026-10-26 Google answer of one shared gate): the set's config_modifier row 100350823 holds three instances of affix 448225344, (0.5, 1), (1, 1), (1.5, 1), so each line has its own trigger, its own 1 s gate (node 206) and its own Wait: the Main Skill gains 3 × min(1/s, uses/s), the first triggers 0.5, 1 and 1.5 s after the first qualifying use. One link is inferred: that a gate's clock sits on its own instance, as the client's class 206 keeps it on its object and as Transition's three instances of 943144 run apart. Trigger 1000074 is a player's use, so triggered casts of that skill do not count; each Multistrike repeat of your use is a 1000074 event of its own (SS14 client, research/use-events-rea-2026-11-04.md §1; that each repeat runs the release step is inferred), so the uses counted include the repeats. The dummy recount keeps the merged rate from the Main Skill's own first use.",
     alternatives: [
       { reading: "The instances share one gate (the Google answer)", effect: "÷3 on the triggered uses" },
       { reading: "Every Multistrike attack counts as a use", effect: "no change at 1 use/s or more; more triggers for slow multistriking skills" }
@@ -3360,12 +3352,12 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "crit-cache-events",
     title: "Crit events per use: the damage crit cache",
-    question: "For a skill that hits several times per use (Spiral Strike, a projectile volley), is there one Critical Strike determination per use, and do crit-triggered effects (Tremble's Numbed buff, Electric Overload, Juggernaut, Nether King's recent non-crit stacks, Instructions on crit) count it once? Is the cache per cast, per damage entity or per damage index?",
-    evidence: "provisional",
-    current: "Provisional (2026-10-27; src/crit-cache.js): game manual 1000000420 and the SkillEditor closeDamageCritCache flags (21 components, src/data/game/skill-crit-cache.generated.js) — a skill with a cache-off damage index counts every hit (a mixed skill like Flame Jet counts all its hits: components are not mapped to damage indexes); every other skill makes one determination per hit group per use (min(1, hits ÷ hits per launch); each Sentry, each extra Combo Finisher and each of Blade Cluster's generated Steep Strikes is its own determination; Multistrike repeats are separate uses). Average damage does not change. The SkillEditor records are SS13 (not re-extracted for SS14).",
-    alternatives: [{ reading: "one determination per damage entity (each projectile / Recall / Shadow its own)", effect: "more crit events for volleys" }, { reading: "every hit rolls (the reading before 2026-10-27)", effect: "crit-event rates as hits/s" }],
+    question: "For a skill that hits several times per use (Spiral Strike, a projectile volley), is one Critical Strike determination shared by its hits, and is the cache per cast, per damage entity or per damage index?",
+    evidence: "game code (not tested)",
+    current: "Game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md and research/oq-aeterna-stack-modes-2026-11-04.md R-b; applied 2026-11-04): a hit event's cache key is built from the cast instance, a group field on the attack entity's hit component and the attacker class (0x141d4d1f0); a shared crit state is rolled once per key (0x141fbaac0, 0x141fc07a0) and a key of 0 rolls per event. Every hit event of a critting group carries the crit tag and raises the crit events, so the crit-event readers (Aeterna Martyr, Tremble, Electric Overload, Juggernaut, Husk, Nether King's recent non-crit stacks, Instructions on crit) count every landing hit × the crit share (rate.critEventsPerSecond); the determinations (rate.critChecksPerSecond: one per hit group per use for cached skills, every hit for the 21 cache-off components) count only the rolls (a Lucky re-roll). Not found: what the group field holds (damage index or entity group) and where closeDamageCritCache enters, so the clustering of crit events (a use crits all its hits or none) is not modeled: events are read as independent, which can only overstate a capped stack count. The once-per-frame-per-source cap of a flagged listener is applied on the tick engine's bus only. The SkillEditor records are SS13.",
+    alternatives: [{ reading: "Crit events clustered per cast (all hits of a cached use crit or none)", effect: "fewer distinct stacks on a capped reader (Aeterna Martyr on Selena Trauma SS14)" }, { reading: "One determination per damage entity (each projectile / Recall / Shadow its own)", effect: "more independent rolls for volleys; the mean crit events unchanged" }],
     test: "Spiral Strike with a 'gain a buff on Critical Strike, N stacks' line at ~30% crit: stacks after 10 uses vs 10 × 30% (cached) or 10 × hits × 30% (per hit).",
-    source: "src/crit-cache.js; scripts/build-skill-crit-cache.mjs; src/skill-hit-model.js critChecksPerUse; src/planner.js hitRateFacts",
+    source: "research/oq-aeterna-stack-modes-2026-11-04.md R-b; research/oq-r3-r4-rea-2026-11-04.md crit-cache-events; src/crit-cache.js; src/skill-hit-model.js critChecksPerUse / critEventsPerUse; src/planner.js hitRateFacts",
     // A cached skill with more hits than crit determinations per use, and a crit-event reader in the build.
     appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.rate?.critCache?.cached && (hit.rate.critChecksPerSecond ?? 0) < (hit.rate.hitsPerSecond ?? 0) - 1e-9 && (hit.crit?.chancePercent ?? 0) > 0)
       && ctx.hasText(/per recent (?:non-)?Critical Strike|Juggernaut|Tremble|Electric Overload|Instructions? (?:per|on) Critical Strike|Husk|(?:when|on) (?:landing |dealing )?(?:a )?Critical Strikes?\b.*(?:stack|buff|Gains?)/i)
@@ -3402,17 +3394,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "§6 test 103: Lv16, no gear: dummy average, then count the numbers per second with 3 Thunderbolts up.",
     source: "src/skill-hit-profiles.js Lightning Beam; Split 163969, 798312",
     appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.name === "Lightning Beam")
-  },
-  {
-    id: "bombard-shell-hit",
-    title: "Bombard: does the shell hit by itself?",
-    question: "Is Bombard one hit per shell, the explosion?",
-    evidence: "game data (partial)",
-    current: "Inferred (chunk 7): only the explosions count. Split 795922's shell has hitCountLimit 0, the value on carriers that hit nothing, and the stone text gives one damage per shell. Before, shell and explosion both counted.",
-    alternatives: [{ reading: "The shell's row 81 is a hit too", effect: "×2 on Bombard" }],
-    test: "§6 test 104: Bombard Lv16, cannon, no gear: count the numbers per shell on the dummy.",
-    source: "src/attack-hit-profiles.js Bombard; Split 795922",
-    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.name === "Bombard")
   },
   {
     id: "frost-impact-demolisher-waves",
@@ -3678,17 +3659,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.hasText(/Deterioration (?:Damage taken per stack|no longer deals True Damage)|additional Deterioration Damage if you have dealt|stack\(s\) of Deterioration ?\. Lasts|enhanced by Obliterate/i)
   },
   {
-    id: "legendary-ash",
-    title: "Hot Night's Embrace / Illusory Chimera: Ash every N Fire casts",
-    question: "Ash (keyword 10147: no crits, +30% additional Fire Damage, unable to refresh): is a gain while Ash is up lost (so the uptime is D ÷ the first multiple of the gain period that reaches D), and does \"Cannot inflict Critical Strike\" remove the crits for exactly that share?",
-    evidence: "provisional",
-    current: "Provisional: uptime as stated from the hit pass's measured Fire casts per second; time-averaged +30% × uptime additional Fire Damage and the crit rating × (1 − uptime).",
-    alternatives: [{ reading: "The gain counter keeps counting while Ash is up and the next gain refreshes on expiry", effect: "a higher uptime on fast casters" }],
-    test: "Cast a Fire skill at a known rate with Hot Night's Embrace and time the Ash buff.",
-    source: "research/legendary-items-audit-2026-10-22.md §9; src/combat-states.js ashGain",
-    appliesWhen: (ctx) => ctx.hasText(/a Fire Skill is cast, gains Ash for/i)
-  },
-  {
     id: "legendary-blessing-gains",
     title: "Legendary Blessing lines: random / any Blessing gains, Tenacity max-stack bonuses on Focus, Blessing Duration",
     question: "Do Illusory Chimera's \"random Blessing upon dealing damage\" and Grace Boots' \"Non-Critical Strikes grant any Blessing\" hold every Blessing at its max (as the other gain sources), and do the -50% / -90% Blessing Duration lines (Feline Steps, Divine Ember) ever drop a held Blessing on the dummy?",
@@ -3768,13 +3738,13 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "legendary-unmodeled-families",
     title: "Legendary lines still Not modeled, with the missing fact",
-    question: "Which of these facts can be read in game or from the hovers: Transcendence's uptime (Mortal's Reverie); Blur Rating per metre or per second (Chain behind the Curtain, Eternal Sea Fog, Illusory Chimera); Legendary Soldier Spectacles' Arena / Renown / Notoriety / Giantism; the Storm, Banquet and Zodiac Flash effects (Heart of the Storm, End Night Banquet, Realm Beyond Reach); the rotating Main Skill supports (Wriggling Tango, Illusory Chimera); Shattering's own hit (Frozen Will); Sentries that Multistrike or activate Spell Burst (Imperial Iron Sentry); Demolisher Charges from Sentry uses; Barrage Wave Interval; Mantra and Oracle of the Saints; Magmaskull's initial Affliction; Dragon Breath Armor's self-Ignite; Tangle crit (Old Grudge); Combo Finisher damage per Infiltration (Vajra Handguards); Life consumed at Full Life (Strange Snow); \"Legendary enemy units\" (Memory); Physical damage taken converted to Lightning within 10 m (Pantheon's Elegy); Blessing Duration lines; Blessings on Curse casts and on Spell Burst (Cover the Sun, Tranquil Stir); the Minion lines (Contained Mind, Iron and Bloom, Quantum Convergence); Ghost Slaughter's Fervor consumption at Low Life?",
+    question: "Which of these facts can be read in game or from the hovers: Transcendence's uptime (Mortal's Reverie); Blur Rating per metre or per second (Chain behind the Curtain, Eternal Sea Fog, Illusory Chimera); Legendary Soldier Spectacles' Arena / Renown / Notoriety / Giantism; the Storm, Banquet and Zodiac Flash effects (Heart of the Storm, End Night Banquet, Realm Beyond Reach); the rotating Main Skill supports (Wriggling Tango, Illusory Chimera); Shattering's own hit (Frozen Will); Sentries that Multistrike or activate Spell Burst (Imperial Iron Sentry); Demolisher Charges from Sentry uses; Barrage Wave Interval; Mantra and Oracle of the Saints; Dragon Breath Armor's self-Ignite; Tangle crit (Old Grudge); Combo Finisher damage per Infiltration (Vajra Handguards); Life consumed at Full Life (Strange Snow); \"Legendary enemy units\" (Memory); Physical damage taken converted to Lightning within 10 m (Pantheon's Elegy); Blessing Duration lines; Blessings on Curse casts and on Spell Burst (Cover the Sun, Tranquil Stir); the Minion lines (Contained Mind, Iron and Bloom, Quantum Convergence); Ghost Slaughter's Fervor consumption at Low Life?",
     evidence: "unknown",
     current: "Unknown: each family is listed in research/legendaries-chunk12-2026-11-01.md §12 with the fact it needs; the lines read Not modeled (or Partly modeled) until then.",
     alternatives: [{ reading: "A best-case reading for each family (full uptime, every trigger at its cap)", effect: "more damage than the game gives where the fact turns out lower" }],
     test: "One controlled dummy run per family (with and without the item), as listed in the audit document.",
     source: "research/legendaries-chunk12-2026-11-01.md §12",
-    appliesWhen: (ctx) => ctx.hasText(/additional Combo Finisher Damage to an enemy|triggers Shattering|Transcendence|Blur Rating for every|Blur Rating per second|Arena|Notoriety|Renown|windfield|Banquet|Aquarius|Hercules|Scutum|in turn: The Main Skill|Sentries can (?:perform Multistrike|activate Spell Burst)|Demolisher Charge when using Sentry|Wave Interval|Mantra of the Saints|Oracle of the Saints|initially inflicted Affliction|ignores enemy Fire Resistance|Tangle Critical Strike Rating|inflicts \d+ Affliction to nearby|Legendary enemy units|Damage taken by enemies within \d+m to Lightning|% Blessing Duration|a random Blessing when consuming|simultaneously apply|empty Support Skill slot|initial Multistrike Count for|Life lost by a Synthetic Troop Minion|Consumes all Fervor Rating/i)
+    appliesWhen: (ctx) => ctx.hasText(/additional Combo Finisher Damage to an enemy|triggers Shattering|Transcendence|Blur Rating for every|Blur Rating per second|Arena|Notoriety|Renown|windfield|Banquet|Aquarius|Hercules|Scutum|in turn: The Main Skill|Sentries can (?:perform Multistrike|activate Spell Burst)|Demolisher Charge when using Sentry|Wave Interval|Mantra of the Saints|Oracle of the Saints|ignores enemy Fire Resistance|Tangle Critical Strike Rating|inflicts \d+ Affliction to nearby|Legendary enemy units|Damage taken by enemies within \d+m to Lightning|% Blessing Duration|a random Blessing when consuming|simultaneously apply|empty Support Skill slot|initial Multistrike Count for|Life lost by a Synthetic Troop Minion|Consumes all Fervor Rating/i)
   },
   // Tick engine prototype (2026-10-31; src/tick-engine.js CAST_OVERSHOOT_RULE). Shown when the engine drives the figure (chunk 15, 2026-11-01).
   {
@@ -3791,34 +3761,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => engineDrives(ctx) && (ctx.skillHits.some((hit) => /^cast$|^channel|combo cycle/.test(String(hit.rate?.useModel || "")) && !wholeTicks(hit.rate?.effectiveUseTimeSeconds)) || (recountInputs(ctx).rate > 0 && !wholeTicks(1 / recountInputs(ctx).rate)) || modeledMinions(ctx).length > 0)
   },
   // Tick engine session 2 (2026-10-31; src/tick-youga-layers.js): shown when the engine drives the figure (chunk 15, 2026-11-01).
-  {
-    id: "tick-tangle-timer-class",
-    title: "What kind of timer fires a Tangle?",
-    question: "A Tangle triggers its Spell at the Spell's casting interval. Is that timer a cast whose leftover time carries, one whose leftover is lost, or a fixed-interval node that goes to the nearest tick?",
-    evidence: "game data (partial)",
-    current: "Partly settled from the game files (2026-10-31). Not a recipe node: no affix row holds the trigger, and the only recipe gate near it (Spell Tangle's node 206) spaces the spawning of Tangles. Each Tangle keeps its own timer: the reflected call CollectSpellOrbInfo returns a Tangle's cast interval and remaining cast cooldown, and field 2006288 is a Tangle cast-interval correction. Stasis Vault's \"fixed Cast Speed\" (label 3050222, field 2501300) is a separate affix, not the normal path. How that timer ends on a whole tick was not found: the routine is not in the decompiled output. The prototype carries the leftover.",
-    alternatives: [
-      { reading: "The leftover is lost: ceil(30 × interval) ticks per trigger", effect: "Youga Forking Thunder ×0.922 on the average, ×0.914 on the highest 5 s" },
-      { reading: "A fixed-interval timer: the nearest tick", effect: "×0.966 on the average: 6 ticks inside Periodic Burst's window, 7 outside it" }
-    ],
-    test: "With one Tangle on a dummy and a 0.8 s Spell, count the hits over 60 s at +158% Cast Speed (0.310 s, 9.3 ticks): about 193 if the leftover carries, 180 if it is lost, 200 at the nearest tick. Repeat at +167% (0.300 s, 9 ticks) as the control: all three give about 200.",
-    source: "research/tick-engine-prototype-2026-10-31.md (Tangle timer evidence); src/tick-youga-layers.js; SkillEditor Split files 275773, 745037, 771944 (structs 455368, 178856)",
-    appliesWhen: (ctx) => engineDrives(ctx) && coreApplied(ctx)
-  },
-  {
-    id: "tick-tangle-phase",
-    title: "When do a Clockwork Core's Tangles first fire, and do they fire together?",
-    question: "No Core exists until a cast summons it. Does each Tangle then wait a full casting interval, or fire at once? And do all of them fire on the same tick, or spread out across the interval?",
-    evidence: "game data (partial)",
-    current: "Not found in the game files (2026-10-31): the Core's spawn action (struct 455368 with 178856, Tangle entity 2002) holds no delay or phase field, and it spawns them together. The prototype runs them in lockstep, one casting interval after the summon cast ends. The summon cast is read at the skill's own use time; the two summon files (275773, 745037) carry 0.65 s, Cast Speed scaled, and were not linked to a cast.",
-    alternatives: [
-      { reading: "First trigger as the summon cast ends", effect: "Youga Forking Thunder ×1.001 on the average" },
-      { reading: "Staggered evenly across one interval", effect: "×1.000 on the average, ×0.971 on the highest 5 s, because fewer whole volleys sit inside a window" }
-    ],
-    test: "Summon the Core on a fresh dummy and step a slow-motion recording: count the frames from the cast's end to the first hit number, and see whether four hit numbers appear together.",
-    source: "research/tick-engine-prototype-2026-10-31.md (Tangle timer evidence); src/tick-youga-layers.js coreSummon",
-    appliesWhen: (ctx) => engineDrives(ctx) && coreApplied(ctx)
-  },
   {
     id: "tick-actor-order",
     title: "In what order do actors run inside a tick?",
@@ -3920,10 +3862,10 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Which uses and successes fire a Reap?",
     question: "A skill's built-in Reap at max channeled stacks: is the count every (max − start + 1) uses, held at max stacks until its cooldown allows, and does the opening wait for the channel even with stacks built before engaging? Does \"inflicting an ailment\" fire on any ailment, and on a skill's own DoT?",
     evidence: "provisional",
-    current: "Provisional: every N uses of the skill, armed until its recovery allows, the count restarting at the fire and starting at 0, as the planner's firstTriggerUses. \"Inflicting an ailment\" fires on the ailment with the highest chance, as the planner's successfulApplicationsPerSecond takes the maximum, and a skill DoT counts there. A ready Reap and a success read as independent, as the recount's mean-field share; the recount tracks its first such source jointly with the chain.",
+    current: "Provisional: every N uses of the skill, armed until its recovery allows, the count restarting at the fire and starting at 0, as the planner's firstTriggerUses. \"Inflicting an ailment\" fires on the ailment with the highest chance, as the planner's successfulApplicationsPerSecond takes the maximum; a skill's own DoT does not count since 2026-11-03 (open question reap-inflict-skill-dot). A ready Reap and a success read as independent, as the recount's mean-field share; the recount tracks its first such source jointly with the chain.",
     alternatives: [
       { reading: "Channel stacks are full at engagement with own buffs built before engaging", effect: "the first Reap comes N − 1 uses sooner: one more Reap in the opening" },
-      { reading: "A skill DoT is not an ailment, so Fire Swordsman does not fire on it", effect: "wilting-beam-ss14 loses that Reap, 9% of its modeled damage, unless a real ailment lands" },
+      { reading: "A skill DoT counts as an ailment for Fire Swordsman", effect: "wilting-beam-ss14 regains that Reap (the planner's reading before 2026-11-03)" },
       { reading: "A joint ready state with the chain", effect: "no fixture moves (every such Reap sits on a 100% chain); on a 50% chain with a Reap slower than the timer ×0.96 on a strongest-of-n table, ×0.82 on one that climbs with every success" }
     ],
     test: "Wilting Beam on a dummy: read the tick of the first Reap number with Min Channeled Stacks changed; and Fire Swordsman with only a skill DoT on the dummy.",
@@ -3944,56 +3886,18 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => engineDrives(ctx) && recountReaps(ctx).length > 0
   },
   {
-    id: "tick-reap-any-source-removal",
-    title: "Does every Reap remove Affliction with Torturer's Touch?",
-    question: "Torturer's Touch's removal answers the on-Reap event with no filter. With a second Reap source on the build, does each of its Reaps remove the Affliction too?",
-    evidence: "game data (partial)",
-    current: "Affix 221839 reads trigger 1000032 with no tag and removes 100% of the current rating, so in the data any Reap of the holder removes it. The planner and the tick engine remove it only on Torturer's Touch's own Reap, and no fixture has a second source beside it.",
-    alternatives: [
-      { reading: "Every Reap removes it", effect: "a build with Torturer's Touch and a fast Reap on dealing damage over time would hold a low rating and rarely reach 100, so Torturer's Touch itself would rarely fire" }
-    ],
-    test: "Torturer's Touch beside a Dark Gaze Reap: watch the Affliction bar on a dummy.",
-    source: "config_affix_effect 221839; src/data/game/affix-recipes.generated.js; research/tick-engine-prototype-2026-10-31.md (Session 5)",
-    appliesWhen: (ctx) => engineDrives(ctx) && afflictionRemover(ctx) && recountReaps(ctx).length > 1
-  },
-  {
-    id: "tick-affliction-accrual",
-    title: "Does the dummy gain Affliction from the start of the fight, or only while a DoT is on it?",
-    question: "The Affliction per second comes from the build. Does the rating climb from the first moment, or does it wait for the first damage over time?",
-    evidence: "provisional",
-    current: "Provisional: from engagement, as the planner's recount (afflictionAccrual windowStart). The game's gain (0x141c07a90) sums the per-second values of a list of active sources and stops when the list is empty; what puts a source on it was not read.",
-    alternatives: [
-      { reading: "The rating gains only while a DoT is on the dummy", effect: "the opening only: DoTs ×0.995 to ×0.998 on the Trauma fixture, ×0.996 on Wilting Beam, nothing once the rating is full" }
-    ],
-    test: "Hit the dummy with a slow first ailment and a large Affliction per second, and read the first DoT tick against the second.",
-    source: "research/affliction-component-trace-2026-10-07.md; research/tick-engine-prototype-2026-10-31.md (Session 4)",
-    appliesWhen: (ctx) => engineDrives(ctx) && recountInputs(ctx).afflictionPerSecond > 0
-  },
-  {
     id: "tick-ailment-stack-mode",
     title: "How do Wilt stacks replace each other at the limit, and how long does a stack last on whole ticks?",
-    question: "At 30 Wilt stacks, does a new stack replace the one closest to ending? And does a 1.689 s stack deal 51 ticks, each stack rounding up on its own?",
-    evidence: "game data (partial)",
-    current: "Game code and data (2026-10-31, chunk 0). Cap: nearest(config cap + a config-named field) in 0x141dc7360 (Ignite and Trauma 1, Wilt 30, Numbed 10, Focus Blessing 4). Mode at config +0x28: Ignite and Trauma 6, Wilt 7, Numbed and Focus Blessing 1, Scorch 2. Mode 7 replaces the instance with the smallest +0xc8, read as remaining time. Mode 6 replaces a held value that is lower than or equal to the new one (0x141bd9990; the value is the application's amount × one per-caster ratio table, so the attacker's part cancels: question ailment-held-strength). A stack lasting a fraction of a tick into its last tick reads that whole tick (provisional: the client's order inside the buff update was not traced).",
+    question: "At 30 Wilt stacks, does a new stack replace the one closest to ending? And how many ticks does a stack deal on whole ticks (a 1.689 s Wilt stack: 50, 50.67 or 51)?",
+    evidence: "game code (not tested)",
+    current: "Game code and data (2026-10-31, chunk 0). Cap: nearest(config cap + a config-named field) in 0x141dc7360 (Ignite and Trauma 1, Wilt 30, Numbed 10, Focus Blessing 4). Mode at config +0x28: Ignite and Trauma 6, Wilt 7, Numbed and Focus Blessing 1, Scorch 2. Mode 7 replaces the instance with the smallest +0xc8, read as remaining time. Mode 6 replaces a held value that is lower than or equal to the new one (0x141bd9990; the value is the application's amount × one per-caster ratio table, so the attacker's part cancels: question ailment-held-strength). SS14 executable (2026-11-03, research/dot-timing-ss14-check-2026-11-03.md): ailment stacks are layers of one buff action (the subtype-3 strategy, vtable 0x1454b7610), each with its own remaining time, and mode 7's 'shortest remaining' (0x141d2d960) compares those layers: the first half is settled. The last tick: a buff's own last frame settles the remainder (UBuffAction::Execute 0x141d14210), but a layer whose time runs out while others are held is removed before that frame's settlement (0x141d15bc0) and the rebuilt record replaces the old one unsettled. So an Ignite or Trauma run, or the last Wilt stack, deals 30 × D ticks in all (the remainder on its expiry tick), and a Wilt stack expiring while other stacks are held deals ceil(30 × D) − 1 whole ticks (50 for 1.689 s). Applied 2026-11-03 (src/tick-engine.js lastTickRemainder / expiringLayers, src/held-ailment-store.js heldStoreRun, src/ailment-model.js Wilt). Still provisional: the subtype-to-strategy link (Ignite, Trauma and Wilt read subtype 3 from the chunk 0 data mapping, inferred), and a whole 30 × D (base Wilt 1.5 s): the client removes a layer whose remaining time equals one frame, which gives 44 ticks, not 45, unless soft-float rounding leaves it a hair above one frame; the planner keeps the full last tick there.",
     alternatives: [
-      { reading: "A stack deals only the fraction of its last tick", effect: "Wilt ×0.9935 on the Trauma fixture, ×0.981 on wilting-beam-build; a shared timer rounds once per run, so Ignite and Trauma hardly move" }
+      { reading: "Every stack deals the remainder of its last tick (the pre-SS14 Lua copy's reading)", effect: "Wilt ×1.013 on the Trauma fixture against the SS14 reading (×0.9936 vs ×0.9807 of the old whole-tick figure), ×1.0007 on wilting-beam-build; Ignite and Trauma unchanged" },
+      { reading: "A whole 30 × D stack is removed one frame early (44 ticks for 1.5 s)", effect: "×0.978 on base-duration Wilt; no fixture has a whole-tick Wilt duration" }
     ],
     test: "One Wilt stack on the dummy at a known duration, with a floating-number log of its ticks; or the recount of a Wilt-only build at 1.70 s against 1.667 s of duration.",
-    source: "config_char_buff 130, 150, 160, 170, 380; research/ignite-persistence-trace-2026-10-06.md (subtype and mode switch); research/tick-engine-prototype-2026-10-31.md (Session 4); src/tick-engine.js inflictAilment",
+    source: "config_char_buff 130, 150, 160, 170, 380; research/ignite-persistence-trace-2026-10-06.md (subtype and mode switch); research/tick-engine-prototype-2026-10-31.md (Session 4); research/dot-timing-ss14-check-2026-11-03.md; src/tick-engine.js expiringLayers",
     appliesWhen: (ctx) => engineDrives(ctx) && recountAilments(ctx).some((ailment) => !ailment.silent && (ailment.stacking === "independent" || ailment.limit > 1))
-  },
-  {
-    id: "tick-ailment-snapshot",
-    title: "Do buffs reach an ailment when it lands, or on each tick of its damage?",
-    question: "A hit inflicts Ignite while a 4 s buff is up. When the buff ends, does the Ignite keep the buff's bonus?",
-    evidence: "game code (not tested)",
-    current: "Game code (2026-10-31, chunk 0): the attacker's increased and additional lines are read once, in 0x141dd9860, when a damage buff value is set (0x141b8df10 → 0x141bfede0), and the result is cached; a tick re-runs it only if that cache is empty, and re-reads target-side factors (resistance, taken, Affliction). So the application that set the held value fixes its attacker multipliers, and a strong stack keeps a buff past the buff's end. That application is chosen on its own amount, not on those multipliers (question ailment-held-strength). Live since chunk 15 session 3 (2026-11-01, src/tick-engine.js snapshotAt): the engine fixes a DoT's attacker-side time-varying layers (Windwalk's window, the attacker's own timed buffs) at each application and reads the target side every tick; the planner's own conditional buffs still enter as averages, so what the engine snapshots is only what varies on the loop.",
-    alternatives: [
-      { reading: "Each tick re-reads the attacker's buffs (the planner's averaged reading)", effect: "against the game code; a strongest stack under a part-time buff reads low" }
-    ],
-    test: "Apply one long Ignite under a short damage buff and watch the floating DoT numbers as the buff ends.",
-    source: "research/ignite-magnitude-trace-2026-10-06.md; research/ignite-persistence-trace-2026-10-06.md; research/tick-engine-investigation-2026-10-30.md §4.1; research/core-formulas-chunk0-2026-10-31.md §5",
-    appliesWhen: (ctx) => engineDrives(ctx) && recountAilments(ctx).some((ailment) => !ailment.silent)
   },
   // The held strength of a limit-1 ailment (2026-11-02): the refresh question answered by the user's in-game check, the compare still inferred.
   {
@@ -4001,14 +3905,13 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Which part of a Trauma or Ignite application decides whether it replaces the held stack?",
     question: "At the stack limit, is an application compared on its own amount (its roll and ailment-damage lines, the attacker's other buffs cancelling) or on its full value? Do an inflicting skill's own additional damage lines count in that amount? And does a limit that holds several applications time each stack on its own?",
     evidence: "game code (not tested)",
-    current: "Answered 2026-11-02 (user's in-game check, user decision following the client): a weaker application does nothing. With the beam stopped and Nether Grasp still hitting, the Trauma number falls to Nether Grasp's level, which a weaker hit refreshing the strong stack (the 2026-10-19 rule) cannot give. The planner holds the client's rule at a one-rank limit (src/held-ailment-store.js): an application at least as strong replaces the held stack (an equal one too), a strictly weaker one neither replaces nor refreshes it, and the held stack ends its duration after its own application. Still inferred: (1) the compare reads the application's own amount (the roll, the ailment-damage lines read at application, Aim's state included) and the winner keeps the attacker's other buffs (recent crit stacks), from the client's one ratio table per caster (SS13 copy; SS14's selector has the same shape); (2) an inflicting skill's own layers count in that amount (Nether Grasp's ×0.305 of the beam's: its supports' additional damage, its skill level), although the per-caster ratio read literally would leave its attr 5719 lines out; (3) a limit that holds several applications keeps the 2026-10-19 chain (no fixture has one). The engine carries the probability of each held amount and application tick, so it shows the mean level, not one run's swing: on the Selena Trauma build 50.02 / 53.78 / 48.62 B on the 60 s run (in game 53.50 / 68.53 / 56.02 B) and 49.51 / 53.78 B on 23 s (58.14 / 70.84 B).",
+    current: "Answered 2026-11-02 (user's in-game check, user decision following the client): a weaker application does nothing. The planner holds the client's rule at a one-rank limit (src/held-ailment-store.js): an application at least as strong replaces the held stack (an equal one too), a strictly weaker one neither replaces nor refreshes it, and the held stack ends its duration after its own application. Game code (SS14 client, research/oq-r1-r2-rea-2026-11-04.md R1.1): a weaker application adds nothing, touches no instance and raises no success event (the subtype-3 add returns false at 0x141d01d49: proven). The compare's ratio entry is kept per (caster, key), rewritten at each record build of that key, and the key is the inflicting skill (the request keeps its per-skill id: proven; the key field and the entity type 0x41 check inferred), so an inflicting skill's own layers (its supports' additional damage, its level) are in the compare: Nether Grasp's Trauma is compared at its own multiplier (the per-caster reading that gave ×0.33 is ruled out). Within one skill the held and the new read the same latest entry, so the attacker's timed buffs cancel and the compare is on the amount (the roll × attr 3604 lines, Aim's included): the planner's reading. Across skills each entry is as of that skill's last record build, so a timed buff enters each at its own last build; the planner's \"own layers in, other buffs cancel\" is right while both skills apply continuously. Still open: a limit that holds several applications (the selector replaces the weakest held instance; whether Open Wounds' 3 Trauma share a key and a timer, the user-confirmed 2026-10-19 reading, was not traced). The engine shows the mean level, not one run's swing: on the Selena Trauma build 50.02 / 53.78 / 48.62 B on the 60 s run (in game 53.50 / 68.53 / 56.02 B).",
     alternatives: [
-      { reading: "On the full value with the attacker's buffs (no client support: the ratio table is per caster)", effect: "Selena Trauma Monte Carlo mean 54.4 B on 60 s, ×1.09 of the planner" },
-      { reading: "A skill's own attr 5719 layers out of the compare (the per-caster ratio read literally)", effect: "Nether Grasp's roll ×1 beats the beam's ×0.8 (Bard's −20%, attr 3604): it holds the Selena Trauma stack 92% of the time, Trauma ×0.33" },
-      { reading: "A limit that holds several applications on the client's rule, each stack on its own timer", effect: "no fixture holds one (Open Wounds' Trauma 3 would)" }
+      { reading: "Each skill's ratio as of its own last application, a timed attacker buff entering at that build (the client's hybrid, kept per stream in src/held-ailment-store.js)", effect: "within ±1% on Selena Trauma SS14 (the note's estimate; not run)" },
+      { reading: "A limit that holds several applications on the client's selector, each instance on its own timer", effect: "no fixture holds one (Open Wounds' Trauma 3 would; against the user-confirmed shared timer of 2026-10-19 if so)" }
     ],
-    test: "Selena Trauma build, 30 s channel with Nether Grasp hitting: note the floating Trauma number each second. It falls less than 5.4 s after its last change while the beam channels = the compare ignores the crit stacks (the planner's reading); it only ever falls 5.4 s after its last change = the full value is compared. It drops to Nether Grasp's level while the beam channels = Nether Grasp's own layers are out of the compare. On a build with Open Wounds (Trauma limit 3): do the stacks end one by one?",
-    source: "research/core-formulas-chunk0-2026-10-31.md §5; scripts/held-ailment-readings.mjs; tests/selena-trauma-ss14-reference.test.js; research/master-validation-checklist-2026-10-31.md §6 test 166",
+    test: "On a build with Open Wounds (Trauma limit 3): do the Trauma stacks end one by one or all together?",
+    source: "research/oq-r1-r2-rea-2026-11-04.md R1.1; research/core-formulas-chunk0-2026-10-31.md §5; scripts/held-ailment-readings.mjs; tests/selena-trauma-ss14-reference.test.js; research/master-validation-checklist-2026-10-31.md §6 test 166",
     appliesWhen: (ctx) => engineDrives(ctx) && recountAilments(ctx).some((ailment) => !ailment.silent && ["trauma", "ignite"].includes(ailment.key) && (ailment.limit ?? 1) <= 1)
   },
   // Tick engine session 6 (2026-10-31; src/tick-minions.js): shown when the engine drives the figure (chunk 15, 2026-11-01).
@@ -4314,15 +4217,15 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "summon-support-minion-tags",
     title: "Supports on a summon: eligibility by its Minion skills' tags, and what they do to the Minions",
-    question: "User-confirmed 2026-10-28: a summon takes supports by its Minion skills' tags too (Module: Ratlin Stormer Captain, whose own stone has no Hit, takes Blind, Added Fire Damage and Multistrike because Blitz Strike / Burst Hammer carry Hit and Attack). Open: (1) the planner reads one tag set (own ∪ Minion skills) with the game's exclude groups on it, so Preparation and Activation Medium: Preparation (\"Cannot support Attack Skills\") leave the 14 summons whose Minion skills are Attacks (Machine Guard, Spider Tank, 12 modules); does the game still offer them there (a per-skill check would)? (2) Does each support then apply to the Minion skills it fits, as the planner reads it (Added X Damage as added damage at the Minion skill's effectiveness, a type the hit does not deal as its own part; Multistrike on Minion Attacks; \"+X% additional (typed / Area / Melee / Hit) damage for the supported skill\", Critical Strike Rating / crit-only damage, Attack / Cast Speed and Cooldown Recovery Speed on the Minion skills; target-state conditional lines such as Grudge vs Cursed)?",
+    question: "User-confirmed 2026-10-28: a summon takes supports by its Minion skills' tags too (Module: Ratlin Stormer Captain, whose own stone has no Hit, takes Blind, Added Fire Damage and Multistrike because Blitz Strike / Burst Hammer carry Hit and Attack). Settled by the client's install filter (2026-11-03, encrypted-scripts full pass finding 2): include groups read the own ∪ Minion-skill ∪ added tags, exclude groups the summon's own stone tags only, so Preparation and Activation Medium: Preparation (\"Cannot support Attack Skills\") stay on the 14 summons whose Minion skills are Attacks (Machine Guard, Spider Tank, 12 modules; that the server's validity check agrees is inferred). Open: does each support then apply to the Minion skills it fits, as the planner reads it (Added X Damage as added damage at the Minion skill's effectiveness, a type the hit does not deal as its own part; Multistrike on Minion Attacks; \"+X% additional (typed / Area / Melee / Hit) damage for the supported skill\", Critical Strike Rating / crit-only damage, Attack / Cast Speed and Cooldown Recovery Speed on the Minion skills; target-state conditional lines such as Grudge vs Cursed)?",
     evidence: "provisional",
     current: "Eligibility user-confirmed (src/support-compatibility.js supportFilterTagIds; replaces the Blind-only exception `support-blind-summon`). Calculation provisional (2026-10-28, src/summon-support-minion.js summonSupportReading, read by src/minion-damage-model.js): the game recipes write those lines on the caster with the \"this skill\" tag (Added Fire Damage 200000365, Multistrike 200000350 / 526048, Spell Concentration 825739, Steamroll 101010462, Precision Strike 200000369, Control Spell 6439405), read as reaching the Minion skills that inherit the support, at the stone's values for the support's level. Earlier (manual rule 1001011821, read as \"Minions take only lines that name Minions\") these read No DPS effect. Minion ailments, damage over time, conversions, Activation Medium triggers on a summon and conditions on the user's own state (Life lost, Hasten, Blessings, Fervor) stay Not modeled.",
     alternatives: [
       { reading: "Supports on a summon change only the summon cast; Minions take only lines that name Minions (manual rule 1001011821)", effect: "every newly offered support (Added X Damage, Multistrike, Spell Concentration, …) would read No DPS effect on the summon, as before 2026-10-28" },
-      { reading: "Eligibility is checked per skill (the summon or one of its Minion skills), not on one merged tag set", effect: "Preparation and Activation Medium: Preparation stay on the 14 Attack summons; no other support changes" }
+      { reading: "The server rejects a support whose exclude group matches a Minion skill's tags, unlike the client filter", effect: "Preparation and Activation Medium: Preparation leave the 14 Attack summons again" }
     ],
-    test: "Put Ratlin Stormer Captain on the dummy with and without Added Fire Damage (then Multistrike, then Spell Concentration) and compare the recount; on Summon Machine Guard, check whether Preparation is listed in an empty support slot.",
-    source: "config_skill_stone 2640 (Module: Ratlin Stormer Captain), 2642 / 2643 (Blitz Strike, Burst Hammer), 10002310 (Added Fire Damage), 10002050 (Multistrike), 10003260 (Preparation); game recipes 200000365, 200000350, 526048, 825739; user report 2026-10-28",
+    test: "Put Ratlin Stormer Captain on the dummy with and without Added Fire Damage (then Multistrike, then Spell Concentration) and compare the recount; on Summon Machine Guard, check that Preparation is listed in an empty support slot.",
+    source: "research/encrypted-scripts-full-pass-2026-11-03.md finding 2; config_skill_stone 2640 (Module: Ratlin Stormer Captain), 2642 / 2643 (Blitz Strike, Burst Hammer), 10002310 (Added Fire Damage), 10002050 (Multistrike), 10003260 (Preparation); game recipes 200000365, 200000350, 526048, 825739; user report 2026-10-28",
     appliesWhen: (ctx) => ctx.setups.some((setup) => /^Module: |^Summon (?:Machine Guard|Spider Tank|Grim Phantom|Fire Magus|Frost Magus|Thunder Magus|Rock Magus|Erosion Magus)$/.test(setup.name) && (setup.supports || []).some((support) => support && support.enabled !== false))
   },
   {
@@ -4343,11 +4246,10 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "banishment-tangle-minion-attach",
     title: "Banishment: Tangle: how many Tangles attach to each Minion, and where do they fire from?",
-    question: "With Banishment's Tangle effect (\"Tangle attaches to Minions instead of enemies\"), does each Minion take one Tangle (plus \"You can apply N additional Tangle(s) to enemies\"), so that 4 Minions activate 4 Tangles? Does a Tangle on a Minion fire its Spell at the dummy as often as one on the dummy, and how many projectiles of a fan cast from the Minions land on it? Which Synthetic Troop is \"the nearest\" for the per-80-Max-Life bonus?",
-    evidence: "game data (partial)",
-    current: "Game data (partial, 2026-11-02): the effect sets label 3001613 (Tangle entities attach to summons instead of enemies; affix 504296544), and the second line is affix 38919688: +1% additional damage per 80 Max Life of the nearest Synthetic Troop, continuous, up to +130%, on each Tangle Skill cast. A troop's Max Life is 5 × its Base Damage (config_minion_attr, every Synthetic Troop) × the Minion Max Life lines and the summon's Life supports. Provisional: activated Tangles = min(Max Tangle Quantity, Minions × the per-target attach count), the rest inactivated (so Dormant Entanglement's per-inactivated bonus drops); user statement 2026-11-03: more of a projectile fan's shots land on the dummy from a Tangle on a Minion than when you cast, so a Tangle-fired cast lands every projectile of the fan (best case, count not given; Shotgun falloff 1 + c × (hits − 1) kept; your own casts keep ceil(n / 2) close, 1 at range); with no Minion the Tangle Skill fires nothing; every activated Tangle triggers the Spell at its casting interval, from Minions standing by the dummy; the nearest troop is the highest-Life one.",
+    question: "With Banishment's Tangle effect (\"Tangle attaches to Minions instead of enemies\"), how many projectiles of a fan cast from a Tangle on a Minion land on the dummy, which Synthetic Troop is \"the nearest\" for the per-80-Max-Life bonus, and how does a Minion's Tangle pick its enemy target?",
+    evidence: "game code (not tested)",
+    current: "Game data (partial, 2026-11-02): the effect sets label 3001613 (Tangle entities attach to summons instead of enemies; affix 504296544), and the second line is affix 38919688: +1% additional damage per 80 Max Life of the nearest Synthetic Troop, continuous, up to +130%, on each Tangle Skill cast. A troop's Max Life is 5 × its Base Damage (config_minion_attr, every Synthetic Troop) × the Minion Max Life lines and the summon's Life supports. Game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md, 2026-11-04) settles the count: with label 3001613 a Tangle accepts only one of its owner's own summons as attach target (0x142278a50), within its attach range by priority then nearness; a summon takes at most field 2006281 Tangles, which \"You can apply N additional Tangle(s) to enemies\" (16113773) writes, so activated Tangles = min(Max Tangle Quantity, Minions × (1 + N)) as the planner reads it (src/tangle-model.js), the rest inactivated (Dormant Entanglement's per-inactivated bonus drops); summon-attached records fire each on its own timer from the Tangle's position, with no per-target cap. Still open (geometry, not code): user statement 2026-11-03: more of a projectile fan's shots land on the dummy from a Tangle on a Minion than when you cast, so a Tangle-fired cast lands every projectile of the fan (best case, count not given; Shotgun falloff 1 + c × (hits − 1) kept; your own casts keep ceil(n / 2) close, 1 at range); with no Minion the Tangle Skill fires nothing; every activated Tangle triggers the Spell at its casting interval, from Minions standing by the dummy; the nearest troop is the highest-Life one.",
     alternatives: [
-      { reading: "Only one Tangle attaches to the Minions in all", effect: "one use per casting interval and 3 inactivated Tangles: far less hit damage, Dormant Entanglement's +120% back" },
       { reading: "Fewer than all of a fan's projectiles land from a Tangle on a Minion (more than ceil(n / 2), user statement 2026-11-03)", effect: "fewer hits per cast on a fan skill than the best case read" },
       { reading: "The nearest troop is a lower-Life one", effect: "a smaller per-80-Life bonus" }
     ],
@@ -4371,25 +4273,312 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.hasText(/^Intimidated gains an additional base effect/i)
   },
   {
-    id: "cc-chance-holders",
-    title: "Weaken, Slow and Blind by chance: which events fire them and how long do they hold?",
-    question: "\"+X% chance to Blind the target on hit\", \"+X% chance to inflict Slow on hit\" and \"+X% chance to Weaken nearby enemies when triggering any skill\": do Tangle-fired and other triggered casts fire the Weaken line (and do your own casts not), do your Minions' hits fire the on-hit lines, and do the buffs last 4 s on the dummy?",
+    id: "reap-inflict-skill-dot",
+    title: "Does a skill's own DoT fire \"Reaps … when inflicting an Ailment\"?",
+    question: "\"Reaps X s of Damage Over Time when inflicting an Ailment\" (game records 476089, 124759664: trigger 1000150 with the Ailment tag 5100001) fires on an ailment's application. Does a skill's own damage over time (Wilting Beam's, a Terra's) count as one?",
     evidence: "game data (partial)",
-    current: "Game records (2026-11-03): Blind 574297 and Slow 472365504 run on trigger 1000033 (your hit) with a chance gate and add buff 20060 / 260 to the hit target; Weaken 279824224 runs on trigger 1000060 with a chance gate and adds buff 270 to enemies within 6 m. Every one of these buffs carries tag 5100101, the tag Wings of Light's Intimidated count and the other crowd control counters read, and lasts its record's 4 s (duration -2). The planner reads 1000060 as a triggered use (the Hair-trigger / Gemma / Rosa precedent: a player's use raises 1000074; inferred), so the Weaken line counts the uses of modeled skill hits that are not cast by you and a Tangle Skill's casts that are not cast by Spell Burst; the on-hit lines count your hits, not your Minions'. Each type holds 1 − (1 − p)^(events/s × 4 s) of the time, built from zero on the clean dummy. Their own effects do nothing to the dummy, so they read In calc only where a crowd control counter reads them.",
+    current: "No (wiring audit W2 gap 2, 2026-11-03): only Ignite, Trauma and Wilt successes fire it. The buff records settle the tags: Ignite 130, Trauma 160 and Wilt 150 carry 5100001; the skill DoT buffs (Wilting Beam's 10232, the Terra and ground DoTs) carry DoT 5100309 and skill 5100310 but not 5100001. That the event carries the applied buff's tags is inferred.",
+    alternatives: [{ reading: "A skill DoT's application fires it too", effect: "Fire Swordsman and the other \"when inflicting an Ailment\" Reaps fire on a DoT-only build again (the planner's reading before 2026-11-03)" }],
+    test: "Wilting Beam with no Wilt or Ignite chance and Fire Swordsman (or the 476089 line): watch the dummy for Reap numbers.",
+    source: "game affixes 476089, 124759664; config_char_buff 130, 150, 160, 10232; src/planner.js successfulApplicationsPerSecond; src/dummy-recount.js triggerAilmentIndex; research/wiring-audit-triggers-2026-11-03.md gap 2",
+    appliesWhen: (ctx) => ctx.hasText(/Reaps? [\d.]+ ?s of Damage Over Time when inflicting an Ailment/i) && (ctx.planner.skillDots || []).some((dot) => dot?.modeled)
+  },
+  {
+    id: "focus-buff-wilt-panel-row",
+    title: "Corrosion Focus's Wilt: what does the character panel's Wilt DPS row count?",
+    question: "With Corrosion Focus on the board the panel reads Base Wilt 2 (row 160300), Wilt chance 30% (81200) and Wilt DPS 112,320 (160002 / 160003) on the user's SS14 Wilting Beam build. Base × the panel's own Erosion and DoT-tab rows (Damage Bonus 1186.5%, Additional ×24.67 × Erosion ×2.2435, Affliction ×7.99, 30% resistance) gives about 7,970, ×14 short. Is the row one Wilt stack, a held stack count, or does it take layers the DoT-tab rows leave out?",
+    evidence: "game data (partial)",
+    current: "The Focus buff is read from its game record (2026-11-03; src/focus-buffs.js, config_char_buff 10480: 24479 Adds 2 - 2 Base Wilt Damage, 101080129 +10% Wilt chance, 319376192 additional Erosion Damage; untagged writes on you, so every skill's Wilt takes them; the base unscaled, the rest × Focus Buff Effect, GetEffectScale read as Focus Buff Effect as for the item-granted Precise: Acuteness Focus Buff, whose in-game +25% matched). Base Wilt 2 and the 30% chance match the panel. The planner's town Wilt (one application, the panel's DoT-row conventions: combat-only lines out, × 0.7) reads ×0.0254 of the row; nothing fitted. The dummy figures use the planner's own stack model (Wilt from the Corrosion Orbs' hits).",
+    alternatives: [{ reading: "The row is the DPS of a held stack count (about 14 stacks)", effect: "a panel convention only; the dummy figures do not move" }, { reading: "The row takes the selected skill's layers on a Wilt it inflicts itself (Wilting Beam applying Wilt)", effect: "Wilting Beam would be a Wilt applier: more Wilt stacks and more \"when inflicting an Ailment\" Reaps on the dummy" }],
+    test: "Corrosion Focus on the board, no other Wilt source: read the panel's Wilt DPS with Wilting Beam selected, then with another skill selected, then with Wilt Duration changed; and watch the dummy for Wilt numbers while only Wilting Beam channels.",
+    source: "config_char_buff 10480 / 10481 / 10440 / 10441; config_skill_stone 50180 (affix 103250023: add buff 10480 to you at the skill's level); src/focus-buffs.js; tests/wilting-beam-ss14-reference.test.js; tests/focus-buff-records.test.js",
+    appliesWhen: (ctx) => (ctx.planner.ailments?.wilt?.sources?.typed?.base || []).some((line) => /Focus buff|Focus Buff/.test(line.source || ""))
+  },
+  {
+    id: "focus-buff-effect-scale",
+    title: "Focus buffs: does Focus Buff Effect (and nothing else) scale their values?",
+    question: "Every Focus buff (Acuteness, Corrosion, Flame, Ice, Thunder Focus and their Precise forms) is read from its game record: its additional damage and ailment chance multiply by the buff's effect scale, its base ailment does not. Is that scale exactly 1 + Focus Buff Effect, with Aura Effect and other Effect lines left out?",
+    evidence: "game data (partial)",
+    current: "Read as 1 + the summed \"+X% Focus Buff Effect\" lines (attr 3401 on tag 5100306; W6c 2026-11-03, src/focus-buffs.js). The buff records (config_char_buff 10440–10481) carry tags 5100310, 5100306 and their family tag (5100314–5100318), never the Aura tag 5100305, so Aura Effect is left out; Flame Focus's Ignite chance took Aura Effect before (it was read as an Aura value). The link from the recipes' `scale` (GetEffectScale) to attr 3401 on the buff's own tags is inferred; the one in-game check is the trauma fixture's Precise: Acuteness Focus Buff, +25% additional Physical at +60% Focus Buff Effect. The conditional \"+X% Focus Buff Effect\" lines (Focus Skills in the Active / Passive Skill Slot) and \"+X% additional Focus Buff Effect\" are not read yet.",
+    alternatives: [{ reading: "Aura Effect also scales a Focus buff (the Focus skills sit in Aura slots)", effect: "Flame Focus's Ignite chance and every Focus buff's additional damage × (1 + Aura Effect) as well" }],
+    test: "Flame Focus on the board, then add a \"+X% Aura Effect\" line: does the character panel's Ignite chance or additional Fire Damage change? Then a \"+X% Focus Buff Effect\" line in its place.",
+    source: "config_char_buff 10440–10481 (affix lists and tags); config_affix_effect 6779909, 101080071, 132023, 919705, 869686; affix 753654 (attr 3401 mod 3 on 5100306); src/focus-buffs.js; tests/focus-buff-records.test.js",
+    appliesWhen: (ctx) => (ctx.planner.modifierTexts || []).some((line) => line.focusBuff)
+  },
+  {
+    id: "dot-damage-trigger-events",
+    title: "How often does a DoT fire \"when dealing damage\" (trigger 1000030)?",
+    question: "Lines on trigger 1000030 (\"when you deal damage\", \"upon inflicting damage\": crowd control chances, Blessing gains, Discord of the Second Will, gear-triggered curses) also fire on a DoT's damage (table: the \"when dealing Damage Over Time\" templates sit on it with the DoT tag). How many events does a ticking DoT raise: one per server tick, one per tick per stack, or fewer (867 listener rows carry bTriggerOnceWithSameSourceEntity, scope not traced)? And does a 1000031 line (Infiltration \"when dealing damage\") fire on every DoT value set?",
+    evidence: "provisional",
+    current: "Provisional (wiring audit W2 gap 4, 2026-11-03): each of your ticking DoTs (a modeled skill DoT, the beam's Ignite, an ailment you inflict) raises one 1000030 event per server tick (30/s), so a DoT-only build holds these lines; 1000031 lines (Infiltration on dealing damage) hold while a DoT of yours is applied. Your Minions' and the follower's damage are theirs.",
+    alternatives: [
+      { reading: "One event per DoT application, not per tick", effect: "lower rates for chance-gated crowd control on DoT-only builds" },
+      { reading: "bTriggerOnceWithSameSourceEntity fires once per DoT entity", effect: "a DoT fires each such line once per application: much lower uptime for chance-gated lines" }
+    ],
+    test: "Wilting Beam alone with \"+30% chance to inflict Paralysis, Weaken, Slow, and Blind when you or Minions deal damage\": watch the dummy's debuff bar for Blind while only the beam's DoT ticks.",
+    source: "research/wiring-audit-triggers-2026-11-03.md gap 4; src/trigger-rows.js DOT_TICKS_PER_SECOND; src/crowd-control-recipes.js; src/blessing-model.js; src/combat-states.js",
+    appliesWhen: (ctx) => !ctx.skillHits.length && ((ctx.planner.skillDots || []).some((dot) => dot?.modeled) || Object.values(ctx.ailments).some((ailment) => ailment?.modeled)) && ctx.hasText(/(?:when|upon) (?:you (?:or (?:your )?Minions )?)?(?:deal|dealing|inflicting) damage/i)
+  },
+  // W10 step 1 (2026-11-04; src/trigger-bus.js): shown only when the trigger bus drives this build's windows (TLI_TRIGGER_BUS=bus, not the default)
+  // and a hit of yours raised an event a listener heard. Step 2b (2026-11-04): the SS14 client settled the count and the flag
+  // (research/trigger-events-rea-2026-11-04.md §1, §2); what is left open is which hits the planner lands on the dummy.
+  {
+    id: "trigger-bus-hit-events",
+    title: "How often does an \"on hit\" line fire (trigger 1000033)?",
+    question: "Lines on trigger 1000033 (\"on hit\": a chance to Blind, Slow or Intimidate, Agility Blessing on Critical Strike) fire once per hit event, and the same hit raises 1000030 (\"when dealing damage\", \"for Non-Critical Strikes\"). The client raises one event per projectile, strike or area that lands on the dummy and passes its hit rule, and bTriggerOnceWithSameSourceEntity allows one success per frame per target. Does the planner land the same hits on the dummy (each Shotgun fan's reach, the Shadows, a Tangle's fan)?",
+    evidence: "game code (not tested)",
+    current: "Game code (SS14 client, research/trigger-events-rea-2026-11-04.md §1–§2; not tested in game): the trigger bus raises one 1000033 event (and one 1000030) per hit that lands, each worth 1, not the falloff-weighted hits per use: the planner's Shotgun reach (a fan ceil(n / 2) close and one at range, all of a Tangle's fan, src/shotgun-effect.js), each Shadow, each Recall (src/skill-hit-model.js landingsPerUse); the falloff scales that event's damage only. A missed or evaded hit raises nothing (the dummy never evades). A flagged row (tr.once, on 1000030 / 1000033) succeeds at most once per frame on the dummy: a failed roll leaves the frame open, so k events of a frame succeed with 1 − Π(1 − p_e); a held debuff's share does not move, a Blessing gain or a gated row's sum is capped at one per frame. Still inferred: the landing counts themselves (the fan reach is observed for Chromatic Shot only; the Tangle fan is a user statement; a Barrage's per-wave volleys read their first wave's reach), and a crit-gated row's one determination per hit group (src/crit-cache.js, open question crit-cache-events).",
+    alternatives: [
+      { reading: "Every projectile of a fan lands on a close dummy (not ceil(n / 2))", effect: "more events per cast for chance-gated lines on fans the planner reads as half landing; no figure moves while the holds are saturated" },
+      { reading: "The Shadows strike as one event between them, not one per Shadow", effect: "a Shadow Strike skill's on-hit lines hear fewer events (Erika's Thunder Spike: Blind, 2 events a use instead of the strike and 2 Shadows' 3)" }
+    ],
+    test: "One skill with several projectiles hitting the dummy and a low \"chance to inflict Slow on hit\" line: cast once at a time and count how often the dummy shows Slow per cast. About 1 − (1 − p)^(projectiles that land) = the planner's landing count.",
+    source: "research/trigger-events-rea-2026-11-04.md; research/unified-state-design-2026-11-03.md §5; research/wiring-audit-triggers-2026-11-03.md; src/trigger-bus.js; src/skill-hit-model.js landingsPerUse",
+    appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.bus?.events || 0) > 0 && (ctx.planner?.dummyRecount?.engine?.bus?.listeners || []).some((item) => (item.trigger ?? 1000033) !== 1000032 && item.events > (item.dotEvents || 0) + (item.reapEvents || 0))
+  },
+  // W10 steps 2a and 2b (2026-11-04; src/trigger-bus.js): shown only when the trigger bus drives trigger 1000030 or 1000032 on this build's windows
+  // and a DoT or a Reap of yours raised an event on the loop (TLI_TRIGGER_BUS=bus, not the default). The cadence is the client's
+  // (research/trigger-events-rea-2026-11-04.md §3); what each event carries is not traced.
+  {
+    id: "trigger-bus-dot-events",
+    title: "What do your DoT ticks' and Reaps' events (triggers 1000030, 1000032) carry?",
+    question: "On the tick engine's trigger bus each DoT record of yours raises one 1000030 event on each frame it settles, and each Reap of yours raises 1000032 and 1000030 (the SS14 client's cadence). Which tags does each event carry (the inflicting skill's stone tags and Main Skill tag, the DoT flow 5000004, the DoT state 5100309, the ailment state tags such as 5100003 Ignite, the dealt-type tag; a Reap's), and when several of your skills apply one ailment, or a skill's own Reap settles, whose skill is the event's \"this skill\" (a support clause such as Grudge on one of them)?",
+    evidence: "provisional",
+    current: "The cadence is game code (SS14 client, research/trigger-events-rea-2026-11-04.md §3; not tested in game): 1000030 is raised for every settled damage event of yours, each DoT record once per frame it settles (its stacks summed into one record), each hit and each Reap (a fixed-amount event); 1000032 once per Reap (each trigger id has one raiser; the per-Reap count is inferred from it). The events' contents are inferred (no client trace): a DoT tick carries the applying skill's event tags, 5000004, 5100309, 5001160 (dealing damage), the ailment's state tags and its dealt-type tag, never the hit tags 5000003 / 5001050 or the crit tag (a DoT never crits). A skill DoT is its own skill's; an ailment that several of your skills apply (Trauma from Scorching Beam and Nether Grasp) is each skill's in proportion to its expected successes (applications/s × chance), so a \"this skill\" row hears that share of the ticks; the follower's applications are not yours. The event happens in the share of the tick the DoT is on the dummy (a shared timer's held mass, P(any stack) for Wilt). A Reap carries 5001160 only: no skill (a \"this skill\" row never hears one, a skill's built-in Reap included), no hit, crit or DoT-flow tag (a \"when dealing Damage Over Time\" Reap does not fire from one, W2); it is an event in the share of the Reap that fired, and the follower's Reaps are the follower's. With the bus on both of your triggers, Grudge's Paralysis (\"when the supported skill deals damage\") hears its skill's DoT ticks too, where the planner's closed form counts the skill's hits only. A Blessing gained when Reaping (Focus, 235328224 on 1000032) is the bus's in bus mode, with the layers' expected stacks.",
+    alternatives: [
+      { reading: "The DoT event carries the skill of the layer that is ticking (the held stack's own applier)", effect: "a \"this skill\" row follows the held stack's applier rather than the success share (the held store knows each stack's stream)" },
+      { reading: "A DoT tick carries no skill (no \"this skill\" row hears it)", effect: "Grudge and the other support clauses hear their skill's hits only, as the planner's closed form reads them" },
+      { reading: "The ailment state tags are on the buff, not on the damage event", effect: "rows that need Ignite / Trauma / Wilt tags on the event do not fire on DoT ticks" },
+      { reading: "A skill's own Reap (a built-in Reap, The Cycle I Resist's) carries that skill", effect: "a \"this skill\" row on that skill (Grudge) hears its Reaps too: a few more events a second, no figure moves while its hold is saturated" }
+    ],
+    test: "A build whose only damage is one skill's DoT, with a support that triggers \"when the supported skill deals damage\" (Grudge on a Cursed dummy): watch whether Paralysis appears while only the DoT ticks.",
+    source: "research/trigger-events-rea-2026-11-04.md §3; research/unified-state-design-2026-11-03.md §5; research/wiring-audit-triggers-2026-11-03.md; src/trigger-bus.js; src/tick-engine.js stackPresence, settleReap",
+    appliesWhen: (ctx) => engineDrives(ctx) && ((ctx.planner?.dummyRecount?.engine?.bus?.dotEvents || 0) > 0 || (ctx.planner?.dummyRecount?.engine?.bus?.reapEvents?.you || 0) > 0)
+  },
+  // W10 step 3a (2026-11-04; src/trigger-bus.js): shown only when the trigger bus owns Blur on this build's windows (TLI_TRIGGER_BUS=bus, not the
+  // default). User decision 2026-11-04: a Blur gained from Reaps starts at 0 and builds from them; the rest is read here.
+  {
+    id: "trigger-bus-blur-from-reaps",
+    title: "Blur gained on the dummy (\"+50% chance to gain Blur when Reaping\"): how long does it last, and does a new gain refresh it?",
+    question: "When every Blur gain of a build needs the dummy (Reaping, inflicting an ailment or crowd control), the trigger bus holds Blur from 0 at engagement and builds it from those events (user decision 2026-11-04). How long does Blur last when a row adds it with the record's default duration, does gaining Blur again while it is up restart it (or only \"Refreshes Blur upon gaining Blur\" does), does the Blur Rating stay at its held value while Blur is up or fall 10 a second, and do Energy Shield starting to charge and evading count as gains that need no target?",
+    evidence: "provisional",
+    current: "Game data (SS14 client, research/use-events-rea-2026-11-04.md §3), the behaviour inferred: Blur's record (config_char_buff 220) reads -1 in the default-duration field (the field that reads 4 on Paralysis, Slow, Weaken, Taunt, Blind, Ignite, Trauma and Frostbite, 2 on Numbed and Wilt, 10 on the Blessings, Frail, Fire Infiltration, Hasten, Profane, Attack Aggression and Barrier), as on Deflection, the other rating buff: Blur has no timer of its own. It is a rating buff (class 1035) held as a 0 to 100 resource (resourceType 2, minLimit 0, maxLimit 100, a gain, a loss and a cost collector, affix 607776 at 0.25% per point), and the record's 10 sits in that class section. Read: a full Rating lost at 10 a second, so a gain row with duration -2 holds 10 s (the planner's Blur Rating 100 lost at 10 a second; the loss rate is inferred). Each gain restarts it (read as a gain refilling the Rating, inferred): Blur is held while a success of a gain row is younger than 10 s (expected values: 1 − Π of each recent event's miss). While held, the Blur lines read the planner's held Rating. Energy Shield starting to charge and evading are best-case events with no target, so either keeps the whole Blur pre-built, as the planner holds it (the Blessing rule of 2026-11-02). The loop reads Blur on the ledger lines held while Blur is active (Blur's own damage lines, Daze, Subtle Impact) on each DoT path, fixed at each application, and on hit parts; a build whose Blur is also read by a Blur Rating line condition (Chain behind the Curtain, Chaotic Ending), Phantom Trace's per-Rating clause or Stab In The Back keeps the planner's held Blur.",
+    alternatives: [
+      { reading: "Blur lasts the recipe reader's 4 s default for duration -2", effect: "Blur lapses between Reaps at a low Reap rate: Subtle Impact's +30% and the other Blur lines hold less of the time" },
+      { reading: "Gaining Blur while it is up does nothing (no refresh) without \"Refreshes Blur upon gaining Blur\"", effect: "Blur ends 10 s after its first gain and returns at the next success: a short gap every 10 s" },
+      { reading: "The Blur Rating falls 10 a second from 100 while Blur is up (the likely mechanism behind the 10 s itself, research/use-events-rea-2026-11-04.md §3)", effect: "the per-Rating lines (Valerie's Night Stroll, Folklore of Locking Fingers) read a falling Rating between gains, about half their value unless the Rating is refilled" },
+      { reading: "A second gain while Blur is up adds an amount to the Rating, or does nothing, instead of refilling it", effect: "at a low gain rate Blur ends sooner: Subtle Impact's +30% and the other Blur lines hold less of the time" },
+      { reading: "Energy Shield starting to charge needs the dummy's hits", effect: "builds whose other Blur gain is Energy Shield charging (Selena) start Blur at 0 too: their Blur lines build from the Reaps" }
+    ],
+    test: "Wilting Beam with \"+50% chance to gain Blur when Reaping\" as the only Blur gain and Subtle Impact: watch the Blur buff and its Rating from the first second on the dummy; note when it first shows, whether the Rating falls between Reaps and whether each Reap fills it back to 100.",
+    source: "config_char_buff 220 (default-duration field -1, class 1035 settings); config_affix_effect 258217104, 607776; research/use-events-rea-2026-11-04.md §3; src/trigger-bus.js; src/blur-sources.js; src/blur-effects.js",
+    appliesWhen: (ctx) => engineDrives(ctx) && Boolean(ctx.planner?.dummyRecount?.engine?.bus?.ownsBlur)
+  },
+  // W10 step 3a (2026-11-04; src/trigger-bus.js): shown only when the trigger bus holds a Reaping Duration stack on this build's windows.
+  {
+    id: "trigger-bus-reap-stacks",
+    title: "\"+X% Reaping Duration for each recent Reaping\" and Scorching Pulse: when does a Reap read its stacks?",
+    question: "On the tick engine's trigger bus each Reap adds a Reaping Duration stack (Fire Swordsman's \"for each recent Reaping\" / \"for each Reap dealt\", records 476089 and 706259; the follower's Scorching Pulse, 16649485: node 306 mode 3, 4 s, on trigger 1000032), from 0 at engagement, and every Reap settles with the stacks held on its tick. Does a Reap read the stack it adds itself, does each stack keep its own 4 s, and do the follower's Reaps the loop does not run arrive on the follower model's schedule?",
+    evidence: "provisional",
+    current: "Proven (SS14 client, research/use-events-rea-2026-11-04.md §2): a Reap never reads the stack it adds (its amount is computed at once, with Reaping Duration, and 1000032 is raised last), and a Reap raised in the Damage stage (on hit, on dealing damage or a DoT tick, on a Reap: every Reap that adds these stacks) runs after the Buff stage, so it no longer reads a stack that ends on its frame, the bus's reading; a second Reap in the same frame reads the first one's new stack (inferred: the add on 1000032 is immediate). Inferred: each stack keeps its own 4 s from its Reap (mode 3 read as the per-event stacking mode, as follower-scorching-pulse-stacks; its end inside the Buff system is inferred), held = min(cap, the share of each Reap that fired in the last 4 s); a Reap reads the stacks of the Reaps before it. Your stacks count your Reaps; Scorching Pulse's count the follower's (its Reap of your DoT where the loop runs it, at the planner's rate from one interval in, and Reaping Agony's Reaps of its own DoT on the follower model's schedule). The planner's closed form holds your stacks at their cap and Scorching Pulse at its window average; the sustained figure keeps them. The Ignite-only Reap path folds its recent-Reaping stacks into its Reaping Duration and keeps them at their cap.",
+    alternatives: [
+      { reading: "A new stack refreshes all of them", effect: "at any Reap rate above one per 4 s the stacks reach the cap" },
+      { reading: "A stack is still up on the tick its 4 s ends (the planner's best case for the follower's own Reap; right for a Reap from a continuous node in the Affix stage or from skill code in the Skill stage, which run before the Buff stage, research/use-events-rea-2026-11-04.md §2; where the follower's own Reap fires was not traced)", effect: "a follower Reaping exactly every 4 s reads its previous Scorching Pulse stack on each Reap: its Reap ×1.29 on the Wilting Beam test build (the engine ends a buff on that tick's Buff stage, before the Reap)" },
+      { reading: "The follower's first Reap lands with its first cast (0.5 s) rather than one Reap interval in", effect: "Scorching Pulse's first stack 3.5 s sooner on a 0.25 Reaps a second follower: the 5 s window higher" }
+    ],
+    test: "Fire Swordsman with a slow Reap source (one Reap every 2 s or more): watch the buff counter next to your buff bar from the first Reap; it should climb one a Reap and drop each stack 4 s after its Reap.",
+    source: "config_affix_effect 476089, 706259, 16649485 (node 306); research/use-events-rea-2026-11-04.md §2; src/trigger-bus.js; src/trigger-rows.js affixStackCarriers; src/reaping-model.js; src/follower-model.js scorchingPulseStacks",
+    appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.bus?.reapStacks || []).length > 0
+  },
+  // W10 step 3b (2026-11-04; src/trigger-bus.js): shown only when the trigger bus raises your skill uses on this build's windows (TLI_TRIGGER_BUS=bus,
+  // not the default).
+  {
+    id: "trigger-bus-use-events",
+    title: "Skill-use events on the trigger bus: what is still read rather than traced?",
+    question: "On the tick engine's trigger bus each use of yours raises the skill-use triggers by the SS14 client's rules (research/use-events-rea-2026-11-04.md §1: 1000069 at every skill instance's creation, 1000060 for a triggered instance, 1000074 at release and on each paid channel loop step, never on a triggered instance). Does each Multistrike repeat run the release step (one 1000074 per repeat), does a Tangle's cast carry the skill tag Tangle 6000089 besides the trigger routine's 6400008, and is a Combo step a use of its own?",
+    evidence: "game data (partial)",
+    current: "Proven (SS14 client, research/use-events-rea-2026-11-04.md §1): a use is triggered or not from its creation; the cast routine raises 1000069 for every instance and 1000060 for a triggered one (Activation Medium, item and affix triggers, a Tangle's or the Clockwork Core's cast); the release step and each paid channel loop step raise 1000074, which a triggered instance drops; Spell Burst's automatic casts inherit the activating cast's flag (1000074 after your press, never 1000060). The bus runs each skill's uses at the planner's rate and splits them by rate.usesBySource: a press 1000069 and 1000074; a Spell Burst automatic cast 1000069 and 1000074; a triggered use 1000069 and 1000060; a Multistrike repeat of your use 1000074 only (no new instance, so no 1000069: inferred; one 1000074 per repeat: inferred, the code that advances the repeat counter was not traced), a repeat of a triggered use nothing. A channel (a held channel, Scorching Beam, a channelled DoT-only skill) raises 1000074 on each loop step and its 1000069 once at its creation: before engagement with prebuiltSelfBuffs, else at its first use on the loop. A Tangle skill's casts (the Clockwork Core's, a Banishment: Tangle skill's) are triggered uses, every use not cast by Spell Burst, carrying the trigger routine's 6400008 and, read so, the skill tag 6000089 (inferred: \"when Tangle casts a skill\", record 1073837, needs it); the planner's rate.usesBySource still counts a Banishment: Tangle skill's casts as your presses. A DoT-only skill's cast is triggered when the planner triggers it (Wind Rhythm, Activation Medium: Terra, a DoT trigger), else yours. A use lands with the use's other on-use events, before its hits. Not raised yet: Aim's, Selves of All Realms', a curse's, an Empower's, a summon's and a Mobility skill's own casts that are no modeled hit, and the Clockwork Core's summoning cast (none of them is in the planner's use counts either). Listeners: a Blessing gained on a use keeps the whole Blessing pre-built at engagement (a gain that needs no target, user decision 2026-11-02) and is renewed by each fitting use; Willpower's stacks (record 905178944) are pre-built at engagement and, with prebuiltSelfBuffs off, built one per 1000074 of its skill; an \"if you have used a <tag> Skill recently\" window (node 306, 4 s) is held at engagement when pre-built and refreshed by each fitting 1000074; crowd control on a triggered use or a cast (Weaken 279824224) builds from 0 on the clean dummy.",
+    alternatives: [
+      { reading: "One release announces a whole Multistrike sequence (one 1000074 per sequence)", effect: "Willpower, Fortitude and the \"used recently\" windows count a Multistrike skill's sequences, not its repeats (Erika's Thunder Slash 14.2 uses/s → 3.1 events/s)" },
+      { reading: "A Tangle's cast carries 6400008 only, not the skill tag 6000089", effect: "\"Gains 1 stack(s) of Focus Blessing when Tangle casts a skill\" (record 1073837) never fires on the loop: Gemma's Focus lapses 10 s after engagement" },
+      { reading: "Each Combo step is a use of its own", effect: "a Combo skill raises one use per attack instead of one per cycle: more events, no figure moves while the gains are saturated" }
+    ],
+    test: "A Multistrike Attack with \"Gains a stack of Fortitude when using a Melee Skill\" at a low chance: count Fortitude stacks against the attacks of a sequence; Gemma with Banishment: Tangle and \"Gains 1 stack(s) of Focus Blessing when Tangle casts a skill\": watch whether Focus Blessing stays up past 10 s.",
+    source: "research/use-events-rea-2026-11-04.md §1; config_affix_effect 425305952, 103010024, 1073837, 279824224, 905178944, 437971, 556993; src/trigger-bus.js USE_SOURCE_TRIGGERS; src/skill-hit-model.js usesBySource; src/planner.js ccEvents",
+    appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.bus?.useEvents?.uses || 0) > 0
+  },
+  // W10 step 3c (2026-11-04; src/trigger-bus.js): shown only when the trigger bus raises your Minions' hits or your Regains on this build's windows
+  // (TLI_TRIGGER_BUS=bus, not the default).
+  {
+    id: "trigger-bus-minion-regain-events",
+    title: "Your Minions' hits and your Regains on the trigger bus: what is read rather than traced?",
+    question: "On the tick engine's trigger bus each landing of a Minion hit raises 1000047 (\"summon deals damage\") on you and its own 1000033 / 1000030 on the Minion, and each pool you Regain with raises 1001200 (Life) or 1001210 (Energy Shield) on a hit of yours once its Regain Interval has run. Which tags does a Minion's event carry for your rows, does each landing apply your Minions' ailments at their whole-percent chance, does the first Regain land on your first hit, and does a Regain stack (\"for each time you have Regained in the last 8s\") keep its own 8 s?",
+    evidence: "provisional",
+    current: "Game code (SS14 client, research/trigger-events-rea-2026-11-04.md §3): 1000047 is raised on the attacker's owner for each settled damage event of a unit carrying the summon component, and bTriggerOnceWithSameSourceEntity does nothing on it. Inferred: a Minion's event carries the Minion skill's stone tags, the hit and dealt-damage tags, its damage type and its crit share; a row a node 111 hands to your Minions is each Minion's own copy, so its once flag is not read as a cap on the troop's event (no stacking Minion row is on a fixture); each landing (the skill's hits per use × the Minions × the event's weight) applies a Minion ailment type the planner holds only from your Minions at its whole-percent chance (src/minion-ailment-types.js), held 1 − Π(1 − p) over the landings younger than its duration (Ignite and Trauma 4 s, Wilt 1.5 s, Numbed 2 s on Lightning hits), from the Minions' first hit. A Regain: once per pool per Regain Interval (the interval on the nearest frame, a fixed interval) on a hit of yours while the pool is missing Life or Energy Shield (the planner's regainEvents best case), the first on your first hit; a pool the planner drives from an attack-crit enabler Regains on any hit of yours at its interval (the crit gate is not checked on the loop). A Regain event carries no tag. \"Regained in the last N s\" counts each Regain as a stack of its own N s from 0 at engagement (record 15719533's count over the window); a gate-184 row (16750813) needs the Agility Blessing held on the loop at the Regain and its node 623 consumes one stack (since W10 step 4a the planner holds the Agility those spends leave: open question regain-agility-spend). A Blessing whose every gain is a Regain or your Minions' damage starts at 0 (the 2026-11-02 rule for a gain that needs the dummy). Since step 4a \"When Regaining, inflicts Paralysis on enemies within 10m\" (3829717, 4 s per Regain row) is held from the Regain events on the loop when both of your hit ids drive the bus (the planner keeps its full hold from t = 0), so a hit before the first Regain reads no Paralysis. Not moved: a Regain line's DoT bodies keep the planner's reading.",
+    alternatives: [
+      { reading: "The first Regain waits one Regain Interval after the first hit", effect: "a Regain window or stack line reaches its held value one interval later (0.5 s on Erika's Judgment line)" },
+      { reading: "\"Regained in the last N s\" stacks share one timer refreshed by each Regain", effect: "no difference while the build Regains faster than N s, which every Regain build does" },
+      { reading: "A Minion's ailment applies once per Minion use, not per landing", effect: "a Minion type with a low chance holds less of the time (Gemma's Sand Giant Wilt at 18% per landing, 8 landings a use)" }
+    ],
+    test: "Erika with Judgment's \"+1.4% additional Attack Speed for each time you have Regained in the last 8s\": watch the buff counter from the first hit on the dummy; it should read 2 at once (Life and Energy Shield) and 4 half a second later.",
+    source: "research/trigger-events-rea-2026-11-04.md §3; config_affix_effect 15719533, 16750813, 3829717, 11199117, 296793; src/trigger-bus.js; src/tick-minions.js; src/regain-model.js; src/minion-ailment-types.js",
+    appliesWhen: (ctx) => engineDrives(ctx) && ((ctx.planner?.dummyRecount?.engine?.bus?.minionEvents || 0) > 0 || Object.values(ctx.planner?.dummyRecount?.engine?.bus?.regains || {}).some((pool) => pool.regains > 0))
+  },
+  // Magmaskull's first infliction (user decision 2026-11-04 to model it; src/initial-affliction.js): shown when the line puts the opening at its value.
+  {
+    id: "magmaskull-initial-affliction",
+    title: "Magmaskull: does \"the initially inflicted Affliction\" fire again after your damage over time lapses?",
+    question: "Magmaskull's \"Changes the initially inflicted Affliction to 100\" puts the dummy at 100 on the first tick one of your DoT records is on it. If all your DoTs leave the dummy for more than 4 s, does the next one put it at 100 again?",
+    evidence: "game code (not tested)",
+    current: "Game code (SS14 client, research/oq-r1-r2-rea-2026-11-04.md R1.3; record 16012669): 1000022 is raised in the Affliction routine (0x141d4cd50, after the Damage loop's DoT, hit and apply passes) on each attacker entry with at least one active DoT record whose raised flag is clear, once; so it fires when your first DoT record lands, not at engagement (proven), and a full-Affliction Reap's removal changes only the rating and never re-fires it (proven). Applied 2026-11-04: the tick engine and the recount set the rating to the value on the first tick one of your DoT records exists, after that tick's DoT pass, once per fight. Still inferred: the attacker list is cleared only when no attacker holds an active record and buff 400 (4 s, refreshed by each new record: the inferred link) has lapsed, so a dummy whose DoTs lapse for longer than that would raise it again; the planner fires it once (no fixture lets its DoTs lapse).",
+    alternatives: [
+      { reading: "It fires again on the next DoT after your DoTs lapse and buff 400 runs out", effect: "only a build whose DoTs leave the dummy for more than 4 s: its rating jumps back to the value at the next DoT" }
+    ],
+    test: "With Magmaskull, apply one short DoT, wait 6 s with nothing on the dummy, then apply another: does the Affliction bar jump to 100 again?",
+    source: "research/oq-r1-r2-rea-2026-11-04.md R1.3; research/remaining-triggers-2026-11-04.md §2; config_affix_effect 16012669; config_char_buff 400; src/initial-affliction.js; src/tick-engine.js (Damage stage gain)",
+    appliesWhen: (ctx) => ctx.planner?.initialAffliction?.status === "In calc"
+  },
+  // W10 step 4a (2026-11-04; src/consumption-procs.js regainAgilitySpend): shown when a Regain row spends Agility on this build.
+  {
+    id: "regain-agility-spend",
+    title: "How much Agility Blessing is left when each Regain spends a stack?",
+    question: "\"Upon Regaining, consumes 1 stack of Agility Blessing to inflict Paralysis, Weaken, Slow, and Taunt\" spends a stack on every Regain that finds one. On one hit that both gains Agility and Regains, which comes first, and how many stacks does the build hold on average?",
+    evidence: "provisional",
+    current: "Game record 16750813 (one row per pool, 1001200 Life and 1001210 Shield): gate 184 needs Agility (buff 320), node 623 then spends 1, and the crowd control nodes carry the 10 m range (the spend has none). The planner holds a cycle per spending Regain: a Regain lands on the first hit event of yours (a cast's hits together, a channel's or an area's one per step or tick) at or after its Regain Interval, and spends after that hit's own Agility gain (the tick engine's order: a hit's on-hit effects, then its trigger events; inferred). When the gains per Regain do not exceed the spend, every stack is spent at the next Regain: a stack gained on the Regain's own hit at once, one gained between Regains after half a cycle on average; the gate opens on that share of the Regains. When they exceed it, the stacks stay at max but for the Regain's take until the gains between Regains refill it. At an exact balance the opening decides, and a Blessing gained only from the dummy starts at 0 (user decision 2026-11-02). Gains between Regains are read as evenly spaced; the Blessing's 10 s duration is not counted.",
+    alternatives: [
+      { reading: "The Regain's spend comes before that hit's Agility gain", effect: "a stack gained on a Regain's own hit waits a whole cycle: the 100% on-hit Ice Lances probe holds 1 stack, not 0 (+2% additional damage and +4% Cast Speed)" },
+      { reading: "The spend is not counted (the planner before step 4a)", effect: "the probe holds the full 4 stacks: sustained ×1.253" }
+    ],
+    test: "A build with this line, Life Regain and a 100% on-hit Agility gain: watch the Agility Blessing counter while hitting the dummy slower than twice a second; it should stay at 0 (or blink to 1) rather than climb to 4.",
+    source: "config_affix_effect 16750813 (gate 184, node 623); src/consumption-procs.js regainAgilitySpend; src/combat-states.js holdRows; src/trigger-bus.js gateOf",
+    appliesWhen: (ctx) => ctx.planner?.lineEffects?.state?.consumption?.regainSpend?.active === true
+  },
+  // W10 step 4a (2026-11-04; src/tick-layers.js ailmentTypeLayer): shown when the engine drives the figure and a per-type line reads the loop.
+  {
+    id: "tick-ailment-type-count",
+    title: "On the dummy's first seconds, how many ailment types does a per-type line count?",
+    question: "\"For every type of Ailment the enemy has\" lines (Warlock (6,3), Dirty Tricks, Elder Sage Girdle) and \"for each type of Elemental Ailment\" lines read the types on the dummy when the hit lands. The dummy starts clean: when does each type arrive, and how long does it stay?",
+    evidence: "provisional",
+    current: "On the tick engine each per-type line reads the types held on that tick, each body its own way (an increased, additional or penetration body per type × n, a (multiplies) body (1 + X%)^n). A type your hits or the follower keep is held from its own inflicting hit (certain) for the ailment's duration on the loop (Frostbite and Frozen 1.5 s, Numbed 2 s, the others 4 s); a type only your Minions keep counts the trigger bus's share from their landings when it drives 1000047, else the planner's uptime from t = 0. The Minions' own per-type bodies take their factor over the planner's (an increased one on the Minion skill's increased pool, read as one pool). The sustained figure keeps the planner's count. A per-type Ailment Damage body on a DoT (\"+X% additional Ailment Damage (multiplies)\", trauma-build) keeps the planner's count: the beam's ailments would need the loop's ailment runs.",
+    alternatives: [
+      { reading: "Every type counts from t = 0 (the loop before step 4a)", effect: "Gemma's 5 s window ×1.069 (×1.13 with the bus), the 60 s average ×1.006; the last 5 s unchanged" }
+    ],
+    test: "Gemma's Chromatic Shot build: compare the first two seconds of damage on a fresh dummy (before the follower's first Lightning Storm) with the same span ten seconds in.",
+    source: "src/tick-layers.js ailmentTypeLayer, minionTypeModifiers; src/line-conditions.js ailmentTypes, elementalAilmentTypes; src/tick-minions.js",
+    appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.liveLayers || []).some((layer) => layer.key === "ailmentTypes")
+  },
+  {
+    id: "follower-inflictions-not-yours",
+    title: "Do the follower's ailments and crowd control count as \"inflicted by you\"?",
+    question: "\"+X% additional damage for every type of Ailment or Crowd Control Effect inflicted recently\" (trigger 1000160) and \"Changes the base effect of Numbed\" (trigger 1000150) listen to your inflictions. Does the follower's Numbed, Paralysis or Weaken fire them?",
+    evidence: "provisional",
+    current: "No (wiring audit W2 gap 6, 2026-11-03; inferred: a unit's affixes hear its own events, as your Minions' copies do through node 111): only your own inflictions count; the follower's and your Minions' types still sit on the dummy for every state reader (\"the enemy has\", Numbed's damage taken), and a follower-only Numbed keeps the +5% base. W8 step 3 (2026-11-03): a Paralysis only your Minions' recipe rows inflict (1000047, node 111 Minion hits, a summon's interval) is theirs too, so it no longer counts for the 1000160 readers; your Paralysis Effect still scales it (as for your own; not decided).",
+    alternatives: [{ reading: "The follower's inflictions are yours for these listeners", effect: "the per-type line counts the follower's types and a follower-only Numbed takes the changed base effect" }],
+    test: "With the follower's Numbed only (no Lightning of yours) and the changed-base Numbed talent, read the dummy's Lightning damage taken on the panel or the numbers.",
+    source: "game affixes 236213264, 289590144; src/combat-states.js ownCrowdControl / ownNumbed; src/enemy-ailments.js byFollower; research/wiring-audit-triggers-2026-11-03.md gap 6",
+    appliesWhen: (ctx) => Boolean(ctx.planner.follower?.selection) && ctx.hasText(/inflicted recently \(multiplies\)|^Changes the base effect of Numbed/i)
+  },
+  {
+    id: "cc-chance-holders",
+    title: "Crowd control held from the game recipes: which events fire it and how long does it hold?",
+    question: "Every line whose record applies a crowd control buff (Paralysis 230, Slow 260, Weaken 270, Taunt 280, Blind 20060; tag 5100101) is held on the dummy at its trigger's rate × chance × duration: \"25% chance to inflict a stack of Slow on hit\", \"+X% chance for Attacks to inflict Taunt on enemies on hit\", \"+X% chance to inflict Paralysis, Weaken, Slow, and Blind when you or Minions deal damage\", \"Upon Regaining, consumes 1 stack of Agility Blessing to inflict Paralysis, Weaken, Slow, and Taunt\", \"Blinds enemies within N m when casting Dazzling Bloom\" and the Blind / Slow / Weaken chance lines. Do triggered casts fire the Weaken line (and your own casts not), does trigger 1000030 also fire on a DoT's damage, does the Taunt line need an Attack (its record has no Attack gate), and do the buffs last 4 s on the dummy?",
+    evidence: "game data (partial)",
+    current: "Game records (2026-11-03; src/crowd-control-recipes.js): the line's recipe rows name the trigger (1000033 your hit, 1000030 your damage, 1000047 your Minions' damage, 1000060 a triggered use, 1001200 / 1001210 a Regain, 1000069 a cast of a skill with the row's skill tag), the chance (gate 188), a held Blessing (gate 184: Agility 320) and the range (condition 189), and the buff with its duration (-2: the record's 4 s). The planner reads 1000060 as a triggered use (the Hair-trigger / Gemma / Rosa precedent: a player's use raises 1000074; inferred), counts your hits and your DoT's damage events for 1000030 (one per server tick while a DoT of yours ticks: open question dot-damage-trigger-events; wiring audit W2 gap 4, 2026-11-03), your Minions' hits for 1000047, the Regain rate for the Regain triggers (one Agility Blessing per Regain while the build holds one; its cost is not counted) and the board skill's casts for 1000069 (Dazzling Bloom on its cooldown). Each type holds 1 − (1 − p)^(events/s × duration) of the time, or min(1, duration × events/s) for a certain event, built from zero on the clean dummy; lines of one type combine as 1 − Π(1 − uptime). Paralysis adds its damage taken (one stack); the other types do nothing to the dummy, so they read In calc only where a crowd control counter or a Blinded / Paralyzed reader reads them. The Taunt line's record has no Attack gate, so every hit fires it (the text says Attacks).",
     alternatives: [
       { reading: "1000060 fires on your own casts only", effect: "the Weaken line follows your casts; on Gemma Chromatic Shot both hold Weaken nearly all the time" },
-      { reading: "Your Minions' hits fire the on-hit lines", effect: "more Blind / Slow uptime on Minion builds" }
+      { reading: "Trigger 1000030 fires on hits only, not on a DoT's damage", effect: "a DoT-only build holds none of the \"when you or Minions deal damage\" types (the planner holds them since 2026-11-03)" },
+      { reading: "The Taunt line needs an Attack, as its text says", effect: "no Taunt from Spell hits" }
     ],
-    test: "On the dummy, with only the Weaken line and a Tangle Skill (no player cast of it), watch the dummy's debuff bar for Weaken; with only the Blind line and Minions hitting, watch for Blind.",
-    source: "game affixes 574297, 472365504, 279824224; config_char_buff 20060, 260, 270 (tag 5100101); src/combat-states.js; Google AI Mode answers 2026-11-03 (community-level, not tested in game): Minion hits do not fire your own on-hit Blind / Slow / Weaken lines unless they name Minions (matches), support-applied Blind / Weaken / Slow count like the chance lines (supports are not holders yet), Knockback is a crowd control type but instantaneous (left out of held counts), research/google-ai-mode-answers-2026-11-03.md",
-    appliesWhen: (ctx) => ctx.hasText(/chance to (?:Blind the target on hit|inflict Slow on hit|Weaken nearby enemies when triggering any skill)/i)
+    test: "On the dummy, with only the Weaken line and a Tangle Skill (no player cast of it), watch the dummy's debuff bar for Weaken; with only the \"+30% chance to inflict Paralysis, Weaken, Slow, and Blind\" line and Minions hitting, watch for Blind; with the Taunt line and a Spell, watch for Taunt.",
+    source: "game affixes 574297, 472365504, 279824224, 103010035, 103010015, 103010080, 11199117, 16750813, 547105344; config_char_buff 230, 260, 270, 280, 20060 (tag 5100101); src/crowd-control-recipes.js, src/combat-states.js; research/wiring-audit-2026-11-03.md gap 1; Google AI Mode answers 2026-11-03 (community-level, not tested in game): support-applied Blind / Weaken / Slow count like the chance lines (supports are not holders yet), Knockback is a crowd control type but instantaneous (left out of held counts), research/google-ai-mode-answers-2026-11-03.md",
+    appliesWhen: (ctx) => (ctx.planner.lineEffects?.combat?.entries || []).some((entry) => entry.ccHolder)
+  },
+  {
+    id: "support-cc-holders",
+    title: "Crowd control from support clauses: on whose events, and how often?",
+    question: "Support stone affixes that apply a crowd control buff (Blind 276803, Exhaustion 964132928, Sluggish 861666688, Shadow Shot: Eradicate 392468032, Ice Lances: Ice Corrosion 140140992, Tidewell: Undertow 937559104, Defense Form 296793, Precise: Protection Field 462019712) now hold their type on the dummy. Do their \"this skill\" rows fire only on the supported skill's own hits / damage, does Protection Field's Minion Taunt fire at summon time and then every cooldown, does Ice Corrosion's Frost Terra condition hold whenever a Frost Terra is on the board, and does Defense Form's chance read the summoner's held Command?",
+    evidence: "game data (partial)",
+    current: "Game records (2026-11-03; src/crowd-control-recipes.js supportRecipeCrowdControl, src/combat-states.js holdRows): the clause is bound to its stone affix by game id. Rows on \"this skill\" (trigger tag 5000002) count the supported setup's own events (its hits for 1000033, its hits and its DoT's server ticks for 1000030); a row a node 111 hands to \"Minions summoned by the supported skill\" (filter target 3) counts those Minions' hits, or fires once per gate-206 cooldown while one is out (Protection Field: Taunt every 6 s within 6 m, the first at t = 0); Ice Corrosion's target state 4015180 (on a Frost Terra) holds while a Frost Terra is on the board (best case: the dummy stands on it). Two chances sit in locals the recipe table drops, read from the raw rows: Defense Form ⌊Command ÷ P1⌋ × P2 with the summoner's Command (src/minion-cores.js commandState, full Command best case), Undertow (Terra Charges a use consumes) ÷ P1 × P2. Reform's buff (313578, Weaken on gaining Barrier, trigger 1000111) is not read.",
+    alternatives: [
+      { reading: "Protection Field's first Taunt comes one cooldown after the summon", effect: "the 5 s / 20 s windows start Taunt 6 s later; the sustained figure is unchanged (4 s of every 6 s either way)" },
+      { reading: "Ice Corrosion needs the dummy inside a Frost Terra the build casts at it", effect: "Slow only while the Terra is up under the dummy" }
+    ],
+    test: "On the dummy with Shadow Shot: Eradicate on Shadow Shot, watch the dummy's debuff bar for Weaken after a hit; with Precise: Protection Field on a Spirit Magus, time the Taunt icon against the summon.",
+    source: "game affixes 276803, 964132928, 861666688, 392468032, 140140992, 937559104, 296793, 462019712 (raw rows of 296793 and 937559104 for their locals); research/wiring-audit-producers-2026-11-03.md gap 1",
+    appliesWhen: (ctx) => (ctx.planner.lineEffects?.combat?.supportCrowdControl || []).some((item) => item.status !== "Inactive")
+  },
+  {
+    id: "tenacity-gain-scorch",
+    title: "Does \"Gaining Tenacity Blessing triggers Scorch\" fire while the Tenacity stacks are full?",
+    question: "Fiery Oath's \"Gaining Tenacity Blessing triggers Lv. N Scorch. Interval: N s\" (117923520: trigger 1000110 on gaining buff stacks of Tenacity Blessing, tag 5100208) is held whenever the build gains Tenacity Blessing in the fight. With the stacks pre-built at max, does a further gain still fire the trigger (a refresh), or only a gain that adds a stack?",
+    evidence: "game data (partial)",
+    current: "Held while the Blessing model has an available Tenacity gain source (src/build-mechanics.js, src/planner.js tenacityGainState; True Flame Immolation's refill counts): a gain keeps firing at max stacks, so Scorch is recast every Interval and stays on the dummy (best case). Without a gain source it reads Inactive. Wiring audit W6a item 2, 2026-11-03.",
+    alternatives: [
+      { reading: "1000110 fires only when a stack is added", effect: "with pre-built stacks at max Scorch lands only after a stack lapses or is consumed; on a build with no consumption it is cast once at most" }
+    ],
+    test: "With Fiery Oath and one Tenacity Blessing gain line, hold Tenacity at max on the dummy and watch whether Scorch is reapplied every Interval.",
+    source: "game affix 117923520 (trigger 1000110, gate 206, node 2320 stone 1990); src/build-mechanics.js; research/wiring-audit-producers-2026-11-03.md gap 5",
+    appliesWhen: (ctx) => (ctx.planner.mechanics?.curses?.active || []).some((curse) => curse.tenacityGain)
+  },
+  {
+    id: "combat-armor-buffs",
+    title: "Do the per-Armor lines read the Armor of buffs you hold only in combat, and at what level?",
+    question: "\"Adds X - Y Physical Damage to Attacks per N Armor\", \"+X% additional damage per N Armor\" and \"… when having at least N Armor\" read your Armor attribute. In combat that includes an Aura's Armor buff (Precise: Steadfast), Iron Fortification while Aegis of Fire lasts, the follower's Fortify Line (+1600 Armor for 3 s per cast) and Thea's Prophecy of Shelter. Does the line read each of them, and does a part-time buff count at its time average?",
+    evidence: "game data (partial)",
+    current: "Wiring fix W6b (2026-11-03; src/combat-armor.js): the readers take the stat sheet's Armor + the active Auras' Armor (their effective effects), Iron Fortification while Aegis of Fire is up (best case), the follower's Fortify Line at min(1, 3 s × its casts/s), time-averaged, and Prophecy of Shelter's additional Defense while Tenacity stacks equal Focus stacks. The town stat sheet keeps its Armor.",
+    alternatives: [
+      { reading: "A part-time buff counts only while it is up (whole thresholds flicker)", effect: "\"at least N Armor\" lines hold part of the time instead of the average's all-or-nothing" },
+      { reading: "The readers take the panel Armor only", effect: "the readers lose the combat buffs again (the planner before 2026-11-03)" }
+    ],
+    test: "With Clenched Spring and Precise: Steadfast on the board, compare the Attack damage on the character panel with Steadfast on and off.",
+    source: "game records 112034, 918454528, 785760064 (readers), 15163 (101010015 / 101010326), 34792, 4791021, 773000044; research/wiring-audit-producers-2026-11-03.md item 4",
+    appliesWhen: (ctx) => Boolean(ctx.planner.lineEffects?.state?.armorReaderLive && ctx.planner.lineEffects?.state?.combatArmor?.sources?.length)
+  },
+  {
+    id: "fortitude-chance-stacks",
+    title: "How many Fortitude stacks does a chance to gain Fortitude hold?",
+    question: "\"+X% chance to gain a stack of Fortitude when using a Melee Skill\" (record 940275264: your own Melee uses, a chance gate, buff 3481). Does each stack keep its own 10 s, so the held stacks are min(max, chance × Melee uses/s × 10 s), or does a gain refresh every stack?",
+    evidence: "game data (partial)",
+    current: "Wiring fix W6b (2026-11-03; src/combat-states.js): a guaranteed gain holds the max (own buffs pre-built); a chance gain holds min(max, chance × your own Melee uses per second × 10 s), each stack read as its own 10 s (keyword 10000107), and the per-stack damage line reads that average with no whole-step floor. Triggered Melee uses gain none (trigger 1000074).",
+    alternatives: [
+      { reading: "A gain refreshes every stack's timer", effect: "the stacks reach the max at any steady chance and use rate" }
+    ],
+    test: "With only a chance line and a Melee skill used by hand about once a second, watch the Fortitude counter on the buff bar.",
+    source: "game records 940275264, 936246784, buff 3481; research/wiring-audit-fields-2026-11-03.md gap 1",
+    appliesWhen: (ctx) => (ctx.planner.modifierTexts || []).some((line) => /chance to gain a stack of Fortitude when using a Melee Skill$/i.test(String(line.text ?? "").trim()))
+  },
+  {
+    id: "eye-of-the-gale-held",
+    title: "Is Eye of the Gale's buff held while Howling Gale channels?",
+    question: "Howling Gale: Eye of the Gale (Noble) makes the Gale follow you and gives \"+X% additional Attack and Cast Speed and +20% Projectile Speed when your character is within this skill's Gale\" (record 239448224 on buff 10851). Is it on all the time while you channel, and does it reach every skill you use?",
+    evidence: "game data (partial)",
+    current: "Wiring fix W6b (2026-11-03; src/support-buff-effects.js): held while Howling Gale is an active channeled skill on the board (best case); the speed is yours, so every skill takes it, and the Projectile Speed joins the Projectile Speed conversions (Gale 114414, 101140017).",
+    alternatives: [
+      { reading: "The Gale lingers only while the channel is held, and the other skills are used between channels", effect: "a time share below 1 on every skill" }
+    ],
+    test: "Channel Howling Gale with Eye of the Gale, then check the character panel's Cast Speed and Projectile Speed inside the Gale.",
+    source: "game record 239448224, buff 10851, fields 2600273 / 2600274; research/wiring-audit-producers-2026-11-03.md item 7",
+    appliesWhen: (ctx) => (ctx.planner.activation?.setups || []).some((setup) => (setup.supports || []).some((support) => support.enabled !== false && /Eye of the Gale/.test(support.name)))
+  },
+  {
+    id: "combat-block-buffs",
+    title: "Do the Block Chance lines read Aegis of Fire's block and Rosa's Murderous Intent block in combat?",
+    question: "The block readers (\"For every +X% Attack or Spell Block Chance, +Y% additional damage\", \"… when Attack Block Chance is greater than N%\") read the Block Chance attribute. Aegis of Fire's own buff and Rosa's \"For every N Murderous Intent …, +X% Attack and Spell Block Chance\" write it while they hold. Do the readers take both?",
+    evidence: "game data (partial)",
+    current: "Wiring fix W6b (2026-11-03; src/planner.js): the readers take the panel block + Aegis of Fire's buff while it is up (best case, as the Effective HP view) + Rosa's Block Chance at the Holy Domain's held Murderous Intent (record 5623221, linear), capped at 100%.",
+    alternatives: [
+      { reading: "Aegis of Fire's block counts only at its uptime", effect: "lower readings when Aegis of Fire is not recast on expiry" }
+    ],
+    test: "With Aegis of Fire up and a per-Block-Chance damage line, compare the character panel's damage with Aegis of Fire on and off.",
+    source: "game records 468337, 965147, 5623221, 200000032; readers 391186272, 41811, 315500352, 406445504, 307383, 7378101; research/wiring-audit-producers-2026-11-03.md item 8",
+    appliesWhen: (ctx) => Boolean(ctx.planner.lineEffects?.state?.blockChance?.combat)
   },
   {
     id: "minion-ailment-types",
     title: "Do your Minions' hits put ailments on the dummy for the per-ailment-type counters and the ailment conditions?",
     question: "With \"Adds X - Y Base Ailment Damage to Minions\" and \"+X% chance for Minions to inflict Damaging Ailments\", do module and Synthetic Troop Minions' hits inflict Ignite, Trauma and Wilt on the dummy, so that \"for every type of Ailment the enemy has\" lines (Dirty Tricks, Warlock) count them and \"enemy with Trauma\" / \"against Traumatized enemies\" conditions (the follower's Armor Penetration affix) hold?",
     evidence: "game data (partial)",
-    current: "Best case, provisional (2026-11-03): each damaging ailment type you do not already keep on the dummy holds 1 − (1 − p)^(Minion hits/s × its base duration) of the time (Ignite and Trauma 4 s, Wilt 1.5 s), p the whole-percent roll of the Minion chance (82980 writes the three chance fields 2006480 / 2006510 / 2006520), and adds that share to the ailment-type count. Dirty Tricks (13332725) counts the target's states whoever inflicted them. Since 2026-11-03 these types also sit in the enemy-ailment model (src/enemy-ailments.js minionTypes), so every \"enemy with <Ailment>\" / \"<Ailment>ed enemies\" condition and state-dependent effect reads them: at their uptime where the reader settles a share (the follower's Armor shred and Physical-taken affixes, line conditions on the enemy's state, \"damage against <Ailment>ed enemies\" lines), held otherwise; \"when inflicting\" readers and your own Trauma / Wilt stack counts do not take them. No Minion ailment damage is added (open question talent-minion-ailments).",
+    current: "Best case, provisional (2026-11-03): each damaging ailment type you do not already keep on the dummy holds 1 − (1 − p)^(Minion hits/s × its base duration) of the time (Ignite and Trauma 4 s, Wilt 1.5 s), p the whole-percent roll of the Minion chance (82980 writes the three chance fields 2006480 / 2006510 / 2006520), and adds that share to the ailment-type count. Dirty Tricks (13332725) counts the target's states whoever inflicted them. Since 2026-11-03 these types also sit in the enemy-ailment model (src/enemy-ailments.js minionTypes), so every \"enemy with <Ailment>\" / \"<Ailment>ed enemies\" condition and state-dependent effect reads them: at their uptime where the reader settles a share (the follower's Armor shred and Physical-taken affixes, line conditions on the enemy's state, \"damage against <Ailment>ed enemies\" lines), held otherwise; \"when inflicting\" readers and your own Trauma / Wilt stack counts do not take them. No Minion ailment damage is added (open question talent-minion-ailments). Since 2026-11-03 (wiring audit gap 2) the Minion chance and base are read from the game recipes (node 108 on the Minions, to [3]; the Minion-tagged base attributes), so \"+X% Ignite chance for Minions\" (31953) counts, and \"+X% Numbed chance for Minions\" (976439744, field 2006530) holds Numbed 1 − (1 − p)^(Minion Lightning hits/s × 2 s) of the time (no base needed); a Numbed only your Minions keep holds its share of the Numbed stacks (10 with Lightning hits of yours, else 1). The per-type counts and the group-state readers (\"enemies with Elemental Ailments\", \"affected by Ailments\") read the one enemy-ailment list with these shares.",
     alternatives: [
       { reading: "Module and troop Minion hits apply no ailments", effect: "no added type and no Trauma on the dummy (Gemma Chromatic Shot: ×1/1.291 for the types, ×1/1.034 for Swift Shadow Raid's Armor Penetration)" }
     ],
@@ -4398,18 +4587,32 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => Boolean(ctx.planner?.minionAilmentTypes?.active)
   },
   {
+    id: "enemy-ailment-recipe-sources",
+    title: "Ailment chances and bases read from the game recipes: when do they put the ailment on the dummy?",
+    question: "\"Adds X - Y Base Elemental Ailment Damage\" (279611, an Ignite base), \"+X% Ignite Chance against enemies that haven't been Ignited\" (2214789), \"+X% chance to inflict Frostbite\" (810785 / 101080011), \"+X% Numbed chance\" (610248064, 999267584) and \"+X% chance for Critical Strikes to inflict Damaging Ailments\" (101080205): do they make the dummy Ignited / Frostbitten / Numbed for every reader, and do \"Inflicts Fire Infiltration when dealing Fire Damage to Ignited enemies\" and \"+X% Fire Penetration against Ignited enemies\" reach your Fire hits when the dummy is Ignited?",
+    evidence: "game data (partial)",
+    current: "Game records (2026-11-03, wiring audit gaps 2 and 3; src/enemy-ailments.js recipeAilmentParts): a line no wording reader counts, whose record writes an ailment chance field or a base attribute on you, counts for the enemy-ailment model: an Ignite base and chance make the dummy Ignited (the not-Ignited chance meets its gate on the first application); a Frostbite / Numbed chance holds Frostbite / Numbed while an inflicting skill deals Cold / Lightning hits (held, as every Frostbite / Numbed source); an Attack-scoped chance counts with an Attack inflicter; the Critical Strike chance adds X × each skill's crit chance to its own chance (src/ailment-applications.js; the beam's Ignite ledger does not read it). Off the Scorching Beam path, the Ignited Fire Infiltration and Fire Penetration lines hold on your Fire damage while the dummy is Ignited, by you or by your Minions at their uptime (src/combat-states.js); the beam keeps its own ledgers' reading.",
+    alternatives: [
+      { reading: "A Frostbite / Numbed chance needs the element's hits at the chance rate (not held)", effect: "lower Frostbite / Numbed uptime at a small chance" },
+      { reading: "The Ignited Fire Infiltration and Penetration lines reach only your Ignite", effect: "True Flame Immolation ×1/1.20 (the Warlord nodes on its Fire hits)" }
+    ],
+    test: "With only \"+X% chance to inflict Frostbite\" and a Cold hit skill, watch the dummy for Frostbite; with the Warlord Fire Infiltration node and an Ignited dummy, read a Fire hit with and without it.",
+    source: "game affixes 279611, 2214789, 810785, 101080011, 610248064, 999267584, 101080205, 885067264, 391400; src/enemy-ailments.js, src/ailment-applications.js, src/combat-states.js; research/wiring-audit-2026-11-03.md gaps 2 and 3",
+    appliesWhen: (ctx) => ctx.hasText(/Base Elemental Ailment Damage|haven't been Ignited|chance to inflict Frostbite|Numbed chance|chance for Critical Strikes to inflict|(?:Infiltration when dealing|Penetration against) Ignited enemies|Fire Damage to Ignited enemies/i)
+  },
+  {
     id: "support-added-tags",
     title: "Tags a support gives its skill: which readers take them?",
     question: "Supports such as Chromatic Shot: Condensed Cold (\"The supported skill gains the Cold Tag\") and Blizzard: Freezing Point (Empower) add a tag in the game's support filter. Do lines scoped to that tag (\"+X% Cold Skill Critical Strike Damage\", \"+2 Cold Skill Level\") reach the skill, and do a support's removed tags (Focused Slash: Behead removes Area) take tag-scoped lines away?",
     evidence: "game data (partial)",
-    current: "Game data (partial, 2026-11-02): the support stone filter's adds field lists the tags (Condensed Cold: Cold 6001010 and Elemental 6001180). The planner adds a fitting, enabled support's added catalog tags to the skill for every calculation reader (levels, tag-scoped lines, the hit model); Elemental has no catalog tag and is left out; removed tags are not applied in the calculation. The support filter is unchanged (it already read them).",
+    current: "Game data (partial, 2026-11-02): the support stone filter's adds field lists the tags (Condensed Cold: Cold 6001010 and Elemental 6001180). The planner adds a fitting, enabled support's added catalog tags to the skill for every calculation reader (levels, tag-scoped lines, the hit model); Elemental has no catalog tag and is left out. Since 2026-11-03 (wiring audit gap 7) the removed tags are taken away the same way (Focused Slash: Behead drops Area, so Area-scoped lines no longer reach it). The support filter is unchanged (it already read them).",
     alternatives: [
-      { reading: "Removed tags also take tag-scoped lines away", effect: "less damage on a skill with Focused Slash: Behead from Area lines" },
+      { reading: "Removed tags still let tag-scoped lines reach the skill", effect: "more damage on a skill with Focused Slash: Behead from Area lines" },
       { reading: "The added tag reaches only the support filter", effect: "the Cold Skill lines no longer reach Chromatic Shot (×0.53 on the Gemma Chromatic Shot fixture)" }
     ],
     test: "Socket Condensed Cold on Chromatic Shot and read the skill's level and Critical Strike Damage on the panel with a \"+2 Cold Skill Level\" item on and off.",
     source: "src/data/skills/support-eligibility-ss13.generated.js (addsTags / removesTags), src/support-compatibility.js supportAddedTagNames",
-    appliesWhen: (ctx) => ctx.setups.some((setup) => (setup.supportAddedTags || []).length > 0)
+    appliesWhen: (ctx) => ctx.setups.some((setup) => (setup.supportAddedTags || []).length > 0 || (setup.supportRemovedTags || []).length > 0)
   },
   {
     id: "lightchaser-main-stat-rows",

@@ -28,7 +28,7 @@
 // three instances of the affix, each with its own (delay, interval), and a node 206 gate keeps its last time on its own object (one link
 // inferred, as Transition's three instances of 943144, research/core-talents-audit-2026-10-18.md). So the set adds 3 × min(1/s, uses/s), the
 // first triggers 0.5, 1 and 1.5 s after the first such use. Provisional (open question kismet-hunters-hand-trigger): only player-made uses
-// count (trigger 1000074), a Multistrike sequence is one use, and each trigger is a full Main Skill use like the other triggers.
+// count (trigger 1000074; each Multistrike repeat of your use is a 1000074 event too, research/use-events-rea-2026-11-04.md, counted by src/planner.js), and each trigger is a full Main Skill use like the other triggers.
 import { normalizePercentageText } from "./percentage-text.js";
 import { fixedIntervalSeconds } from "./frame-snapping.js";
 

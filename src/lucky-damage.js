@@ -38,7 +38,8 @@ export const LUCKY_DAMAGE_PATTERNS = Object.freeze({
   conditionalLuckyCrit: /^(?:Lucky Critical Strikes?|Critical Strikes? (?:has|have) the Lucky [Ee]ffect) (while having at least (\d+) Fervor Rating|against Blinded enemies|on [Mm]arked enemies|at Full Life|when you have (\d+) types of Blessings)$/i,
   luckyVsNumbed: /^You and Minions deal Lucky Damage against Numbed enemies$/i,
   luckyVsIgnitedLightning: /^Lightning Damage has Luck effect against Ignited enemies$/i,
-  deflectionLucky: /^When having at least (\d+) stacks of Deflection, Damage gains Lucky$/i,
+  // Record 2271533 prints "stack(s)" (gate 185 on buff 470, label 3000090): the same line (wiring fix W6b).
+  deflectionLucky: /^When having at least (\d+) stack(?:s|\(s\)) of Deflection, Damage gains Lucky$/i,
   // The Megagon Dice row as src/gear-unique-modules.js averageRotatingBuffs writes it (one line; the four effects listed).
   randomLucky: /^Random Lucky \/ Unlucky \(each 1\/(\d+) of the time\): (.+)$/i,
   // A part-time Lucky window written by another model (the follower's Lucky Field, src/follower-model.js): "Lucky Damage (X% of the time)".

@@ -260,6 +260,10 @@ function chariotState(lines, modifierTexts, requestedConditions) {
     takenPercent: held ? round(KEYWORDS.noGuard.takenPercent * (1 + noGuardIncrease / 100) * (1 + perRatio * rawBlockRatio / 100)) : 0, seconds: Number(one("despNoGuard").match[1]) } : null;
   const why = !domainLines ? "the Holy Domain or Murderous Intent line is not in the build" : "the Trait Skill switch is off: the Holy Domain is never cast";
   const state = { domainLines, pressed, held, why, maxIntent, cost, regenPerSecond, intent: round(intent), intentAtMax, intentSwitchOn, desperation, blocks, bossCount, enemies, blockRatio, upper, invPercent, repent: repentLine ? { on: repentOn, percent: repentPercent, seconds: Number(repentLine.match[1]) } : null, noGuard };
+  // "For every N Murderous Intent you currently have, +X% Holy Domain radius and +Y% Attack and Spell Block Chance" (record 5623221: attr
+  // 4800 / 4801 from GetFemaleKnightEnergy ÷ p0 × p2, no floor): the Block Chance at the held Murderous Intent, read by the planner's
+  // combat block for the block readers (wiring fix W6b, 2026-11-03).
+  state.moonBlockChance = round(all(lines, "moonRadius").reduce((sum, { match }) => sum + state.intent / Number(match[1]) * Number(match[3]), 0));
   const switches = [], assumptions = [];
   if (domainLines && (has("divine") || has("stand") || has("despNoGuard"))) {
     if (has("divine") && !desperation) switches.push({ id: INTENT_HELD_SWITCH, label: "Holy Domain cast once and held: Murderous Intent at its max", enabled: intentSwitchOn, active: intentAtMax, summary: `Murderous Intent held at ${maxIntent} (Divine Intervention reads it)`, reason: intentSwitchOn ? (held ? "game records: the Domain has no timer and consumes no Murderous Intent (Split 569460), so it is not recast" : why) : `switched off: cast whenever ${cost} are ready, Murderous Intent averages ${round(cost / 2)}` });
@@ -382,7 +386,7 @@ function chariotRead(key, match, c) {
       return held ? inCalc(`the Holy Domain has no timer and closes only 1 s after you leave it (game records), centred on you: ${body}`, [body]) : inactive(why);
     }
     case "blockGain": return neutral(`Murderous Intent is ${c.intentAtMax ? "already held at its max" : "spent on each recast"}; Blocking only shortens the refill, which changes no dummy figure`);
-    case "moonRadius": return neutral("Holy Domain radius and Block Chance change no dummy figure (the dummy is pulled inside)");
+    case "moonRadius": return c?.blockReaderLive && c.moonBlockChance > 0 ? inCalc(`+${c.moonBlockChance}% Attack and Spell Block Chance at ${c.intent} Murderous Intent (game record 5623221, linear), read by the build's Block Chance lines; the Holy Domain radius changes no dummy figure`) : neutral("Holy Domain radius and Block Chance change no dummy figure (the dummy is pulled inside; no line on the build reads Block Chance)");
     case "stand": {
       const value = round(Math.min(Number(match[2]), Number(match[1]) * c.enemies));
       const body = `+${value}% additional damage`;
@@ -457,6 +461,10 @@ function mercuryRead(key, match, m, purged) {
 /** The Infiltration Mercury Baptism keeps on the dummy ({ type, uptime, takenPercent }) or null (src/combat-states.js reads it). */
 export const rosaInfiltration = (state) => state?.mercury?.infiltration || null;
 
+// Game code (research/oq-rosa-client-2026-11-05.md §1, SS14): the record is each hit's final per-type Elemental damage after the target
+// factors (+0xf8 at trigger 1000030; node 2243 apply 0x141bfb280), and the Baptism is a mode-4 true-damage event (0x142212010 → 0x141fbbc50)
+// that 0x141fbaa90 resolves with no target stage: the dummy's damage-taken debuffs reach it once, through the record. The hits' modelled DPS
+// already carries them, so the reading below is the client's.
 /**
  * Mercury Baptism's True Damage per second from the modeled hits (each { dps, components, setupTags, kind }): the record share × the
  * non-Channeled Attack Elemental part of their dealt damage × the Realm's time share. Returns null when it deals nothing.

@@ -1,10 +1,15 @@
 // Badges for the legendary lines the legendary audit (research/legendary-items-audit-2026-10-22.md) brought into the calculation,
 // or settled as having no dummy effect. src/line-coverage.js clauseStatus asks here first; null means "no opinion" (the shared
 // readers decide). `engines` is src/line-coverage.js plannerEngines(planner) (null without a planner: the tooltip preview).
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { GUARANTEED_CRIT_LINE, CRIT_NO_EXTRA_DAMAGE_LINE } from "./scorching-beam-critical.js";
 import { isMainRetriggerLine, HUNTERS_HAND_LINE } from "./main-skill-retriggers.js";
 import { parseChanceTriggerPair, EMPOWER_BUFF_SPECS } from "./empower-buffs.js";
 import { parseItemMainSkillLine } from "./item-main-skill-replacement.js";
+import { initialAfflictionLine, resolveInitialAffliction } from "./initial-affliction.js";
+
+// Magmaskull's first infliction, a rolled value or the catalog's "(80–100)" range (src/initial-affliction.js).
+const INITIAL_AFFLICTION_BADGE_LINE = /^Changes the initially inflicted Affliction to \(?[\d.]+(?:\s*[–-]\s*[\d.]+)?\)?$/i;
 
 const FIREBIRD_TRIGGER_LINE = /^When you have a Barrier ?, triggers the Main Skill upon taking damage, then removes Barrier\.?$/i;
 import { TRINITY_MULTIPLE_LINE, TRINITY_RANDOM_LINE, TRINITY_ONLY_ELEMENTAL_LINE, TRINITY_NO_CONVERSION_LINE } from "./trinity.js";
@@ -105,6 +110,9 @@ const NOT_ON_DUMMY = [
 const FIXED_SUPPORT_MULTIPLIER = /^Support Skill's Mana Multiplier is fixed at (\d+(?:\.\d+)?) ?%\.?$/i;
 
 /** The status of one legendary-audit line, or null when it is not one of them. */
+// The enemy-ailment model's ailment names, from the dummy's unit buff set (W8 step 2) or the model's list (TLI_BUFF_SET=off).
+const modelAilmentNames = (planner) => enemyBuffSet(planner?.mechanics?.enemyAilments)?.types() ?? (planner?.mechanics?.enemyAilments?.types || []).map((type) => type.name);
+
 export function legendaryLineStatus(text, planner, engines) {
   const line = String(text || "").replace(/\s+/g, " ").trim();
   // Item-triggered buff and hit skills (census 2026-10-26 #2 / #7; src/empower-buffs.js): "+X% chance to trigger Lv. N Bull's Rage and
@@ -126,6 +134,15 @@ export function legendaryLineStatus(text, planner, engines) {
     return "Inactive";
   }
   if (GUARANTEED_CRIT_LINE.test(line) || CRIT_NO_EXTRA_DAMAGE_LINE.test(line)) return engines ? active(engines.anyHit) : "In calc";
+  // Magmaskull's "Changes the initially inflicted Affliction to N" (user decision 2026-11-04; src/initial-affliction.js): In calc where the dummy's
+  // rating builds from 0 and the build inflicts Affliction (the opening starts at N; the steady rating is unchanged), No DPS effect under a
+  // configured rating (manual mode), Inactive without Affliction. A line the build does not carry (a preview) is judged as if equipped.
+  if (INITIAL_AFFLICTION_BADGE_LINE.test(line)) {
+    if (!planner?.activation) return "In calc";
+    const resolved = planner.initialAffliction ?? resolveInitialAffliction(initialAfflictionLine([{ text: line.replace(/\(?([\d.]+)(?:\s*[–-]\s*[\d.]+)?\)?$/, "$1") }]),
+      { afflictionOn: planner.conditions?.affliction !== false, simulated: Boolean(planner.afflictionRating), perSecond: planner.afflictionRating?.afflictionPerSecond || 0 });
+    return resolved?.status ?? "Inactive";
+  }
   // Stray Bird's Return (src/planner.js strayBirdReturn; 2026-10-28, provisional): the return and the Returning Projectile Damage lines
   // are In calc where a modeled projectile passes through the dummy and returns through it, Inactive otherwise.
   if (/^Normal Projectiles will return after reaching their max range and will hit enemies on their path again$/i.test(line) || /^\+[\d.]+ ?% additional Returning Projectile Damage(?: for Attack Horizontal Projectiles)?$/i.test(line)) {
@@ -165,14 +182,14 @@ export function legendaryLineStatus(text, planner, engines) {
   // "+1 Ignite limit for Numbed enemies" (src/planner.js numbedIgniteLimit): In calc where the dummy is Numbed and the build ignites.
   if (/^\+\d+ Ignite limit for Numbed enemies$/i.test(line)) {
     if (!planner?.mechanics) return "In calc";
-    const numbed = (planner.mechanics.enemyAilments?.types || []).some((type) => type.name === "Numbed");
+    const numbed = modelAilmentNames(planner).includes("Numbed");
     return numbed && (engines?.ignite || engines?.beam) ? "In calc" : "Inactive";
   }
   // Chaotic Ending's rolls (src/enemy-ailments.js; legendary audit batch 8): In calc while the dummy carries the ailment.
   const chaoticAilment = /^Critical Strikes are guaranteed to inflict Numbed\.?$/i.test(line) ? "Numbed" : /^Inflicts Frostbites when dealing Cold Damage$/i.test(line) ? "Frostbite" : null;
-  if (chaoticAilment) return planner?.mechanics ? active((planner.mechanics.enemyAilments?.types || []).some((type) => type.name === chaoticAilment)) : "In calc";
+  if (chaoticAilment) return planner?.mechanics ? active(modelAilmentNames(planner).includes(chaoticAilment)) : "In calc";
   // Prophet's Dirge's Frostbite (read by src/enemy-ailments.js): In calc while the dummy is Frostbitten.
-  if (/^Upon inflicting damage, inflicts Frostbite$/i.test(line)) return planner?.mechanics ? active((planner.mechanics.enemyAilments?.types || []).some((type) => type.name === "Frostbite")) : "In calc";
+  if (/^Upon inflicting damage, inflicts Frostbite$/i.test(line)) return planner?.mechanics ? active(modelAilmentNames(planner).includes("Frostbite")) : "In calc";
   // A fixed Support Mana Multiplier other than Off The Beaten Track's 95% (Lich's Dirge 88%; src/planner.js
   // fixedSupportManaMultiplier): it changes the Aura reservations, so In calc while an active Aura carries a support.
   const fixed = line.match(FIXED_SUPPORT_MULTIPLIER);
@@ -218,6 +235,9 @@ export function legendaryLineStatus(text, planner, engines) {
     const beamIgnite = keys.includes("ignite") && planner.activation?.activeNames?.has?.("Scorching Beam") && planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && planner.theoretical?.totals?.applicationChancePercent > 0;
     const modeled = beamIgnite || keys.some((key) => (planner.ailments[key]?.base?.max || 0) > 0 && (planner.ailments[key]?.dps ?? planner.ailments[key]?.sustained?.dps ?? 1) !== 0);
     if (!modeled) return "Inactive";
+    // A share of the main skill's added flat damage: with none added it adds nothing (src/ailment-model.js ailmentBaseSettle; seen 2026-11-03
+    // when Corrosion Focus's Focus buff gave the SS14 Wilting Beam build a Wilt base without any added flat damage).
+    if (flatBase && !beamIgnite && !keys.some((key) => (planner.ailments[key]?.flatAdded?.max || 0) > 0)) return "Inactive";
     if (flatBase && /^When /i.test(line)) {
       const entry = (planner.lineEffects?.lines || []).find((item) => item.text === line);
       if (entry && !entry.active) return "Inactive";

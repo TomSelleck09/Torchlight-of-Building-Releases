@@ -121,6 +121,15 @@ export function estimateNeutralBeamDelivery({ heroId, beamActive, nativeCycle = 
   };
 }
 
+// The sustained (steady-state) beam as dealt to the dummy: the delivery's total, the figure the 5 s / 20 s windows, the recount, the tick
+// engine and combineBeamAndIgnite deal (the native cycle × the Fire Resistance after penetration and Scorch relative to the 30% the 49%
+// coefficient carries, + Selena's Bard residual). The native cycle alone is the 30% calibration's source figure (research/steady-loop-check-
+// 2026-11-04.md: it read ×0.24 of the loop on selena-1, ×0.62 on the Trauma beam builds); it stays only where no delivery applies.
+export function sustainedBeamDps(delivery, nativeCycle) {
+  if (!nativeCycle) return 0;
+  return delivery?.applicable ? delivery.totalDps : nativeCycle.expectedDps || 0;
+}
+
 export function combineBeamAndIgnite(delivery, strongestOneStack, reaping = null) {
   if (!delivery?.applicable || !strongestOneStack) return null;
   const beamDps = delivery.totalDps;

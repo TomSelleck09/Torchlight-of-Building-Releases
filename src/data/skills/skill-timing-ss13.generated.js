@@ -3,7 +3,7 @@
 // the summon's NPC (chunk 10, research/minions-chunk10-2026-11-01.md): fixedTime is the header's onceFixedTime, npc the NPC's AI file, stones and birth skill.
 // The file name keeps its old SS13 label so its readers do not change.
 // useTime/cooldown are seconds at skill level 1 with no modifiers; speedType says which speed stat scales useTime;
-// cdTimes is the charge count (0 = no charge system); channel.maxStacks is the base Max Channeled Stacks; manaCost is the stone's first cost entry.
+// cdTimes is the charge count (0 = no charge system); channel.maxStacks is the base Max Channeled Stacks; manaCost is the stone's level-1 cost; manaCostByLevel its level map when the cost changes with level.
 export const skillTimingSs13 = {
  "Leap Attack": {
   "useTime": 1,
@@ -68,12 +68,26 @@ export const skillTimingSs13 = {
   "cdTimes": 0,
   "chargeCost": 1,
   "range": 200,
-  "manaCost": 20,
+  "manaCost": 10,
   "splitId": 179790,
   "checks": {
    "cast": "agree",
-   "mana": "disagree"
-  }
+   "mana": "agree"
+  },
+  "manaCostByLevel": [
+   [
+    1,
+    10
+   ],
+   [
+    21,
+    20
+   ],
+   [
+    99,
+    20
+   ]
+  ]
  },
  "Whirlwind": {
   "useTime": 1,

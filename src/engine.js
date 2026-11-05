@@ -308,8 +308,8 @@ export function calculateAuraLedger(setups, options) {
     // An item-granted Aura (src/planner.js, Lone Walker's Boots) seals no Mana or Life (user-confirmed 2026-10-13).
     const reservation = setup.granted ? { ...ownReservation, granted: true, uncappedReservedPercent: 0, reservedPercent: 0 } : ownReservation;
     const baseEffects = auraBaseEffects(setup);
-    if (setup.name === "Flame Focus" && !Number.isFinite(baseEffects.igniteChancePercent)) baseEffects.igniteChancePercent = 10;
-    if (setup.name === "Precise: Flame Focus" && !Number.isFinite(baseEffects.igniteChancePercent)) baseEffects.igniteChancePercent = 15;
+    // Flame Focus's Ignite chance is its Focus buff's (config_char_buff 10450 / 10451, read in src/focus-buffs.js since W6c 2026-11-03):
+    // a Focus buff, scaled by Focus Buff Effect, not an Aura value scaled by Aura Effect (the hand-kept 10 / 15 here are gone).
     // "<Aura> gains an additional effect: <modifiers>" (Pantheon's Elegy; src/aura-gained-effects.js): part of the Aura's buff,
     // scaled by its Aura Effect like the base values below (provisional). Clauses with an Aura stat key join baseEffects here; the
     // other clauses become derived lines in the planner (auraGainedEffectLines) scaled by the same factor.

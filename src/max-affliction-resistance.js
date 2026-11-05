@@ -14,8 +14,11 @@
 // - a window of W seconds is at max for max(0, W − t₀) / W of the time, times the cycle fraction.
 
 import { frameSnap as snapToFrames } from "./frame-snapping.js";
+import { afflictionClearCycle } from "./affliction-rating.js";
 
-export function maxAfflictionUptime({ afflictionPerSecond = 0, removers = [] } = {}) {
+// `clears`: the follower's periodic clears (src/affliction-rating.js afflictionClearCycle): the steady share at max is multiplied by the
+// cycle's share at 100 (with a remover as well, an approximation).
+export function maxAfflictionUptime({ afflictionPerSecond = 0, removers = [], clears = [] } = {}) {
   if (!(afflictionPerSecond > 0)) return { firstMaxSeconds: Infinity, steadyFraction: 0, limitingRemover: null };
   const firstMaxSeconds = 100 / afflictionPerSecond;
   let steadyFraction = 1, limitingRemover = null;
@@ -29,7 +32,9 @@ export function maxAfflictionUptime({ afflictionPerSecond = 0, removers = [] } =
     // The remover that leaves the dummy at max for the least time limits the uptime.
     if (fraction < steadyFraction) { steadyFraction = fraction; limitingRemover = { source: remover.source, fillSeconds, intervalSeconds }; }
   }
-  return { firstMaxSeconds, steadyFraction, limitingRemover };
+  const cycle = afflictionClearCycle({ afflictionPerSecond, clears });
+  if (cycle) steadyFraction *= cycle.atMaxFraction;
+  return { firstMaxSeconds, steadyFraction, limitingRemover, ...(cycle ? { clears: cycle } : {}) };
 }
 
 // Share of a window (dummy starting clean) spent at max Affliction. seconds = 0 means steady state.

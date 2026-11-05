@@ -1,3 +1,4 @@
+import { UnitBuffSet, putCombatHolds, putFollowerDebuffs, putOwnCombatHolds } from "./unit-buff-set.js";
 import { classifyDoubleDamageLine } from "./double-damage.js";
 import { classifyPassiveSupportLine } from "./passive-support-lines.js";
 import { normalizePercentageText } from "./percentage-text.js";
@@ -101,6 +102,9 @@ export function bodyReaders(body) {
   if (/^\+[\d.]+% additional Ailment Damage dealt by Channeled Skills$/i.test(body)) readers.push("ailment");
   // Extra ailment stacks (src/ailment-model.js extraStacks; Strayed Healer's Waistguard, legendary audit batch 8).
   if (/^\+?[\d.]+% chance to inflict (?:an|\d+) additional stack(?:\(s\))? of (?:Trauma|Wilt)$/i.test(body)) readers.push("ailment");
+  // An ailment's duration (src/ailment-model.js "duration" reads the derived line; "+X% Trauma Duration when inflicting Trauma on Trauma
+  // enemies", wiring audit gap 4, 2026-11-03).
+  if (/^[+-]?[\d.]+% (?:Trauma|Wilt) Duration$/i.test(body)) readers.push("ailment");
   // Spirit Magus initial Growth (src/minion-damage-model.js GROWTH_INITIAL; Friend Nemesis, legendary audit batch 7).
   if (/^\+?[\d.]+ initial Growth for Spirit Magi$/i.test(body)) readers.push("minion");
   // A share of the added flat damage as base ailment damage (src/ailment-model.js flatBase; Confusion Elemental Belt).
@@ -111,8 +115,10 @@ export function bodyReaders(body) {
 // Bodies with no damage effect on the dummy (own recovery, movement, block). A held condition whose only bodies are neutral reads
 // No DPS effect (batch 1 2026-10-27; before, Not modeled: "+20% Movement Speed when Focus Blessing reaches max stacks", "Regenerates
 // 0.56% Mana per second while Focus Blessing is active").
+// Physique (field 2010019) is the body's size, No DPS effect everywhere else (chunk 9 F19); Caged Fury's "+35% Physique" beside its +35%
+// additional damage (research/caged-fury-audit-2026-11-05.md) read Partly modeled for it.
 const NEUTRAL_REGEN = /^Regenerates [\d.]+ ?% (?:Mana|Life|Energy Shield) per second$/i;
-const NEUTRAL_BODY = /^[+-]?[\d.]+ ?% (?:Life Regain(?: and Energy Shield Regain)?|Energy Shield Regain|Movement Speed|Block Ratio|(?:Attack |Spell |Attack and Spell )?Block Chance)$/i;
+const NEUTRAL_BODY = /^[+-]?[\d.]+ ?% (?:Life Regain(?: and Energy Shield Regain)?|Energy Shield Regain|Movement Speed|Physique|Block Ratio|(?:Attack |Spell |Attack and Spell )?Block Chance)$/i;
 
 // Conditional bodies use "Attack Speed and Cast Speed" where the plain template says "Attack and Cast Speed".
 const normalizeBody = (body) => String(body).replace(/Attack Speed and Cast Speed/i, "Attack and Cast Speed");
@@ -155,7 +161,12 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
   combat.deterioration = deteriorationFrom(modifierTexts, state || {}, combat.entries);
   // The crowd control types on the dummy (Thea – Blasphemer's Mountain of Sins reads them; hero trait audit B7).
   // The dummy's debuffs (Frail, Infiltration types) for the follower's Frail / Infiltration Effect taken (src/follower-model.js AFFIX_EFFECTS).
-  if (state) { state.buffs = combat.buffs; state.regain = combat.regain; state.enemyCrowdControl = combat.crowdControl || []; state.crowdControlReaders = combat.crowdControlReaders || 0; state.ailmentReaders = combat.ailmentReaders || null; state.deteriorationActive = Boolean(combat.deterioration); state.enemyDebuffs = combat.debuffs || null; }
+  if (state) { state.buffs = combat.buffs; state.regain = combat.regain; state.enemyCrowdControl = combat.crowdControl || []; state.ownCrowdControl = combat.ownCrowdControl || null; state.enemyCrowdControlShares = combat.crowdControlShares || {}; state.crowdControlReaders = combat.crowdControlReaders || 0; state.ailmentReaders = combat.ailmentReaders || null; state.deteriorationActive = Boolean(combat.deterioration); state.enemyDebuffs = combat.debuffs || null; }
+  // The same holds on the dummy's unit buff set (W8 step 2, src/unit-buff-set.js putCombatHolds): the crowd control view, the held
+  // debuffs and the Numbed / Frostbite levels. A copy, so a badge probe's shallow state copy (src/line-coverage.js) leaves the planner's set alone.
+  if (state?.enemyBuffs instanceof UnitBuffSet) state.enemyBuffs = putCombatHolds(state.enemyBuffs.clone(), combat);
+  // Your held buffs (Aggression, Hasten, Profane, Fortitude, Fervor) on your unit buff set (W9 step 2), set where `state.buffs` is: a copy too.
+  if (state?.playerBuffs instanceof UnitBuffSet) state.playerBuffs = putOwnCombatHolds(state.playerBuffs.clone(), combat);
   lines.push(...combat.entries);
   derived.push(...combat.derived);
   // Hero trait modules (talent batch chunk 4): ammo, Spacetime Illusion, Purgatory, Crimson Tide; Not modeled with a reason
@@ -169,6 +180,8 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
   // switch (listed with the timed effects in src/planner.js bestCaseAssumptions); `follower` keeps every line's reading.
   const follower = resolveFollowerEffects(state?.follower || null, state || {});
   combat.timedEffects.push(...follower.timedEffects);
+  // The follower's debuffs on the dummy join its unit buff set (W8 step 2; entries only, their readers read the derived lines).
+  if (state?.enemyBuffs instanceof UnitBuffSet) putFollowerDebuffs(state.enemyBuffs, follower.timedEffects);
   derived.push(...follower.derived);
   // Hare's Agility: the cap of the stacks gained when exiting Stand Still, for the per-stack clause (src/line-conditions.js).
   if (state) state.exitStandStillMaxStacks = modifierTexts.reduce((max, line) => {

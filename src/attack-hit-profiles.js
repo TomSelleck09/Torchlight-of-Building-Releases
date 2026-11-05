@@ -69,8 +69,9 @@ const DEFINITIONS = [
       { key: "waves", label: "Barrage waves", groupId: 441, perUse: { perTick: 1, countAtStacks: (stacks) => 1 + stacks, falloff: { count: 6, factor: 0.7, reach: "all" } }, ...provisional(`Reference data: 1 base wave + 1 per channeled stack at the end of channeling (6 at 5 stacks), each wave 1 Projectile + \"Projectile Quantity of this skill +5\" read as 6 projectiles per wave on the single target; ${SHOTGUN_NOTE(6, 0.7, "all")} (game data: the barrage is fallen projectiles that all aim at the enemy, aimEmemyPercent 100)`) }
     ],
     notes: ["Inexhaustible Barrage: \"25% of bonuses to Projectile Speed for this skill (up to 200%) also apply to this skill's additional damage\": read with the Projectile Speed pool (src/skill-hit-model.js projectileSpeedState), provisional, open question support-projectile-speed-share. The game description (group 441) is a dev note (\"fixed 3 waves for now\"); the reference data's 1 + stacks is used. Crossbows are neither guns nor cannons in the reference data's wording and are left out of the restriction."] },
-  // Focus skills (role aura): the Focus buff itself (additional Physical / Lightning Damage, Trauma chance, Base Trauma) is
-  // the aura model's; only the triggered weapon hit is modeled here, as a trigger rate (the Corrosion Focus shape).
+  // Focus skills (role aura): the Focus buff itself (additional Physical / Lightning Damage, Trauma chance, Base Trauma) is read
+  // build-wide from its game record (src/focus-buffs.js); only the triggered weapon hit is modeled here, as a trigger rate (the
+  // Corrosion Focus shape).
   ...["Acuteness Focus", "Precise: Acuteness Focus"].map((name, index) => ({ name, delivery: "focus-strike",
     // Focus Pts economy (read by the Focus Pts supports, src/support-effects.js focusPtsConsumed / focusPtsGained; condition-unread batch 3).
     focus: { pointsPerSecond: 25 / 0.2, pointsPerUse: 100 },
@@ -165,8 +166,8 @@ const DEFINITIONS = [
   // attacks); a use with a stored attempt spends it and is a Steep Strike, replacing its Sweep Slash (reference data "When having Steep
   // Strike attempts, launches a Steep Strike"). Steep Strikes per use = min(1, repeat attacks per use ÷ 2) from the planner's
   // Multistrike sequence, or 1 inside Big Stride's window (src/skill-hit-model.js steepAttemptShare; per-attack check and the held
-// window confirmed by a user-supplied answer 2026-10-15). Blade Cluster (2026-10-15): × (1 + 2) Steep Strike hits per launched
-// Steep Strike (steepStrikeState clusterHits). The perUse values below
+// window confirmed by a user-supplied answer 2026-10-15). Blade Cluster: × (1 + 2) Steep Strike hits per launched Steep Strike only
+// with Shotgun Effect, else one (SS14 client 2026-11-04; steepStrikeState clusterHits). The perUse values below
   // are the defaults the model replaces (the steep markers): before 2026-10-14 the Steep Strike was a flat 0.1 extra hit per use.
   { name: "Thunder Slash", delivery: "attack-melee", steepStrike: { ownChancePercent: 0, fromChance: false, multistrikeIncrementPerChancePercent: 2, multistrikeAttempts: { perRepeats: 2, ownRepeatsPerUse: 0.2, source: "user-supplied mechanism (2026-10-14): 1 Steep Strike attempt per 2 Multistrikes; reference data: \"gains one Steep Strike attempt for every two Sweep Slashes\" during Multistrike" }, source: "Thunder Slash: \"This skill cannot obtain Steep Strike attempts with Steep Strike Chance\"; \"The skill's Multistrikes gain 2% additional damage increment for every +1% Steep Strike chance\"" }, weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to swords, axes, and hammers") },
     conversion: convert("Lightning"),

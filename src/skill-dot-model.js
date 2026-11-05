@@ -1,6 +1,7 @@
 import { maxAfflictionLayerWindowScale } from "./max-affliction-resistance.js";
 import { skillLevelDamageMultiplier } from "./engine.js";
 import { supportEffectsFor } from "./support-effects.js";
+import { skillTagsWithSupportChanges } from "./support-compatibility.js";
 import { expectedStrongestApplication, windowAverageStrongest } from "./ailment-model.js";
 import { classifyDamageLine, routeDamageLine } from "./damage-line-classifier.js";
 import { normalizePercentageText } from "./percentage-text.js";
@@ -186,6 +187,8 @@ export function textSkillDotReading(line, profile) {
 export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTexts = [], shared, auraEntries = [], castsPerSecond = 0, firstApplicationSeconds = null, crit = {}, aim = null, sustainedWindowSeconds = 20, extraAdditional = [], triggered = false, lucky = null }) {
   // A buff for the character's "other skills" (Ice Bond's Euphoria, src/empower-effects.js) skips the skill that grants it.
   const ownKey = setup?.setupKey || setup?.instanceId;
+  // The setup's stone-filter tag changes are the skill's own tags (wiring audit W1 gap 1; src/planner.js applies them to the sources too).
+  if (setup?.supportAddedTags?.length || setup?.supportRemovedTags?.length) profile = { ...profile, tags: [...skillTagsWithSupportChanges(profile.tags, setup)] };
   const modifierTexts = allModifierTexts.filter((line) => !line.exceptSetupKey || line.exceptSetupKey !== ownKey);
   const level = Math.max(1, Math.floor(setup?.effectiveLevel ?? profile.dot.referenceLevel));
   const perSecond = profile.dot.perSecondAtLevel(level);

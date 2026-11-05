@@ -4,6 +4,7 @@ import { copiedSlateAffixes, isCopySlate, isOverlaySlate, slateCells, SLATE_BOAR
 import { modeledCoreTalents, noDamageCoreTalents, conditionalTextCoreTalents } from "./core-talent-model.js";
 import { inverseImageEffectMultiplier, inverseImageTalentNodes, prismReplacesCore, prismCoreRule } from "./prism-crafting.js";
 import { reflectedClauseScale } from "./inverse-image-values.js";
+import { withProphecyReplacements } from "./prophecy-of-revelation.js";
 import { craftedSlateShape, judgmentAffectedSlateIds, scaleJudgmentAffix, isActiveJudgment, judgmentAffixTargetPercent, JUDGMENT_LINK_EFFECT_PERCENT } from "./slate-judgment.js";
 import { PEDIGREE_OF_GODS, isPedigreeSlate, normalizePedigreeAffixes } from "./pedigree-slots.js";
 import { divinitySlateAffixesSs13 } from "./data/divinity-slate-affixes-ss13.js";
@@ -40,15 +41,17 @@ function reflectedEffectsPerRank(description, rank, effect) {
   return totals;
 }
 
-export function resolveTalentCandidate(captured, catalogue, ranks, selections) {
+export function resolveTalentCandidate(captured, catalogue, ranks, selections, { prophecyOfRevelation = false } = {}) {
   const warnings = [], activeCores = new Set();
-  const panels = selections.selectedTrees.filter(Boolean).map((name) => {
+  const panels = selections.selectedTrees.map((name, panelIndex) => ({ name, panelIndex })).filter((item) => item.name).map(({ name, panelIndex }) => {
     const baseline = captured.panels.find((panel) => panel.name === name);
     const panel = catalogue[name];
     if (!panel) return { name, allocatedNodes: [] };
+    // Thea's Prophecy of Revelation replaces some talents of the 4th activated panel (src/prophecy-of-revelation.js).
+    const panelNodes = withProphecyReplacements(panel.nodes, name, panelIndex, prophecyOfRevelation);
     const prism=(selections.prismInventory||[]).find((item)=>item.id===selections.installedPrisms?.[name]);
-    const nodes=inverseImageTalentNodes(panel.nodes,prism,selections.installedPrismNodes?.[name]);
-    const sourceNodes=new Map(panel.nodes.map((node)=>[node.coordinate.join(","),node]));
+    const nodes=inverseImageTalentNodes(panelNodes,prism,selections.installedPrismNodes?.[name]);
+    const sourceNodes=new Map(panelNodes.map((node)=>[node.coordinate.join(","),node]));
     const scaleEffects=(effects,multiplier)=>Object.fromEntries(Object.entries(effects||{}).map(([key,value])=>[key,typeof value==="number"?value*multiplier:value]));
     const allocatedNodes = nodes.map((node) => {
       const source=sourceNodes.get(node.reflectedFrom)||node;

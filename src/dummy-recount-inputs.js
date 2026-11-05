@@ -138,6 +138,8 @@ function otherAilment({ ailment, retention, count: mainCount, critChancePercent,
   const count = uses ? Math.max(1, Math.min(MAX_RETAINED_SUCCESSES, Math.floor(uses.rate * seconds + 1e-9) + 1)) : mainCount;
   const common = {
     key: ailment.key, name: ailment.name,
+    // A skill's own DoT is no ailment for "inflicting an Ailment" Reaps (wiring audit W2 gap 2; src/dummy-recount.js triggerAilmentIndex).
+    ...(ailment.skillDot ? { skillDot: true } : {}),
     chance: clampChance(chancePercent), notActiveChance: clampChance(chancePercent),
     duration: ailment.durationSeconds,
     ...(uses ? { uses } : {}),
@@ -170,6 +172,25 @@ function otherAilment({ ailment, retention, count: mainCount, critChancePercent,
   return { ...common, stacking: "shared-timer", retainedBase, retainedLimit };
 }
 
+// What a multi-source Reap's settled seconds were built from (src/reaping-model.js calculateMultiSourceReaping), for the tick engine's trigger
+// bus (W10 step 3a, src/trigger-bus.js): a Reaping Duration stack it holds on the loop (a "recent Reaping" counter, Scorching Pulse) replaces
+// its held share in these. `basisPercent`: 100 + the summed Reaping Duration of each DoT's seconds (seconds = base × basis ÷ 100 × the
+// additional duration factor); `recent` the per-Reap stack lines the planner counts at their cap (`recentPercent` in all); `terms` the
+// Reaping Duration lines. A Reap at its own duration (the follower's) carries `ownPercent` and its Rising Heat share instead.
+function multiReapDuration(source, reaping) {
+  const own = Number.isFinite(source.ownDurationPercent);
+  const factor = own ? 1 : reaping.additionalDurationFactor ?? 1;
+  if (!(source.baseDurationSeconds > 0) || !(factor > 0)) return null;
+  const basisPercent = Object.fromEntries((source.perDot || []).filter((dot) => dot.seconds > 0).map((dot) => [dot.key, own ? 100 + source.ownDurationPercent : 100 * dot.seconds / (source.baseDurationSeconds * factor)]));
+  if (own) return { basisPercent, ownPercent: source.ownDurationPercent, risingHeatPercent: source.risingHeat?.percent ?? 0 };
+  const line = ({ source: from, text, value }) => ({ source: from, text: text ?? null, value });
+  return {
+    basisPercent, recentPercent: reaping.recentReapPercent ?? 0,
+    recent: (reaping.modifiers?.recentReap || []).map((item) => ({ ...line(item), cap: item.cap, affixId: item.recipe?.affixId ?? null })),
+    terms: (reaping.modifiers?.duration || []).map(line)
+  };
+}
+
 /**
  * Collect the recount inputs. Returns null when the main skill makes no uses.
  * @param {object} p
@@ -185,6 +206,8 @@ function otherAilment({ ailment, retention, count: mainCount, critChancePercent,
  * @param {object|null} p.channel mechanics.channel; ramps only when prebuiltSelfBuffs is false
  * @param {number} p.castsPerSecond main-skill uses (application attempts) per second
  * @param {number} p.afflictionPerSecond the build's passive Affliction per second
+ * @param {object|null} [p.initialAffliction] Magmaskull's first infliction { value, source } (src/initial-affliction.js), or null
+ * @param {object[]} [p.afflictionClears] the follower's Affliction clears (src/affliction-rating.js afflictionClearCycle), left out when empty
  * @param {number} p.critChancePercent beam critical strike chance (ailment crit mixture)
  * @param {boolean} p.prebuiltSelfBuffs own buffs built before engaging
  * @param {object} [p.options] recount options (dummy-recount.js DEFAULT_RECOUNT_OPTIONS)
@@ -196,7 +219,8 @@ function otherAilment({ ailment, retention, count: mainCount, critChancePercent,
 export function collectDummyRecountInputs({
   delivery = null, nativeCycle = null, ignite = null, igniteReaping = null, igniteFullAfflictionScale = 1, igniteAfflictionRating = 0, igniteAfflictionPerPoint,
   ailments = [], multiReaping = null, channel = null, castsPerSecond = 0, afflictionPerSecond = 0, critChancePercent = 0,
-  prebuiltSelfBuffs = true, options = {}, seconds = 60, timedDotLayers = [], skillHits = [], scheduledHits = [], firstUseSeconds = null, timedEffects = null
+  prebuiltSelfBuffs = true, options = {}, seconds = 60, timedDotLayers = [], skillHits = [], scheduledHits = [], firstUseSeconds = null, timedEffects = null,
+  initialAffliction = null, afflictionClears = []
 } = {}) {
   const rate = Number(castsPerSecond) || 0;
   if (!(rate > 0)) return null;
@@ -255,6 +279,9 @@ export function collectDummyRecountInputs({
       const maxStacks = source.trigger === "max channeled stacks" || source.trigger === "skill use";
       reaping.push({
         key: `reap:${index}`, source: source.source, trigger: maxStacks ? "dealing damage over time" : source.trigger, triggerLabel: source.trigger,
+        // The follower's Reap (src/follower-model.js followerReapSources) is its own unit's: the tick engine's trigger bus raises its events on the
+        // follower, not on you (W10 step 2b). The recount does not read it.
+        ...(source.follower ? { holder: "follower" } : {}),
         recoverySeconds: maxStacks && Number.isFinite(source.intervalSeconds) ? source.intervalSeconds : source.recoverySeconds, floorSeconds: RECOUNT_STEP_SECONDS,
         // Start-up: uses fall at u / rate (u ≥ 1); the opening channel reaches max stacks firstTriggerUses uses after the first.
         ...(maxStacks && source.usesPerSecond > 0 && Number.isFinite(source.firstTriggerUses) ? { firstReadySeconds: (1 + source.firstTriggerUses) / source.usesPerSecond } : {}),
@@ -264,7 +291,9 @@ export function collectDummyRecountInputs({
         // `trueDamage`: the Reap's settle scale (src/true-damage.js), 1 since the client keeps the "damage applied to Life" term on Reaps.
         settle: Object.fromEntries(source.perDot.map((dot) => [dot.key, { affliction: full ? settleAffliction[dot.key] ?? 1 : null, resistance: full && dot.key === "ignite" ? igniteFullResistance : null, trueDamage: dot.trueDamageScale ?? 1 }])),
         // The tick engine's read (src/tick-ailments.js): the base time and the speed, not the resolved seconds. The recount does not read it.
-        timing: { baseSeconds: source.baseRecoverySeconds, speedFactor: source.fixedRecovery ? 1 : Math.max(0.0001, (1 + multiReaping.recoveryPercent / 100) * multiReaping.additionalRecoveryFactor * (source.additionalRecoveryFactor || 1)), usesPerSecond: source.usesPerSecond ?? null, usesPerTrigger: source.usesPerTrigger ?? null, skipFirstUse: Boolean(source.cycleResist) }
+        timing: { baseSeconds: source.baseRecoverySeconds, speedFactor: source.fixedRecovery ? 1 : Math.max(0.0001, (1 + multiReaping.recoveryPercent / 100) * multiReaping.additionalRecoveryFactor * (source.additionalRecoveryFactor || 1)), usesPerSecond: source.usesPerSecond ?? null, usesPerTrigger: source.usesPerTrigger ?? null, skipFirstUse: Boolean(source.cycleResist) },
+        // The trigger bus's read (W10 step 3a, src/trigger-bus.js): the Reaping Duration these seconds were built from. The recount does not read it.
+        duration: multiReapDuration(source, multiReaping)
       });
     });
     if (multiReaping.sources.some((source) => source.trigger === "full Affliction")) assumptions.push({ id: "fullAfflictionRefill", value: 100, text: "Multi-source full-Affliction Reaps wait for a full 100-point refill; the source's Affliction removal % is not used (parity with reaping-model.js)." });
@@ -279,7 +308,10 @@ export function collectDummyRecountInputs({
         // A full-Affliction Reap settles at 100 rating and with the max-Affliction resistance reduction in full.
         settle: { ignite: full ? { affliction: source.settledAfflictionScale ?? 1, resistance: source.settledResistanceScale ?? 1, trueDamage: source.trueDamageScale ?? 1 } : { affliction: null, resistance: null, trueDamage: source.trueDamageScale ?? 1 } },
         // The tick engine's read, as above.
-        timing: { baseSeconds: source.baseRecoverySeconds, speedFactor: Math.max(0.0001, (1 + (igniteReaping.recoverySpeedPercent || 0) / 100) * (igniteReaping.additionalRecoveryFactor ?? 1)) }
+        timing: { baseSeconds: source.baseRecoverySeconds, speedFactor: Math.max(0.0001, (1 + (igniteReaping.recoverySpeedPercent || 0) / 100) * (igniteReaping.additionalRecoveryFactor ?? 1)) },
+        // The trigger bus's read, as above: the Ignite path's summed Reaping Duration (its recent-Reaping stacks are folded in at their cap and
+        // not listed apart, so the bus holds none of them here).
+        duration: source.baseDurationSeconds > 0 && source.minimum.effectiveDurationSeconds > 0 ? { basisPercent: { ignite: 100 * source.minimum.effectiveDurationSeconds / source.baseDurationSeconds }, recentPercent: 0, recent: [], terms: (igniteReaping.durationSources || []).map(({ source: from, text, value }) => ({ source: from, text: text ?? null, value })) } : null
       });
     });
     if (igniteReaping.sources.length) assumptions.push({ id: "reapTickFloor", value: "multi-source only", text: "The 1/30 s Reap floor applies to multi-source Reaping only (parity with today's Ignite Reaping)." });
@@ -315,6 +347,10 @@ export function collectDummyRecountInputs({
     channel: ramp ? { minStacks: channel.minStacks, maxStacks: channel.maxStacks, perStackSupercharge: channel.perStackSupercharge, superchargeFlat: channel.superchargeFlat } : null,
     ailments: recountAilments,
     afflictionPerSecond: Math.max(0, Number(afflictionPerSecond) || 0),
+    // Magmaskull: the first infliction's amount (src/initial-affliction.js); left out without the line.
+    ...(Number.isFinite(initialAffliction?.value) ? { initialAffliction: { value: Math.max(0, Math.min(100, initialAffliction.value)), source: initialAffliction.source || "Magmaskull" } } : {}),
+    // The follower's Affliction clears (Pain Amplification; one resource on the dummy): left out without one.
+    ...((afflictionClears || []).length ? { afflictionClears: afflictionClears.map(({ amount, gateSeconds, minRating, eventSeconds, firstSeconds, source }) => ({ amount, gateSeconds, minRating, eventSeconds, firstSeconds, source })) } : {}),
     reaping,
     options: normalized,
     assumptions

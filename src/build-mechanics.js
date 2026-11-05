@@ -1,7 +1,7 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { supportProgressionSs13 } from "./data/skills/support-progression-ss13.generated.js";
-import { skillProgressionSs13 } from "./data/skills/skill-progression-ss13.generated.js";
 import { collectEnemyAilments, ailmentStateNames } from "./enemy-ailments.js";
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { dummyTarget, dummyTargetWord } from "./dummy-target.js";
 import { allSkillEffectsSs13 } from "./data/skills/all-skill-effects-ss13.generated.js";
 import { collectAilmentTypedSources, unscopeSkillAilmentLine } from "./ailment-model.js";
@@ -18,6 +18,8 @@ import { collectAllReapingSources } from "./reaping-model.js";
 import { buildWideAilmentBlock, blockedAilmentsOf } from "./ailment-blocks.js";
 import { damageTypeRestriction, restrictionLine } from "./damage-type-restriction.js";
 import { hitPathMode, hitRecipeReader, hitLineFromFacts } from "./recipe-hit-layers.js";
+import { lineHeard } from "./trigger-rows.js";
+import { focusBuffRecordLines, focusBuffId, readsFocusBuffRecord } from "./focus-buffs.js";
 
 // Build-wide mechanics that every damage path shares: support bonuses for the
 // main skill, channeled-stack scaling, curses triggered by gear, Torment, Focus
@@ -61,16 +63,70 @@ const OTHER_ORIGINS = new Set(["gear", "kismet", "pact", "memory", "follower"]);
 // (The same list src/support-effects.js uses for the clause statuses.)
 const separatelyModeledSupports = SCORCHING_BEAM_DEDICATED_SUPPORTS;
 
-const acutenessAdditionalPhysical = (level) => {
-  const table = skillProgressionSs13["Precise: Acuteness Focus"]?.levels?.[String(Math.max(1, Math.min(40, level)))];
-  const change = table?.changes?.find(([, text]) => /additional Physical Damage/i.test(text));
-  const value = change ? Number(String(change[1]).match(/([\d.]+)%/)?.[1]) : NaN;
-  return Number.isFinite(value) ? value : 15.6;
-};
+// The Focus buffs (src/focus-buffs.js; every Focus skill since W6c, 2026-11-03): the item-granted ones ("Gains Lv. N Precise: X Focus
+// Buff", the lunar memory's "Has Lv. N Precise: X Focus") and a board Focus skill's own buff (an enabled, active setup with the Focus tag,
+// Precise forms included), one copy per buff (the higher level), and the Focus Buff Effect: "+X% Focus Buff Effect" lines summed once per
+// source and text; two different lines keep the larger (Dual Kismets list both copies; the buff applies once; the reading before
+// 2026-11-03, unchanged). The level is not capped at 40: the records' level maps run to Lv41 and hold there (src/game-skill-data.js
+// gameLevelValue, as the Auras since chunk 9).
+export function collectFocusBuffs({ setups = [], activeNames = new Set(), modifierTexts = [] }) {
+  const buffs = new Map();
+  const keep = (name, entry) => { const prior = buffs.get(name); if (!prior || entry.level > prior.level) buffs.set(name, entry); };
+  let effectPercent = 0;
+  const seenEffect = new Set();
+  for (const line of modifierTexts) {
+    const text = String(line.text ?? "");
+    let match = text.match(/^Gains Lv\. (\d+) (Precise: [\w ]+) Focus Buff$/i) || text.match(/^Has Lv\. (\d+) (Precise: [\w ]+) Focus$/i);
+    if (match) { keep(`${match[2]} Focus`, { level: Number(match[1]), source: line.source, text, board: false }); continue; }
+    match = text.match(/^\+(\d+(?:\.\d+)?)% Focus Buff Effect$/i);
+    if (match) { const key = `${line.source}|${text}`; if (!seenEffect.has(key)) { seenEffect.add(key); effectPercent += number(match[1]) * (line.multiplier ?? 1); } }
+  }
+  if (effectPercent && seenEffect.size > 1) effectPercent = Math.max(...[...seenEffect].map((key) => number(key.split("|")[1].match(/([\d.]+)%/)[1])));
+  for (const setup of setups) {
+    if (setup.enabled === false || !activeNames.has(setup.name) || !(setup.tags || []).includes("Focus") || !readsFocusBuffRecord(setup.name)) continue;
+    keep(setup.name, { level: Math.max(1, Math.round(setup.effectiveLevel || 20)), source: setup.name, board: true });
+  }
+  return { buffs, effectPercent };
+}
 
-export function collectBuildMechanics({ main, setups = [], activeNames = new Set(), modifierTexts = [], specialSupportConfigs = {}, castsPerSecond = 0, curseLimitMaximum = 1, skillCurses = [], heroMemories = { lines: [] }, targetLife = true, auraAilmentChance = null, minionsDealDamage = false, twoHandedWeapon = false, grantedSupportLevelBonus = () => 0, minionAilmentTypes = [] } = {}) {
+// Their derived lines (base ailment, chance, additional typed damage, in that order) and notes.
+function focusBuffSyntheticLines({ buffs, effectPercent }) {
+  const lines = [], notes = [];
+  const order = { base: 0, chance: 1, additional: 2 };
+  for (const [name, entry] of buffs) {
+    const record = focusBuffRecordLines(name, entry.level, effectPercent).filter((line) => line.kind in order).sort((a, b) => order[a.kind] - order[b.kind]);
+    if (!record.length) continue;
+    const label = entry.board ? `${name}: Focus buff (Lv.${entry.level}, game buff ${focusBuffId(name)})` : `${name} Buff`;
+    for (const line of record) lines.push({ text: line.text, source: line.kind === "additional" && !entry.board ? `${label} (+${effectPercent}% Focus Buff Effect)` : label, origin: "derived", multiplier: 1, focusBuff: name });
+    notes.push(`${entry.board ? name : `${name} Buff`} Lv.${entry.level} (game buff ${focusBuffId(name)}): ${record.map((line) => line.text).join(", ")}; the base is not scaled by Focus Buff Effect${effectPercent ? `, the rest by +${effectPercent}%` : ""}.`);
+  }
+  // Flame Focus's buff (either form): its base Ignite and Ignite chance as the Scorching Beam Ignite ledger's build-wide entries
+  // (src/theoretical-sources.js), which every Ignite applier starts from (src/ailment-applications.js igniteGlobalChanceSources and the
+  // ledger's base). Before W6c these were hand-kept (base 2, chance 10 / 15 scaled by Aura Effect).
+  const ignite = { base: [], chance: [] };
+  for (const line of lines) {
+    let match = line.text.match(/^Adds ([\d.]+) - ([\d.]+) Base Ignite Damage$/i);
+    if (match) { ignite.base.push({ source: line.source, text: line.text, min: number(match[1]), max: number(match[2]) }); continue; }
+    match = line.text.match(/^\+([\d.]+)% chance to Ignite targets$/i);
+    if (match) ignite.chance.push({ source: line.source, text: line.text, value: number(match[1]) });
+  }
+  return { lines, notes, ignite };
+}
+
+export function collectBuildMechanics({ main, setups = [], activeNames = new Set(), modifierTexts = [], specialSupportConfigs = {}, castsPerSecond = 0, curseLimitMaximum = 1, skillCurses = [], heroMemories = { lines: [] }, targetLife = true, auraAilmentChance = null, minionsDealDamage = false, twoHandedWeapon = false, grantedSupportLevelBonus = () => 0, minionAilmentTypes = [], eventSources = null, tenacityGain = null, dealtTypesBySetup = null } = {}) {
   const recognized = new Map();
   const mark = (line, note) => recognized.set(normalizePercentageText(line.text), note);
+  // A gear-triggered curse's own event (wiring audit W2 gap 3, 2026-11-03): its record's trigger rows (src/trigger-rows.js) against
+  // the build's sources `eventSources` ({ hit: your hits, dot: your DoT, minion: your Minions' damage }; null: not known, held as before).
+  // Without a recipe the wording decides ("on hit" your hits, "upon dealing / inflicting damage" your hits or DoT, "you or your Minions"
+  // either). Returns the reason it never fires, or null.
+  const curseEventMissing = (line, text) => {
+    if (!eventSources || /^Nearby enemies within/i.test(text)) return null;
+    const heard = lineHeard(line, eventSources);
+    const byText = /on hit\b/i.test(text) ? Boolean(eventSources.hit) : /you or your Minions/i.test(text) ? Boolean(eventSources.hit || eventSources.dot || eventSources.minion) : Boolean(eventSources.hit || eventSources.dot);
+    if (heard ?? byText) return null;
+    return /on hit\b/i.test(text) ? `no hit of yours triggers it (game trigger 1000033: your hits${eventSources.minion ? "; your Minions' hits are theirs" : ""})` : `no damage of yours triggers it (game trigger 1000030: your hits or damage over time${eventSources.minion && !/you or your Minions/i.test(text) ? "; your Minions' damage is theirs" : ""})`;
+  };
   const hit = [], igniteIncreased = [], igniteAdditional = [], igniteCombatAdditional = [], combatTaken = [], synthetic = [], notes = [], channeledOwn = [];
   const pushAll = (entry, { hitBucket, igniteBucket }) => {
     if (hitBucket) hit.push({ source: entry.source, bucket: hitBucket, percent: entry.value, text: entry.text });
@@ -218,13 +274,19 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   const scopedDamagingChance = igniteScopedLines.filter((line) => /^[+-]?[\d.]+% chance to inflict Damaging Ailments$/i.test(line.text))
     .map((line) => ({ source: line.source, text: line.text, value: number(line.text.match(/^([+-]?[\d.]+)%/)[1]) }));
 
+  // The Focus buffs (src/focus-buffs.js; game records 10440–10481): a board Focus skill's own buff and the item-granted Precise ones.
+  // Read here, before the dummy's ailments: their base Trauma / Wilt / Ignite is the build's (2026-11-03; Flame Focus's Ignite since W6c).
+  const focus = collectFocusBuffs({ setups, activeNames, modifierTexts });
+  const focusLines = focusBuffSyntheticLines(focus);
+
   // Ailments on the target (damaging ones from base sources; Frostbite/Numbed from supports).
   // Other hitting skills (generic spell hits, src/skill-damage-profiles.js) apply hit ailments too (src/ailment-applications.js).
   const applierNames = setups.filter((setup) => setup.enabled !== false && setup.name !== main?.name && inferDamageProfile(setup)?.canInflictHitAilments === true).map((setup) => setup.name);
   // Build-wide "Cannot inflict Ignite" (src/ailment-blocks.js): the beam's Ignite ledger gets no application chance.
   const igniteBlocked = buildWideAilmentBlock(modifierTexts, "Ignite");
   for (const line of modifierTexts) if (blockedAilmentsOf(line.text).length) mark(line, `Cannot inflict ${blockedAilmentsOf(line.text).join(", ")} (every skill; src/ailment-blocks.js)`);
-  const enemyAilments = collectEnemyAilments({ setups, activeNames, modifierTexts: [...modifierTexts, ...allScopedAilmentLines], mainName: main?.name, applierNames, auraChance: auraAilmentChance, minionTypes: minionAilmentTypes });
+  // A re-collect sees the buff's lines already pushed into modifierTexts (src/planner.js): they count once.
+  const enemyAilments = collectEnemyAilments({ setups, activeNames, modifierTexts: [...modifierTexts.filter((line) => !line.focusBuff), ...allScopedAilmentLines, ...focusLines.lines], mainName: main?.name, applierNames, auraChance: auraAilmentChance, minionTypes: minionAilmentTypes, ownHits: eventSources ? Boolean(eventSources.hit) : null, ownDamage: eventSources ? Boolean(eventSources.hit || eventSources.dot) : null, dealtBySetup: dealtTypesBySetup, scopedLinesFor: collectSkillScopedAilmentLines });
   for (const line of modifierTexts) {
     // "to Elites" reads like "against Elites" (Ethereal Prism Crushing Blast "+30% additional damage to Elites", game affix
     // 200000062: All Damage additional 30 with the Elite condition; core audit batch B1).
@@ -235,11 +297,13 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     const targetFlag = dummyTargetWord(word);
     const state = targetFlag ? null : word ? ailmentStateNames[word] : "any";
     if (word && !targetFlag && !state) continue;
-    const present = targetFlag ? dummyTarget[targetFlag] === true : state === "any" ? enemyAilments.count > 0 : enemyAilments.has(state);
+    // Ignited / Traumatized and any Ailment from the dummy's unit buff set (src/unit-buff-set.js, W8 step 1); null with TLI_BUFF_SET=off.
+    const buffs = !targetFlag && ["any", "Ignite", "Trauma"].includes(state) ? enemyBuffSet(enemyAilments) : null;
+    const present = targetFlag ? dummyTarget[targetFlag] === true : buffs ? (state === "any" ? buffs.count() > 0 : buffs.holds(state)) : state === "any" ? enemyAilments.count > 0 : enemyAilments.has(state);
     if (!present) { mark(line, `Inactive: target is not ${word || "affected by an Ailment"}`); continue; }
     // An ailment only your Minions keep on the dummy (src/minion-ailment-types.js; provisional) holds its uptime share: the line's
     // value × that share (one increased or additional term, so the time average is linear in it).
-    const minionShare = targetFlag ? 1 : state === "any" ? (enemyAilments.types.every((type) => type.byMinions) ? 1 - enemyAilments.types.reduce((off, type) => off * (1 - type.uptime), 1) : 1)
+    const minionShare = targetFlag ? 1 : buffs ? buffs.share(state === "any" ? "Ailment" : state) : state === "any" ? (enemyAilments.types.every((type) => type.byMinions) ? 1 - enemyAilments.types.reduce((off, type) => off * (1 - type.uptime), 1) : 1)
       : (enemyAilments.types.find((type) => type.name === state)?.byMinions ? enemyAilments.types.find((type) => type.name === state).uptime : 1);
     const value = number(match[1]) * (line.multiplier ?? 1) * minionShare;
     const targetLabel = targetFlag ? `${targetFlag === "boss" ? "a Boss" : "an Elite"} (the dummy counts as a Boss)` : "";
@@ -251,9 +315,6 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   let curseEffectPercent = 0;
   const gearCurses = [];
   const grantedSupports = [];
-  const focusBuffs = new Map();
-  let focusEffectPercent = 0;
-  const seenFocusEffect = new Set();
   let tormentLines = 0;
   // Gear-pact batch G8: keys the talent / slate totals read ("+X% additional damage applied to Life") or only the
   // Affliction core supplies ("+X% additional Affliction effect") are also read from gear, kismets, pacts and memories,
@@ -343,8 +404,16 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     // batch chunk 2: crafted wordings that read nothing before).
     // Nether King Ultimate nodes (slates audit 2026-10-22): "Triggers Lv. 1 Timid Curse when you or your Minions deal damage to enemies.
     // Cooldown: 0.2 s" is the same trigger from your own damage.
+    // Wiring audit W2 gap 3 (2026-11-03): a triggered curse is cast only when its record's trigger fires (`curseEventMissing`): 1000033
+    // "on hit" your hits, 1000030 "upon dealing damage" your hits or DoT, a 1000047 row your Minions' damage (the "you or your Minions" pair).
+    // Before, every such curse was held whatever the build dealt (Vulnerability on a Minion-only build ×1.39).
     match = text.match(/^(?:Triggers? Lv\. (\d+) ([\w']+(?: [\w']+)*?) Curse (?:upon dealing damage to enemies|on hit|when you or your Minions deal damage to enemies)|Nearby enemies within \d+ ?m are cursed by Lv\. (\d+) ([\w']+(?: [\w']+)*))/i);
-    if (match) { gearCurses.push({ name: match[2] || match[4], level: Number(match[1] || match[3]), source: line.source, text, origin: line.origin, slot: line.slot }); continue; }
+    if (match) {
+      const missing = curseEventMissing(line, text);
+      if (missing) { mark(line, `Inactive: ${missing}`); continue; }
+      gearCurses.push({ name: match[2] || match[4], level: Number(match[1] || match[3]), source: line.source, text, origin: line.origin, slot: line.slot });
+      continue;
+    }
     // Pantheon's Elegy: Onslaughter's Dirge (legendary audit batch 1, 2026-10-22): "Enemies within 15m are cursed by Lv. 25 Timid Curse
     // while you are wielding a Two-Handed weapon": a gear curse while a Two-Handed weapon is held (the dummy stands within 10 m).
     match = text.match(/^Enemies within \d+ ?m are cursed by Lv\. (\d+) ([\w']+(?: [\w']+)*?)(?: Curse)? while you are wielding a Two-Handed weapon$/i);
@@ -374,12 +443,24 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     // 0.2s" names the curse skill without the word "Curse" (game affix 482924864 casts the Corruption Curse, stone 2030). Read
     // as a gear-triggered curse when the name is a curse the planner knows; only the Lv.20 value is sourced (+39%; provisional).
     match = text.match(/^Triggers Lv\. (\d+) ([\w']+(?: [\w']+)*?) upon inflicting damage(?:\. Cooldown: [\d.]+ ?s)?$/i);
-    if (match && (curseTakenEffect(match[2]) || NO_DUMMY_EFFECT_CURSES[match[2]] || ["Scorch", "Entangled Pain"].includes(match[2]))) { gearCurses.push({ name: match[2], level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot }); continue; }
-    // Fiery Oath (chunk 12; game record 117923520: trigger 1000110 on Tenacity Blessing, cooldown P2, casts Scorch, stone 1990): a
-    // gear-triggered curse while the build has a Tenacity Blessing gain line (the Blessing model comes later; read from the words).
+    if (match && (curseTakenEffect(match[2]) || NO_DUMMY_EFFECT_CURSES[match[2]] || ["Scorch", "Entangled Pain"].includes(match[2]))) {
+      const missing = curseEventMissing(line, text);
+      if (missing) { mark(line, `Inactive: ${missing}`); continue; }
+      gearCurses.push({ name: match[2], level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot });
+      continue;
+    }
+    // Fiery Oath (chunk 12; game record 117923520: trigger 1000110 "on gaining buff stacks" with tag 5100208 Tenacity Blessing, gate 206
+    // cooldown P2, node 2320 casts Scorch (stone 1990) on enemies within 10 m): a gear-triggered curse while the build gains Tenacity
+    // Blessing stacks in the fight. Wiring audit W6a item 2 (2026-11-03): the gain is the Blessing model's (`tenacityGain`, src/planner.js:
+    // any available Tenacity gain source, True Flame Immolation's refill included; "Own N additional stacks" are held, not gained), not a
+    // wording match, which missed gains worded otherwise and left the line unread with no reason. Best case (provisional, open question
+    // tenacity-gain-scorch): a gain source keeps firing at max stacks (each gain refreshes the stacks), so Scorch is recast every Interval
+    // and held; the record does not say whether 1000110 fires when the gain adds no stack. Without a gain source it is Inactive.
     match = text.match(/^Gaining Tenacity Blessing triggers Lv\. (\d+) Scorch ?\. Interval: [\d.]+ ?s$/i);
     if (match) {
-      if (modifierTexts.some((other) => other !== line && /\bgains? .*Tenacity Blessing|Tenacity Blessing when/i.test(String(other.text)))) gearCurses.push({ name: "Scorch", level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot });
+      const gains = tenacityGain ? tenacityGain.gains : modifierTexts.some((other) => other !== line && /\bgains? .*Tenacity Blessing|Tenacity Blessing when/i.test(String(other.text)));
+      if (gains) gearCurses.push({ name: "Scorch", level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot, tenacityGain: true });
+      else mark(line, `Inactive: the build gains no Tenacity Blessing stacks in the fight (game trigger 1000110 on gaining Tenacity Blessing${tenacityGain?.reason ? `; ${tenacityGain.reason}` : ""})`);
       continue;
     }
     if (/^Gains a stack of Torment when dealing Damage Over Time$/i.test(text)) { tormentLines++; mark(line, "Torment · 3 stacks × 5% additional DoT"); continue; }
@@ -390,14 +471,12 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
       else mark(line, "Inactive: no Reaping source");
       continue;
     }
-    match = text.match(/^Gains Lv\. (\d+) (Precise: [\w ]+) Focus Buff$/i);
-    // Only Precise: Acuteness's Focus Buff has a model below; other Focus Buffs (e.g. Precise: Corrosion) read Not modeled
-    // instead of In calc (gear-pact batch G6).
-    // Residual batch: "Has Lv. 20 Precise: Corrosion Focus" (lunar memory) is the same Focus Buff.
-    if (!match) { const has = text.match(/^Has Lv\. (\d+) (Precise: [\w ]+) Focus$/i); if (has) match = has; }
-    if (match) { focusBuffs.set(match[2], { level: Number(match[1]), source: line.source, text }); mark(line, ["Precise: Acuteness", "Precise: Corrosion"].includes(match[2]) ? "Focus buff" : `Not modeled: the ${match[2]} Focus Buff has no model (only Precise: Acuteness and Precise: Corrosion)`); continue; }
-    match = text.match(/^\+(\d+(?:\.\d+)?)% Focus Buff Effect$/i);
-    if (match) { const key = `${line.source}|${text}`; if (!seenFocusEffect.has(key)) { seenFocusEffect.add(key); focusEffectPercent += number(match[1]) * scale; } mark(line, "Focus Buff Effect"); }
+    // The Focus buffs and Focus Buff Effect are read above (collectFocusBuffs); here only marked. Every Focus buff with a game record
+    // is read (src/focus-buffs.js, W6c 2026-11-03); one without reads Not modeled instead of In calc (gear-pact batch G6). Residual
+    // batch: "Has Lv. 20 Precise: Corrosion Focus" (lunar memory) is the same Focus Buff.
+    match = text.match(/^Gains Lv\. (\d+) (Precise: [\w ]+) Focus Buff$/i) || text.match(/^Has Lv\. (\d+) (Precise: [\w ]+) Focus$/i);
+    if (match) { mark(line, readsFocusBuffRecord(`${match[2]} Focus`) ? "Focus buff" : `Not modeled: the ${match[2]} Focus Buff has no game record in the planner's tables`); continue; }
+    if (/^\+(\d+(?:\.\d+)?)% Focus Buff Effect$/i.test(text)) mark(line, "Focus Buff Effect");
   }
   // Intelligence: gear and hero-memory flat Intelligence are already pooled by the
   // ledgers; talents, slates, and pacts add flat points, and "% Intelligence" scales the total.
@@ -440,9 +519,6 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     intelligence.sources.push({ source: "Main-stat bonus removed", text: "The base main attribute no longer additionally increases damage (user-confirmed 2026-10-14)" });
     for (const line of modifierTexts) if (/^The base main (?:attribute|stat) no longer additionally increases damage/i.test(line.text)) mark(line, "Main-stat bonus removed (every skill and stat; user-confirmed 2026-10-14)");
   }
-
-  // Dual Kismets list both copies; the buff applies once.
-  if (focusEffectPercent && seenFocusEffect.size > 1) focusEffectPercent = Math.max(...[...seenFocusEffect].map((key) => number(key.split("|")[1].match(/([\d.]+)%/)[1])));
 
   // "+X% Torment Effect" (prism "Gains a stack of Torment when dealing Damage Over Time; +100% Torment Effect"): scales the
   // buff's value, (1 + Σ%) like the planner's other "Effect" pools (frost-terra audit 2026-10-13; before, it was not read).
@@ -489,33 +565,14 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     mark(line, `Torment's added effect: +${value}% additional Reaping Recovery Speed (${how}; game recipe 6414413)`);
   }
 
-  const acuteness = focusBuffs.get("Precise: Acuteness");
-  if (acuteness) {
-    const effect = 1 + focusEffectPercent / 100;
-    const additional = acutenessAdditionalPhysical(acuteness.level) * effect;
-    synthetic.push(
-      { text: "Adds 5 - 5 Base Trauma Damage", source: "Precise: Acuteness Focus Buff", origin: "derived", multiplier: 1 },
-      { text: `+${round(15 * effect)}% chance to inflict Trauma`, source: "Precise: Acuteness Focus Buff", origin: "derived", multiplier: 1 },
-      { text: `+${round(additional)}% additional Physical Damage`, source: `Precise: Acuteness Focus Buff (+${focusEffectPercent}% Focus Buff Effect)`, origin: "derived", multiplier: 1 }
-    );
-    notes.push(`Precise: Acuteness Lv.${acuteness.level}: ${round(additional)}% additional Physical Damage; base Trauma is not scaled by Focus Buff Effect (matches the in-game 885 base).`);
-  }
-
-  // Precise: Corrosion Focus Buff (residual batch), read like Acuteness above (provisional analogy: Acuteness matches the in-game
-  // panel): reference data skill text "15.6% additional Erosion Damage, +15% Wilt chance, Adds 2 - 2 Base Wilt Damage" at Lv.20, the
-  // additional Erosion Damage from the level table; the base Wilt is not scaled by Focus Buff Effect, the rest is.
-  const corrosion = focusBuffs.get("Precise: Corrosion");
-  if (corrosion) {
-    const effect = 1 + focusEffectPercent / 100;
-    let percent = 15.6;
-    for (let lv = 1; lv <= Math.max(1, Math.min(40, corrosion.level)); lv++) for (const [, change] of skillProgressionSs13["Precise: Corrosion Focus"]?.levels?.[String(lv)]?.changes || []) { const value = String(change).match(/^\+?([\d.]+)% additional Erosion Damage$/i); if (value) percent = Number(value[1]); }
-    synthetic.push(
-      { text: "Adds 2 - 2 Base Wilt Damage", source: "Precise: Corrosion Focus Buff", origin: "derived", multiplier: 1 },
-      { text: `+${round(15 * effect)}% Wilt chance`, source: "Precise: Corrosion Focus Buff", origin: "derived", multiplier: 1 },
-      { text: `+${round(percent * effect)}% additional Erosion Damage`, source: `Precise: Corrosion Focus Buff (+${focusEffectPercent}% Focus Buff Effect)`, origin: "derived", multiplier: 1 }
-    );
-    notes.push(`Precise: Corrosion Lv.${corrosion.level}: ${round(percent * effect)}% additional Erosion Damage, Wilt chance and base Wilt (read like Precise: Acuteness; provisional).`);
-  }
+  // The Focus buffs (read above, collectFocusBuffs; values from their game records, src/focus-buffs.js): the item-granted Precise
+  // Focus Buffs and a board Focus skill (either form). The base ailment is not scaled by Focus Buff Effect (its recipe has no `scale`;
+  // the trauma fixture's in-game base 885 agrees), the chance and the additional damage are. Before 2026-11-03 the item-granted ones
+  // were hand-kept numbers (the same at Lv.20) and a board Focus skill gave only its additional damage (src/planner.js, from the reference data
+  // level table; the Precise forms nothing), so the user's SS14 Wilting Beam build read Base Wilt 0 against the panel's 2. Flame Focus's
+  // Ignite base and chance also reach the Ignite ledger (`ignite.focusBuff` below).
+  synthetic.push(...focusLines.lines);
+  notes.push(...focusLines.notes);
 
   // Fortitude (Warrior Legendary Medium / Pedigree of Gods node) is only gained by using a Melee
   // Skill; with no active Melee skill the line does nothing. With one it stays unmodeled.
@@ -697,6 +754,9 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   const dealtTypes = new Set(["Fire"]);
   for (const setup of setups) {
     if (!activeNames.has(setup.name)) continue;
+    // A modeled hit's measured types (the hit pass, 2026-11-05) replace its tag guess.
+    const measured = dealtTypesBySetup?.get?.(setup.setupKey);
+    if (measured) { for (const type of measured) dealtTypes.add(type); continue; }
     for (const tag of setup.tags || []) { const type = ["Physical", "Fire", "Cold", "Lightning", "Erosion"].find((item) => item.toLowerCase() === String(tag).toLowerCase()); if (type) dealtTypes.add(type); }
   }
   const ailmentBaseLines = [...modifierTexts, ...scopedAilmentLines];
@@ -785,14 +845,15 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     channel: { baseMax: BASE_MAX_CHANNELED_STACKS, baseMin: BASE_MIN_CHANNELED_STACKS, maxStacks, minStacks, startStacks, excessStacks, additionalMaxStacks, stackSources, lineMaxStacks, lineMinStacks, supportMaxStacks, supportMinStacks, perStackSupercharge, superchargeFlat },
     channelRamp,
     curses: { effectPercent: curseEffectPercent, gearScorch, gear: gearCurses, active: activeGearCurses, overLimitCurses, duplicates: duplicateGearCurses, notApplied: notAppliedCurses, overLimitWarning: overLimitCurses.length ? overLimitWarning : "", limit: curseLimitMaximum, skill: skillCurses, cast: cursesCast, overLimit: curseOverLimit },
-    enemyAilments: { types: enemyAilments.types, count: enemyAilments.count },
+    // `set`: the dummy's unit buff set (src/unit-buff-set.js, W8 step 1), the readers of the Ignited / Traumatized states and the counts.
+    enemyAilments: { types: enemyAilments.types, count: enemyAilments.count, set: enemyAilments.set },
     intelligence,
     hit,
     damageToLife,
     penetration,
     generic,
     grantedSupports,
-    ignite: { increased: igniteIncreased, additional: igniteAdditional, combatAdditional: igniteCombatAdditional, additionalAfflictionEffect, afflictionEffect: derivedAfflictionEffect, additionalReapingRecovery: tormentAddedRecovery, maxAfflictionResistance, grantedSupports, combatTaken, penetration: ignitePenetration, base: igniteScoped.base, chance: [...igniteScoped.chance, ...scopedDamagingChance], igniteBlocked },
+    ignite: { increased: igniteIncreased, additional: igniteAdditional, combatAdditional: igniteCombatAdditional, additionalAfflictionEffect, afflictionEffect: derivedAfflictionEffect, additionalReapingRecovery: tormentAddedRecovery, maxAfflictionResistance, grantedSupports, combatTaken, penetration: ignitePenetration, base: igniteScoped.base, chance: [...igniteScoped.chance, ...scopedDamagingChance], igniteBlocked, focusBuff: focusLines.ignite },
     scopedAilmentLines,
     syntheticTexts: synthetic,
     recognized,
@@ -851,7 +912,10 @@ export function collectSkillScopedAilmentLines(main) {
     }
   };
   const split = (text) => String(text || "").split(/\r?\n/).map((part) => part.trim()).filter(Boolean);
-  for (const text of new Set((allSkillEffectsSs13[main.name] || []).flatMap(split))) add(text, `Skill: ${main.name}`, true);
+  // A Focus skill's "Activates Focus and gains a buff:" block is the buff it grants you, not lines of the skill: when its game record
+  // is read (src/focus-buffs.js, Acuteness / Corrosion Focus) its chance and base are build-wide derived lines (collectFocusBuffs).
+  const ownBlocks = (allSkillEffectsSs13[main.name] || []).filter((block) => !(/^Activates Focus and gains a buff:/i.test(String(block)) && readsFocusBuffRecord(main.name)));
+  for (const text of new Set(ownBlocks.flatMap(split))) add(text, `Skill: ${main.name}`, true);
   for (const support of main.supports || []) {
     if (support.enabled === false) continue;
     for (const text of [...(support.effects || []).flatMap(split), ...split(supportProgressionSs13[support.name]?.baseEffect)]) add(text, `Support: ${support.name}`, false);

@@ -77,8 +77,9 @@ export function summonMinionSkillTagIds(name) {
 
 /**
  * The tag set the support filter reads for a skill: its own game tags, and for a summon that owns Minion skills (Synthetic Troop
- * summons, modules, Spirit Magi) also every tag of those Minion skills (user-confirmed 2026-10-28, eligibility; the union is read as one
- * set, so the game's include and exclude groups both apply to it and an exclude still wins). Replaces the earlier Blind-only exception.
+ * summons, modules, Spirit Magi) also every tag of those Minion skills (user-confirmed 2026-10-28, eligibility). The include groups read
+ * this union; the exclude groups read the skill's own stone tags only (client install filter, 2026-11-03; ruleAccepts), so Preparation
+ * and Activation Medium: Preparation ("Cannot support Attack Skills") stay on a summon whose Minion skills are Attacks.
  */
 export function supportFilterTagIds(skill, addedTags = []) {
   const ids = skillGameTagIds(skill, addedTags);
@@ -100,10 +101,13 @@ export function skillGameTagIds(skill, addedTags = []) {
   return ids;
 }
 
-// A support supports a skill that carries every tag of one include group and no exclude group in full.
-function ruleAccepts(rule, ids) {
-  const full = (group) => group.every((id) => ids.has(id));
-  return rule.include.some(full) && !rule.exclude.some(full);
+// A support supports a skill that carries every tag of one include group and no exclude group in full. The client's install filter
+// (SkillFilterMgr, encrypted-scripts full pass 2026-11-03 finding 2) reads the include groups against the skill's own stone tags, the
+// tags the other stones add and, for a summon, its Minion skills' tags, but the exclude groups against the skill's own stone tags only
+// (`excludeIds`; defaults to `ids`). So an exclude matched only by an added or Minion-skill tag blocks nothing.
+function ruleAccepts(rule, ids, excludeIds = ids) {
+  const full = (set) => (group) => group.every((id) => set.has(id));
+  return rule.include.some(full(ids)) && !rule.exclude.some(full(excludeIds));
 }
 
 /** The game's eligibility rule of a support ({ text, include, exclude, addsTags?, removesTags?, ... }), or null. */
@@ -124,16 +128,18 @@ export function activationMediumRule(name) {
 
 // The skill's tags with what its other enabled supports add or remove (game data: Blizzard: Freezing Point adds Empower,
 // Focused Slash: Behead removes Area), counting only supports that can support the skill themselves.
-function linkedTagChanges(baseIds, linkedSupports, self) {
+function linkedTagChanges(baseIds, linkedSupports, self, ownIds = baseIds) {
   const ids = new Set(baseIds), added = [];
+  const removed = [];
   for (const linked of linkedSupports || []) {
     if (linked?.enabled === false || linked?.name === self) continue;
     const rule = supportEligibilitySs13[linked?.name];
-    if (!rule || !(rule.addsTags || rule.removesTags) || !ruleAccepts(rule, baseIds)) continue;
+    if (!rule || !(rule.addsTags || rule.removesTags) || !ruleAccepts(rule, baseIds, ownIds)) continue;
     for (const id of rule.addsTags || []) { ids.add(id); added.push(id); }
-    for (const id of rule.removesTags || []) ids.delete(id);
+    for (const id of rule.removesTags || []) { ids.delete(id); removed.push(id); }
   }
-  return { ids, addedNames: added.map((id) => GAME_SKILL_TAG_NAMES[id]).filter((name) => CATALOG_TAG_GAME_IDS[name]) };
+  const named = (list) => list.map((id) => GAME_SKILL_TAG_NAMES[id]).filter((name) => CATALOG_TAG_GAME_IDS[name]);
+  return { ids, addedNames: named(added), removedNames: named(removed) };
 }
 
 /**
@@ -141,13 +147,50 @@ function linkedTagChanges(baseIds, linkedSupports, self) {
  * (config_skill_stone; Chromatic Shot: Condensed Cold adds Cold 6001010 and Elemental 6001180, its text "The supported skill gains
  * the Cold Tag"; Blizzard: Freezing Point adds Empower, "The supported skill becomes an Empower Skill"), counted only for supports
  * the game lets support the skill. Tags with no catalog name (Elemental, Hit, Damage Over Time, …) are left out: the readers match
- * catalog tag names. Removed tags (`removesTags`, Focused Slash: Behead) are not applied here. The support filter itself is
- * unchanged: it already reads the other supports' added tags (linkedTagChanges).
+ * catalog tag names. Removed tags: supportRemovedTagNames below. The support filter itself is unchanged: it already reads the other
+ * supports' added and removed tags (linkedTagChanges).
  */
 export function supportAddedTagNames(skill, supports = []) {
   if (!skill) return [];
   const own = new Set(skill.tags || []);
-  return [...new Set(linkedTagChanges(supportFilterTagIds(skill), supports, null).addedNames)].filter((name) => !own.has(name));
+  return [...new Set(linkedTagChanges(supportFilterTagIds(skill), supports, null, skillGameTagIds(skill)).addedNames)].filter((name) => !own.has(name));
+}
+
+/**
+ * The catalog tags a skill's enabled supports take away in the calculation (the stone filter's `removes` field; Focused Slash: Behead
+ * removes Area 6000040; wiring audit gap 7, 2026-11-03): the skill's own tags among them, so tag-scoped lines ("+X% Area Damage", "+N
+ * Area Skill Level") no longer reach it. Counted only for supports the game lets support the skill.
+ */
+export function supportRemovedTagNames(skill, supports = []) {
+  if (!skill) return [];
+  const own = new Set(skill.tags || []);
+  const changes = linkedTagChanges(supportFilterTagIds(skill), supports, null, skillGameTagIds(skill));
+  return [...new Set(changes.removedNames)].filter((name) => own.has(name) && !changes.addedNames.includes(name));
+}
+
+/**
+ * A skill's tags in the calculation: its profile / catalog tags with the setup's stone-filter tag changes applied
+ * (setup.supportAddedTags / supportRemovedTags, from the two functions above, set in src/planner.js). The hit, DoT and ailment
+ * models build their tag-scoped line checks from it (wiring audit W1 gap 1, 2026-11-03).
+ */
+export function skillTagsWithSupportChanges(tags = [], setup = null) {
+  const out = new Set(tags || []);
+  for (const tag of setup?.supportAddedTags || []) out.add(tag);
+  for (const tag of setup?.supportRemovedTags || []) out.delete(tag);
+  return out;
+}
+
+/**
+ * The game tag ids a setup's own events carry (wiring audit W2 gap 1, 2026-11-03): its skill-stone tags (src/data/skills/
+ * support-eligibility-ss13.generated.js; catalog tags for a skill with no linked stone), the stone-filter tags its supports add or remove
+ * (setup.supportAddedTags / supportRemovedTags) and Main Skill 6020000 for the Main Skill. A trigger row's `mine` / `notMine` tags are
+ * checked against this set (src/trigger-rows.js rowTagsFit), not against a hand-picked subset of tag names.
+ */
+export function setupEventTagIds(setup, tags = []) {
+  const ids = skillGameTagIds({ name: setup?.name, tags: tags.length ? tags : setup?.tags || [], role: setup?.role, effects: setup?.effects }, setup?.supportAddedTags || []);
+  for (const name of setup?.supportRemovedTags || []) { const id = CATALOG_TAG_GAME_IDS[name]; if (id) ids.delete(id); }
+  if (setup?.role === "main") ids.add(6020000);
+  return ids;
 }
 
 /** reference data's "Supports ... . Cannot support ... ." text rule on catalog tags (the fallback when no stone links). */
@@ -183,10 +226,11 @@ export function supportCanSupportSkill(support, skill, linkedSupports = []) {
   if (!support || !skill) return false;
   const rule = supportEligibilitySs13[support.name];
   // A summon reads its Minion skills' tags too (supportFilterTagIds; Blind on a module or Spirit Magus comes from their Hit).
-  const { ids, addedNames } = linkedTagChanges(supportFilterTagIds(skill), linkedSupports, support.name);
+  const own = skillGameTagIds(skill);
+  const { ids, addedNames } = linkedTagChanges(supportFilterTagIds(skill), linkedSupports, support.name, own);
   // Game filter on the skill's own stone tags; an Activation Medium also reads tags derived from the catalog for a skill
-  // with no stone (reference data's SS13 cards have no "Supports" line for them).
-  if (rule && (skillGameTagsSs13[skill.name] || rule.category === "activation")) return ruleAccepts(rule, ids);
+  // with no stone (reference data's SS13 cards have no "Supports" line for them). Excludes read the own stone tags only (ruleAccepts).
+  if (rule && (skillGameTagsSs13[skill.name] || rule.category === "activation")) return ruleAccepts(rule, ids, own);
   return supportTextRuleAccepts(support, addedNames.length ? { ...skill, tags: [...(skill.tags || []), ...addedNames] } : skill);
 }
 

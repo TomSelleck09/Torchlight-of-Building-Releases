@@ -9,7 +9,7 @@
 import {
   GENERAL_LAYERS, RECENT_SECONDS, SPELL_AGGRESSION_SECONDS, TICKS_PER_SECOND, aimLayer, ailmentTypeLayer, blessingLayer, curseLayer, finishTarget,
   followerProgram, frailLayer, frostbiteLayer, generalHeldLayers, markLayer, numbedLayer, paralysisLayer, penetrationLayer, periodicBurstLayer,
-  prepareEvery, seedWindow, spellAggressionLayer, swiftBoltLayer, tidewellLayer, timedLayer
+  prepareEvery, seedWindow, spellAggressionLayer, swiftBoltLayer, tidewellLayer, timedLayer, triggerBusLayer
 } from "./tick-layers.js";
 
 // Forking Thunder's spear (SS14 Split 957208, shot struct 930564): 3000 units/s (forks 2600), bModifySpeedByShotSpeedAttribute on, no speed
@@ -61,12 +61,12 @@ function coreSummon(ctx) {
   const nightFeather = ctx.isLive("tangleStacks") ? [{ kind: "buff", buff: "nightFeather", seconds: Infinity }] : [];
   const core = [{ kind: "buff", buff: "coreActive", seconds: Infinity }, ...nightFeather];
   // Own buffs built before engaging (user rule 2026-10-09, prebuiltSelfBuffs): the Core was summoned before the fight and is up at engagement,
-  // its Tangles' first interval from t = 0, as the planner's stream reads it (chunk 15 session 2: the summon cast ran cold against that rule,
+  // its Tangles charged at t = 0 (SS14 client: they fire on their first tick) (chunk 15 session 2: the summon cast ran cold against that rule,
   // ×0.904 on the 5 s window). Off: no Core until a cast of the supported skill makes one (R1: research/youga-recall-mechanics-2026-10-18.md);
-  // it stays up after that (the player recasts within the 8 s, best case). First Tangle cycle from there: provisional, tick-tangle-phase.
+  // it stays up after that (the player recasts within the 8 s, best case). The Tangles fire on their first tick with the Core (SS14 client).
   if (!ctx.isLive("coreSummon") || ctx.prebuilt) {
     ctx.initialBuffs.push({ buff: "coreActive", seconds: Infinity }, ...(nightFeather.length ? [{ buff: "nightFeather", seconds: Infinity }] : []));
-    if (ctx.isLive("coreSummon")) ctx.reported("coreSummon").events = "the Core is up at engagement (own buffs pre-built, user rule 2026-10-09); the Tangles' first interval runs from t = 0";
+    if (ctx.isLive("coreSummon")) ctx.reported("coreSummon").events = "the Core is up at engagement (own buffs pre-built, user rule 2026-10-09); its Tangles start charged and fire on the first tick (SS14 client)";
     return;
   }
   ctx.actions.push({
@@ -74,7 +74,7 @@ function coreSummon(ctx) {
     useSeconds: { baseSeconds: hit.rate.useTimeSeconds / (hit.rate.supportSpeedFactor || 1), speed: ctx.core.speedKey },
     effects: [...core, ...(ctx.isLive("spellAggression") ? [{ kind: "buff", buff: "spellAggression", seconds: SPELL_AGGRESSION_SECONDS }] : [])]
   });
-  ctx.reported("coreSummon").events = "one player cast summons the Core; the Tangles start after it";
+  ctx.reported("coreSummon").events = "one player cast summons the Core; its Tangles fire on their first tick after it (SS14 client)";
 }
 
 function selvesLayer(ctx) {
@@ -157,7 +157,7 @@ function heldLayers(ctx) {
 }
 
 // The builders in the order sessions 2 and 3 fixed; the general ones run over every target, the Core's own on the core target.
-const ORDER = [coreSummon, aimLayer, selvesLayer, spearLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, nightFeatherLayer, blessingLayer, coreCooldownLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, spearTravelLayer, penetrationLayer, timedLayer, followerProgram];
+const ORDER = [coreSummon, aimLayer, selvesLayer, spearLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, nightFeatherLayer, blessingLayer, triggerBusLayer, coreCooldownLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, spearTravelLayer, penetrationLayer, timedLayer, followerProgram];
 
 /**
  * The live program for the Clockwork Core's hit, on a layer context (src/tick-layers.js createLayerContext) whose first target is the Core's
@@ -165,7 +165,7 @@ const ORDER = [coreSummon, aimLayer, selvesLayer, spearLayer, swiftBoltLayer, sp
  * @param {object} ctx the layer context, with ctx.core the Core's target and ctx.youga the planner's yougaUltimateOne
  * @param {object[]} tangleActions one action per Tangle stream
  * @param {object} options { live: layer keys, tangleTimer: "carry" | "drop" | "nearest", tanglePhase: "lockstep" | "staggered",
- *   tangleStart: "afterSummon" | "atSummon", numbedStacks, followerOrder: "ready" | "slot" } the last five run the open readings for the
+ *   tangleStart: "atSummon" (default, SS14 client) | "afterSummon", numbedStacks, followerOrder: "ready" | "slot" } the last five run the open readings for the
  *   probe's effect range
  */
 export function compileYougaProgram(ctx, tangleActions, options) {
@@ -177,14 +177,18 @@ export function compileYougaProgram(ctx, tangleActions, options) {
   const tangles = tangleActions.map((action, index) => ({
     ...action, actor: "player", requiresBuff: "coreActive", ...timer,
     useSeconds: { baseSeconds: action.useSeconds * hit.rate.speedFactor, speed: target.speedKey },
-    ...(options.tanglePhase === "staggered" ? { firstUseSeconds: interval * (1 + index / streams) } : options.tangleStart === "atSummon" ? { firstUseSeconds: 1 / TICKS_PER_SECOND } : {}),
+    // First trigger (SS14 client, research/oq-r3-r4-rea-2026-11-04.md tick-tangle-phase): a new Core Tangle starts with its elapsed
+    // time at the full interval, so it fires on its first tick with a target, all of one summon together (lockstep); the frame the
+    // Core's Tangles first get their target is inferred (the tick after the summon). "afterSummon" keeps the pre-2026-11-04 reading
+    // (one casting interval after the summon).
+    ...(options.tanglePhase === "staggered" ? { firstUseSeconds: interval * (1 + index / streams) } : options.tangleStart !== "afterSummon" ? { firstUseSeconds: 1 / TICKS_PER_SECOND } : {}),
     effects: [...target.onUse, ctx.travelSeconds ? { kind: "delay", seconds: ctx.travelSeconds, effects: [strike] } : strike]
   }));
   const liveLayers = [...ctx.report.values()];
   const assumptions = liveLayers.map((layer) => ({ id: `tick:live:${layer.key}`, value: layer.lines.length, text: `${layer.label}: live. ${layer.events}.` }));
   assumptions.push(
-    { id: "tick-tangle-timer-class", value: options.tangleTimer || "carry", text: "A Tangle's trigger is read as a per-Tangle cast timer at the Spell's casting interval, overshoot carried (open question tick-tangle-timer-class)." },
-    { id: "tick-tangle-phase", value: options.tanglePhase || "lockstep", text: "All Tangles start together, one casting interval after the summon cast ends (open question tick-tangle-phase)." },
+    { id: "tick-tangle-timer-class", value: options.tangleTimer || "carry", text: "A Tangle's trigger is read as a per-Tangle cast timer at the Spell's casting interval, overshoot carried, capped at one frame (SS14 client: research/oq-r3-r4-rea-2026-11-04.md tick-tangle-timer-class)." },
+    { id: "tick-tangle-phase", value: options.tanglePhase || "lockstep", text: options.tangleStart === "afterSummon" ? "All Tangles start together, one casting interval after the summon cast ends (the pre-2026-11-04 reading)." : "All Tangles start charged and fire together on their first tick with the Core as their target (SS14 client: a new Tangle's elapsed time starts at the full interval); later casts do not reset them." },
     { id: "tick-follower-actor", value: ctx.isLive("followerActor") ? options.followerOrder || "ring" : "parallel", text: ctx.isLive("followerActor") ? "The follower is one actor: one cast at a time, each skill ready again after its cooldown from the press, the first ready after the last one used going next (client AI_SelectMercenarySkill)." : "The follower's skills run in parallel at the planner's rates, all from t = 0." },
     { id: "tickProjectileTravel", value: ctx.travelSeconds ?? 0, text: ctx.travelSeconds ? `Spear travel: a constant ${Math.round(ctx.travelSeconds * 10000) / 10000} s from the Core to the dummy; hits read buffs on landing (whether the client snapshots them at the launch was not traced).` : "No projectile travel in this run: a spear lands on the tick its use ends." }
   );

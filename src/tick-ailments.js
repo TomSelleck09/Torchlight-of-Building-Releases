@@ -20,6 +20,7 @@ import { expectedStrongestStacks } from "./ailment-model.js";
 import { heldAttempt, heldExpire, heldGroup, heldStoreLevels, newHeldState } from "./held-ailment-store.js";
 import { wholePercentRoll } from "./whole-percent-roll.js";
 import { turbulenceSeries } from "./youga-spacetime.js";
+import { playerBuffSet } from "./unit-buff-set.js";
 
 const EPS = 1e-9;
 // The series Ill Omen and Spacetime Turbulence are built from: every DoT and every Reap (as the recount's builders).
@@ -53,14 +54,17 @@ const timedFactorOf = (timed, key) => timedShareFactor(timed, timed?.shares?.[ke
 
 // The recount's timed series on a DoT, split by side (chunk 15 session 3, tick-ailment-snapshot): the dummy's debuffs (`target` "enemy") read
 // the tick, the attacker's own buffs ("self": Empower, hero and pact buffs on the player) are snapshotted at each application (`attacker`).
-function timeModifiers(inputs, key, { snapshot = false } = {}) {
+// The trigger bus (W10 step 2a, src/trigger-bus.js timedCorrection): a timed part it holds on the loop (Paralysis's damage taken) is put in place of
+// the series' schedule on the dummy's side, read on the tick.
+function timeModifiers(inputs, key, { snapshot = false, bus = null } = {}) {
   const asModifier = (liveKey, source, factorAt, attacker = false) => ({ source, text: `${source} over time, as the recount reads it${attacker ? ", fixed at each application" : ""}`, liveKey, layer: "additional", steadyAmount: 0, ...(attacker ? { attacker: true } : {}), amount: (world) => (factorAt(world.frame * FRAME_SECONDS) - 1) * 100 });
   const timed = inputs.timedEffects, share = timed?.shares?.[key];
   const sideOf = (side) => timed?.parts?.length && share ? timedShareFactor({ parts: timed.parts.filter((part) => (part.target === "self") === (side === "self")) }, share) : null;
   const channel = channelFactorOf(inputs.channel, inputs.rate);
   const parts = snapshot ? [["enemy", false], ["self", true]].flatMap(([side, attacker]) => { const factor = sideOf(side); return factor ? [asModifier("timed", side === "self" ? "Timed own buffs" : "Timed debuffs", factor, attacker)] : []; })
     : (() => { const factor = timedFactorOf(timed, key); return factor ? [asModifier("timed", "Timed effects", factor)] : []; })();
-  return [...parts, ...(channel ? [asModifier("timed", "Channeled stacks", channel)] : [])];
+  const correction = parts.length && bus ? bus.timedCorrection(share) : null;
+  return [...parts, ...(correction ? [correction] : []), ...(channel ? [asModifier("timed", "Channeled stacks", channel)] : [])];
 }
 
 // The share of a DoT's value a Blessing gained only from the dummy holds: the ledger line the planner counted at full stacks (src/tick-layers.js
@@ -73,7 +77,7 @@ function targetBlessingPercent(planner, key, blessing) {
 }
 
 // A DoT's path: damagePerBase with Affliction live.
-function dotPath(inputs, ailment, type, timedLayers, blessings = []) {
+function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null) {
   const simulated = inputs.options?.afflictionModel === "simulated";
   const { configuredRating = 0, perPoint = 0 } = ailment.affliction || {};
   const live = simulated && perPoint > 0;
@@ -85,7 +89,7 @@ function dotPath(inputs, ailment, type, timedLayers, blessings = []) {
     modifiers.push(simulated ? { ...common, maxAffliction: { ratioAtNone: max.ratioAtNone, ratioAtFull: max.ratioAtFull } } : { ...common, amount: (world) => ((world.frame * FRAME_SECONDS >= max.firstMaxSeconds - EPS ? steadyRatio : max.ratioAtNone) - 1) * 100 });
   }
   // A timed DoT layer (Windwalk's 4 s own buff) is the attacker's: an application inside the window keeps it for its life (tick-ailment-snapshot).
-  modifiers.push(...timedLayers.map((layer) => ({ source: "Timed DoT layer", text: `×${layer.factor} from ${layer.startSeconds} s for ${layer.durationSeconds} s, fixed at each application`, buff: layer.buff, layer: "additional", percent: (layer.factor - 1) * 100, steadyAmount: 0, liveKey: "timed", attacker: true })), ...timeModifiers(inputs, ailment.key, { snapshot: true }));
+  modifiers.push(...timedLayers.map((layer) => ({ source: "Timed DoT layer", text: `×${layer.factor} from ${layer.startSeconds} s for ${layer.durationSeconds} s, fixed at each application`, buff: layer.buff, layer: "additional", percent: (layer.factor - 1) * 100, steadyAmount: 0, liveKey: "timed", attacker: true })), ...timeModifiers(inputs, ailment.key, { snapshot: true, bus }));
   // A Blessing gained only from the dummy is out of the planner's held value and back as its live stacks, the attacker's own buff, fixed at each
   // application.
   const liveBlessings = blessings.filter((blessing) => blessing.percent > 0);
@@ -94,6 +98,13 @@ function dotPath(inputs, ailment, type, timedLayers, blessings = []) {
     const from = [blessing.gains?.reap ? "the Reaps" : "", blessing.gains?.hits?.length ? "the hits" : ""].filter(Boolean).join(" and ") || "its gains";
     modifiers.push({ source: `${blessing.name} Blessing`, text: `+${blessing.percent / blessing.stacks}% additional per stack, from 0 on ${from}, fixed at each application`, buff: blessing.buff, perStack: true, layer: "additional", percent: blessing.percent / blessing.stacks, steadyAmount: blessing.percent, liveKey: "blessings", attacker: true });
   }
+  // Blur held on the loop when the trigger bus owns it (W10 step 3a, src/trigger-bus.js blurCorrection): the attacker's own buff, fixed at each
+  // application, in place of the planner's held Blur on this DoT's ledger lines.
+  const blur = bus?.blurCorrection ? bus.blurCorrection({ kind: "dot", key: ailment.key }) : null;
+  if (blur) modifiers.push(blur);
+  // Profane held on the loop when the trigger bus owns it (W10 step 4b, src/trigger-bus.js profaneCorrection): the same, on this DoT's Profane line.
+  const profane = bus?.profaneCorrection ? bus.profaneCorrection({ kind: "dot", key: ailment.key }) : null;
+  if (profane) modifiers.push(profane);
   return {
     label: ailment.name, kind: "dot",
     parts: [{ key: "dot", type, base: ailment.damagePerBase / (live ? 1 + configuredRating * perPoint : 1) / heldBlessing, increasedPercent: 0, additionalFactor: 1 }],
@@ -171,7 +182,8 @@ function heldWeights(planner, ailment, streams) {
 // planner holds it at its average in the DoT's value; with Aim on the loop each application reads Aim's state instead: ×(1 + full) ÷ (1 + average)
 // while Aim is up, ÷ (1 + average) while it is not. Null when Aim is not on the loop or the DoT holds no Aim line.
 function aimVariant(planner, ailment, aimBuff) {
-  const aim = planner.aim;
+  // Aim's series from your unit buff set (W9 step 2, planner.playerBuffs), else planner.aim.
+  const ownBuffs = playerBuffSet(planner), aim = ownBuffs?.staged("timed") ? ownBuffs.seriesOf("Aim") : planner.aim;
   if (!aimBuff || !aim?.active || !(aim.ailmentDamagePercent > 0)) return null;
   const own = planner.ailments?.[ailment.key];
   const lists = own ? [own.shared?.ledger?.combatOutgoing, own.shared?.ledger?.additional] : [planner.theoretical?.combat?.ledger];
@@ -192,13 +204,13 @@ function heldStoreSpec(planner, ailment, streams, weights, aimBuff) {
   };
 }
 
-function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null } = {}) {
+function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null, bus = null } = {}) {
   const streams = streamsOf(planner, ailment), independent = ailment.stacking === "independent";
   // On the loop when its hit gains landed on a hit or Reaps can build it (with no Reap on the loop src/tick-ledger.js holds it full, the planner's value).
   const blessings = targetBlessings.filter((item) => item.hitPlaced || (item.gains?.reap && inputs.reaping?.length)).map((item) => ({ ...item, percent: targetBlessingPercent(planner, ailment.key, item) }));
   const shared = { key: ailment.key, seconds: ailment.duration, path: ailment.silent ? null : ailment.key };
-  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings) };
-  const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings);
+  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus) };
+  const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings, bus);
   const weights = heldStrength === "refresh" ? null : heldWeights(planner, ailment, streams);
   if (weights) {
     const { store, variant } = heldStoreSpec(planner, ailment, streams, weights, aimBuff);
@@ -215,17 +227,17 @@ const streamEffect = (ailment, stream, index) => ({
 });
 
 // Which ailment's success fires an "inflicting" Reap: the one it names; otherwise the damaging ailment with the highest chance, as the recount
-// and the planner's successfulApplicationsPerSecond read it (a skill DoT counts: planner behaviour, reported).
+// and the planner's successfulApplicationsPerSecond read it (a skill DoT is no ailment: wiring audit W2 gap 2, 2026-11-03).
 function successAilment(source, ailments) {
   const named = String(source.trigger).match(/^inflicting (Ignite|Trauma|Wilt)$/)?.[1]?.toLowerCase();
   if (named) return named;
-  return ailments.reduce((best, item) => !item.silent && (!best || item.chance > best.chance) ? item : best, null)?.key ?? null;
+  return ailments.reduce((best, item) => !item.silent && !item.skillDot && (!best || item.chance > best.chance) ? item : best, null)?.key ?? null;
 }
 
 // One Reap source for the loop. Its recovery is the base time and speed, not the resolved seconds, so whole ticks come from the engine's elapsed
 // check (D1). A DoT's settle is what the recount multiplies on top of the DoT's rate: the True Damage scale, and for a full-Affliction source read
 // at 100 (reapSettle "atHundred") what the path cannot reach by itself there. Read at the last DoT pass the path's own factors are the whole of it.
-function reapSpec(source, ailments, simulated, atHundred) {
+function reapSpec(source, ailments, simulated, atHundred, bus = null) {
   const timing = source.timing || {}, label = source.triggerLabel ?? source.trigger, full = source.trigger === "full Affliction";
   const dots = {};
   for (const ailment of ailments) {
@@ -233,11 +245,16 @@ function reapSpec(source, ailments, simulated, atHundred) {
     if (!(seconds > 0) || ailment.silent) continue;
     const settle = source.settle?.[ailment.key] || {}, live = simulated && ailment.affliction?.perPoint > 0, max = ailment.maxAffliction;
     const pathRatio = !max ? 1 : simulated ? max.ratioAtFull : max.ratioAtNone + (max.ratioAtFull - max.ratioAtNone) * max.steadyFraction;
-    dots[ailment.key] = { seconds, scale: (settle.trueDamage ?? 1) * (full && atHundred ? (live ? 1 : settle.affliction ?? 1) * (settle.resistance ?? pathRatio) / pathRatio : 1) };
+    // A Reaping Duration stack the trigger bus holds on the loop (W10 step 3a: a "recent Reaping" counter, Scorching Pulse) reads this tick's.
+    const durationScale = bus?.reapSecondsScale ? bus.reapSecondsScale(source.key, ailment.key) : null;
+    dots[ailment.key] = { seconds, scale: (settle.trueDamage ?? 1) * (full && atHundred ? (live ? 1 : settle.affliction ?? 1) * (settle.resistance ?? pathRatio) / pathRatio : 1), ...(durationScale ? { durationScale } : {}) };
   }
-  const spec = { key: source.key, label: `Reaping: ${source.source}`, source: source.source, baseSeconds: timing.baseSeconds ?? source.recoverySeconds ?? 0, speedFactor: timing.speedFactor ?? 1, dots };
+  // `holder`: the follower's Reap raises its trigger bus events on the follower (W10 step 2b); yours by default.
+  const spec = { key: source.key, label: `Reaping: ${source.source}`, source: source.source, baseSeconds: timing.baseSeconds ?? source.recoverySeconds ?? 0, speedFactor: timing.speedFactor ?? 1, ...(source.holder === "follower" ? { holder: "follower" } : {}), dots };
   if (full) return { ...spec, trigger: "affliction", remover: source.key };
-  if (/^inflicting /.test(source.trigger)) return { ...spec, trigger: "success", ailment: successAilment(source, ailments) };
+  // With the trigger bus on 1000150 (W10 step 4b, src/trigger-bus.js inflictReapAilments) every application of yours that fits the Reap's row fires
+  // it (`ailments`); `ailment` stays the recount's (the parity budgets read it).
+  if (/^inflicting /.test(source.trigger)) { const heard = bus?.inflictReapAilments ? bus.inflictReapAilments(source.key) : null; return { ...spec, trigger: "success", ailment: successAilment(source, ailments), ...(heard?.length ? { ailments: heard } : {}) }; }
   if (label === "max channeled stacks") return { ...spec, trigger: "uses", usesPerTrigger: timing.usesPerTrigger ?? 1 };
   // "skill use": no recovery of its own (the planner's base time is the use interval). The Cycle I Resist's first cast has no previous Terra.
   if (label === "skill use") return { ...spec, trigger: "uses", baseSeconds: 0, usesPerTrigger: 1, ...(timing.skipFirstUse ? { startUses: -1 } : {}) };
@@ -246,7 +263,7 @@ function reapSpec(source, ailments, simulated, atHundred) {
 
 // Scorching Beam as the recount has it: uses at its rate, an explosion every cycleUses, the Bard residual as a constant stream, and a Scorch
 // scale read from the chain. With no delivery calibration (a beam that deals no hits here) the uses still attempt the ailments.
-function beamProgram(inputs, strikeEffects, timerFields) {
+function beamProgram(inputs, strikeEffects, timerFields, bus = null) {
   const { hits, rate } = inputs, paths = {};
   const useSeconds = 1 / rate, first = Number.isFinite(inputs.firstUseSeconds) ? { firstUseSeconds: inputs.firstUseSeconds } : {};
   const base = { key: "beam:use", label: "Scorching Beam uses", actor: "player", useSeconds, ...first, ...timerFields };
@@ -257,20 +274,22 @@ function beamProgram(inputs, strikeEffects, timerFields) {
   const percent = scorch ? (scorch.activeScale / scorch.baseScale - 1) * 100 : 0;
   const modifiers = [
     ...(scorch ? [{ source: "Scorch", text: `resistance scale ×${scorch.baseScale} to ×${scorch.activeScale} with the stacks on the ${chain?.name ?? scorch.chainKey} chain`, ailmentShare: { ailment: scorch.chainKey, fractions: chain?.scorchFraction || [0, 1] }, layer: "additional", percent, steadyAmount: percent, liveKey: "scorch" }] : []),
-    ...timeModifiers(inputs, "beam")
+    ...timeModifiers(inputs, "beam", { bus })
   ];
   const path = (key, label, value, extra = {}) => { paths[key] = { label, kind: "hit", ...extra, parts: [{ key: "beam", type: "Fire", base: value * scale, increasedPercent: 0, additionalFactor: 1 }], modifiers }; };
   path("beam", "Beam hits", hits.perUse, { working: { perUse: hits.perUse, explosion: hits.explosion, cycleUses: hits.cycleUses, residualDps: hits.residualDps, resistance: hits.resistance } });
   const strike = { kind: "hit", path: "beam", onHit: strikeEffects };
+  // Each beam use raises its use event on the trigger bus (W10 step 3b: a use of yours), before its hits; none on the layers.
+  const use = bus?.beamUseEffect ? bus.beamUseEffect() : null, uses = use ? [use] : [];
   const explosion = hits.cycleUses > 0 && hits.explosion > 0;
   if (explosion) path("beam:explosion", "Beam explosion", hits.explosion, { source: "beam" });
-  const steps = explosion ? Array.from({ length: hits.cycleUses }, (_, index) => ({ useSeconds, label: "Scorching Beam use", effects: index === hits.cycleUses - 1 ? [strike, { kind: "hit", path: "beam:explosion" }] : [strike] })) : null;
+  const steps = explosion ? Array.from({ length: hits.cycleUses }, (_, index) => ({ useSeconds, label: "Scorching Beam use", effects: index === hits.cycleUses - 1 ? [...uses, strike, { kind: "hit", path: "beam:explosion" }] : [...uses, strike] })) : null;
   const periodics = [];
   if (hits.residualDps > 0) {
     path("beam:residual", "Bard residual", hits.residualDps * FRAME_SECONDS, { source: "beam" });
     periodics.push({ key: "beam:residual", actor: "player", label: "Bard residual", intervalSeconds: FRAME_SECONDS, effects: [{ kind: "hit", path: "beam:residual" }] });
   }
-  return { paths, actions: [steps ? { ...base, steps } : { ...base, effects: [strike] }], periodics };
+  return { paths, actions: [steps ? { ...base, steps } : { ...base, effects: [...uses, strike] }], periodics };
 }
 
 // Walk a program's hit effects, wherever they are nested. `change` returns the effect to keep.
@@ -285,30 +304,33 @@ function hitsIn(item, series) {
 /**
  * The ailment program of a build, or null when the recount has none to compile.
  * @param {object} planner calculatePlanner's result (read only)
- * @param {object} [readings] afflictionRemoval: "beforeDot" (default) | "reap"; afflictionAccrual: "fromStart" (default) | "whileDot"; reapSettle:
+ * @param {object} [readings] afflictionRemoval: "beforeDot" (default) | "reap"; afflictionAccrual: "whileDot" (default, game code: only while one of your DoT records is held) | "fromStart"; reapSettle:
  *   "lastDot" (default, a full-Affliction Reap reads the last DoT pass's rating, before that tick's hits) | "atHundred" (it reads 100 and the max-Affliction term in full, after the hits);
  *   heldStrength: "dropped" (default, user decision 2026-11-02: a limit-1 Ignite or Trauma is a held store, a weaker application does nothing) |
  *   "refresh" (the 2026-10-19 reading: every success restarts the shared timer and the run's strongest is held, the recount's own chain)
  * @param {object} [timerFields] the cast reading's fields for the beam's action
- * @param {object} [context] aimBuff: the buff Aim's state is on the loop under (src/tick-layers.js aimLayer), or null
+ * @param {object} [context] aimBuff: the buff Aim's state is on the loop under (src/tick-layers.js aimLayer), or null; bus: the trigger bus (src/trigger-bus.js,
+ *   W10), whose timed corrections the DoT and beam paths take, or null
  * @returns {{ paths, ailments, affliction, actions, periodics, dotEffect, attach, layers, assumptions, held }} `attach` puts each stream on its
  *   skill's hits and returns what lands on the loop, Reaps included; `dotEffect` is the application effect of a skill DoT
  */
-export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null } = {}) {
+export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null, bus = null } = {}) {
   const inputs = planner?.dummyRecount?.inputs;
   if (!inputs) return null;
   const simulated = inputs.options?.afflictionModel === "simulated";
   const timedLayers = (inputs.timedDotLayers || []).map((layer, index) => ({ ...layer, buff: `timedDot:${index}` }));
-  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff }) }]));
+  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff, bus }) }]));
   const removers = (inputs.reaping || []).filter((source) => source.trigger === "full Affliction").map((source) => ({ key: source.key, label: source.source, baseSeconds: source.timing?.baseSeconds ?? source.recoverySeconds ?? 0, speedFactor: source.timing?.speedFactor ?? 1, removedPercent: Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 100)), settle: readings.reapSettle ?? "lastDot" }));
-  const affliction = inputs.afflictionPerSecond > 0 ? { perSecond: inputs.afflictionPerSecond, removers, removalStage: readings.afflictionRemoval ?? "beforeDot", accrual: readings.afflictionAccrual ?? "fromStart" } : null;
-  const reapSpecs = (inputs.reaping || []).map((source) => ({ source, spec: reapSpec(source, inputs.ailments || [], simulated, readings.reapSettle === "atHundred") }));
+  // Magmaskull's first infliction (src/initial-affliction.js): only where the rating builds from 0 (a configured rating holds from the start).
+  const initial = simulated && Number.isFinite(inputs.initialAffliction?.value) ? inputs.initialAffliction.value : undefined;
+  const affliction = inputs.afflictionPerSecond > 0 ? { perSecond: inputs.afflictionPerSecond, removers, removalStage: readings.afflictionRemoval ?? "beforeDot", accrual: readings.afflictionAccrual ?? "whileDot", ...(initial !== undefined ? { initial } : {}), ...(inputs.afflictionClears?.length ? { clears: inputs.afflictionClears } : {}) } : null;
+  const reapSpecs = (inputs.reaping || []).map((source) => ({ source, spec: reapSpec(source, inputs.ailments || [], simulated, readings.reapSettle === "atHundred", bus) }));
   // A use-driven Reap counts its skill's uses: a skill DoT it belongs to, or one that lands at its rate (The Cycle I Resist, the Main Terra's recasts).
   const usesOf = ({ source, spec }) => spec.trigger !== "uses" ? null : (planner.skillDots || []).find((dot) => dot.modeled && (dot.builtInReaping?.source === source.source || (source.timing?.usesPerSecond > 0 && Math.abs(dot.applicationsPerSecond - source.timing.usesPerSecond) < 1e-9)))?.key ?? null;
   const reapsOnDot = new Map();
   for (const item of reapSpecs) { const dot = usesOf(item); if (dot) reapsOnDot.set(dot, [...(reapsOnDot.get(dot) || []), item.spec.key]); }
   const beamEffects = [...compiled.values()].flatMap(({ ailment, streams }) => streams.map((stream, index) => stream.key === "beam" ? streamEffect(ailment, stream, index) : null).filter(Boolean));
-  const beam = (inputs.hits || beamEffects.length) ? beamProgram(inputs, beamEffects, timerFields) : { paths: {}, actions: [], periodics: [] };
+  const beam = (inputs.hits || beamEffects.length) ? beamProgram(inputs, beamEffects, timerFields, bus) : { paths: {}, actions: [], periodics: [] };
   const placed = new Set(beamEffects.map((effect) => effect.ailment));
   const timedPeriodics = timedLayers.map((layer) => ({ key: layer.buff, actor: "player", label: "Timed DoT layer", startFrame: Math.max(1, Math.ceil(layer.startSeconds * 30 - EPS)), intervalSeconds: Infinity, effects: [{ kind: "buff", buff: layer.buff, seconds: layer.durationSeconds }] }));
 
@@ -363,7 +385,7 @@ export function compileAilmentProgram(planner, readings = {}, timerFields = {}, 
       ],
       layers: [
         ...kept.map(({ ailment, streams, held }) => ({ key: `ailment:${ailment.key}`, label: ailment.name, lines: [], events: ailment.stacking === "independent" ? `each success a stack on its own ${ailment.duration} s timer, up to ${ailment.limit}` : held ? `the held amount and its application tick in expectation: replaced by an application at least as strong, a weaker one does nothing, each stack ends ${ailment.duration} s after its own application${streams.length > 1 ? `; ${streams.length} streams compared on their own amounts` : ""}${held.variant ? "; Aim's state read at each application" : ""}` : `a success restarts the ${ailment.duration} s timer; ${streams.length > 1 ? `${streams.length} streams on the model's strongest applications` : "n successes read the retained table"}` })),
-        ...(affliction ? [{ key: "affliction", label: "Affliction", lines: [], events: `+${Math.round(affliction.perSecond / 30 * 1000) / 1000} per tick from engagement, 0 to 100, read by the next tick's DoT${removers.length ? `; ${removers.map((item) => item.label).join(", ")} removes ${removers[0].removedPercent} at 100, before that tick's DoT pass` : ""}` }] : []),
+        ...(affliction ? [{ key: "affliction", label: "Affliction", lines: [], events: `+${Math.round(affliction.perSecond / 30 * 1000) / 1000} per tick ${affliction.accrual === "fromStart" ? "from engagement" : "while one of your DoT records is held, after that tick's DoT pass"}${affliction.initial !== undefined ? ` (the first infliction ${affliction.initial}: ${inputs.initialAffliction.source || "Magmaskull"})` : ""}, 0 to 100, read by the next tick's DoT${affliction.clears?.length ? `; ${affliction.clears.map((item) => `${item.source || "a follower skill"} clears ${item.amount} on its damage at most every ${item.gateSeconds} s while the rating is at least ${item.minRating}`).join(", ")}` : ""}${removers.length ? `; ${removers.map((item) => item.label).join(", ")} removes ${removers[0].removedPercent} at 100, before that tick's DoT pass` : ""}` }] : []),
         ...reaps.map((item) => ({ key: item.spec.key, label: item.spec.label, lines: [], events: reapEvents(item) })),
         ...(inputs.hits ? [{ key: "beam", label: "Scorching Beam", lines: [], events: `${Math.round(inputs.rate * 1e4) / 1e4} uses/s${inputs.hits.cycleUses > 0 ? `, an explosion every ${inputs.hits.cycleUses}` : ""}, the Bard residual every tick${inputs.hits.resistance?.kind === "scorch" ? ", Scorch's scale from its chain" : ""}` }] : [])
       ],

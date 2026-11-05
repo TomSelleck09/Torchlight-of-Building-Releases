@@ -1,5 +1,7 @@
+import { maxSpellBurstTotal } from "./max-spell-burst.js";
 import { wholePercentRoll } from "./whole-percent-roll.js";
 import { normalizePercentageText } from "./percentage-text.js";
+import { recipeCrowdControl, crowdControlEventRate, crowdControlLocalChance } from "./crowd-control-recipes.js";
 import { explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS } from "./dummy-target.js";
 import { sustainedLevel } from "./timed-effects.js";
 import { resolveRegain } from "./regain-model.js";
@@ -9,8 +11,14 @@ import { classifyHitLine, splitHitLineText } from "./skill-hit-lines.js";
 import { LUCKY_DAMAGE_PATTERNS, readLuckyDamage, luckyRollAverage, luckyCritChance } from "./lucky-damage.js";
 import { STORM_COMMAND_LINE, resolveStormCommand } from "./storm-command.js";
 import { sageOwnedLine } from "./sage-traits.js";
+import { lineTriggerRows } from "./trigger-rows.js";
+import { BY_YOU, BY_YOU_OR_FOLLOWER, UnitBuffSet, buffRecordOf, enemyBuffSet, playerBuffSet } from "./unit-buff-set.js";
 import { DEFLECTION_SOURCES } from "./carino-traits.js";
 import { ELIXIR_PROGRESS_LINE, ELIXIR_EFFECT_LINE, ELIXIR_ADDITIONAL_EFFECT_LINE, TAILORED_REMEDY_LINE, ELIXIR_DURATION_LINE, RESTORATION_KEPT_LINE, MIRACULOUS_GAIN_LINE, resolveElixirs, elixirSetupText, miraculousGainState } from "./elixir-model.js";
+
+// Your Blessings from your unit buff set (W9 step 2: the early Blessing pass, src/planner.js), else the state's fields (TLI_BUFF_SET=off).
+const ownBlessingStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingStacks() : state.blessingStacks; };
+const ownBlessingMaxStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingMaxStacks() : state.blessingMaxStacks; };
 
 // Buffs, enemy debuffs and the damage side of non-damaging ailments (research/talent-batch-2026-10-12.md §10 chunk 3).
 // Each state turns into derived plain lines (src/line-effects.js pushes them into planner.modifierTexts, so every engine
@@ -71,11 +79,19 @@ const discordInterval = (line) => Number(line.clean.match(PATTERNS.discordCrowdC
 // Snow's deemed Frostbite Rating. A crowd control line with no effect of its own on the dummy (Weaken, Slow, Blind) reads In calc only
 // with one of them.
 const CROWD_CONTROL_READER = /type of crowd control effect the enemy has|for each type of Crowd Control Effect they are under|every type of Ailment or Crowd Control Effect inflicted recently|for each type of crowd control effect the target is under|^Each type of Crowd Control Effect, Ailment, and Curse afflicting an enemy is deemed/i;
-const CC_CHANCE_LINE = /^\+\d+(?:\.\d+)?% chance to (?:Blind the target on hit|inflict Slow on hit|Weaken nearby enemies when triggering any skill)$/i;
-// The planner measures the hit and triggered-use rates these lines need (src/planner.js hit-rate pass) only when both are present.
-export function crowdControlChanceRatesNeeded(modifierTexts = []) {
-  const texts = modifierTexts.filter((line) => line?.origin !== "derived").map((line) => normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim());
-  return texts.some((text) => CC_CHANCE_LINE.test(text)) && texts.some((text) => CROWD_CONTROL_READER.test(text));
+// Readers of the Blinded state (target state 4000140: "+X% additional damage to Blinded enemies" 101010148, Spirit Magi 171666624,
+// Lucky Critical Strike against Blinded enemies) and of the Paralyzed state (Judgment 191779): a held Blind / Paralysis feeds them.
+const BLINDED_READER = /\bBlinded enem/i, PARALYZED_READER = /\bParalyzed enem/i;
+// Crowd control held from the game recipes (src/crowd-control-recipes.js; wiring audit gap 1, 2026-11-03): the planner measures the
+// event rates (your hits, triggered uses, Minion hits, skill casts: src/planner.js hit-rate pass) when such a line has a reader, or
+// holds Paralysis (its own damage taken).
+export function crowdControlChanceRatesNeeded(modifierTexts = [], supportHolders = []) {
+  const lines = modifierTexts.filter((line) => line?.origin !== "derived" && !line?.lineEffect).map((line) => ({ ...line, clean: normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim() }));
+  // Support clauses that hold crowd control (wiring audit W6a item 1) count as holders too.
+  const holders = [...lines.filter((line) => !scriptedCrowdControl(line.clean)).map((line) => recipeCrowdControl(line)).filter(Boolean), ...supportHolders.map((holder) => holder.reading).filter(Boolean)];
+  if (!holders.length) return false;
+  const readers = lines.some((line) => CROWD_CONTROL_READER.test(line.clean) || BLINDED_READER.test(line.clean) || PARALYZED_READER.test(line.clean));
+  return readers || holders.some((holder) => holder.rows.some((row) => row.types.some((type) => type.type === "Paralysis")));
 }
 // Read only for the revived Numbed family's own stacks (revivedNumbed in resolveCombatStates), so they stay out of PATTERNS.
 const NUMBED_DURATION_LINE = /^([+-]\d+(?:\.\d+)?)% Numbed Duration$/i, FOLLOWER_NUMBED_LINE = /^The Follower inflicts Numbed on the dummy$/i;
@@ -139,7 +155,9 @@ const PATTERNS = {
   ferocityOnPhysical: /^Gains Ferocity when dealing Physical Damage$/i,
   godOfWarBlessing: /^Gains (\d+) stack\(s\) of God of War's Blessing$/i,
   hastenEffect: /^\+(\d+(?:\.\d+)?)% Hasten Effect$/i,
-  fortitudeGain: /^Gains a stack of Fortitude when using a Melee Skill$/i,
+  // Records 936246784 and 940275264 (wiring fix W6b, 2026-11-03): trigger 1000074 (a use you make yourself) with the Melee tag 6001120,
+  // node 301 adding buff 3481 (Fortitude); the chance form has gate 188 at p0. One reading for both wordings.
+  fortitudeGain: /^(?:\+?(\d+(?:\.\d+)?)% chance to gain|Gains) a stack of Fortitude when using a Melee Skill$/i,
   fortitudeExtra: /^(?:Owns (\d+) additional stack\(s\) of Fortitude|\+(\d+) (?:to )?Max Fortitude Stacks)$/i,
   fortitudeDamage: /^\+(\d+(?:\.\d+)?)% additional damage (?:per|for every) (\d+) stack\(s\) of Fortitude$/i,
   elixirActive: /^(.+?) while an Elixir Skill is active$/i,
@@ -212,6 +230,9 @@ const PATTERNS = {
   lacerationEffectPerTrauma: /^\+(\d+(?:\.\d+)?)% Laceration Effect for each stack of Trauma$/i,
   // The same Elementalist node since the 2026-10-14 game patch (reference data tree text): Frostbitten instead of Frozen.
   coldInfiltrationFrostbitten: /^Inflicts Cold Infiltration when dealing damage to Frostbitten enemies$/i,
+  // Wiring audit gap 2d (2026-11-03): the Ignited readers off the Scorching Beam path (the beam keeps its own ledgers' talent keys).
+  fireInfiltrationIgnited: /^Inflicts Fire Infiltration when dealing Fire Damage to Ignited enemies$/i,
+  firePenetrationIgnited: /^\+(\d+(?:\.\d+)?)% Fire Penetration against Ignited enemies$/i,
   // Broken Dream (2026-10-18): "Inflicts Cold Infiltration on enemies cursed by Biting Cold": held while that curse skill is on the dummy.
   infiltrationCursedBy: /^Inflicts (Fire|Cold|Lightning) Infiltration on enemies cursed by ([A-Z][\w' ]+?)$/i,
   penetrating: /^When dealing Fire, Lightning, or Cold Damage, inflicts Fire Infiltration, Lightning Infiltration, or Cold Infiltration respectively\.$/i,
@@ -291,11 +312,10 @@ const PATTERNS = {
   intimidateDealDamage: /^Adds Intimidated when you or Minions deal damage$/i,
   intimidateNearby: /^Enemies within (\d+(?:\.\d+)?) ?m are Intimidated$/i,
   intimidatingEffect: /^\+(\d+(?:\.\d+)?)% Intimidating effect$/i,
-  // Crowd control by chance (2026-11-03; game records): "+X% chance to Blind the target on hit" (574297: trigger 1000033 on hit,
-  // gate 188, buff 20060 on the hit's target), "+X% chance to inflict Slow on hit" (472365504: the same, buff 260) and "+X% chance
-  // to Weaken nearby enemies when triggering any skill" (279824224: trigger 1000060, gate 188, buff 270 on enemies within 6 m).
-  ccChanceOnHit: /^\+(\d+(?:\.\d+)?)% chance to (Blind the target|inflict Slow) on hit$/i,
-  weakenOnTrigger: /^\+(\d+(?:\.\d+)?)% chance to Weaken nearby enemies when triggering any skill$/i,
+  // Crowd control by chance ("+X% chance to Blind the target on hit" 574297, "+X% chance to inflict Slow on hit" 472365504, "+X%
+  // chance to Weaken nearby enemies when triggering any skill" 279824224, and every other line whose record applies a crowd control
+  // buff) is held from the game recipes since 2026-11-03 (src/crowd-control-recipes.js; the block "Crowd control from the game
+  // recipes" below), not by wording.
   juggernaut: /^-(\d+(?:\.\d+)?)% additional Armor and -(\d+(?:\.\d+)?)% Elemental and Erosion Resistance for enemies on Critical Strike for (\d+(?:\.\d+)?) ?s\. Stacks up to (\d+) times$/i,
   openWounds: /^\+(\d+(?:\.\d+)?)% additional Hit Physical Damage taken for every stack of Trauma the enemy has, up to \+(\d+(?:\.\d+)?)%$/i,
   escalatingAffliction: /^Changes the effect of each point of Affliction to: \+?(\d+(?:\.\d+)?)% - \+?(\d+(?:\.\d+)?)% additional Damage Over Time taken\. Refreshes every 1 ?s and is affected by Lucky Damage bonuses$/i,
@@ -373,9 +393,14 @@ const PATTERNS = {
   spellLevelCrit: /^\+(\d+(?:\.\d+)?) Spell Critical Strike Rating and \+(\d+(?:\.\d+)?)% Spell Critical Strike Rating for every \+(\d+) to Spell Skill Level\. Stacks up to (\d+) time\(s\)$/i
 };
 
+// Crowd control the scripted readers below hold by wording (their conditions are their own: on Block, at max Tenacity, every N s in
+// turn, Nearby …); every other line whose record applies a crowd control buff is held from its recipe (src/crowd-control-recipes.js).
+const SCRIPTED_CROWD_CONTROL = ["paralysisAttacks", "paralysisOnHit", "paralysisCursed", "paralysisTenacity", "paralysisDealDamage", "paralysisNearby", "paralysisBlocking", "paralysisRegain", "paralysisBombs", "holyMaiden", "witchAntelope", "discordCrowdControl", "channelWeaken", "attackProjectileBlind", "followerCrowdControl", "followerParalysis", "iceSoul"];
+function scriptedCrowdControl(text) { return SCRIPTED_CROWD_CONTROL.some((key) => PATTERNS[key].test(text)); }
+
 /** True when this module reads the line (src/line-effects.js leaves it alone). */
 export function readByCombatStates(text) {
-  return Object.values(PATTERNS).some((pattern) => pattern.test(text));
+  return Object.values(PATTERNS).some((pattern) => pattern.test(text)) || Boolean(recipeCrowdControl({ text, origin: null, source: "" }));
 }
 
 /** The Frostbite Rating the build inflicts (10 base + "+N to Max Frostbite Rating", capped at 120, or at a "can exceed its
@@ -412,8 +437,32 @@ export function resolveCombatStates(modifierTexts = [], state = {}) {
   return second;
 }
 
+// Feline Figure's Numbed hold on the dummy's set (W8 step 3 Group B; see resolveCombatStatesOnce).
+const FELINE_NUMBED_SOURCE = "Lightning Shadow: Feline Figure (buff 170)";
+const felineNumbedHold = (entry) => entry.stage === "combat" && entry.source === FELINE_NUMBED_SOURCE;
+
+// The pass's dummy holds as non-enumerable fields (W8 steps 2 and 3), read by putCombatHolds, not part of the planner result's data:
+// `passHolds` the entries of the pass's own set (Frail, Infiltrations, held Paralysis, Intimidated), `crowdControlBy` the unit that holds
+// each crowd control type you do not inflict ("follower", "minion").
+// `triggerHolds` (W10, src/trigger-bus.js): each crowd control type's hold as the planner composes it (the scripted holders' schedule, then the recipe
+// holds with the row that fires each), the crowd control counters and Intimidated's holders: what the tick engine's trigger bus needs to
+// replace the holds it owns on the loop, read only.
+const withDummyHolds = (result, passHolds, crowdControlBy, triggerHolds = null) => Object.defineProperties(result, { passHolds: { value: passHolds, enumerable: false }, crowdControlBy: { value: crowdControlBy, enumerable: false }, triggerHolds: { value: triggerHolds, enumerable: false } });
+
 function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   let deemedRerun = null;
+  // The pass's own holds on the dummy (W8 step 3): Frail, the Infiltrations, held Paralysis and Intimidated go on this set as each
+  // producer stage completes, and the pass's later readers query it (the result fields stay for TLI_BUFF_SET=off). putCombatHolds puts
+  // its entries on the dummy's set (stage "debuff").
+  const passSet = new UnitBuffSet("dummy");
+  // The dummy's unit buff set (src/unit-buff-set.js, W8 step 1): the Ignited / Traumatized readers below query it; null with
+  // TLI_BUFF_SET=off or a hand-made state (the old lists then). Trauma you inflict: yours or the follower's, not your Minions'.
+  const buffs = enemyBuffSet(state);
+  const traumaInflicted = buffs ? buffs.holds("Trauma", { by: BY_YOU_OR_FOLLOWER }) : (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Trauma");
+  // W8 step 2: the other ailment states, the ailments you (or the follower) inflict, the curses and the Minion-only shares from the set too.
+  const inflictedAilments = buffs ? buffs.types("Ailment", { by: BY_YOU_OR_FOLLOWER, stage: "model" }) : state.enemyAilmentsInflicted ?? state.enemyAilments ?? [];
+  const onDummy = (name) => buffs ? buffs.holds(name) : (state.enemyAilments || []).includes(name);
+  const targetCursed = buffs ? buffs.holds("Cursed") : Boolean(state.cursed);
   const lines = modifierTexts.filter((line) => line.origin !== "derived" && !line.lineEffect).map((line) => ({ ...line, clean: normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim() }));
   // Sage's trait and revived lines are read and badged by its module (src/sage-traits.js, hero trait audit B8); the Elixir engine
   // still reads them below (Scent of Ambition's duration, the bottle-only moon line, Omni-Elixir Side Effect's -50%).
@@ -428,13 +477,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const readerCount = (pattern) => lines.filter((line) => pattern.test(line.clean) && !/\bdefeat/i.test(line.clean)).length;
   const ailmentReaders = {
     any: readerCount(/(?<!every )types? of (?:Damaging )?Ailments?(?! or Crowd Control Effect the enemy has)|every type of (?:Damaging )?Ailment(?! or Crowd Control Effect the enemy has)|per Ailment on enem|(?:affected by|with) (?:Damaging )?Ailments|Ailments? (?:the enemy|they) ha(?:s|ve)/i),
-    Ignite: readerCount(/\bIgnited\b|\bwith Ignite\b/i), Trauma: readerCount(/\bTraumatized\b|\bwith Trauma\b/i), Wilt: readerCount(/\bWilted\b|\bwith Wilt\b/i)
+    // "an enemy with Elemental Ailments" (target state 4000570: Ignite, Frostbite, Freeze, Numbed) reads an Ignited dummy too (W6a item 3).
+    Ignite: readerCount(/\bIgnited\b|\bwith Ignite\b|(?:affected by|with) Elemental Ailments?\b/i), Trauma: readerCount(/\bTraumatized\b|\bwith Trauma\b/i), Wilt: readerCount(/\bWilted\b|\bwith Wilt\b/i)
   };
   const entries = [], derived = [];
   // Timed and stacking effects (src/timed-effects.js): { id, label, source, target, toggle, enabled, active, reason, parts, … }.
   // Their derived lines hold the sustained value; the parts carry the clock the 5 s / 20 s windows and the recount follow.
   const timedEffects = [];
-  const entry = (line, active, conditionText, extra = {}) => entries.push({ source: line.source, origin: line.origin, text: line.clean, active, conditionText, status: extra.status || (active ? "In calc" : "Inactive"), provisional: Boolean(extra.provisional), bodies: (extra.bodies || []).map((text) => ({ body: text, derivedText: active ? text : null, readers: ["state"] })), condition: extra.condition || "combatState", group: extra.group || null, ...(extra.enemyDebuff ? { enemyDebuff: true } : {}), ...(extra.armourShred ? { armourShred: true } : {}) });
+  const entry = (line, active, conditionText, extra = {}) => entries.push({ source: line.source, origin: line.origin, text: line.clean, active, conditionText, status: extra.status || (active ? "In calc" : "Inactive"), provisional: Boolean(extra.provisional), bodies: (extra.bodies || []).map((text) => ({ body: text, derivedText: active ? text : null, readers: ["state"] })), condition: extra.condition || "combatState", group: extra.group || null, ...(extra.enemyDebuff ? { enemyDebuff: true } : {}), ...(extra.armourShred ? { armourShred: true } : {}), ...(extra.ccHolder ? { ccHolder: true } : {}) });
   // Buff lines take origin "buff" (every engine reads them as plain lines); enemy damage-taken lines take origin "derived"
   // (the hit engine reads derived "damage taken" lines as the target's; the ailment engines read typed ones).
   // A best-case assumption is on unless its condition is switched off (state flag or the requested conditions; Config tab
@@ -446,12 +496,12 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
 
   // ---- Fervor ----
   const fervorSources = find(PATTERNS.hasFervor);
-  // A fixed Fervor Rating (residual batch A-3) gives Fervor at that Rating; the lowest fixed value wins (provisional). A fixed
+  // A fixed Fervor Rating (residual batch A-3) gives Fervor at that Rating; the largest fixed value holds (game code 0x14207d0b0: the sorted list of fixed values sets the largest). A fixed
   // Rating is not capped at the Max Fervor Rating of 100 (user-confirmed 2026-10-14: Unmatched Valor's 130 goes past it).
   const fixedFervor = find(PATTERNS.fervorFixed).map((line) => num(line.clean.match(PATTERNS.fervorFixed)[1]));
   const hasFervor = fervorSources.length > 0 || fixedFervor.length > 0;
   const fervorEffect = sum(values(PATTERNS.fervorEffect));
-  const heldFervorRating = !hasFervor ? 0 : fixedFervor.length ? Math.min(...fixedFervor) : BUFF_VALUES.fervorMax;
+  const heldFervorRating = !hasFervor ? 0 : fixedFervor.length ? Math.max(...fixedFervor) : BUFF_VALUES.fervorMax;
   // Centralize part 2 ("Consumes half of current Fervor Rating when hit. -0.8% additional damage per 1 point consumed"). Game recipe
   // 570574 (user decision 2026-10-25, "follow the game recipes"; research/recipe-interpreter-step1-2026-10-25.md §17):
   //   row 1: on being hit (trigger 1000037), after 0.04 s, node 627 Fervor Rating -50% of current (the halving);
@@ -464,15 +514,19 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const centralizeLines = find(PATTERNS.centralizeHit);
   const centralizeNotHit = conditionOn("centralizeNotHit");
   const centralizeHitApplies = hasFervor && centralizeLines.length > 0 && !centralizeNotHit;
-  const centralizeConsumed = centralizeHitApplies ? round(heldFervorRating / 2) : 0;
+  // A fixed Rating locks the fight resource (game code, research/oq-rosa-client-2026-11-05.md §2: 0x14207caf0 refuses every change while a
+  // node-639 fixed value is held; 0x14207d0b0 sets the largest fixed value, unclamped): the halving when hit takes nothing, and Centralize's
+  // +25% of current on hit adds nothing either. Only the damage-taken defence remains.
+  const centralizeConsumed = centralizeHitApplies && !fixedFervor.length ? round(heldFervorRating / 2) : 0;
   // Per held point on damage taken (the defence; reported, not applied): p0 / 2 of the line's per-consumed-point value.
   const centralizePerPoint = Math.max(0, ...centralizeLines.map((line) => { const match = line.clean.match(PATTERNS.centralizeHit); return match[1] ? num(match[1]) * (line.multiplier ?? 1) / num(match[2] || 1) : 0; }));
   const centralizeDamageTakenPercent = round(-centralizePerPoint / 2 * (heldFervorRating - centralizeConsumed));
   const centralizePenalty = 0;
   const fervorRating = round(heldFervorRating - centralizeConsumed);
-  const centralizeHitText = `hit (Centralize; condition "Centralize: not hit" off): half of the ${heldFervorRating} Fervor Rating consumed (${centralizeConsumed}), ${fervorRating} left for every Fervor reader${fixedFervor.length ? "; whether a fixed Rating can be consumed is unknown, assumed yes (provisional)" : " (provisional)"}`;
+  const centralizeHitText = fixedFervor.length ? `hit (Centralize; condition "Centralize: not hit" off): the fixed ${heldFervorRating} Fervor Rating refuses the halving (game code 0x14207caf0: no change while a fixed value is held), nothing consumed, ${fervorRating} left for every Fervor reader`
+    : `hit (Centralize; condition "Centralize: not hit" off): half of the ${heldFervorRating} Fervor Rating consumed (${centralizeConsumed}), ${fervorRating} left for every Fervor reader (provisional)`;
   const fervorText = (fixedFervor.length
-    ? `Fervor Rating fixed at ${heldFervorRating} (the fixed-Rating line's value, not capped at ${BUFF_VALUES.fervorMax}: user-confirmed 2026-10-14${fixedFervor.length > 1 ? "; the lowest fixed value wins, provisional" : ""})`
+    ? `Fervor Rating fixed at ${heldFervorRating} (the fixed-Rating line's value, not capped at ${BUFF_VALUES.fervorMax}: user-confirmed 2026-10-14${fixedFervor.length > 1 ? "; the largest fixed value holds (game code)" : ""})`
     : `Fervor held at ${BUFF_VALUES.fervorMax} Rating (it builds on hitting Elite enemies; the dummy is an Elite; own buffs pre-built: provisional)`)
     + (centralizeConsumed ? `; ${centralizeHitText}` : "");
   for (const line of fervorSources) entry(line, true, fervorText, { provisional: !fixedFervor.length });
@@ -527,8 +581,19 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       fervorAttackAilment.push({ source: line.source, value, rating: fervorRating, fervorEffectPercent: fervorEffect, text: `${line.source}: ${bodies.join(" and ")} (${reading})` });
     }
   }
-  for (const line of find(PATTERNS.fervorSkillArea)) entry(line, hasFervor, "Skill Area", { status: "No DPS effect" });
-  for (const line of find(PATTERNS.fervorLifeDrain)) entry(line, hasFervor, "Life and Energy Shield drain", { status: "No DPS effect" });
+  // Ghost Slaughter's "Fervor gains an additional base effect: +1% Skill Area for every 3 Fervor Rating" (464187 → 28444: node 119, attr 6201
+  // increased, × GetEffectScale, manuals 1002010421 / 1002010422: Fervor Effect scales an added base effect; linear, no whole steps). A Skill
+  // Area reader on the hit (Berserking Blade: Rampage, Blazing Bullet: Ignition Point; src/support-conditional-batch4.js) takes it
+  // (2026-11-05, Rosa build audit gap 4); else it moves no damage on one dummy.
+  const fervorSkillArea = [];
+  for (const line of find(PATTERNS.fervorSkillArea)) {
+    const match = line.clean.match(/\+(\d+(?:\.\d+)?)% Skill Area for every (\d+(?:\.\d+)?) Fervor Rating/i);
+    const value = hasFervor && match ? round(num(match[1]) * (line.multiplier ?? 1) * (fervorRating / num(match[2])) * (1 + fervorEffect / 100)) : 0;
+    if (value) fervorSkillArea.push({ source: line.source, value, text: `+${value}% Skill Area (${fervorRating} Fervor Rating ÷ ${num(match[2])} × ${num(match[1])}%${fervorEffect ? ` × (1 + ${fervorEffect}% Fervor effect)` : ""})` });
+    entry(line, hasFervor, hasFervor ? `+${value}% Skill Area (${fervorRating} Fervor Rating ÷ ${match ? num(match[2]) : "?"}${fervorEffect ? ` × (1 + ${fervorEffect}% Fervor effect)` : ""})${state.skillAreaReaders ? ": read by the hit's Skill Area support" : ": no Skill Area reader on the build"}` : "no Fervor source", { status: hasFervor && state.skillAreaReaders ? "In calc" : "No DPS effect", provisional: Boolean(state.skillAreaReaders) });
+  }
+  // The drain sets the held current-Life level the "per 1% Life lost" readers take (src/planner.js lifeLostState; record 824274, 2026-11-05).
+  for (const line of find(PATTERNS.fervorLifeDrain)) entry(line, hasFervor, state.lifeLostDrain ? `${state.lifeLostDrain.text}${state.lifeLostReaders ? "; read by the build's Life-lost lines" : "; no Life-lost reader on the build"}` : "Life and Energy Shield drain", { status: hasFervor && state.lifeLostDrain && state.lifeLostReaders ? "In calc" : "No DPS effect", provisional: Boolean(state.lifeLostDrain && state.lifeLostReaders) });
   // User-confirmed 2026-10-14: Fervor from a static source ("Have Fervor", the necklace) is not lost at Low Life, though sealed
   // Life keeps the build at Low Life; only Fervor gained in combat would be.
   for (const line of find(PATTERNS.losesFervorLowLife)) entry(line, false, fervorSources.length || fixedFervor.length ? "Fervor here is static (\"Have Fervor\" or a fixed Rating), so Low Life does not remove it (user-confirmed 2026-10-14)" : "no Fervor source", { status: "No DPS effect" });
@@ -541,7 +606,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.fervorRatingOnHit)) entry(line, hasFervor, hasFervor ? (fixedFervor.length ? `Fervor Rating is fixed at ${heldFervorRating}` : "Fervor Rating is already held at its max (100)") : "no Fervor source", { status: "No DPS effect" });
   // Centralize part 1 (the user has not answered whether it can raise a fixed Rating): the current reading is kept.
   const fixedFervorSource = (() => { const fixedLine = find(PATTERNS.fervorFixed).find((line) => num(line.clean.match(PATTERNS.fervorFixed)[1]) === heldFervorRating); if (!fixedLine) return ""; const prefix = fixedLine.clean.match(/^\[([^\]]+)\]/); const core = String(fixedLine.source || "").match(/core: ([^(]+?)(?: \(|$)/i); return (prefix?.[1] || core?.[1] || fixedLine.source || "").trim(); })();
-  for (const line of find(PATTERNS.centralize)) entry(line, hasFervor, hasFervor ? (fixedFervor.length ? `Fervor Rating fixed at ${heldFervorRating}${fixedFervorSource ? ` by ${fixedFervorSource}` : ""}; whether Centralize can raise a fixed Rating is unconfirmed` : "Fervor Rating is already held at its max (100)") : "no Fervor source", { status: "No DPS effect" });
+  for (const line of find(PATTERNS.centralize)) entry(line, hasFervor, hasFervor ? (fixedFervor.length ? `Fervor Rating fixed at ${heldFervorRating}${fixedFervorSource ? ` by ${fixedFervorSource}` : ""}; a fixed Rating refuses Centralize's gain (game code 0x14207caf0)` : "Fervor Rating is already held at its max (100)") : "no Fervor source", { status: "No DPS effect" });
   // Centralize part 2: the "-0.8% additional damage" is a defence (game recipe 570574: additional damage taken from hits), No DPS
   // effect. The halving reaches the Fervor readers when the "Centralize: not hit" switch is off (In calc, provisional).
   const centralizeDefence = `game recipe 570574: ${-centralizePerPoint / 2}% additional damage taken from hits per held Fervor Rating point (attribute 57201, additional damage taken), a defence with no DPS effect`;
@@ -566,7 +631,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const attackAggressionLines = [...find(PATTERNS.attackAggressionGain).filter((line) => !/when casting an Attack Skill/i.test(line.clean) || state.castsAttack), ...(hasFervor ? fervorAggressionLines : [])];
   // Kitty Express (pact scripted-effects batch): "Has Attack Aggression when reaching Max Feline Stimulant stacks" (game affix
   // 86855680) holds with the Feline Stimulant stacks at their cap (own buff, best case; resolved with the timed effects below).
-  const felineOn = find(PATTERNS.felineGain).length > 0 && conditionOn("felineStimulant") && Number(state.mainUsesPerSecond) > 0;
+  // "when triggering a Main Skill" is trigger 1000060 with the Main Skill tag (game record 715628480; the 1000074 / 1000060 pairs settle
+  // 1000060 as a triggered use): the Main Skill's triggered uses from the hit pass (wiring audit W2 gap 5, 2026-11-03: a manual Main Skill
+  // alone no longer holds it); before the pass, any Main Skill use.
+  const mainTriggered = Number.isFinite(state.mainTriggeredUsesPerSecond) ? state.mainTriggeredUsesPerSecond > 0 : Number(state.mainUsesPerSecond) > 0;
+  const felineOn = find(PATTERNS.felineGain).length > 0 && conditionOn("felineStimulant") && mainTriggered;
   // "Gains Attack / Spell Aggression when Minions land a (Spell) Critical Strike": the Minion holds it, not you. Raw affixes 77639088 and 817133056: row 1 hands
   // row 2 to the Minions ([3]), and row 2's buff filter is [1], that row's own holder; a line that reaches you says so (Command's 9338664 writes on [4]). The
   // buff's own values at uptime 1 while the Minion crits (open question gear-aggression-minion-crit; chunk 11, 2026-11-01).
@@ -586,8 +655,8 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     derive(`+${value}% additional Attack Speed`, BUFF_VALUES.attackAggression.source, "Attack Aggression held");
   }
   // "Gains Spell Aggression when casting a Spell Skill" (residual batch A-3): held while the build casts a Spell on the dummy.
-  const spellAggressionLines = [...find(PATTERNS.spellAggressionGain), ...find(PATTERNS.spellAggressionOnCast).filter(() => state.dealsSpellDamage), ...(hasFervor ? fervorAggressionLines : [])];
-  for (const line of find(PATTERNS.spellAggressionOnCast).filter(() => !state.dealsSpellDamage)) entry(line, false, "no Spell Skill is cast on the dummy");
+  const spellAggressionLines = [...find(PATTERNS.spellAggressionGain), ...find(PATTERNS.spellAggressionOnCast).filter(() => state.castsSpell ?? state.dealsSpellDamage), ...(hasFervor ? fervorAggressionLines : [])];
+  for (const line of find(PATTERNS.spellAggressionOnCast).filter(() => !(state.castsSpell ?? state.dealsSpellDamage))) entry(line, false, "no Spell Skill is cast on the dummy");
   // The Spell half of the Minion lines above (affix 817133056, trigger tags Spell + crit).
   for (const line of find(PATTERNS.spellAggressionMinionSpellCrit)) {
     entry(line, Boolean(state.minionSpellsCrit), state.minionSpellsCrit ? "the modeled Minions hold Spell Aggression" : "no modeled Minion casts a Spell", { provisional: true });
@@ -613,8 +682,8 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.aggressionEffect)) entry(line, line.clean.includes("Attack") ? hasAttackAggression : hasSpellAggression, "scales the Aggression buff");
   const hastenSources = [
     ...find(PATTERNS.hastenAlways).map((line) => [line, true, "Hasten held"]),
-    ...find(PATTERNS.hastenAgility).map((line) => [line, (state.blessingStacks?.Agility || 0) > 0, (state.blessingStacks?.Agility || 0) > 0 ? "Agility Blessing at max stacks (Blessing model)" : "no Agility Blessing stacks"]),
-    ...find(PATTERNS.hastenTrauma).map((line) => [line, (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Trauma"), (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Trauma") ? "the build keeps inflicting Trauma: Hasten refreshed (uptime 1; provisional)" : "the build inflicts no Trauma"])
+    ...find(PATTERNS.hastenAgility).map((line) => [line, (ownBlessingStacks(state)?.Agility || 0) > 0, (ownBlessingStacks(state)?.Agility || 0) > 0 ? "Agility Blessing at max stacks (Blessing model)" : "no Agility Blessing stacks"]),
+    ...find(PATTERNS.hastenTrauma).map((line) => [line, traumaInflicted, traumaInflicted ? "the build keeps inflicting Trauma: Hasten refreshed (uptime 1; provisional)" : "the build inflicts no Trauma"])
   ];
   const hasHasten = hastenSources.some(([, active]) => active);
   for (const [line, active, text] of hastenSources) entry(line, active, text, { provisional: /provisional/.test(text) });
@@ -638,7 +707,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const profaneLines = find(PATTERNS.profane);
   const profaneOnWilt = find(PATTERNS.profaneOnWilt);
   // "when inflicting" readers: your own ailments only (not those your Minions keep on the dummy, src/minion-ailment-types.js).
-  const wiltOnDummy = (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).some((name) => ["Wilt", "Deterioration"].includes(name));
+  const wiltOnDummy = inflictedAilments.some((name) => ["Wilt", "Deterioration"].includes(name));
   for (const line of profaneOnWilt) entry(line, wiltOnDummy, wiltOnDummy ? "the build inflicts Wilt or Deterioration: Profane refreshed (uptime 1; provisional)" : "the build inflicts no Wilt or Deterioration", { provisional: true });
   const hasProfane = profaneLines.length > 0 || (profaneOnWilt.length > 0 && wiltOnDummy);
   const minionsProfane = profaneLines.some((line) => line.clean.match(PATTERNS.profane)[1]) && Boolean(state.minionsCrit);
@@ -670,7 +739,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Uptime = 1 − (1 − chance)^(inflictions in one duration), with one Elemental Ailment infliction per main-skill use (the
   // early use rate: a lower bound for builds whose hits inflict several; provisional). Value: reference data keyword +20% additional
   // Elemental Damage.
-  const elementalOnDummy = (state.enemyAilments || []).some((name) => ["Ignite", "Frostbite", "Frozen", "Freeze", "Numbed", "Shock"].includes(name));
+  const elementalOnDummy = buffs ? buffs.holds("ElementalAilment") : (state.enemyAilments || []).some((name) => ["Ignite", "Frostbite", "Frozen", "Freeze", "Numbed", "Shock"].includes(name));
   for (const line of find(PATTERNS.thrillBarrier)) {
     const match = line.clean.match(PATTERNS.thrillBarrier);
     const chance = Math.min(1, num(match[1]) * (line.multiplier ?? 1) / 100), seconds = num(match[2]);
@@ -683,10 +752,12 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
 
   // ---- Ash (legendary audit batch 7; reference data keyword 10147: "Cannot inflict Critical Strike. +30% additional Fire Damage and +30%
   // Movement Speed. Unable to refresh") ----
-  // Hot Night's Embrace / Illusory Chimera: "Every N time(s) a Fire Skill is cast, gains Ash for D s". The casts are the Main Skill's
-  // uses while a Fire skill is active; a gain while Ash is up is lost (unable to refresh), so the uptime is D ÷ (the first multiple of
-  // the gain period that reaches D). Time-averaged (provisional): +30% × uptime additional Fire Damage and the crit rating × (1 −
-  // uptime), the second read as "-X% additional Critical Strike Rating".
+  // Hot Night's Embrace / Illusory Chimera: "Every N time(s) a Fire Skill is cast, gains Ash for D s". The casts are every Fire skill use,
+  // player and triggered (the recipe's counter has no gate on Ash). SS14 client (research/oq-aeterna-stack-modes-2026-11-04.md R7,
+  // legendary-ash; 2026-11-04): affix 248970000's Ash is a node-306 carrier in mode 2, so a gain while Ash is up refreshes it to the full
+  // D (the keyword's "unable to refresh" does not describe this carrier): uptime = min(1, D ÷ (N ÷ Fire casts/s)). Before 2026-11-04 a gain
+  // while up was lost: D ÷ (the first multiple of the period that reaches D). Time-averaged: +30% × uptime additional Fire Damage and no
+  // crits for that share ("-X% additional Critical Strike Rating" marked cannotCrit: label 3001211 wins over a guaranteed crit).
   for (const line of find(PATTERNS.ashGain)) {
     const [, every, seconds] = line.clean.match(PATTERNS.ashGain);
     // The hit pass's measured Fire casts per second (src/planner.js facts.fireCastsPerSecond); the early Main Skill rate meanwhile.
@@ -695,10 +766,10 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const fire = measured != null ? measured > 0 : (state.activeTags || new Set()).has("Fire");
     const period = rate > 0 ? num(every) / rate : Infinity;
     const duration = num(seconds);
-    const uptime = fire && Number.isFinite(period) ? duration / (Math.max(1, Math.ceil(duration / period - 1e-9)) * period) : 0;
+    const uptime = fire && Number.isFinite(period) ? Math.min(1, duration / period) : 0;
     const value = round(BUFF_VALUES.ash * uptime), critLoss = round(100 * uptime);
-    entry(line, uptime > 0, uptime > 0 ? `Ash uptime ${round(uptime * 100)}% (one gain per ${every} Fire casts at ${round(rate)} casts/s, ${duration} s, unable to refresh): +${value}% additional Fire Damage and no crits for that share (time-averaged; provisional)` : fire ? "no Main Skill use rate" : "no active Fire skill", { provisional: true, bodies: uptime > 0 ? [`+${value}% additional Fire Damage`, `-${critLoss}% additional Critical Strike Rating`] : [] });
-    if (uptime > 0) { derive(`+${value}% additional Fire Damage`, line.source, `Ash at ${round(uptime * 100)}% uptime`, true); derive(`-${critLoss}% additional Critical Strike Rating`, line.source, `Ash at ${round(uptime * 100)}% uptime: no crits`, true, uptime); }
+    entry(line, uptime > 0, uptime > 0 ? `Ash uptime ${round(uptime * 100)}% (one gain per ${every} Fire casts at ${round(rate)} casts/s, ${duration} s, a gain while up refreshes it: SS14 client): +${value}% additional Fire Damage and no crits for that share (time-averaged; provisional)` : fire ? "no Main Skill use rate" : "no active Fire skill", { provisional: true, bodies: uptime > 0 ? [`+${value}% additional Fire Damage`, `-${critLoss}% additional Critical Strike Rating`] : [] });
+    if (uptime > 0) { derive(`+${value}% additional Fire Damage`, line.source, `Ash at ${round(uptime * 100)}% uptime`, true); derive(`-${critLoss}% additional Critical Strike Rating`, line.source, `Ash at ${round(uptime * 100)}% uptime: no crits`, true, uptime); derived.at(-1).lineEffect.cannotCrit = true; }
   }
 
   // ---- Frantic Shadow (legendary audit batch 7): "N% chance to gain +X% Attack Speed for T s when Shadows hit enemies" ----
@@ -715,16 +786,25 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
 
   // ---- Fortitude (defence) and per-stack damage ----
   const fortitudeGain = find(PATTERNS.fortitudeGain);
-  const hasFortitude = fortitudeGain.length > 0 && state.castsMelee;
-  const fortitudeStacks = hasFortitude ? BUFF_VALUES.fortitudeBaseMax + sum(find(PATTERNS.fortitudeExtra).map((line) => { const match = line.clean.match(PATTERNS.fortitudeExtra); return num(match[1] || match[2]) * (line.multiplier ?? 1); })) : 0;
+  // Each gain line's chance (100% for "Gains a stack …"); the gains answer your own Melee uses (trigger 1000074). Measured by the hit
+  // pass (state.meleeManualUsesPerSecond); before it, an active Melee skill holds the stacks (own buffs pre-built).
+  const fortitudeChance = Math.min(1, sum(fortitudeGain.map((line) => { const match = line.clean.match(PATTERNS.fortitudeGain); return (match[1] == null ? 100 : num(match[1]) * (line.multiplier ?? 1)) / 100; })));
+  const meleeUses = Number.isFinite(state.meleeManualUsesPerSecond) ? state.meleeManualUsesPerSecond : null;
+  const hasFortitude = fortitudeGain.length > 0 && state.castsMelee && fortitudeChance > 0 && meleeUses !== 0;
+  const fortitudeMax = BUFF_VALUES.fortitudeBaseMax + sum(find(PATTERNS.fortitudeExtra).map((line) => { const match = line.clean.match(PATTERNS.fortitudeExtra); return num(match[1] || match[2]) * (line.multiplier ?? 1); }));
+  // A guaranteed gain on every use holds the max (pre-built). A chance gain holds min(max, chance × Melee uses/s × 10 s): each stack read
+  // as its own 10 s (keyword 10000107), provisional (open question fortitude-chance-stacks).
+  const fortitudeStacks = !hasFortitude ? 0 : fortitudeChance >= 1 || meleeUses === null ? fortitudeMax : Math.min(fortitudeMax, fortitudeChance * meleeUses * 10);
   // The stacks are damage where a "+X% additional damage per N stack(s) of Fortitude" line reads them (badge movement probe
   // 2026-10-27: Automatic Upgrade's gain line moved Hammer of Ash while it read No DPS effect).
   const fortitudeRead = hasFortitude && find(PATTERNS.fortitudeDamage).length > 0;
-  for (const line of fortitudeGain) entry(line, hasFortitude, hasFortitude ? `${fortitudeStacks} Fortitude stacks held (defence: -5% Hit Damage taken each${fortitudeRead ? "; read by the per-stack damage line" : ""})` : "no active Melee skill", { status: hasFortitude ? (fortitudeRead ? "In calc" : "No DPS effect") : "Inactive" });
+  for (const line of fortitudeGain) entry(line, hasFortitude, hasFortitude ? `${round(fortitudeStacks)} Fortitude stacks held${fortitudeChance < 1 && meleeUses !== null ? ` (${round(fortitudeChance * 100)}% chance × ${round(meleeUses)} Melee uses/s × 10 s, up to ${fortitudeMax}; provisional)` : ""} (defence: -5% Hit Damage taken each${fortitudeRead ? "; read by the per-stack damage line" : ""})` : meleeUses === 0 ? "no Melee skill you use yourself (its uses are all triggered; trigger 1000074)" : "no active Melee skill", { status: hasFortitude ? (fortitudeRead ? "In calc" : "No DPS effect") : "Inactive" });
   for (const line of find(PATTERNS.fortitudeExtra)) entry(line, hasFortitude, "Fortitude stack cap", { status: hasFortitude ? (fortitudeRead ? "In calc" : "No DPS effect") : "Inactive" });
   for (const line of find(PATTERNS.fortitudeDamage)) {
     const match = line.clean.match(PATTERNS.fortitudeDamage);
-    const value = round(num(match[1]) * (line.multiplier ?? 1) * Math.floor(fortitudeStacks / num(match[2])));
+    // Whole steps of the held stacks; a chance gain's expected stacks are a time average (no floor on the average: provisional).
+    const steps = fortitudeChance >= 1 || meleeUses === null ? Math.floor(fortitudeStacks / num(match[2])) : fortitudeStacks / num(match[2]);
+    const value = round(num(match[1]) * (line.multiplier ?? 1) * steps);
     entry(line, value > 0, value > 0 ? `${fortitudeStacks} Fortitude stacks held (own buffs pre-built)` : "no Fortitude stacks", { bodies: [`+${value}% additional damage`] });
     if (value > 0) derive(`+${value}% additional damage`, line.source, `${fortitudeStacks} Fortitude stacks`);
   }
@@ -830,11 +910,13 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (type) debuffs.infiltration.add(type); else debuffs.frail = true;
     entry(line, true, `the follower keeps ${type ? `${type} Infiltration` : "Frail"} on the dummy while its skill hits it (uptime 1, provisional)`, { provisional: true, enemyDebuff: true, bodies: [type ? `+${BUFF_VALUES.infiltration}% additional ${type} Damage taken` : `+${BUFF_VALUES.frail}% additional Spell Damage taken`] });
   }
+  if (debuffs.frail) passSet.add({ name: "Frail", inflictedBy: debuffs.frailOwn ? "you" : "follower", stage: "debuff", source: "Frail (keyword 10000102)" });
+  const frailHeld = buffs ? passSet.holds("Frail") : debuffs.frail, frailOwn = buffs ? passSet.holds("Frail", { by: BY_YOU }) : debuffs.frailOwn;
   // Frail Effect (batch 7): scales the Frail you inflict; a Frail only the follower keeps is its own (as the follower's Paralysis is not
   // scaled by your inflicted Paralysis Effect).
   const frailEffect = sum(find(PATTERNS.frailEffect).map((line) => num(line.clean.match(PATTERNS.frailEffect)[1]) * (line.multiplier ?? 1)));
-  for (const line of find(PATTERNS.frailEffect)) entry(line, debuffs.frailOwn, debuffs.frailOwn ? "scales the Frail you keep on the dummy (game recipe 540757504: Status Effect on Frail)" : debuffs.frail ? "the Frail on the dummy is the follower's: your Frail Effect does not scale it" : "no Frail source");
-  if (debuffs.frail) derive(`+${round(BUFF_VALUES.frail * (debuffs.frailOwn ? 1 + frailEffect / 100 : 1))}% additional Spell Damage taken`, "Frail (keyword 10000102)", "Frail on the dummy", true);
+  for (const line of find(PATTERNS.frailEffect)) entry(line, frailOwn, frailOwn ? "scales the Frail you keep on the dummy (game recipe 540757504: Status Effect on Frail)" : frailHeld ? "the Frail on the dummy is the follower's: your Frail Effect does not scale it" : "no Frail source");
+  if (frailHeld) derive(`+${round(BUFF_VALUES.frail * (frailOwn ? 1 + frailEffect / 100 : 1))}% additional Spell Damage taken`, "Frail (keyword 10000102)", "Frail on the dummy", true);
   // "+X% additional damage taken by Nearby enemies / enemies in Proximity": Nearby is within 6 m and Proximity within 4 m
   // (reference data keyword tooltips, Q-G9 answered 2026-10-12). The player stands close (best case), so it holds; the Distant
   // alternative of the Distance group (6 m away) drops it.
@@ -902,9 +984,12 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const match = line.clean.match(PATTERNS.infiltrationOnHit);
     const type = match[1] || match[2];
     const typeWord = type[0].toUpperCase() + type.slice(1).toLowerCase();
-    const active = Boolean(state.anyHit);
+    // "when dealing damage" is trigger 1000031 (game records 69093904, 923795264, 984191424): a hit or a DoT's value being set (proven:
+    // client 0x141c337c0), so a DoT of yours holds it too (wiring audit W2 gap 4, 2026-11-03); "on hit" is your hits.
+    const onHit = /on hit/i.test(line.clean), viaDot = !onHit && !state.anyHit && Boolean(state.dealsDamageOverTime);
+    const active = Boolean(state.anyHit) || viaDot;
     if (active) debuffs.infiltration.add(typeWord);
-    entry(line, active, active ? `the build hits the dummy: ${typeWord} Infiltration held (uptime 1, provisional)` : "no modeled hit", { provisional: true, bodies: [`+${BUFF_VALUES.infiltration}% additional ${typeWord} Damage taken`] });
+    entry(line, active, active ? (viaDot ? `your damage over time sets its value on the dummy (trigger 1000031): ${typeWord} Infiltration held (uptime 1, provisional)` : `the build hits the dummy: ${typeWord} Infiltration held (uptime 1, provisional)`) : onHit ? "no modeled hit" : "no damage of yours (no hit or damage over time)", { provisional: true, bodies: [`+${BUFF_VALUES.infiltration}% additional ${typeWord} Damage taken`] });
   }
   for (const line of find(PATTERNS.infiltrationMinions)) {
     const type = line.clean.match(PATTERNS.infiltrationMinions)[1];
@@ -914,7 +999,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, active, active ? `a modeled Minion deals damage to the dummy: ${typeWord} Infiltration held (uptime 1, provisional)` : "no modeled Minion", { provisional: true, bodies: [`+${BUFF_VALUES.infiltration}% additional ${typeWord} Damage taken`] });
   }
   for (const line of find(PATTERNS.lightningInfiltrationCrit)) { const active = Boolean(state.canCrit) && dealt.has("Lightning"); if (active) debuffs.infiltration.add("Lightning"); entry(line, active, active ? "the build crits with Lightning Damage: Lightning Infiltration held (uptime 1, provisional)" : "no crit with Lightning Damage", { provisional: true }); }
-  const frostbitten = (state.enemyAilments || []).includes("Frostbite");
+  const frostbitten = onDummy("Frostbite");
   const frostbiteTypeGroups = damageTypeGroups(state.dealtDamageTypes || state.dealtTypes);
   debuffs.frostbiteRating = frostbitten ? inflictedFrostbiteRating(modifierTexts, { typeGroups: frostbiteTypeGroups }) : 0;
   // Frostbite only from Discord of the Second Will: buff 112 on its turn in the rotation, so Cold Damage taken and the crowd control
@@ -923,6 +1008,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(MAX_FROSTBITE_PER_TYPE)) { const value = num(line.clean.match(MAX_FROSTBITE_PER_TYPE)[1]) * (line.multiplier ?? 1); const active = frostbitten && frostbiteTypeGroups > 0; entry(line, active, !frostbitten ? "the build inflicts no Frostbite" : `${frostbiteTypeGroups} damage type group${frostbiteTypeGroups === 1 ? "" : "s"} dealt (Physical / Elemental / Erosion): +${round(value * frostbiteTypeGroups)} Max Frostbite Rating → Frostbite Rating ${debuffs.frostbiteRating} (max 120; provisional)`, { provisional: true }); }
   // user-confirmed 2026-10-18: Frozen at 100 or higher (reference data says "more than 100").
   debuffs.frozen = frostbitten && debuffs.frostbiteRating >= BUFF_VALUES.frostbiteFreezeAt;
+  // W8 step 3 (Group B): a Freeze this pass reaches with the per-type Max Frostbite Rating lines (Prophet's Dirge: the enemy-ailment
+  // model's Freeze check counts no damage type group) is on the dummy for every Frozen reader, as the deemed Freeze below is (before, only
+  // the crowd control counters saw it).
+  if (debuffs.frozen && Array.isArray(state.enemyAilments) && !state.enemyAilments.includes("Frozen")) {
+    state.enemyAilments.push("Frozen");
+    const foreign = buffs && !buffs.holds("Frostbite", { by: BY_YOU }) ? buffs.entries("Frostbite").find((item) => item.inflictedBy !== "you")?.inflictedBy : null;
+    state.enemyBuffs?.add?.({ name: "Frozen", source: "Frostbite Rating (src/combat-states.js)", reason: `Frostbite Rating ${debuffs.frostbiteRating} ≥ ${BUFF_VALUES.frostbiteFreezeAt} with ${frostbiteTypeGroups} damage type group${frostbiteTypeGroups === 1 ? "" : "s"} dealt`, inflictedBy: foreign || "you", stage: "combat" });
+  }
   // First Flake of Strange Snow (B3): deemed Frostbite Rating per type of Crowd Control Effect, Ailment and Curse on the dummy.
   // Types: the dummy's ailments (Frostbite and Freeze one type each), Paralysis, and each curse (the curse skills, or one "Curse"
   // when only a granted curse holds); a Freeze the deemed rating reaches adds its own type (one step).
@@ -931,20 +1024,25 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const deemedLines = find(PATTERNS.deemedFrostbite);
     if (deemedLines.length && frostbitten) {
       const [, per, cap] = deemedLines[0].clean.match(PATTERNS.deemedFrostbite).map(Number);
-      const names = new Set((state.enemyAilments || []).map((name) => name === "Frozen" ? "Freeze" : name));
+      const names = new Set((buffs ? buffs.types("Ailment") : state.enemyAilments || []).map((name) => name === "Frozen" ? "Freeze" : name));
       if (debuffs.paralysis) names.add("Paralysis");
       // The crowd control types held further down (Paralysis by chance, Weaken, Slow, Blind, Taunt, …): resolveCombatStates runs a
       // second time with the first run's types when they add one (2026-11-03: the deemed rating counted 5 types, not 6, before).
       for (const name of state.deemedCrowdControl || []) names.add(name === "Frozen" ? "Freeze" : name);
       for (const name of state.curseSkillNames || []) names.add(`Curse: ${name}`);
-      if (state.cursed && !(state.curseSkillNames || []).length) names.add("Curse");
+      if (targetCursed && !(state.curseSkillNames || []).length) names.add("Curse");
       const deemed = (count) => Math.min(cap, per * count);
       let bonus = deemed(names.size);
       if (!names.has("Freeze") && debuffs.frostbiteRating + bonus >= BUFF_VALUES.frostbiteFreezeAt) { names.add("Freeze"); bonus = deemed(names.size); }
       debuffs.frostbiteRating = round(debuffs.frostbiteRating + bonus);
       if (debuffs.frostbiteRating >= BUFF_VALUES.frostbiteFreezeAt && !debuffs.frozen) {
         debuffs.frozen = true;
-        if (Array.isArray(state.enemyAilments) && !state.enemyAilments.includes("Frozen")) state.enemyAilments.push("Frozen");
+        if (Array.isArray(state.enemyAilments) && !state.enemyAilments.includes("Frozen")) {
+          state.enemyAilments.push("Frozen");
+          // The same Frozen on the line-condition state's unit buff set (src/unit-buff-set.js), as a combat-pass entry: the list readers
+          // see it, the per-type count (stage "model") does not, as before (W8 step 1).
+          state.enemyBuffs?.add?.({ name: "Frozen", source: deemedLines[0].source, reason: "deemed Frostbite Rating ≥ 100 (First Flake of Strange Snow)", inflictedBy: "you", stage: "combat" });
+        }
       }
       deemedFrostbite = { per, cap, types: [...names], bonus };
     }
@@ -988,7 +1086,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (active) derive(`+${value}% Elemental Resistance Penetration`, line.source, `${cap} stacks (Barrage hits)`, true);
   }
   // Wilt stacks on the dummy: the Wilt model's steady stacks from the measuring pass (the cap meanwhile, as Open Wounds' Trauma).
-  const wiltInflicted = (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Wilt");
+  const wiltInflicted = inflictedAilments.includes("Wilt");
   for (const line of find(PATTERNS.wiltStackTaken)) {
     const [, per, cap] = line.clean.match(PATTERNS.wiltStackTaken);
     const measured = Number.isFinite(state.wilt?.steadyActiveStacks) ? state.wilt.steadyActiveStacks : null;
@@ -1019,7 +1117,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // +8% additional Physical Damage, summed (provisional), × (1 + Laceration Effect: +X% per Trauma stack on the dummy). Its self-damage
   // (50 True Damage per second, Mana and Energy Shield removal) is defence.
   for (const line of find(PATTERNS.lacerationOnTrauma)) {
-    const inflicted = (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Trauma");
+    const inflicted = traumaInflicted;
     const rate = Number(state.trauma?.stackRate);
     const stacks = !inflicted ? 0 : Number.isFinite(rate) && rate > 0 ? Math.min(30, rate * 5) : 30;
     const traumaStacks = !inflicted ? 0 : Number.isFinite(state.trauma?.steadyActiveStacks) ? state.trauma.steadyActiveStacks : Math.max(1, Number(state.trauma?.stackLimit) || 1);
@@ -1028,7 +1126,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, value > 0, !inflicted ? "the build inflicts no Trauma" : `${round(stacks)} Laceration stacks (Trauma inflicted ${Number.isFinite(rate) && rate > 0 ? `${round(rate)}/s × 5 s` : "often enough to hold the cap"}, max 30) × 8% additional Physical Damage${effect ? ` × (1 + ${round(effect)}% Laceration Effect from ${round(traumaStacks)} Trauma stacks)` : ""} (summed; provisional)`, { provisional: true, bodies: value > 0 ? [`+${value}% additional Physical Damage`] : [] });
     if (value > 0) derive(`+${value}% additional Physical Damage`, line.source, `${round(stacks)} Laceration stacks`, true);
   }
-  for (const line of find(PATTERNS.lacerationEffectPerTrauma)) entry(line, find(PATTERNS.lacerationOnTrauma).length > 0 && (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Trauma"), "scales Laceration (read with its gain line)", { provisional: true });
+  for (const line of find(PATTERNS.lacerationEffectPerTrauma)) entry(line, find(PATTERNS.lacerationOnTrauma).length > 0 && traumaInflicted, "scales Laceration (read with its gain line)", { provisional: true });
   for (const line of find(PATTERNS.sentryProximityTaken)) {
     const value = num(line.clean.match(PATTERNS.sentryProximityTaken)[1]) * (line.multiplier ?? 1);
     const active = (state.sentrySkills || []).length > 0;
@@ -1053,6 +1151,26 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, active, active ? `${curse} is on the dummy: ${typeWord} Infiltration held (uptime 1, provisional)` : `${curse} is not on the dummy (no active ${curse} curse within the curse limit)`, { provisional: true, enemyDebuff: true, bodies: [`+${BUFF_VALUES.infiltration}% additional ${typeWord} Damage taken`] });
   }
   for (const line of find(PATTERNS.coldInfiltrationFrostbitten)) { if (frostbitten) debuffs.infiltration.add("Cold"); entry(line, frostbitten, frostbitten ? "the dummy is Frostbitten" : "the build inflicts no Frostbite"); }
+  // "Inflicts Fire Infiltration when dealing Fire Damage to Ignited enemies" (885067264: trigger 1000030 on your Fire damage, tag 5001130,
+  // to a target in state 4000130 Ignited; buff 3441) and "+X% Fire Penetration against Ignited enemies" (391400 / 101010706: attr 5104 on
+  // the target state 4000130) read the dummy's Ignite whoever inflicted it (wiring audit gap 2d, 2026-11-03): your own, or your Minions'
+  // at its uptime (src/minion-ailment-types.js). On the Scorching Beam path they stay the beam and Ignite ledgers' own talent keys
+  // (src/scorching-beam-hit.js conditions.fireInfiltration, src/theoretical-sources.js "vs Ignited enemies"); elsewhere they hold here, on
+  // every Fire hit and Fire DoT of yours: the Infiltration as Fire Infiltration on the dummy, the penetration as a plain line × the share.
+  const ignitedShare = buffs ? buffs.share("Ignite") : (state.enemyAilments || []).includes("Ignite") ? Math.min(1, Math.max(0, Number(state.enemyAilmentUptime?.Ignite ?? 1))) : 0;
+  const dealsFireOwn = state.ownDamage !== false && (state.dealtDamageTypes || dealt).has("Fire");
+  let fireInfiltrationIgnitedShare = 0;
+  for (const line of state.beamActive ? [] : find(PATTERNS.fireInfiltrationIgnited)) {
+    const active = !state.beamActive && ignitedShare > 0 && dealsFireOwn;
+    if (active && ignitedShare >= 1) debuffs.infiltration.add("Fire"); else if (active) fireInfiltrationIgnitedShare = Math.max(fireInfiltrationIgnitedShare, ignitedShare);
+    entry(line, active, state.beamActive ? "the Scorching Beam path reads it in its own ledgers (the beam's Ignite keeps the dummy Ignited)" : !(ignitedShare > 0) ? "the dummy is not Ignited" : !dealsFireOwn ? "the build deals no Fire Damage of its own" : `the dummy is Ignited${ignitedShare < 1 ? ` ${round(ignitedShare * 100)}% of the time (by your Minions)` : ""} and the build deals Fire Damage: Fire Infiltration on the dummy (game affix 885067264; provisional)`, { provisional: true, enemyDebuff: true });
+  }
+  for (const line of state.beamActive ? [] : find(PATTERNS.firePenetrationIgnited)) {
+    const value = num(line.clean.match(PATTERNS.firePenetrationIgnited)[1]) * (line.multiplier ?? 1);
+    const active = !state.beamActive && ignitedShare > 0 && dealsFireOwn;
+    if (active) derive(`+${round(value * ignitedShare)}% Fire Penetration`, line.source, `the dummy is Ignited${ignitedShare < 1 ? ` ${round(ignitedShare * 100)}% of the time (by your Minions; time-averaged)` : ""}`, true);
+    entry(line, active, state.beamActive ? "the Scorching Beam path reads it in its own ledgers (the beam's Ignite keeps the dummy Ignited)" : !(ignitedShare > 0) ? "the dummy is not Ignited" : !dealsFireOwn ? "the build deals no Fire Damage of its own" : `the dummy is Ignited${ignitedShare < 1 ? ` ${round(ignitedShare * 100)}% of the time (by your Minions)` : ""}: +${round(value * ignitedShare)}% Fire Penetration on your Fire damage (game affix 391400; provisional)`, { provisional: true, bodies: [`+${round(value * ignitedShare)}% Fire Penetration`] });
+  }
   for (const line of find(PATTERNS.penetrating)) {
     // Game record 425153344: trigger 1000030 on your own damage of each type, no Minion row (chunk 4, 2026-11-01). `dealt` always carries
     // Fire, so read the types the build really deals, and none when only Minions deal damage.
@@ -1066,6 +1184,10 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // time-averaged value below unless another source already holds that type.
   const rosaInfiltration = state.rosa?.mercury?.infiltration || null;
   if (rosaInfiltration && rosaInfiltration.uptime >= 1 - 1e-9) debuffs.infiltration.add(rosaInfiltration.type);
+  // Every Infiltration producer has run: the types on the pass's set (their inflicters are settled from the entries at the end).
+  for (const type of debuffs.infiltration) passSet.add({ name: `${type} Infiltration`, label: type, stage: "debuff", tags: buffRecordOf(`${type} Infiltration`)?.tags?.includes(5200086) ? null : [5200086], source: "Infiltration (src/combat-states.js)" });
+  const infiltrationTypes = buffs ? passSet.types({ tag: 5200086 }) : [...debuffs.infiltration];
+  const infiltrationHeld = (type) => infiltrationTypes.includes(type);
   // Fire Infiltration on the beam / Ignite path stays the existing condition (src/scorching-beam-hit.js, theoretical-sources).
   // Infiltration Effect (residual batch A-3): scales that type's +13% (keyword value × (1 + Σ effect)). The beam / Ignite
   // path's own Fire Infiltration (src/scorching-beam-hit.js) does not read it.
@@ -1074,29 +1196,36 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const type = line.clean.match(PATTERNS.infiltrationEffect)[2];
     const word = type[0].toUpperCase() + type.slice(1).toLowerCase();
     const beamFire = word === "Fire" && state.beamActive;
-    const held = debuffs.infiltration.has(word) && !beamFire;
+    const held = infiltrationHeld(word) && !beamFire;
     entry(line, held, held ? `scales the ${word} Infiltration on the dummy` : beamFire ? "the beam path's Fire Infiltration does not read Infiltration Effect" : `no ${word} Infiltration source`, beamFire ? { status: "Not modeled" } : {});
   }
-  for (const type of debuffs.infiltration) if (!(type === "Fire" && state.beamActive)) derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect(type) / 100))}% additional ${type} Damage taken`, `${type} Infiltration (keyword ${type === "Fire" ? "10000103" : type === "Cold" ? "10000104" : "10000105"})`, `${type} Infiltration on the dummy`, true);
-  if (rosaInfiltration && rosaInfiltration.uptime < 1 - 1e-9 && !debuffs.infiltration.has(rosaInfiltration.type) && !(rosaInfiltration.type === "Fire" && state.beamActive)) {
+  for (const type of infiltrationTypes) if (!(type === "Fire" && state.beamActive)) derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect(type) / 100))}% additional ${type} Damage taken`, `${type} Infiltration (keyword ${type === "Fire" ? "10000103" : type === "Cold" ? "10000104" : "10000105"})`, `${type} Infiltration on the dummy`, true);
+  // Fire Infiltration on an Ignited dummy only your Minions keep Ignited part of the time (above): its time-averaged value.
+  if (fireInfiltrationIgnitedShare > 0 && !infiltrationHeld("Fire")) derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect("Fire") / 100) * fireInfiltrationIgnitedShare)}% additional Fire Damage taken`, "Fire Infiltration (keyword 10000103) on the Ignited dummy", `the dummy is Ignited ${round(fireInfiltrationIgnitedShare * 100)}% of the time by your Minions (time-averaged; provisional)`, true);
+  if (rosaInfiltration && rosaInfiltration.uptime < 1 - 1e-9 && !infiltrationHeld(rosaInfiltration.type) && !(rosaInfiltration.type === "Fire" && state.beamActive)) {
     derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect(rosaInfiltration.type) / 100) * rosaInfiltration.uptime)}% additional ${rosaInfiltration.type} Damage taken`, `${rosaInfiltration.type} Infiltration (Mercury Baptism)`, `Mercury Baptism's ${rosaInfiltration.type} Infiltration for the Realm's ${round(rosaInfiltration.uptime * 100)}% (provisional)`, true);
   }
   for (const line of find(PATTERNS.perInfiltrationType)) {
-    const count = debuffs.infiltration.size + (state.fireInfiltrationCondition && !debuffs.infiltration.has("Fire") ? 1 : 0);
+    const count = infiltrationTypes.length + (state.fireInfiltrationCondition && !infiltrationHeld("Fire") ? 1 : 0);
     const value = round(num(line.clean.match(PATTERNS.perInfiltrationType)[1]) * (line.multiplier ?? 1) * count);
     entry(line, count > 0, `${count} Infiltration type${count === 1 ? "" : "s"} on the dummy`, { bodies: [`+${value}% additional Elemental Damage`] });
     if (value > 0) derive(`+${value}% additional Elemental Damage`, line.source, `${count} Infiltration types`, true);
   }
   const paralysisEffect = sum(find(PATTERNS.paralysisEffect).filter((line) => { const hand = line.clean.match(PATTERNS.paralysisEffect)[2]; return !hand || (hand === "Two" ? state.twoHanded : !state.twoHanded); }).map((line) => num(line.clean.match(PATTERNS.paralysisEffect)[1]) * (line.multiplier ?? 1)));
   for (const line of find(PATTERNS.paralysisAttacks)) { const active = Boolean(state.attackHits); if (active) debuffs.paralysis = 1; entry(line, active, active ? "Attacks hit the dummy: Paralysis held (duration not sourced; uptime 1, provisional)" : "no modeled Attack hit", { provisional: true }); }
-  for (const line of find(PATTERNS.paralysisOnHit)) { const active = Boolean(state.anyHit); if (active) debuffs.paralysis = 1; entry(line, active, active ? "the build hits the dummy: Paralysis held (duration not sourced; uptime 1, provisional: talent Q18)" : "no modeled hit", { provisional: true }); }
-  for (const line of find(PATTERNS.paralysisCursed)) { const active = Boolean(state.cursed && state.anyHit); if (active) debuffs.paralysis = 1; entry(line, active, active ? "the dummy is Cursed and hit: Paralysis held (uptime 1, provisional)" : "the dummy is not Cursed or not hit", { provisional: true }); }
+  // A record on trigger 1000030 (882870: "… on hit" in its text, "dealing damage" 5001160 on the row) also fires on your DoT's damage (wiring
+  // audit W2 gap 4, 2026-11-03); one on 1000033 needs your hits.
+  for (const line of find(PATTERNS.paralysisOnHit)) { const viaDot = !state.anyHit && Boolean(state.dealsDamageOverTime) && (lineTriggerRows(line)?.rows || []).some((row) => row.trigger === 1000030); const active = Boolean(state.anyHit) || viaDot; if (active) debuffs.paralysis = 1; entry(line, active, active ? (viaDot ? "your damage over time deals damage to the dummy (game trigger 1000030): Paralysis held (duration not sourced; uptime 1, provisional)" : "the build hits the dummy: Paralysis held (duration not sourced; uptime 1, provisional: talent Q18)") : "no modeled hit", { provisional: true }); }
+  for (const line of find(PATTERNS.paralysisCursed)) { const active = Boolean(targetCursed && state.anyHit); if (active) debuffs.paralysis = 1; entry(line, active, active ? "the dummy is Cursed and hit: Paralysis held (uptime 1, provisional)" : "the dummy is not Cursed or not hit", { provisional: true }); }
   // Paralysis sources without a chance on the dummy (2026-10-14): each holds Paralysis (4 s base duration, manual rule
   // 1002020420, refreshed long before it lapses) while its condition holds; best case, provisional.
-  const tenacity = Number(state.blessingStacks?.Tenacity) || 0, tenacityMax = Number(state.blessingMaxStacks?.Tenacity) || 0;
+  const tenacity = Number(ownBlessingStacks(state)?.Tenacity) || 0, tenacityMax = Number(ownBlessingMaxStacks(state)?.Tenacity) || 0;
   const tenacityAtMax = tenacity > 0 && tenacity >= tenacityMax;
   for (const line of find(PATTERNS.paralysisTenacity)) { const active = Boolean(state.anyHit) && tenacityAtMax; if (active) debuffs.paralysis = 1; entry(line, active, active ? `Tenacity Blessing at max stacks (${tenacity}; Blessing model, own buffs held) and the build hits the dummy: Paralysis held (4 s base duration refreshed by hits; provisional)` : !state.anyHit ? "no modeled hit" : tenacity > 0 ? `Tenacity Blessing below max stacks (${tenacity} of ${tenacityMax})` : "no Tenacity Blessing stacks", { provisional: true }); }
-  const dealsDamage = Boolean(state.anyHit || state.minionsCrit);
+  // Your damage (trigger 1000030: your hits or DoT; wiring audit W2 gaps 3 and 4, 2026-11-03) and yours or your Minions' (the "you or
+  // Minions" wordings). Discord of the Second Will (14747381) is a 1000030 row: your Minions' damage is theirs, a DoT of yours fires it.
+  const yourDamage = Boolean(state.anyHit || state.dealsDamageOverTime);
+  const dealsDamage = Boolean(yourDamage || state.minionsCrit);
   for (const line of find(PATTERNS.paralysisDealDamage)) { if (dealsDamage) debuffs.paralysis = 1; entry(line, dealsDamage, dealsDamage ? "the build (or its Minions) deals damage to the dummy: Paralysis held (4 s base duration, refreshed); Weaken lowers only the enemy's damage and counts as a crowd control type (provisional)" : "the build deals no modeled damage", { provisional: true, enemyDebuff: true }); }
   // Bing – Blast Nova's moon (hero trait audit B12; src/bing-traits.js): the bombs land at the dummy, so it stays within their 10 m while
   // the bombs replace the Main Skill's casts (provisional); Slow lowers only the enemy's speed.
@@ -1113,7 +1242,20 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // self-drain line, or the "Hit or blocked recently" best case); switched by the regainEvents condition. Read again by
   // src/line-conditions.js ("if you have Regained in the last N s") through state.regain (src/line-effects.js).
   const regain = resolveRegain({ modifierTexts: lines, supportDrains: state.regainInputs?.supportDrains || [], stats: state.regainInputs?.stats || {}, anyHit: Boolean(state.anyHit), hitRecently: state.hitRecently !== false, enabled: conditionOn("regainEvents"), hasFervor, castsAttack: Boolean(state.castsAttack), attackCrits: Boolean(state.attackHits && state.canCrit) });
-  for (const line of find(PATTERNS.paralysisRegain)) { const meters = Number(line.clean.match(/within (\d+) ?m/i)?.[1] ?? 10); const inside = explicitRadiusHolds(meters, state.nearTarget); const active = regain.active && inside; if (active) debuffs.paralysis = 1; entry(line, active, active ? `${regain.reason}; the dummy is within ${meters} m: Paralysis held (refreshed every Regain; provisional)` : !regain.active ? regain.reason : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: outside ${meters} m`, { provisional: true, enemyDebuff: true }); }
+  // W10 step 4a: the planner keeps this full hold, now as a Paralysis source per Regain row of its record (3829717: node 374 on 1001200 and
+  // 1001210, buff 230 for 4 s; `regainParalysis`, below the other sources), so the trigger bus can hold it from the Regain events on the loop. A
+  // line whose record does not read stays a held line, as before.
+  const regainParalysis = [];
+  for (const line of find(PATTERNS.paralysisRegain)) {
+    const meters = Number(line.clean.match(/within (\d+) ?m/i)?.[1] ?? 10); const inside = explicitRadiusHolds(meters, state.nearTarget); const active = regain.active && inside;
+    const rows = active ? (recipeCrowdControl(line)?.rows || []).filter((row) => row.event === "regain" && !row.unknown.length && row.types.some((type) => type.type === "Paralysis") && regain.pools?.[row.trigger === 1001210 ? "energyShield" : "life"]?.active) : [];
+    if (active && rows.length) regainParalysis.push({ line, rows, id: recipeCrowdControl(line).id });
+    else if (active) debuffs.paralysis = 1;
+    entry(line, active, active ? `${regain.reason}; the dummy is within ${meters} m: Paralysis held (refreshed every Regain; provisional)` : !regain.active ? regain.reason : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: outside ${meters} m`, { provisional: true, enemyDebuff: true });
+  }
+  // Every line that holds Paralysis has run: the held Paralysis on the pass's set.
+  if (debuffs.paralysis > 0) passSet.add({ name: "Paralysis", share: Math.min(1, debuffs.paralysis), stage: "debuff", source: "Paralysis held by a line (src/combat-states.js)" });
+  const paralysisHeld = buffs ? passSet.holds("Paralysis") : debuffs.paralysis > 0;
   // Grudge (support; src/support-effects.js family "paralysis"): "When the supported skill deals damage to a Cursed target, there
   // is a +X% chance to Paralyze it" (leveled). Paralysis (keyword 704, manual rule 1002020420): +15% damage taken × (1 +
   // Paralysis Effect), 4 s base duration, 1 stack. Expected uptime 1 − (1 − p)^(hits in 4 s) at the supported skill's hit rate
@@ -1123,12 +1265,110 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // nothing to add (1 stack). No line in the catalogs changes Paralysis duration. Freezing Point's "Debuffs inflicted when the
   // supported skill hits are now affected by Empower Effect" is not applied (open: src/empower-effects.js applies it to the
   // skill's own hit debuff only). Not a best-case assumption: the Cursed dummy and the hits are automatic.
+  // ---- Crowd control from the game recipes (wiring audit gap 1, 2026-11-03; src/crowd-control-recipes.js) ----
+  // Every line no scripted reader above or below holds by its wording, whose record applies a crowd control buff (Paralysis 230,
+  // Slow 260, Weaken 270, Taunt 280, Blind 20060; tag 5100101): the type is held on the dummy at its trigger's rate (state.ccEventRates,
+  // measured by the planner's hit pass: your hits for 1000033 / 1000030, Minion hits for 1000047, triggered uses for 1000060; the
+  // Regain rate above for 1001200 / 1001210; the casts of a board skill with the trigger's tag for 1000069) × the gate-188 chance ×
+  // the buff's duration (4 s by its record for duration -2): uptime 1 − (1 − p)^(events/s × duration), or min(1, duration × events/s)
+  // for a certain event, built from zero on the clean dummy (first event from the hit pass). Lines and rows of one type combine as
+  // 1 − Π(1 − uptime). Paralysis joins the Paralysis sources below (its +15% damage taken, one stack whoever inflicts it); the other
+  // types do nothing to the dummy, which never attacks, but every crowd control reader counts them (Wings of Light, Self-Delusion,
+  // the pact counter, First Flake, Passing of Time) and a held Blind / Paralysis makes the dummy Blinded / Paralyzed. Before the
+  // hit pass measures a rate the type is held. Provisional (open question cc-chance-holders): a ticking DoT of yours raises a 1000030 event
+  // every server tick (wiring audit W2 gap 4, 2026-11-03; open question dot-damage-trigger-events), and a gate-184 Blessing requirement is
+  // read as the Blessing held.
+  const ccRecipeRates = state.ccEventRates || null;
+  // ccRecipeMinionTypes (W8 step 3): the types a row holds on your Minions' events (1000047, node 111 Minion hits, a summon's interval), whose inflicter is your Minions.
+  const ccRecipeTypes = new Map(), ccRecipeHolds = new Map(), ccRecipeParalysisHolds = new Map(), ccRecipeLines = new Map(), ccRecipeParalysis = [], ccRecipeOwnTypes = new Set(), ccRecipeMinionTypes = new Set(), ccSupportHolders = [], supportCrowdControlStatus = [];
+  const CC_BLESSING_BUFFS = { 320: "Agility" };
+  // One holder's rows (a modifier line, or a support clause on its setup: wiring audit W6a item 1, 2026-11-03). `scope` gives the
+  // events' rates (the build's for a line; the supported setup's own for a support clause, whose rows trigger on "this skill") and
+  // whether each event exists at all.
+  const holdRows = (reading, rows, holder, scope) => {
+    const parts = [];
+    const rates = scope.rates;
+    for (const row of rows) {
+      // A Regain that spends the Agility its gate needs (node 623, W10 step 4a; src/consumption-procs.js regainAgilitySpend): the gate reads the
+      // stack the Regain finds (its hit's gain, or one held since the last Regain), not the average left after the spends, and only that share of
+      // the Regains opens it.
+      const spend = row.event === "regain" && row.requiresBuffs.includes(320) && state.consumption?.regainSpend?.active ? state.consumption.regainSpend : null;
+      const missingBuff = row.requiresBuffs.map((buff) => ({ buff, name: CC_BLESSING_BUFFS[buff] || null })).find((item) => !item.name || !(Number(ownBlessingStacks(state)?.[item.name]) > 0 || (spend && item.name === "Agility" && spend.findShare > 0)));
+      const missingState = (row.requiresTargetStates || []).find((name) => name === "frostTerra" && !state.frostTerraOnBoard);
+      const inside = row.radiusMeters === null || explicitRadiusHolds(row.radiusMeters, state.nearTarget);
+      const casters = row.event === "cast" ? (state.ccSkillCasts || []).filter((skill) => row.triggerTags.length && row.triggerTags.every((tag) => (skill.tagIds || []).includes(tag))) : [];
+      const eventRate = crowdControlEventRate(row, { rates, regainPerSecond: regain.active ? regain.ratePerSecond : 0, skillCasts: state.ccSkillCasts || [] });
+      const rate = spend && eventRate !== null && spend.findShare < 1 ? eventRate * spend.findShare : eventRate;
+      const eventOk = row.event === "hit" ? scope.hits : row.event === "damage" ? scope.damage : row.event === "minionDamage" || row.event === "minionHit" || row.event === "interval" ? scope.minions : row.event === "regain" ? regain.active : row.event === "cast" ? casters.length > 0 : true;
+      // A chance held in a local the recipe table drops (Defense Form's Command, Tidewell: Undertow's Terra Charge consumed).
+      const localChance = crowdControlLocalChance(row, { command: (playerBuffSet(state)?.level("Command") ?? state.commandPoints) ?? null, terraChargesConsumed: scope.terraChargesConsumed ?? null });
+      const chance = localChance === null ? 0 : Math.min(100, localChance);
+      const active = !missingBuff && !missingState && inside && eventOk && chance > 0 && (rate === null || rate > 0);
+      const first = row.event === "minionDamage" || row.event === "minionHit" ? rates?.minionFirstHitSeconds : row.event === "interval" ? 0 : row.event === "cast" ? Math.min(...casters.map((skill) => Number.isFinite(skill.firstSeconds) ? skill.firstSeconds : 0)) : row.event === "regain" ? regain.pools && Math.min(...Object.values(regain.pools).filter((pool) => pool.active).map((pool) => pool.effectiveIntervalSeconds || 0)) : row.event === "damage" ? rates?.firstDamageSeconds ?? rates?.firstHitSeconds : rates?.firstHitSeconds;
+      const whose = scope.whose || "your";
+      const event = { hit: `${whose} hits/s (trigger 1000033)`, damage: `${whose} damage events/s (trigger 1000030: hits, and a ticking DoT every server tick)`, minionDamage: "your Minions' hits/s (trigger 1000047)", minionHit: `the hits/s of the Minions ${scope.minionLabel || "it summons"} (trigger 1000033 on the Minions, node 111)`, interval: `${row.cooldownSeconds} s cooldown (gate 206) while a Minion ${scope.minionLabel || "it summons"} is out`, triggered: "triggered uses/s (trigger 1000060: uses not cast by you, Tangle casts included; inferred)", regain: "Regains/s (triggers 1001200 / 1001210)", cast: `casts/s of ${casters.map((skill) => skill.name).join(", ") || "a board skill with the trigger's skill tag"} (trigger 1000069)` }[row.event];
+      const why = missingBuff ? (missingBuff.name ? `needs ${missingBuff.name} Blessing (gate 184 on buff ${missingBuff.buff}) and the build holds none` : `needs buff ${missingBuff.buff} held (gate 184; not read)`)
+        : missingState ? "needs the target on a Frost Terra (trigger target tag 4015180) and no Frost Terra is on the skill board"
+          : !inside ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: outside ${round(row.radiusMeters)} m`
+            : !eventOk ? (row.event === "minionDamage" || row.event === "minionHit" || row.event === "interval" ? `no modeled Minion${scope.minionLabel ? ` ${scope.minionLabel}` : ""}` : row.event === "regain" ? regain.reason : row.event === "cast" ? "the skill that triggers it is not on the skill board" : row.event === "damage" ? scope.noDamage || "no damage of yours (no hit or damage over time; your Minions' damage is theirs)" : scope.noHit || "no modeled hit of yours")
+              : localChance === null ? (row.chanceLocal?.kind === "command" ? "no Command source (\"+N Command per second\") or full Command switched off" : "the Terra Charges a use consumes are not modeled for this skill")
+                : !(chance > 0) ? (row.chanceLocal?.kind === "command" ? `⌊${round(state.commandPoints || 0)} Command ÷ ${row.chanceLocal.p0}⌋ × ${row.chanceLocal.p1}% = 0% (full Command switched off, or too little held)` : "no chance") : rate !== null && !(rate > 0) ? `no event: ${event} is 0` : null;
+      const chanceNote = row.chanceLocal?.kind === "command" ? ` (⌊${round(state.commandPoints || 0)} Command ÷ ${row.chanceLocal.p0}⌋ × ${row.chanceLocal.p1}%)` : row.chanceLocal?.kind === "terraChargeConsumed" ? ` (${round(scope.terraChargesConsumed || 0)} Terra Charge consumed ÷ ${row.chanceLocal.p0} × ${row.chanceLocal.p1}%)` : "";
+      for (const item of row.types) {
+        const schedule = !active ? null : rate === null ? { kind: "full" } : chance >= 100 ? { kind: "periodic", durationSeconds: item.durationSeconds, periodSeconds: 1 / rate, startSeconds: Number.isFinite(first) ? first : 0 }
+          : { kind: "chance", chancePercent: chance, hitsPerSecond: rate, durationSeconds: item.durationSeconds, ...(Number.isFinite(first) ? { firstHitSeconds: first } : {}) };
+        const uptime = schedule ? sustainedLevel(schedule) : 0;
+        const label = item.type === "Blinding" ? "Blind" : item.type;
+        const text = why ? `${label}: ${why}` : rate === null ? `${label} held (rate not measured yet on this pass)`
+          : chance >= 100 ? `${label} (buff ${item.buff}, ${round(item.durationSeconds)} s) on every event at ${round(rate)} ${event}: min(1, ${round(item.durationSeconds)} s × ${round(rate)}) = ${round(uptime * 100)}% of the time`
+            : `${label} (buff ${item.buff}, ${round(item.durationSeconds)} s) at ${round(chance)}%${chanceNote} per event, ${round(rate)} ${event}: 1 − (1 − ${round(chance / 100)})^(${round(rate)} × ${round(item.durationSeconds)} s) = ${round(uptime * 100)}% of the time`;
+        parts.push({ type: item.type, active: Boolean(schedule), schedule, uptime, text, chance, rate });
+        if (!schedule) continue;
+        if (item.type === "Paralysis") {
+          const source = { minion: row.event === "minionDamage" || row.event === "minionHit" || row.event === "interval", skill: holder.source, support: "Paralysis", text: holder.clean, chancePercent: chance, hitsPerSecond: rate, rateKnown: rate !== null, active: true, schedule, uptime: round(uptime), reason: `${text} (game record ${reading.id}; provisional)`, recipe: true };
+          ccRecipeParalysis.push(source);
+          // What fires it, for the trigger bus (W10 step 2): the bus owns the whole Paralysis series when it drives both of your triggers.
+          ccRecipeParalysisHolds.set(source, { recipeId: reading.id, row: row.row, trigger: row.trigger, event: row.event, runner: row.runner ?? "you", triggerTags: [...(row.triggerTags || [])], source: holder.source, text: holder.clean, line: scope.line ?? null, setupKey: scope.setupKey ?? null, chancePercent: chance, cooldownSeconds: row.cooldownSeconds ?? null, buff: item.buff, durationSeconds: item.durationSeconds, requiresBuffs: [...(row.requiresBuffs || [])], consumesBuffs: [...(row.consumesBuffs || [])] });
+        }
+        else {
+          ccRecipeTypes.set(item.type, [...(ccRecipeTypes.get(item.type) || []), schedule]);
+          // The same hold with what fires it, for the tick engine's trigger bus (src/trigger-bus.js, W10): a listener it owns replaces this
+          // schedule on the loop; the planner's own figures keep reading the schedule.
+          ccRecipeHolds.set(item.type, [...(ccRecipeHolds.get(item.type) || []), { schedule, holder: { recipeId: reading.id, row: row.row, trigger: row.trigger, event: row.event, runner: row.runner ?? "you", triggerTags: [...(row.triggerTags || [])], source: holder.source, text: holder.clean, line: scope.line ?? null, setupKey: scope.setupKey ?? null, chancePercent: chance, cooldownSeconds: row.cooldownSeconds ?? null, buff: item.buff, durationSeconds: item.durationSeconds, requiresBuffs: [...(row.requiresBuffs || [])], consumesBuffs: [...(row.consumesBuffs || [])] } }]);
+        }
+        if (row.event !== "minionDamage" && row.event !== "minionHit" && row.event !== "interval") ccRecipeOwnTypes.add(item.type === "Paralysis" ? "Paralysis" : item.type);
+        else if (item.type !== "Paralysis") ccRecipeMinionTypes.add(item.type);
+      }
+    }
+    return parts;
+  };
+  for (const line of lines) {
+    if (sageOwnedLine(state.heroId, line) || scriptedCrowdControl(line.clean)) continue;
+    const reading = recipeCrowdControl(line);
+    const rows = (reading?.rows || []).filter((row) => !row.unknown.length);
+    if (!rows.length) continue;
+    const parts = holdRows(reading, rows, line, { rates: ccRecipeRates, hits: Boolean(state.anyHit), damage: yourDamage, minions: Boolean(state.minionsCrit), line });
+    ccRecipeLines.set(line, { id: reading.id, parts });
+  }
+  // Support clauses (wiring audit W6a item 1, 2026-11-03; src/crowd-control-recipes.js supportRecipeCrowdControl): each enabled support's
+  // stone affix that applies a crowd control buff, by its game id, on the supported setup's own events (state.supportCrowdControl, from
+  // src/planner.js: the setup's hits, damage events and Minions; rates from the hit pass's per-setup facts). Before this the planner read
+  // these clauses No DPS effect / Not modeled and held nothing (Wings of Light ×2.32 when fed; provisional, open question cc-chance-holders).
+  for (const holder of state.supportCrowdControl || []) {
+    const reading = holder.reading;
+    const rows = (reading?.rows || []).filter((row) => !row.unknown.length);
+    if (!rows.length) continue;
+    const source = `${holder.skill}: ${holder.support}`;
+    const parts = holdRows(reading, rows, { source, clean: holder.text }, { rates: holder.rates ?? null, hits: Boolean(holder.hits), damage: Boolean(holder.hits || holder.dot), minions: Boolean(holder.minions), terraChargesConsumed: holder.terraChargesConsumed ?? null, setupKey: holder.setupKey ?? null,
+      whose: `${holder.skill}'s`, minionLabel: `summoned by ${holder.skill}`, noHit: `${holder.skill} deals no modeled hit`, noDamage: `${holder.skill} deals no modeled damage (hit or damage over time)` });
+    ccSupportHolders.push({ holder, id: reading.id, parts });
+  }
   const chanceParalysisSources = (state.chanceParalysis || []).map((item) => {
     const chancePercent = wholePercentRoll(item.chancePercent); // EAilmentType palsy: the ailment routine's whole-percent roll (src/whole-percent-roll.js)
     const rateKnown = Number.isFinite(item.hitsPerSecond);
     const hitsPerSecond = rateKnown ? Math.max(0, item.hitsPerSecond) : null;
     // Cripple's fissure Paralysis (needsCurse false) needs no Curse; Grudge needs the Cursed dummy.
-    const cursedOk = item.needsCurse === false || Boolean(state.cursed);
+    const cursedOk = item.needsCurse === false || targetCursed;
     const active = cursedOk && chancePercent > 0 && (!rateKnown || hitsPerSecond > 0);
     // Before the hit rate is measured (the planner's first pass) the source holds Paralysis, so state-gated lines read alike.
     // A certain Paralysis on each fissure hit is periodic: 4 s every 1 / rate s (full uptime once the fissure lands every ≤ 4 s).
@@ -1159,21 +1399,34 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Discord of the Second Will's Paralysis: its turn in the rotation (chunk 2, 2026-11-01; discordSchedule above). It joins the other
   // Paralysis sources (one stack whoever inflicts it); an on-hit source that holds Paralysis leaves it nothing to add.
   for (const line of find(PATTERNS.discordCrowdControl)) {
-    const interval = num(line.clean.match(PATTERNS.discordCrowdControl)[1]), schedule = dealsDamage ? discordSchedule(interval, 0) : null, uptime = schedule ? sustainedLevel(schedule) : 0;
-    const reason = dealsDamage ? `one of ${DISCORD_CROWD_CONTROL.length} crowd control types every ${interval} s (${DISCORD_CROWD_CONTROL.join(", ")}: the buffs with game tag 5100112), each ${BUFF_VALUES.paralysisDurationSeconds} s in its record, so ${round(uptime * 100)}% uptime each and ${round(uptime * DISCORD_CROWD_CONTROL.length)} up at a time (game affix 14747381; provisional: duration −2 read as the record's own)` : "the build deals no modeled damage";
-    chanceParalysisSources.push({ skill: line.source, support: "Discord of the Second Will", text: line.clean, chancePercent: 100, hitsPerSecond: interval > 0 ? 1 / (interval * DISCORD_CROWD_CONTROL.length) : 0, rateKnown: true, active: dealsDamage, schedule, uptime: round(uptime), reason });
-    entry(line, dealsDamage, reason, { provisional: true, enemyDebuff: true, bodies: [`+${round(BUFF_VALUES.paralysis * uptime)}% damage taken`] });
+    const interval = num(line.clean.match(PATTERNS.discordCrowdControl)[1]), schedule = yourDamage ? discordSchedule(interval, 0) : null, uptime = schedule ? sustainedLevel(schedule) : 0;
+    const reason = yourDamage ? `one of ${DISCORD_CROWD_CONTROL.length} crowd control types every ${interval} s (${DISCORD_CROWD_CONTROL.join(", ")}: the buffs with game tag 5100112), each ${BUFF_VALUES.paralysisDurationSeconds} s in its record, so ${round(uptime * 100)}% uptime each and ${round(uptime * DISCORD_CROWD_CONTROL.length)} up at a time (game affix 14747381; provisional: duration −2 read as the record's own)` : "you deal no damage yourself (trigger 1000030: your hits or DoT; your Minions' damage is theirs)";
+    chanceParalysisSources.push({ skill: line.source, support: "Discord of the Second Will", text: line.clean, chancePercent: 100, hitsPerSecond: interval > 0 ? 1 / (interval * DISCORD_CROWD_CONTROL.length) : 0, rateKnown: true, active: yourDamage, schedule, uptime: round(uptime), reason });
+    entry(line, yourDamage, reason, { provisional: true, enemyDebuff: true, bodies: [`+${round(BUFF_VALUES.paralysis * uptime)}% damage taken`] });
+  }
+  // Paralysis held from the game recipes (above): one more source of the same debuff.
+  chanceParalysisSources.push(...ccRecipeParalysis);
+  // "When Regaining, inflicts Paralysis on enemies within 10m" (game record 3829717; W10 step 4a): one source per Regain row whose pool Regains,
+  // held full as the planner always read it (refreshed every Regain; a Regain needs your hit, which the closed form holds from t = 0). Recorded with
+  // its row (trigger 1001200 / 1001210, 4 s) so the trigger bus, when it raises your Regains, holds it from the Regain events on the loop.
+  for (const { line, rows, id } of regainParalysis) for (const row of rows) {
+    const pool = row.trigger === 1001210 ? "energyShield" : "life", type = row.types.find((item) => item.type === "Paralysis");
+    const label = pool === "life" ? "Life" : "Energy Shield";
+    const source = { skill: line.source, support: `Paralysis (${label} Regain)`, text: line.clean, chancePercent: 100, hitsPerSecond: regain.pools[pool].ratePerSecond, rateKnown: true, active: true, schedule: { kind: "full" }, uptime: 1,
+      reason: `${regain.pools[pool].reason}: Paralysis on each Regain (game record ${id}, ${round(type.durationSeconds)} s), held (refreshed every Regain; provisional)`, recipe: true };
+    chanceParalysisSources.push(source);
+    ccRecipeParalysisHolds.set(source, { recipeId: id, row: row.row, trigger: row.trigger, event: "regain", runner: "you", triggerTags: [...(row.triggerTags || [])], source: line.source, text: line.clean, line, setupKey: null, chancePercent: 100, cooldownSeconds: null, buff: type.buff, durationSeconds: type.durationSeconds, requiresBuffs: [], consumesBuffs: [] });
   }
   const chanceParalysisActive = chanceParalysisSources.filter((item) => item.active);
   // Your own Paralysis Effect scales only Paralysis your build inflicts (not the follower's).
-  const ownParalysis = debuffs.paralysis > 0 || chanceParalysisActive.some((item) => !item.follower);
+  const ownParalysis = paralysisHeld || chanceParalysisActive.some((item) => !item.follower);
   for (const line of find(PATTERNS.paralysisEffect)) {
     const hand = line.clean.match(PATTERNS.paralysisEffect)[2], held = !hand || (hand === "Two" ? state.twoHanded : !state.twoHanded);
     entry(line, ownParalysis && held, !held ? `not holding a ${hand}-Handed Weapon` : ownParalysis ? "scales Paralysis (provisional: the effect scales its damage taken)" : "no Paralysis source", { provisional: true });
   }
-  if (debuffs.paralysis) derive(`+${round(BUFF_VALUES.paralysis * (1 + paralysisEffect / 100))}% damage taken`, "Paralysis (keyword 704)", "Paralysis on the dummy", true);
-  const scriptedWeaken = [PATTERNS.witchAntelope, PATTERNS.holyMaiden, PATTERNS.channelWeaken, PATTERNS.paralysisDealDamage, PATTERNS.weakenOnTrigger];
-  for (const line of find(PATTERNS.weaken).filter((line) => !scriptedWeaken.some((pattern) => pattern.test(line.clean)))) entry(line, false, "Weaken lowers the enemy's damage (the dummy does not attack)", { status: "No DPS effect" });
+  if (paralysisHeld) derive(`+${round(BUFF_VALUES.paralysis * (1 + paralysisEffect / 100))}% damage taken`, "Paralysis (keyword 704)", "Paralysis on the dummy", true);
+  const scriptedWeaken = [PATTERNS.witchAntelope, PATTERNS.holyMaiden, PATTERNS.channelWeaken, PATTERNS.paralysisDealDamage];
+  for (const line of find(PATTERNS.weaken).filter((line) => !scriptedWeaken.some((pattern) => pattern.test(line.clean)) && !ccRecipeLines.has(line))) entry(line, false, "Weaken lowers the enemy's damage (the dummy does not attack)", { status: "No DPS effect" });
 
   // ---- Frostbite and Freeze ----
   // Overwrite between units (patch notes 2026-10-15: "Priority is now determined first by maximum Frostbite Rating, then by
@@ -1307,18 +1560,28 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // (condition witchAntelope). Paralysis already held by an on-hit source (Red Umbrella, Bounded Holy Maiden) adds nothing (1 stack).
   const ccSchedules = new Map();
   let paralysisMergedInto = null;
-  const holdCc = (type, schedule) => { const current = ccSchedules.get(type); if (!current || schedule.kind === "full") ccSchedules.set(type, schedule); };
+  // Witch Antelope's own Paralysis turns and value when Grudge's chance Paralysis is merged into its part (the trigger bus, W10 step 2).
+  let antelopeParalysis = null;
+  // The types you inflict yourself (wiring audit W2 gap 6, 2026-11-03): the follower's crowd control and your Minions' are theirs, so the
+  // "inflicted recently" readers (1000160) do not count them; every state reader still sees them on the dummy (`crowdControl`).
+  const ownCcTypes = new Set();
+  // Who holds a type you do not inflict (W8 step 3): the first foreign holder's unit, "follower" or "minion" (the unit buff set's inflicter).
+  const ccForeignBy = new Map();
+  const holdCc = (type, schedule, { foreign = false, by = "follower" } = {}) => { const current = ccSchedules.get(type); if (!current || schedule.kind === "full") ccSchedules.set(type, schedule); if (!foreign) ownCcTypes.add(type); else if (!ccForeignBy.has(type)) ccForeignBy.set(type, by); };
+  // The unit that holds an ailment you do not inflict yourself (Frostbite only the follower keeps), from the set's entries.
+  const foreignAilmentBy = (name) => (buffs ? buffs.entries(name).find((entry) => entry.inflictedBy !== "you")?.inflictedBy : null) ?? "follower";
+  const ownAilmentList = buffs ? buffs.types("Ailment", { by: BY_YOU, stage: "model" }) : Array.isArray(state.ownAilments) ? state.ownAilments : null;
   for (const line of find(PATTERNS.witchAntelope)) {
     const match = line.clean.match(PATTERNS.witchAntelope);
     const radius = num(match[1]), cooldown = num(match[2]);
     const paralysisValue = round(BUFF_VALUES.paralysis * (1 + paralysisEffect / 100));
     const ownParalysisSchedule = cast(Math.min(BUFF_VALUES.paralysisDurationSeconds, 2 * cooldown), 2 * cooldown);
     const allowed = conditionOn("witchAntelope"), inside = explicitRadiusHolds(radius, state.nearTarget);
-    const active = allowed && inside, held = debuffs.paralysis > 0;
+    const active = allowed && inside, held = paralysisHeld;
     // Grudge's chance Paralysis (above) is the same debuff (1 stack): one union schedule, 1 − Π(1 − level), carried here.
     const merged = active && !held && chanceParalysisActive.length > 0 && !paralysisMergedInto;
     const paralysisSchedule = merged ? { kind: "union", schedules: [ownParalysisSchedule, ...chanceParalysisActive.map((item) => item.schedule)] } : ownParalysisSchedule;
-    if (merged) paralysisMergedInto = "witchAntelope";
+    if (merged) { paralysisMergedInto = "witchAntelope"; antelopeParalysis = { schedule: ownParalysisSchedule, percent: paralysisValue, partSchedule: paralysisSchedule }; }
     const uptime = sustainedLevel(paralysisSchedule), sustained = round(paralysisValue * uptime);
     if (active) { holdCc("Paralysis", held ? { kind: "full" } : paralysisSchedule); holdCc("Weaken", { kind: "periodic", durationSeconds: cooldown, periodSeconds: 2 * cooldown, startSeconds: cooldown }); }
     const ccLines = find(PATTERNS.ccTypeDamage).length > 0;
@@ -1336,13 +1599,24 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.iceSoul)) entry(line, frostbitten, frostbitten ? `the dummy is Frostbitten (Nearby enemies, within 6 m: game affix 494613472; holds close and at the Distant 6 m alternative): Frostbite Rating ${debuffs.frostbiteRating}, a crowd control type and an Ailment on the dummy` : "a build-wide Cannot inflict Frostbite line blocks it", { enemyDebuff: true, bodies: frostbitten ? [`+${round(debuffs.frostbiteRating * (1 + frostbiteEffect / 100) * frostbiteEffectAdditional)}% additional Cold Damage taken`] : [] });
 
   // Grudge's Paralysis on its own clock (not held by an on-hit source, not merged into Witch Antelope's part above).
-  const chanceParalysis = { sources: chanceParalysisSources, value: round(BUFF_VALUES.paralysis * (1 + (ownParalysis ? paralysisEffect : 0) / 100)), uptime: 0, factor: 1, held: debuffs.paralysis > 0, mergedInto: paralysisMergedInto };
+  const chanceParalysis = { sources: chanceParalysisSources, value: round(BUFF_VALUES.paralysis * (1 + (ownParalysis ? paralysisEffect : 0) / 100)), uptime: 0, factor: 1, held: paralysisHeld, mergedInto: paralysisMergedInto };
+  // The one Paralysis debuff's timed part as the trigger bus needs it (W10 step 2, src/trigger-bus.js; read only, no figure reads it): the timed
+  // effect that carries it (this one, or Witch Antelope's when merged), its percent and schedule, and each active source with what fires it: a
+  // support clause on its setup's damage (Grudge: game record 369609664, trigger 1000030 on "this skill"), a recipe row (its holder), or another
+  // clock (the follower's casts, Discord's turn, a fissure, your Minions, Witch Antelope's own turns). Null when an on-hit source holds it.
+  const busParalysisSource = (item) => ccRecipeParalysisHolds.has(item) ? { owner: "recipe", schedule: item.schedule, holder: ccRecipeParalysisHolds.get(item) }
+    : item.setupKey && !item.fissure && !item.follower && !item.recipe ? { owner: "support", schedule: item.schedule, setupKey: item.setupKey, skill: item.skill, support: item.support, text: item.text, chancePercent: item.chancePercent, durationSeconds: BUFF_VALUES.paralysisDurationSeconds }
+      : { owner: "other", schedule: item.schedule, skill: item.skill, support: item.support };
+  const busParalysis = paralysisHeld || !chanceParalysisActive.length ? null
+    : paralysisMergedInto === "witchAntelope" && antelopeParalysis ? { timedId: "witchAntelope", percent: antelopeParalysis.percent, schedule: antelopeParalysis.partSchedule, sources: [{ owner: "other", schedule: antelopeParalysis.schedule, skill: "Witch Antelope", support: "Paralysis" }, ...chanceParalysisActive.map(busParalysisSource)] }
+      : paralysisMergedInto ? null : { timedId: "chanceParalysis", percent: chanceParalysis.value, schedule: chanceParalysisActive.length === 1 ? chanceParalysisActive[0].schedule : { kind: "union", schedules: chanceParalysisActive.map((item) => item.schedule) }, sources: chanceParalysisActive.map(busParalysisSource) };
   if (chanceParalysisActive.length) {
     const schedule = chanceParalysisActive.length === 1 ? chanceParalysisActive[0].schedule : { kind: "union", schedules: chanceParalysisActive.map((item) => item.schedule) };
     const uptime = sustainedLevel(schedule), sustained = round(chanceParalysis.value * uptime);
     Object.assign(chanceParalysis, { schedule, uptime: round(uptime), factor: round(1 + sustained / 100) });
     if (!chanceParalysis.held && !paralysisMergedInto) {
-      holdCc("Paralysis", schedule);
+      // W8 step 3 (Group B): a Paralysis only your Minions' rows inflict (1000047, node 111 Minion hits) is theirs, not yours, like the follower's.
+      holdCc("Paralysis", schedule, { foreign: chanceParalysisActive.every((item) => item.follower || item.minion), by: chanceParalysisActive.every((item) => item.follower) ? "follower" : "minion" });
       const label = chanceParalysisActive.map((item) => `${item.skill}: ${item.support}`).join(", ");
       timedEffects.push({ id: "chanceParalysis", label: "Paralysis (support chance)", source: label, text: chanceParalysisActive.map((item) => item.text).join(" · "), target: "enemy", toggle: false, provisional: true, enabled: true, active: true,
         reason: chanceParalysisActive.map((item) => item.reason).join("; "), summary: `Paralysis +${chanceParalysis.value}% damage taken at ${round(uptime * 100)}% uptime`,
@@ -1355,15 +1629,15 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Blinding; user-accepted 2026-10-13 that Frostbite and Freeze count). "For every type of crowd control effect the enemy has,
   // you and your Minions deal +X% additional damage to them" (game affix 75106: one multiplier, X × the count at hit time):
   // the count follows each type's clock (Witch Antelope's turns), so it is a timed sum. Knockback is instantaneous: not counted.
-  if (frostbitten) holdCc("Frostbite", discordFrostbiteLine ? discordSchedule(discordInterval(discordFrostbiteLine), 1) : { kind: "full" });
-  if (debuffs.frozen) holdCc("Freeze", { kind: "full" });
-  if (debuffs.paralysis) holdCc("Paralysis", { kind: "full" });
+  if (frostbitten) holdCc("Frostbite", discordFrostbiteLine ? discordSchedule(discordInterval(discordFrostbiteLine), 1) : { kind: "full" }, { foreign: Boolean(ownAilmentList) && !ownAilmentList.includes("Frostbite"), by: foreignAilmentBy("Frostbite") });
+  if (debuffs.frozen) holdCc("Freeze", { kind: "full" }, { foreign: Boolean(ownAilmentList) && !ownAilmentList.includes("Frostbite"), by: foreignAilmentBy("Frostbite") });
+  if (paralysisHeld) holdCc("Paralysis", { kind: "full" });
   if (find(PATTERNS.holyMaiden).length && state.anyHit) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, { kind: "full" });
-  if (dealsDamage) for (const line of find(PATTERNS.discordCrowdControl)) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, discordSchedule(discordInterval(line), DISCORD_CROWD_CONTROL.indexOf(type)));
+  if (yourDamage) for (const line of find(PATTERNS.discordCrowdControl)) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, discordSchedule(discordInterval(line), DISCORD_CROWD_CONTROL.indexOf(type)));
   if (find(PATTERNS.paralysisDealDamage).length && dealsDamage) holdCc("Weaken", { kind: "full" });
   // The follower's Weaken, Slow, Taunt and Blind (src/follower-model.js, 2026-10-27): held while it casts (durations not
   // published: best case, provisional, open question follower-crowd-control).
-  for (const line of find(PATTERNS.followerCrowdControl)) { const type = line.clean.match(PATTERNS.followerCrowdControl)[1]; holdCc(type, { kind: "full" }); entry(line, true, `the follower keeps ${type} on the dummy while it casts the skill: a crowd control type (held, best case, provisional)`, { provisional: true, enemyDebuff: true, status: crowdControlReaders > 0 ? "In calc" : "No DPS effect" }); }
+  for (const line of find(PATTERNS.followerCrowdControl)) { const type = line.clean.match(PATTERNS.followerCrowdControl)[1]; holdCc(type, { kind: "full" }, { foreign: true, by: "follower" }); entry(line, true, `the follower keeps ${type} on the dummy while it casts the skill: a crowd control type (held, best case, provisional)`, { provisional: true, enemyDebuff: true, status: crowdControlReaders > 0 ? "In calc" : "No DPS effect" }); }
   // Sacrificial Pawn (Thea – Blasphemer's Disgraced Minister on the Desecrated dummy, alone; reference data keyword: "considered a Crowd
   // Control Effect"; hero trait audit B7, src/thea-traits.js).
   if (state.thea?.blasphemer?.pawn) holdCc("Sacrificial Pawn", { kind: "full" });
@@ -1378,41 +1652,44 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (active) holdCc("Blinding", { kind: "full" });
     entry(line, active && find(PATTERNS.ccTypeDamage).length > 0, active ? "an active Attack Projectile Skill keeps the dummy Blinded: a crowd control type" : "no active Attack Projectile Skill", { status: active ? (find(PATTERNS.ccTypeDamage).length ? "In calc" : "No DPS effect") : "Inactive" });
   }
-  // Crowd control by chance (2026-11-03; provisional, open question cc-chance-holders). Blind (574297) and Slow (472365504): trigger
-  // 1000033 on your hit, gate 188 at the chance, buff 20060 / 260 on the hit target; Weaken (279824224): trigger 1000060, gate 188,
-  // buff 270 on enemies within 6 m (gate 189 range 600). 1000060 is read as a triggered use (Hair-trigger, Gemma F2, Rosa R11: a
-  // player's use raises 1000074; inferred): every use of a modeled skill hit that is not the player's own, and a Tangle Skill's casts
-  // that are not cast by Spell Burst (Tangle casts are triggered, as for Hair-trigger). Each buff lasts its record's 4 s (duration
-  // -2), so uptime = 1 − (1 − p)^(events/s × 4 s), the chance-Paralysis schedule, built from zero on the clean dummy; several lines of
-  // one type combine as 1 − Π(1 − uptime). Your Minions' hits are not counted (1000033 is your own hit). The buffs carry tag 5100101
-  // (research/hero-thea-chunk1-2026-11-01.md), so every crowd control counter reads them; their own effects (accuracy, the enemy's
-  // speed and damage) do nothing to the dummy, which never attacks (Blind: user decision 2026-10-25), so with no counter the lines
-  // read No DPS effect. Before the hit pass measures the rates the types are held.
+  // Crowd control from the game recipes (src/crowd-control-recipes.js; the block before the Paralysis sources above): the types each
+  // line holds join the held set, one union per type with the scripted holders (an on-hit holder that keeps a type up wins), and each
+  // line gets its badge: In calc where its Paralysis adds damage taken or a reader counts its types (crowd control counters; a Blinded /
+  // Paralyzed reader for Blind / Paralysis), No DPS effect where nothing reads them (their own effects act on an enemy that attacks),
+  // Inactive where its trigger never fires on the dummy. Replaces the 2026-11-03 morning reading of three wordings (574297, 472365504,
+  // 279824224), which the recipes hold the same way.
+  // The scripted holders' schedule of each type before the recipe holders join (the trigger bus rebuilds a type's hold without the listeners
+  // it owns from this and the recipe holds: src/trigger-bus.js, W10).
+  const ccScripted = new Map(ccSchedules);
+  // The crowd control counters (their per-type value, cap and derived bodies) and Intimidated's holders, for the same bus.
+  const busCounters = [], busIntimidated = [];
   {
-    const rates = state.ccEventRates || null;
     const counted = crowdControlReaders > 0;
-    const byType = new Map();
-    const sources = [
-      ...find(PATTERNS.ccChanceOnHit).map((line) => { const match = line.clean.match(PATTERNS.ccChanceOnHit); return { line, chance: num(match[1]) * (line.multiplier ?? 1), type: /Blind/i.test(match[2]) ? "Blinding" : "Slow", record: /Blind/i.test(match[2]) ? "574297, buff 20060" : "472365504, buff 260", event: "hit", ok: Boolean(state.anyHit), off: "no modeled hit of yours" }; }),
-      ...find(PATTERNS.weakenOnTrigger).map((line) => { const radius = 6; const inside = explicitRadiusHolds(radius, state.nearTarget); return { line, chance: num(line.clean.match(PATTERNS.weakenOnTrigger)[1]) * (line.multiplier ?? 1), type: "Weaken", record: "279824224, buff 270", event: "trigger", ok: inside, off: `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: outside ${radius} m` }; })
-    ];
-    for (const source of sources) {
-      const rate = !rates ? null : source.event === "hit" ? Number(rates.hitsPerSecond) || 0 : Number(rates.triggeredUsesPerSecond) || 0;
-      const what = source.event === "hit" ? "your hits/s" : "triggered uses/s (trigger 1000060: uses not cast by you, Tangle casts included; inferred)";
-      const active = source.ok && source.chance > 0 && (rate === null || rate > 0);
-      const schedule = !active ? null : rate === null ? { kind: "full" } : { kind: "chance", chancePercent: Math.min(100, source.chance), hitsPerSecond: rate, durationSeconds: BUFF_VALUES.paralysisDurationSeconds, ...(Number.isFinite(rates?.firstHitSeconds) ? { firstHitSeconds: rates.firstHitSeconds } : {}) };
-      const uptime = schedule ? sustainedLevel(schedule) : 0;
-      if (schedule) byType.set(source.type, [...(byType.get(source.type) || []), schedule]);
-      const label = source.type === "Blinding" ? "Blind" : source.type;
-      const reason = !source.ok ? source.off : !(source.chance > 0) ? "no chance" : !active ? `no ${source.event === "hit" ? "modeled hit of yours" : "triggered skill use"}` : rate === null ? `${label} held (rate not measured yet on this pass)`
-        : `${round(source.chance)}% chance per ${source.event === "hit" ? "hit" : "triggered use"} at ${round(rate)} ${what}: ${label} (game record ${source.record}, 4 s) on 1 − (1 − ${round(source.chance / 100)})^(${round(rate)} × 4 s) = ${round(uptime * 100)}% of the time, a crowd control type (tag 5100101)${counted ? "" : "; no line counts crowd control types and its own effect does nothing to the dummy"} (provisional)`;
-      entry(source.line, active && counted, reason, { provisional: true, enemyDebuff: true, status: !active ? "Inactive" : counted ? "In calc" : "No DPS effect" });
-    }
-    for (const [type, schedules] of byType) {
+    const blindedRead = lines.some((line) => BLINDED_READER.test(line.clean)), paralyzedRead = lines.some((line) => PARALYZED_READER.test(line.clean));
+    for (const [type, schedules] of ccRecipeTypes) {
+      if (ccRecipeOwnTypes.has(type)) ownCcTypes.add(type);
+      else if (!ccForeignBy.has(type) && !ownCcTypes.has(type) && ccRecipeMinionTypes.has(type)) ccForeignBy.set(type, "minion");
       const current = ccSchedules.get(type);
       if (current?.kind === "full") continue;
       const all = current ? [current, ...schedules] : schedules;
       ccSchedules.set(type, all.some((schedule) => schedule.kind === "full") ? { kind: "full" } : all.length === 1 ? all[0] : { kind: "union", schedules: all });
+    }
+    for (const [line, { id, parts }] of ccRecipeLines) {
+      const active = parts.filter((part) => part.active);
+      const paralysisAdds = active.some((part) => part.type === "Paralysis") && !chanceParalysis.held;
+      const read = active.some((part) => counted || (part.type === "Blinding" && blindedRead) || (part.type === "Paralysis" && paralyzedRead));
+      const status = !active.length ? "Inactive" : paralysisAdds || read ? "In calc" : "No DPS effect";
+      const tail = !active.length ? "" : paralysisAdds ? "; Paralysis adds its damage taken (one stack whoever inflicts it)" : read ? "" : chanceParalysis.held && active.some((part) => part.type === "Paralysis") ? "; Paralysis is already held by an on-hit source and no line counts crowd control types" : "; no line counts crowd control types and their own effects do nothing to the dummy, which never attacks";
+      entry(line, status === "In calc", `${[...new Set(parts.map((part) => part.text))].join("; ")}: crowd control types (tag 5100101; game record ${id})${tail} (provisional)`, { provisional: true, enemyDebuff: true, status, ccHolder: true });
+    }
+    // The support clauses' badges, the same rule (read by src/support-effects.js clauseStatus through supportConditions).
+    for (const { holder, id, parts } of ccSupportHolders) {
+      const active = parts.filter((part) => part.active);
+      const paralysisAdds = active.some((part) => part.type === "Paralysis") && !chanceParalysis.held;
+      const read = active.some((part) => counted || (part.type === "Blinding" && blindedRead) || (part.type === "Paralysis" && paralyzedRead));
+      const status = !active.length ? "Inactive" : paralysisAdds || read ? "In calc" : "No DPS effect";
+      const tail = !active.length ? "" : paralysisAdds ? "; Paralysis adds its damage taken (one stack whoever inflicts it)" : read ? "; the crowd control readers count it" : "; no line counts crowd control types and their own effects do nothing to the dummy, which never attacks";
+      supportCrowdControlStatus.push({ setupKey: holder.setupKey, support: holder.support, gameId: holder.gameId, status, reason: `${[...new Set(parts.map((part) => part.text))].join("; ")}: a crowd control type (tag 5100101; game record ${id})${tail} (provisional)`, types: active.map((part) => part.type) });
     }
   }
   // Judgment: "+X% additional Critical Strike Damage against Paralyzed enemies" multiplies the crit share of every hit while the
@@ -1439,7 +1716,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (active) {
       derive(`+${value}% additional damage`, line.source, `${ccCount} crowd control types on the dummy`, true);
       derive(`+${value}% additional Minion Damage`, line.source, `${ccCount} crowd control types on the dummy`, true);
-      if (ccSum.schedules.some((schedule) => schedule.kind !== "full")) timedEffects.push({ id: `crowdControlTypes:${line.source}`, label: "Crowd control types on the dummy", source: line.source, target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: null, reach: "all", percent, schedule: ccSum }] });
+      const timed = ccSum.schedules.some((schedule) => schedule.kind !== "full");
+      if (timed) timedEffects.push({ id: `crowdControlTypes:${line.source}`, label: "Crowd control types on the dummy", source: line.source, target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: null, reach: "all", percent, schedule: ccSum }] });
+      busCounters.push({ kind: "ccTypeDamage", source: line.source, perType: percent, cap: Infinity, effectFactor: 1, type: null, bodies: [`+${value}% additional damage`], timedId: timed ? `crowdControlTypes:${line.source}` : null });
     }
   }
   // Self-Delusion (Ethereal Prism core; game affix 452467424: "<Type> Damage additional 12" × a local count of the Crowd Control
@@ -1455,7 +1734,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, active, active ? `${ccCount} crowd control type${ccCount === 1 ? "" : "s"} on the dummy (${ccTypes.join(", ")}; user-confirmed 2026-10-18, audit Q6): +${round(perType)}% × ${ccCount} = +${value}% additional ${type} Damage` : "no crowd control effect on the dummy (Frostbite, Freeze, Paralysis or another held type)", { bodies: [body] });
     if (active) {
       derive(body, line.source, `${ccCount} crowd control types on the dummy (Self-Delusion)`);
-      if (ccSum.schedules.some((schedule) => schedule.kind !== "full")) timedEffects.push({ id: `selfDelusion:${line.source}`, label: "Self-Delusion: crowd control types", source: line.source, target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type, reach: "all", percent: perType, schedule: ccSum }] });
+      const timed = ccSum.schedules.some((schedule) => schedule.kind !== "full");
+      if (timed) timedEffects.push({ id: `selfDelusion:${line.source}`, label: "Self-Delusion: crowd control types", source: line.source, target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type, reach: "all", percent: perType, schedule: ccSum }] });
+      busCounters.push({ kind: "selfDelusion", source: line.source, perType, cap: Infinity, effectFactor: 1, type, bodies: [body], timedId: timed ? `selfDelusion:${line.source}` : null });
     }
     selfDelusion = { active, ccCount, ccTypes, perTypePercent: round(perType), type, value };
   }
@@ -1478,8 +1759,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       ...find(PATTERNS.intimidateDealDamage).map((line) => ({ line, active: dealsDamage, how: "when you or your Minions deal damage", off: "the build deals no damage" })),
       ...find(PATTERNS.intimidateNearby).map((line) => { const radius = num(line.clean.match(PATTERNS.intimidateNearby)[1]); return { line, active: explicitRadiusHolds(radius, state.nearTarget), how: `within ${radius} m (game recipe 20976)`, off: `outside ${radius} m` }; })
     ];
-    const intimidated = sources.some((source) => source.active);
     const via = sources.filter((source) => source.active).map((source) => `${source.line.source} ${source.how}`).join("; ");
+    if (sources.some((source) => source.active)) passSet.add({ name: "Intimidated", source: via, reason: "Intimidated (game buff 35063) held while its source acts", stage: "debuff" });
+    const intimidated = buffs ? passSet.holds("Intimidated") : sources.some((source) => source.active);
     for (const source of sources) {
       const reason = !source.active ? source.off : addedLines.length ? `the dummy is Intimidated (${source.how}): it carries Wings of Light's added base effect (see that line)` : "Intimidated's own effects act only at Low Life (game buff 35063); the training dummy never loses Life";
       entry(source.line, source.active && addedLines.length > 0, reason, { enemyDebuff: true, status: !source.active ? "Inactive" : addedLines.length ? "In calc" : "Not on dummy" });
@@ -1499,8 +1781,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       if (active) {
         derive(`+${value}% additional Spell Damage taken`, line.source, `Intimidated with ${round(count)} crowd control types on the dummy`, true);
         derive(`+${value}% additional Damage Over Time`, line.source, `Intimidated with ${round(count)} crowd control types on the dummy (the enemy's Damage Over Time taken)`, true);
+        busCounters.push({ kind: "intimidated", source: line.source, perType, cap, effectFactor: 1 + intimidatingEffect / 100, type: null, bodies: [`+${value}% additional Spell Damage taken`, `+${value}% additional Damage Over Time`], timedId: null });
       }
     }
+    // Intimidated's holders, for the trigger bus (src/trigger-bus.js, W10): the on-hit lines' records hold it on the loop when it owns their trigger.
+    busIntimidated.push(...sources.map((source) => ({ source: source.line.source, text: source.line.clean, line: source.line, how: source.how, active: Boolean(source.active), onHit: PATTERNS.intimidateOnHit.test(source.line.clean) })));
   }
   // Juggernaut (Ethereal Prism core; game affix 105197304): on a player Critical Strike (trigger 1000030, crit tag 5001010) the
   // enemy gains a stack of buff 20392 (8 s, up to 10), and while it has that buff, buff 20390 (affix 537217344: P1 −10, P2 −2,
@@ -1547,7 +1832,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const perStack = num(match[1]) * (line.multiplier ?? 1), cap = num(match[2]) * (line.multiplier ?? 1);
     const trauma = state.trauma || null;
     // Stacks from your own Trauma model (a Minion-held Trauma has no stack count here).
-    const inflicted = (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Trauma");
+    const inflicted = traumaInflicted;
     const stacks = !inflicted ? 0 : trauma && Number.isFinite(trauma.steadyActiveStacks) ? trauma.steadyActiveStacks : Math.max(1, Number(trauma?.stackLimit) || 1);
     const value = round(Math.min(cap, perStack * stacks));
     const body = `+${value}% additional Hit Physical Damage taken`;
@@ -1608,7 +1893,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const maxStacks = 3 + sum(values(PATTERNS.felineMax)), having = sum(values(PATTERNS.felineDamage));
     const buff = round((1.05 ** maxStacks - 1) * 100);
     const allowed = conditionOn("felineStimulant"), active = felineOn;
-    const reason = !allowed ? offReason("felineStimulant") : !active ? "no Main Skill in use" : `best case: ${maxStacks} Feline Stimulant stacks held (own buff${prebuilt ? ", pre-built" : "; held from t = 0, its build-up is not modeled"}): +${buff}% additional Attack Damage (5% per stack, multiplies)${having ? `, +${having}% additional Attack Damage while having it` : ""}${find(PATTERNS.felineAggression).length ? ", Attack Aggression at max stacks" : ""} (provisional: the duration is not in the saved data)`;
+    const reason = !allowed ? offReason("felineStimulant") : !active ? (Number(state.mainUsesPerSecond) > 0 ? "the Main Skill is never triggered (trigger 1000060: a triggered use, not one you cast yourself)" : "no Main Skill in use") : `best case: ${maxStacks} Feline Stimulant stacks held (own buff${prebuilt ? ", pre-built" : "; held from t = 0, its build-up is not modeled"}): +${buff}% additional Attack Damage (5% per stack, multiplies)${having ? `, +${having}% additional Attack Damage while having it` : ""}${find(PATTERNS.felineAggression).length ? ", Attack Aggression at max stacks" : ""} (provisional: the duration is not in the saved data)`;
     const derivedLines = [[`+${buff}% additional Attack Damage`, `${maxStacks} Feline Stimulant stacks`], ...(having ? [[`+${having}% additional Attack Damage`, "having Feline Stimulant"]] : [])];
     addTimed({ id: "felineStimulant", label: "Feline Stimulant (Kitty Express)", target: "self", enabled: allowed, active, reason, summary: `${maxStacks} Feline Stimulant stacks held`, parts: [], bodies: derivedLines.map(([text]) => text), derived: derivedLines },
       line, [...find(PATTERNS.felineMax), ...find(PATTERNS.felineDamage), ...find(PATTERNS.felineAggression)]);
@@ -1618,7 +1903,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // when Spell Burst is consumed with at least 4 Max Spell Burst; "+X% additional Spell Damage" and "+1 Max Spell Burst" while
   // having it. Best case (condition squidnova): held while a Spell Main Skill Spell Bursts (its duration is not in the saved
   // data; provisional).
-  const maxSpellBurst = sum(modifierTexts.map((line) => { const match = String(line.text ?? "").trim().match(/^\+(\d+) Max Spell Burst$/i); return match ? Number(match[1]) * (line.multiplier ?? 1) : 0; }));
+  const maxSpellBurst = maxSpellBurstTotal(modifierTexts);
   for (const line of find(PATTERNS.squidGain)) {
     const threshold = num(line.clean.match(PATTERNS.squidGain)[1]);
     const effect = sum(values(PATTERNS.squidEffect)), spell = sum(values(PATTERNS.squidDamage)), burst = sum(values(PATTERNS.squidBurst));
@@ -1637,7 +1922,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.spiderFluid)) {
     const match = line.clean.match(PATTERNS.spiderFluid);
     const value = round(num(match[1]) * (line.multiplier ?? 1) * num(match[2]));
-    const wilt = (state.enemyAilmentsInflicted ?? state.enemyAilments ?? []).includes("Wilt");
+    const wilt = inflictedAilments.includes("Wilt");
     const allowed = conditionOn("spiderFluid"), active = allowed && wilt;
     addTimed({ id: "spiderFluid", label: "Spider Fluid (Wilt stacks)", target: "self", enabled: allowed, active, summary: `${match[2]} Wilt stacks inflicted recently held`,
       reason: !allowed ? offReason("spiderFluid") : !wilt ? "the build inflicts no Wilt" : `best case: ${match[2]} stacks held (own buff${prebuilt ? ", pre-built" : ", held from t = 0"}; the Wilt rate over 4 s is assumed to reach the cap: provisional)`,
@@ -1666,14 +1951,21 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
 
   // Not modeled, with the reason (they read "No DPS effect" before): Flash Flood needs the Spell Burst count per 4 s and the halved
   // Spell Burst limit. (Sky Piercer is read since census #5, 2026-10-27: src/line-conditions.js key mobility.)
-  for (const line of find(PATTERNS.flashFlood)) entry(line, false, maxSpellBurst >= 1 && state.mainIsSpell ? "Spell Bursts per 4 s and the halved Spell Burst limit are not modeled" : "no Spell Burst", { status: maxSpellBurst >= 1 && state.mainIsSpell ? "Not modeled" : "Inactive" });
+  // Its "Halves Spell Burst Upper Limit" (game affix 101070006: attr 6361 additional −50%) is read by every Max Spell Burst reader
+  // (src/max-spell-burst.js; wiring audit W1 gap 2, 2026-11-03); the per-Spell-Burst speed line is still not modeled.
+  for (const line of find(PATTERNS.flashFlood)) {
+    if (/^Halves Spell Burst Upper Limit$/i.test(line.clean)) entry(line, maxSpellBurst > 0, maxSpellBurst > 0 ? `Max Spell Burst × 0.5 = ${round(maxSpellBurst)} (game affix 101070006: additional −50% on attr 6361)` : "no Max Spell Burst", { status: maxSpellBurst > 0 ? "In calc" : "Inactive" });
+    else entry(line, false, maxSpellBurst >= 1 && state.mainIsSpell ? "Spell Bursts per 4 s are not modeled" : "no Spell Burst", { status: maxSpellBurst >= 1 && state.mainIsSpell ? "Not modeled" : "Inactive" });
+  }
 
   // ---- Numbed ----
   // Erika – Lightning Shadow (hero trait audit B5, Q-H10 provisional; src/erika-traits.js felineFigureState): Feline Figure's
   // Numbed on the dummy (its average stacks, at most 10; another Numbed source keeps the dummy at 10) and the "additional Numbed
   // Effect" lines as one multiplier (the trait lines, Wild Lightning, Charging Equation, Charging Tail on Feline Figure's share).
   const felineFigure = state.felineFigure?.active ? state.felineFigure : null;
-  const otherNumbed = (state.enemyAilments || []).includes("Numbed");
+  // Another source's Numbed: not the Feline Figure's own hold this pass puts on the dummy below (W8 step 3 Group B), so a rerun of the pass
+  // (the deemed Frostbite rerun, the badge probes' state copies) reads Feline Figure's own stacks, not a held 10.
+  const otherNumbed = buffs ? buffs.entries("Numbed").some((item) => !felineNumbedHold(item)) : onDummy("Numbed") && !state.felineNumbedOnly;
   // Feline Figure fires once on the dummy without a retrigger (game affix 264779, 2026-10-31): its 2 s opening is the timed part below,
   // and the sustained dummy is not Numbed.
   const numbed = otherNumbed || Boolean(felineFigure?.totalStacks > 0);
@@ -1690,7 +1982,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     return active ? product * (1 + (num(value) / 100) * uptime) : product;
   }, 1);
   const numbedAdditional = (felineFigure ? felineFigure.additionalFactor : state.felineFigure?.otherNumbed ? state.felineFigure.additionalFactor : 1) * numbedCritBuffFactor;
-  const numbedBase =find(PATTERNS.numbedBase).map((line) => num(line.clean.match(PATTERNS.numbedBase)[1]))[0] ?? BUFF_VALUES.numbedPerStack;
+  // "Changes the base effect of Numbed" (game record 289590144): your own Numbed infliction (trigger 1000150, Numbed tag) gives you the
+  // buff that changes it, so a Numbed only the follower or your Minions inflict keeps the +5% (wiring audit W2 gap 6, 2026-11-03; inferred:
+  // the follower's events go to its own rows).
+  const ownNumbed = Boolean(felineFigure?.totalStacks > 0) || (buffs ? buffs.holds("Numbed", { by: BY_YOU, stage: "model" }) : Array.isArray(state.ownAilments) ? state.ownAilments.includes("Numbed") : otherNumbed);
+  const numbedBase = (ownNumbed ? find(PATTERNS.numbedBase).map((line) => num(line.clean.match(PATTERNS.numbedBase)[1]))[0] : null) ?? BUFF_VALUES.numbedPerStack;
   // + a supported skill's time-averaged crit buff on the Numbed it inflicts (Thunder Spike: Tremble; src/crit-numbed-buff.js,
   // state.numbedEffectBuffs from src/planner.js; 2026-10-14, provisional): the dummy keeps the stronger Numbed.
   const numbedEffect = sum(values(PATTERNS.numbedEffect)) + (state.numbedEffectBuffs || []).reduce((total, buff) => total + (Number(buff.value) || 0), 0);
@@ -1711,16 +2007,28 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // (field 2006882, 10%) × (Max Life + Max Energy Shield) in it adds a stack; the rest carries. The follower's strikes are 50 flat Lightning, so they never reach
   // one on any dummy that survives a fight: with no Lightning hit of yours it holds the 1 stack the strike that finds it clean inflicts (tick-numbed-stacks).
   const followerNumbedOnly = otherNumbed && find(FOLLOWER_NUMBED_LINE).length > 0 && state.lightningHitsPerSecond === 0;
-  debuffs.numbedStacks = revivedNumbed ? round(revivedNumbed.stacks) : followerNumbedOnly ? 1 : otherNumbed ? BUFF_VALUES.numbedMaxStacks : felineFigure ? felineFigure.totalStacks : 0;
+  // Numbed only your Minions keep on the dummy (src/minion-ailment-types.js "+X% Numbed chance for Minions"; wiring audit gap 2,
+  // 2026-11-03; provisional): its uptime share of the stacks (10 when Lightning hits of yours fill the store, else the 1 stack the Minion
+  // strike that finds it clean inflicts, as for the follower), time-averaged.
+  const minionNumbedShare = buffs ? (buffs.heldOnlyBy("Numbed", "minion") ? buffs.share("Numbed") : undefined) : state.enemyAilmentUptime?.Numbed;
+  const minionNumbedStacks = otherNumbed && minionNumbedShare != null ? (state.lightningHitsPerSecond === 0 ? 1 : BUFF_VALUES.numbedMaxStacks) * minionNumbedShare : null;
+  debuffs.numbedStacks = revivedNumbed ? round(revivedNumbed.stacks) : followerNumbedOnly ? 1 : minionNumbedStacks !== null ? round(minionNumbedStacks) : otherNumbed ? BUFF_VALUES.numbedMaxStacks : felineFigure ? felineFigure.totalStacks : 0;
   // A changed base effect (Conductive: "+11% additional Lightning Damage taken") replaces the +5% per stack and stacks the same,
   // max 10 (user-confirmed 2026-10-12). It acts only on enemies the build Numbs, never on the player.
-  const numbedChanged = find(PATTERNS.numbedBase).length > 0;
+  const numbedChanged = ownNumbed && find(PATTERNS.numbedBase).length > 0;
   // Audit of held debuffs (2026-10-13): the dummy starts clean, so the windows build Numbed at one stack per main-skill use (a
   // Numbing hit inflicts 1 stack; provisional: the "+N additional stacks" and the per-damage thresholds are not counted).
   const numbedPerStackRaw = numbedBase * (1 + numbedEffect / 100) * numbedAdditional, numbedPerStack = round(numbedPerStackRaw);
   if (otherNumbed && Number(state.mainUsesPerSecond) > 0) timedEffects.push({ id: "numbed", label: "Numbed", source: "Numbed (keyword 762)", target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: "Lightning", reach: "all", percent: numbedPerStack, schedule: { kind: "ramp", maxStacks: debuffs.numbedStacks, intervalSeconds: revivedNumbed ? 1 / (revivedNumbed.perTrigger * revivedNumbed.triggersPerSecond) : 1 / Number(state.mainUsesPerSecond), startStacks: 1 } }] });
   // Feline Figure alone: its own stack schedule from t = 0 (Electrify owned when engaging; the dummy starts clean).
   else if (felineFigure?.schedule?.points?.length) timedEffects.push({ id: "numbed", label: "Numbed (Feline Figure)", source: "Lightning Shadow: Feline Figure", target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: "Lightning", reach: "all", percent: numbedPerStack, schedule: { kind: "steps", points: felineFigure.schedule.points, sustained: debuffs.numbedStacks } }] });
+  // Feline Figure's Numbed is the Numbed buff (game affix 520462624 row 2: node 343 adds buff 170, Electrify stacks − 1 layers; W8 step 3
+  // Group B), so with no other Numbed source the dummy holds the Numbed state and its groups (4000121, 4000570, 4000580) while the stacks
+  // last: every Numbed, Elemental Ailment and Ailment reader sees it (W4 item 9). Before, only its Lightning Damage taken was read.
+  if (felineFigure && Number(felineFigure.totalStacks) > 0 && !otherNumbed) {
+    if (state.enemyBuffs instanceof UnitBuffSet && !state.enemyBuffs.list.some(felineNumbedHold)) state.enemyBuffs.add({ name: "Numbed", source: FELINE_NUMBED_SOURCE, reason: `${felineFigure.totalStacks} Numbed stack(s) from Electrify (game affix 520462624: buff 170)`, inflictedBy: "you", stage: "combat" });
+    if (Array.isArray(state.enemyAilments) && !state.enemyAilments.includes("Numbed")) { state.enemyAilments.push("Numbed"); state.felineNumbedOnly = true; }
+  }
   if (numbed && debuffs.numbedStacks > 0) derive(`+${round(numbedPerStackRaw * debuffs.numbedStacks)}% additional Lightning Damage taken`, `Numbed (keyword 762: +${numbedBase}% additional Lightning Damage taken per stack${numbedChanged ? ", changed base effect" : ""}, max 10${numbedAdditional !== 1 ? `; ×${numbedAdditional} additional Numbed Effect` : ""})`, otherNumbed ? `${debuffs.numbedStacks} Numbed stacks on the dummy (best case, as the support resolver reads it: provisional)` : `${debuffs.numbedStacks} average Numbed stacks from Feline Figure (Q-H10: provisional)`, true);
   for (const line of find(PATTERNS.numbedEffect)) entry(line, numbed, numbed ? "scales Numbed's Lightning Damage taken" : "the build inflicts no Numbed");
   // The revived Numbed family's source line (src/enemy-ailments.js): In calc when it is what keeps the dummy Numbed; with another
@@ -1740,13 +2048,13 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, chance > 0, chance > 0 ? `${round(excess)}% excess chance to avoid Elemental Ailments: ${round(chance)}% chance per Elemental damage instance to read the dummy's ${level85DummyDefenses.fireResistancePercent}% Resistance as −${level85DummyDefenses.fireResistancePercent}%, on average +${penetration}% Elemental Resistance Penetration` : "the chance to avoid Elemental Ailments is not above 100%", { provisional: true, bodies: [`+${penetration}% Elemental Resistance Penetration`] });
     if (chance > 0) derive(`+${penetration}% Elemental Resistance Penetration`, line.source, `Reactive Rainbow's Elemental Resistance Reversal (${round(chance)}% chance)`, true);
   }
-  for (const line of find(PATTERNS.numbedBase)) entry(line, numbed, numbed ? "replaces Numbed's +5% per stack, max 10 stacks (user-confirmed 2026-10-12)" : "the build inflicts no Numbed");
+  for (const line of find(PATTERNS.numbedBase)) entry(line, numbed && ownNumbed, numbed && ownNumbed ? "replaces Numbed's +5% per stack, max 10 stacks (user-confirmed 2026-10-12)" : numbed ? "the Numbed on the dummy is the follower's or your Minions': the changed base effect comes with your own Numbed infliction (game record 289590144, trigger 1000150; inferred)" : "the build inflicts no Numbed");
   for (const line of [...find(PATTERNS.numbedExtra), ...find(PATTERNS.numbedThreshold)]) entry(line, false, otherNumbed ? "Numbed is already at its 10-stack cap in the best-case reading (provisional)" : "the build inflicts no Numbed", { status: otherNumbed ? "No DPS effect" : "Inactive", provisional: true });
 
   // ---- Lucky ----
   // Census #11 (2026-10-27): Everburn Thunderfire (Ignited dummy), Hanging Bird (held Deflection), Megagon Dice (random windows) and
   // an Elixir Effect's "Damage triggers Lucky" at its uptime (src/lucky-damage.js).
-  const ignitedDummy = (state.enemyAilments || []).includes("Ignite");
+  const ignitedDummy = buffs ? buffs.holds("Ignite") : (state.enemyAilments || []).includes("Ignite");
   const deflectionGain = lines.filter((line) => !line.lineEffect && line.origin !== "derived").flatMap((line) => {
     const rule = DEFLECTION_SOURCES.find((item) => item.pattern.test(line.clean));
     if (!rule) return [];
@@ -1799,7 +2107,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       const full = state.life !== "low" && (state.lifeRemainingPercent ?? 100) >= 95;
       return { line, share: full ? 1 : 0, reason: full ? "at Full Life: the dummy never attacks (best case)" : "not at Full Life (sealed Life or the Low Life group)" };
     }
-    const need = num(match[3]), types = Object.values(state.blessingStacks || {}).filter((stacks) => Number(stacks) > 0).length;
+    const need = num(match[3]), types = Object.values(ownBlessingStacks(state) || {}).filter((stacks) => Number(stacks) > 0).length;
     return { line, share: types >= need ? 1 : 0, reason: `${types} Blessing type${types === 1 ? "" : "s"} held (Blessing model) ${types >= need ? "≥" : "<"} ${need}`, provisional: true };
   });
   for (const grant of luckyCritGrants) {
@@ -1887,9 +2195,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // keywords' +13% on a build with a Spell hit, time-averaged by the Elixir's uptime (no value line, so no Elixir Skill Effect); a type another line holds stays one Infiltration.
   for (const setup of elixirs?.setups || []) {
     if (!(setup.uptime > 0) || !setup.states.some((item) => /^Inflicts all Infiltration Effects/i.test(item.text)) || !state.spellHitTypes?.size) continue;
-    for (const type of ["Fire", "Cold", "Lightning"]) if (!debuffs.infiltration.has(type)) derive(`+${round(BUFF_VALUES.infiltration * setup.uptime)}% additional ${type} Damage taken`, `${setup.name}: ${type} Infiltration`, `${setup.name} up ${setup.uptime} of the time, a Spell hit inflicts ${type} Infiltration (time-averaged; provisional)`, true, setup.uptime);
+    for (const type of ["Fire", "Cold", "Lightning"]) if (!infiltrationHeld(type)) derive(`+${round(BUFF_VALUES.infiltration * setup.uptime)}% additional ${type} Damage taken`, `${setup.name}: ${type} Infiltration`, `${setup.name} up ${setup.uptime} of the time, a Spell hit inflicts ${type} Infiltration (time-averaged; provisional)`, true, setup.uptime);
   }
-  return { crowdControl: [...ccSchedules.keys()], crowdControlReaders, ailmentReaders, centralize, regain, warcry: stormCommand, elixir: elixirs, numbedRevived: revivedNumbed, entries,derived, buffs: { fervorRating, fervorEffectPercent: fervorEffect, fervorAttackAilment, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, hasHasten, hasProfane, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration], ownInfiltration: ownInfiltrationTypes(entries) }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis, deemedRerun };
+  // The Infiltrations' inflicters, settled from the pass's entries (a follower affix's is the follower's).
+  const ownInfiltration = new Set(ownInfiltrationTypes(entries));
+  for (const hold of passSet.list) if (/ Infiltration$/.test(hold.name)) hold.inflictedBy = ownInfiltration.has(hold.label) ? "you" : "follower";
+  return withDummyHolds({ supportCrowdControl: supportCrowdControlStatus, crowdControl: [...ccSchedules.keys()], ownCrowdControl: [...ccSchedules.keys()].filter((type) => ownCcTypes.has(type)), crowdControlShares: Object.fromEntries([...ccSchedules].map(([type, schedule]) => [type, round(Math.min(1, sustainedLevel(schedule)))])), crowdControlReaders, ailmentReaders, centralize, regain, warcry: stormCommand, elixir: elixirs, numbedRevived: revivedNumbed, entries,derived, buffs: { fervorRating, fervorEffectPercent: fervorEffect, fervorAttackAilment, fervorSkillArea, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, attackAggressionEffectPercent: hasAttackAggression ? aggressionEffect("attack") : 0, spellAggressionEffectPercent: hasSpellAggression ? aggressionEffect("spell") + perCastEffect : 0, hasHasten, hasProfane, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration], ownInfiltration: ownInfiltrationTypes(entries) }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis, deemedRerun }, passSet.list, Object.fromEntries(ccForeignBy), { crowdControl: Object.fromEntries([...ccSchedules.keys()].map((type) => [type, { schedule: ccSchedules.get(type), scripted: ccScripted.get(type) ?? null, recipe: ccRecipeHolds.get(type) || [] }])), counters: busCounters, intimidated: busIntimidated, paralysis: busParalysis,
+    // First Flake of Strange Snow's deemed rating (W10 step 2): the types it counted, its per-type value and cap, and the rating it gave.
+    deemedFrostbite: deemedFrostbite ? { ...deemedFrostbite, types: [...deemedFrostbite.types], rating: debuffs.frostbiteRating } : null });
 }
 
 // Lucky roll helpers live in src/lucky-damage.js; re-exported for the existing importers.
@@ -1912,7 +2225,7 @@ export function deteriorationFrom(modifierTexts = [], state = {}, entries = []) 
   // The revived Erosion to Deterioration family: P1% of the increased Erosion Damage bonus joins the increased Deterioration Damage,
   // at most P2 (game affix 16346693). The bonus is read as the untyped-skill "+X% Erosion Damage" lines (also "<Type> and Erosion");
   // generic "+X% damage" and skill-scoped lines are left out: node 114 reads attr 54021 mod 3 with the write's own tags, none here
-  // (open question node-114-source-tags), so attr 5402's untagged increased writes, not attr 5719 (chunk 2, 2026-11-01). Lines that
+  // (node 114 reads with the reader's own query, research/node-114-trace-2026-11-03.md; open question ailment-record-skill-tags for a DoT), so attr 5402's untagged increased writes, not attr 5719 (chunk 2, 2026-11-01). Lines that
   // hold under a condition are not summed here.
   const fromErosionLines = pick(PATTERNS.deteriorationFromErosion);
   const erosionBonus = fromErosionLines.length ? sum(lines.map((line) => line.clean.match(/^\+(\d+(?:\.\d+)?)% (?:(?:Physical|Fire|Cold|Lightning|Elemental) and )?Erosion Damage$/i)?.[1]).map((value, index) => value ? num(value) * (lines[index].multiplier ?? 1) : 0)) : 0;

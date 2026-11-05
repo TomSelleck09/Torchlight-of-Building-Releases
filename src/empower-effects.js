@@ -1,3 +1,4 @@
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { skillProgressionSs13 } from "./data/skills/skill-progression-ss13.generated.js";
 import { skillTimingSs13 } from "./data/skills/skill-timing-ss13.generated.js";
 import { normalizePercentageText } from "./percentage-text.js";
@@ -164,11 +165,13 @@ function summonCastRate(setups, activeNames) {
  * @param {boolean} p.warcriesOnCooldown best-case switch: Warcries cast whenever ready (their own buffs and Storm's Command)
  * @returns {{ lines: object[], entries: object[], sharedDebuffSetupKeys: Set<string>, numbedEffectBuffs, lucky, markSources }}
  */
-export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), damagingSetupKeys = new Set(), hitProfiles = new Map(), modifierTexts = [], enemyAilments = [], prebuiltSelfBuffs = true, multistrikeEventsPerSecond = null, context = {}, warcriesOnCooldown = true } = {}) {
+export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), damagingSetupKeys = new Set(), hitProfiles = new Map(), modifierTexts = [], enemyAilments = [], enemyBuffs = null, prebuiltSelfBuffs = true, multistrikeEventsPerSecond = null, context = {}, warcriesOnCooldown = true } = {}) {
   const lines = [], entries = [], sharedDebuffSetupKeys = new Set(), buffCandidates = [];
   // Buff inputs (src/empower-buffs.js): Focus Blessing stacks, Minions on the field, Spirit Magi, hits per second (null before the
   // hit pass), whether Attack Aggression is already held, whether the build hits, Numbed on the dummy.
-  const buffContext = { prebuiltSelfBuffs, numbed: enemyAilments.includes("Numbed"), summonCastsPerSecond: summonCastRate(setups, activeNames), ...context };
+  // Numbed / Frostbitten from the dummy's unit buff set (W8 step 2; `enemyBuffs`), else the names list.
+  const buffs = enemyBuffSet(enemyBuffs);
+  const buffContext = { prebuiltSelfBuffs, numbed: buffs?.holds("Numbed") ?? enemyAilments.includes("Numbed"), summonCastsPerSecond: summonCastRate(setups, activeNames), ...context };
   const boardWarcries = setups.filter((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.tags || []).includes("Warcry")).map((setup) => ({ name: setup.name, setupKey: setup.setupKey }));
   const warcryEffect = warcryEffectFactor(modifierTexts, { castsRecently: warcriesOnCooldown ? warcryCastsRecently(boardWarcries, modifierTexts) : 0 });
   const globalSources = [];
@@ -179,7 +182,7 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
   }
   const globalIncreasedPercent = globalSources.reduce((sum, item) => sum + item.value, 0);
   const globalAdditional = empowerAdditionalLines(modifierTexts);
-  const frostbitten = enemyAilments.some((name) => FROSTBITTEN.has(name));
+  const frostbitten = buffs ? buffs.holds("Frostbite") || buffs.holds("Frozen") : enemyAilments.some((name) => FROSTBITTEN.has(name));
   for (const setup of setups) {
     if (setup.enabled === false || !activeNames.has(setup.name)) continue;
     const clauses = setup.supportEffects?.clauses || [];

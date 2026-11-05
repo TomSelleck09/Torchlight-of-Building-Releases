@@ -1047,7 +1047,8 @@ export function lineGameIds(line) {
       if (!cc) return null;
       // An Inverse Image copy is its source node (src/modifier-texts.js reflectedFrom).
       const [column, row] = (line.reflectedFrom ? String(line.reflectedFrom).split(",") : [m[2], m[3]]).map(Number);
-      const id = cc * 1e6 + (column + 1) * 1e4 + (row + 1) * 100;
+      // Thea's Prophecy of Revelation puts its replacement record (the original's id + 1) on the node (src/prophecy-of-revelation.js).
+      const id = Number(line.talentGameId) || cc * 1e6 + (column + 1) * 1e4 + (row + 1) * 100;
       return out(map.talents?.[id], true, `config_talent ${id} (${m[1]} ${column},${row}${line.reflectedFrom ? `, reflected to ${m[2]},${m[3]}` : ""})`, String(id));
     }
     case "core": {

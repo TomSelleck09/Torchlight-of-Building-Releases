@@ -4,10 +4,12 @@ import { prismAreaBounds, prismNodeAffixes } from "./prism-crafting.js";
 import { talentNodeClauses } from "./inverse-image-values.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { ailmentStateNames } from "./enemy-ailments.js";
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { withoutSlateCoreName } from "./granted-core-lines.js";
 import { applyTheaCapRules } from "./thea-traits.js";
 import { slateTalentLines } from "./nether-king-authority.js";
 import { trueFlameBlessingCycle, TFI_REFILL_TEXT } from "./true-flame-blessing-cycle.js";
+import { BASE_BLESSING_SECONDS, periodicGainStream, periodicLayerStats } from "./blessing-layers.js";
 
 export const blessingNames = ["Tenacity", "Focus", "Agility"];
 
@@ -103,21 +105,42 @@ export function parseBlessingModifier(text) {
 // Why a gain source can (or cannot) hold its stacks against the training dummy.
 // A gain qualified by the enemy's state ("upon inflicting damage to a Frostbitten enemy", Prophet [6,3]) needs that
 // state on the dummy (src/enemy-ailments.js types; Ignite from the Ignite ledger). Talent batch §3.1.
-const ENEMY_STATE_QUALIFIER = /\b(?:to|against) an? (Ignited|Frostbitten|Frozen|Numbed|Traumatized|Wilted|Withered|Shocked) enem(?:y|ies)\b/i;
+// The article is optional (wiring audit gap 6, 2026-11-03: "Gains 1 stack of Tenacity Blessing when dealing damage to Ignited enemies.
+// Interval: 0.1s", 2793789, trigger 1000030 on a target in state 4000130, read "Unverified" before): the dummy's state from the
+// enemy-ailment model, your Minions' ailments included (src/minion-ailment-types.js; a gain every 0.1 s holds the stacks while it is up).
+const ENEMY_STATE_QUALIFIER = /\b(?:to|against) (?:an? )?(Ignited|Frostbitten|Frozen|Numbed|Traumatized|Wilted|Withered|Shocked) enem(?:y|ies)\b/i;
 function enemyStateHolds(state, context) {
   const word = state[0].toUpperCase() + state.slice(1).toLowerCase();
   const name = ailmentStateNames[word] || (word === "Shocked" ? "Shock" : word);
-  const types = new Set(context.enemyAilments || []);
   if (name === "Ignite" && context.igniteOnTarget) return true;
+  // Every ailment state from the dummy's unit buff set (src/unit-buff-set.js, W8 steps 1 and 2); null with TLI_BUFF_SET=off (the list then).
+  const buffs = enemyBuffSet(context);
+  if (buffs) return buffs.holds(name === "Freeze" ? "Frozen" : name);
+  const types = new Set(context.enemyAilments || []);
   if (name === "Frozen") return types.has("Frozen") || types.has("Freeze");
   return types.has(name);
 }
 
+// A gain on an enemy in a state group (wiring audit W6a item 3, 2026-11-03): "Gains 1 stack of Focus Blessing when hitting an enemy with
+// Elemental Ailments" (2359509: its record's target state 4000570, the Elemental Ailment group: Ignite, Frostbite, Freeze, Numbed, game
+// keyword hyperlink 101; 4000580 any Ailment adds Trauma and Wilt). Before, the wording read "on hit" alone and held the stacks with no
+// ailment on the dummy, so a follower's or a Minion's Ignite (on the dummy whoever inflicted it) changed nothing.
+const ENEMY_GROUP_QUALIFIER = /\ban? enem(?:y|ies) (?:with|affected by) (Elemental )?Ailments?\b/i;
+const ELEMENTAL_AILMENT_STATES = ["Ignite", "Frostbite", "Freeze", "Frozen", "Numbed"], ANY_AILMENT_STATES = [...ELEMENTAL_AILMENT_STATES, "Trauma", "Wilt"];
 export const HIT_GAIN = /after (?:taking|being) a hit|when (?:hit\b|taking damage|being hit|you are hit)|upon taking damage|on taking damage|after being hit/i;
 function gainCondition(line, context) {
   const { canUseNonMain, barrierSources, hasReaping, block, canCrit, canHit, moving, hitRecently = true, mobilityUsed = false, tangleCasts = false } = context;
   const qualifier = line.match(ENEMY_STATE_QUALIFIER);
   if (qualifier && !enemyStateHolds(qualifier[1], context)) return [false, `Needs a ${qualifier[1]} enemy (not inflicted on the dummy by this build)`];
+  const group = line.match(ENEMY_GROUP_QUALIFIER);
+  if (group) {
+    const wanted = group[1] ? ELEMENTAL_AILMENT_STATES : ANY_AILMENT_STATES;
+    const types = new Set(context.enemyAilments || []);
+    // The group state (4000570 / 4000580) on the dummy's unit buff set (W8 step 1), else the list.
+    const buffs = enemyBuffSet(context);
+    const held = buffs ? buffs.holds(group[1] ? "ElementalAilment" : "Ailment") : wanted.some((name) => types.has(name));
+    if (!(held || (context.igniteOnTarget && wanted.includes("Ignite")))) return [false, `Needs an enemy with ${group[1] ? "an Elemental Ailment (Ignite, Frostbite, Freeze or Numbed)" : "an Ailment"}: none on the dummy`];
+  }
   // Magister (patch notes 2026-10-15): "Gains 1 stack(s) of Focus Blessing when Tangle casts a skill" (was "when consuming Spell
   // Burst or generating Tangle"; a saved line with the old wording reads the same). An activated Tangle triggers its Spell at
   // the Spell's casting interval (manual rule 1001020420), far more often than a Blessing lasts, so a Tangle Skill on the board
@@ -126,7 +149,7 @@ function gainCondition(line, context) {
   // Witch of the Night (F2, 2026-10-27): "Gains 1 stack of Focus Blessing every 1 s when Night Feather Entanglement reaches max stacks"
   // (game recipe 5583405: +1 Focus Blessing per p0 s while buff 12090 is held). Recipe 1447677 adds and limits the Night Feather stacks
   // to the activated-Tangle count (field 2006287), so the buff sits at max whenever a Tangle is active (the Clockwork Core's Tangles
-  // counted as activated: provisional, open question youga-core-activated-tangles); the gain then holds the Blessing at max.
+  // counted as activated: SS14 client, research/oq-r3-r4-rea-2026-11-04.md, source 90 counts every Core Tangle); the gain then holds the Blessing at max.
   if (/when Night Feather Entanglement reaches max stacks/i.test(line)) return context.nightFeatherMax ? [true, "Night Feather Entanglement at max stacks (its stacks are added and limited to the activated Tangles; game recipes 1447677 / 5583405; provisional)"] : [false, "No Night Feather Entanglement at max stacks (needs Witch of the Night's Night Feather Entanglement and an activated Tangle)"];
   if (/when using a Non-Main Skill/i.test(line)) return canUseNonMain ? [true, "Active non-main skill available"] : [false, "No active non-main skill"];
   // Gear affix batches A / D (2026-10-22): Minion damage and Elixir casts as gain events.
@@ -139,9 +162,14 @@ function gainCondition(line, context) {
   // switched by the Blocked recently condition and listed in the recount assumptions. Checked before the timed-gain rule.
   if (HIT_GAIN.test(line)) return hitRecently ? [true, "Hit recently (best-case assumption: blocking and being hit are common in maps and against bosses; the training dummy itself never attacks; condition 'Hit or blocked recently')"] : [false, "Hit recently is off (condition 'Hit or blocked recently')"];
   if (/Block/i.test(line)) return block?.recentlyActive ? [true, "Blocked recently enabled; block chance available"] : [false, "Requires blocking"];
-  if (/Non-Critical Strikes|upon dealing damage/i.test(line)) return canHit ? [true, "Active hit skill"] : [false, "No active hit skill"];
+  // "upon dealing / inflicting damage" is trigger 1000030 (game records 2800941, 597216704, 242805264): your hits or your DoT's damage
+  // (wiring audit W2 gap 4, 2026-11-03: a DoT-only build gains them too; a ticking DoT raises an event every server tick); "on hit" and
+  // the crit wordings are your hits only.
+  if (/upon (?:dealing|inflicting) damage|when (?:dealing|inflicting) damage/i.test(line) && !/Non-Critical Strikes/i.test(line)) return canHit ? [true, "Active hit skill"] : context.dealsDot ? [true, "Your damage over time deals damage every server tick (trigger 1000030)"] : [false, "No damage of yours (no hit or damage over time)"];
+  if (/Non-Critical Strikes/i.test(line)) return canHit ? [true, "Active hit skill"] : [false, "No active hit skill"];
   if (/Critical Strike/i.test(line)) return canCrit ? [true, "Critical strikes available"] : [false, "No modeled critical chance"];
-  if (/on hit|hitting an enemy|inflicting damage|Non-Critical Strikes/i.test(line)) return canHit ? [true, "Active hit skill"] : [false, "No active hit skill"];
+  if (/on hit|hitting an enemy/i.test(line)) return canHit ? [true, "Active hit skill"] : [false, "No active hit skill"];
+  if (/inflicting damage/i.test(line)) return canHit ? [true, "Active hit skill"] : context.dealsDot ? [true, "Your damage over time deals damage every server tick (trigger 1000030)"] : [false, "No damage of yours (no hit or damage over time)"];
   if (movementGainPattern.test(line)) return moving ? [true, "Moving (assumed: movement is constant, so max stacks)"] : [false, "Standing still"];
   if (/on defeat|on kill|defeating|defeated/i.test(line)) return [false, "Needs defeated enemies (not on the dummy)"];
   // After using a Mobility Skill (user rule 2026-10-14): mobility skill use is constant when the build has a Mobility Skill on
@@ -157,11 +185,11 @@ const statusKeys = (text) => {
   return [...new Set([clean, clean.replace(/^\[[^\]]+\]\s*/, ""), colon > 0 ? clean.slice(colon + 2) : clean])];
 };
 
-export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, nightFeatherMax = false, minionsDealDamage = false, elixirCasts = false, pactState = {}, equipment, talents = [], slates = [], talentState = {}, barrierSources = [], hasReaping = false, canUseNonMain = false, block, canHit = false, canCrit = false, moving = false, enemyAilments = [], igniteOnTarget = false, spellHitActive = true, extraLines = [], hitRecently = true, stackUsers = new Set(), stackUserTexts = [], stackOverrides = {} , fillShare = 0, fillSource = null, capRules = null, consumptionCycle = null} = {}) {
+export function calculateBlessings({ dealsDot = false, mobilityUsed = false, tangleCasts = false, nightFeatherMax = false, minionsDealDamage = false, elixirCasts = false, pactState = {}, equipment, talents = [], slates = [], talentState = {}, barrierSources = [], hasReaping = false, canUseNonMain = false, block, canHit = false, canCrit = false, moving = false, enemyAilments = [], enemyBuffs = null, igniteOnTarget = false, spellHitActive = true, extraLines = [], hitRecently = true, stackUsers = new Set(), stackUserTexts = [], stackOverrides = {} , fillShare = 0, fillSource = null, capRules = null, consumptionCycle = null, durationSeconds = {} } = {}) {
   const result = Object.fromEntries(blessingNames.map(name => [name, { name, baseMax: 4, maxStacks: 4, stacks: 0, ownStacks: 0, ownSources: [], capSources: [], gainSources: [], effectSources: [], unsupported: [] }]));
   const replacements = [], eachMaxSources = [], perStackLines = [], capShares = [];
-  const context = { canUseNonMain, barrierSources, hasReaping, block, canCrit, canHit, moving, enemyAilments, igniteOnTarget, hitRecently, mobilityUsed, tangleCasts, nightFeatherMax, minionsDealDamage, elixirCasts };
-  const add = (text, source, multiplier = 1) => {
+  const context = { dealsDot, canUseNonMain, barrierSources, hasReaping, block, canCrit, canHit, moving, enemyAilments, enemyBuffs, igniteOnTarget, hitRecently, mobilityUsed, tangleCasts, nightFeatherMax, minionsDealDamage, elixirCasts };
+  const add = (text, source, multiplier = 1, phaseSeconds = undefined) => {
     if (multiplier <= 0) return;
     // Arminius Guillotine's catalog row joins its two lines ("… +8% additional damage Own 1 additional stacks of Tenacity Blessing").
     for (const clause of String(text || "").split(/\s*\|\s*|\s+·\s+|\r?\n|\s+(?=Own \d+ additional stacks? of )/)) {
@@ -196,7 +224,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
       let [available, condition] = gainCondition(parsed.text, context);
       const chance = parsed.text.match(/([\d.]+)% chance/i);
       if (chance && Number(chance[1]) === 0) available = false;
-      for (const name of parsed.names) result[name].gainSources.push({ source, text: clause, available, condition, movement: movementGainPattern.test(parsed.text) });
+      for (const name of parsed.names) result[name].gainSources.push({ source, text: clause, available, condition, movement: movementGainPattern.test(parsed.text), ...(Number.isFinite(phaseSeconds) ? { phaseSeconds } : {}) });
     }
   };
   for (const item of equipment?.candidateItems || []) for (const text of effectiveGearModifierTexts(item)) add(text, item.name);
@@ -227,7 +255,7 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
   for (const line of activeKismetEffects(pactState)) add(line.text, line.source);
   // Conditional Blessing lines the shared resolver made active (src/line-effects.js; e.g. Deceiver's Might "+1 to Max
   // Focus Blessing Stacks if you have landed a Critical Strike or Reaped in the last 8s").
-  for (const line of extraLines) add(line.text, line.source);
+  for (const line of extraLines) add(line.text, line.source, 1, line.phaseSeconds);
   // Thea's max-stack rules (hero trait audit B7, src/thea-traits.js; provisional): Predicted Justice's shared bonus, the Divine Realm's
   // Agility / Tenacity transfer, Blasphemer's inversion into Max Desecration Stacks. The Divine Realm's conversion moves the converted
   // Blessing's stacks (and its gains) to the other one below.
@@ -252,6 +280,20 @@ export function calculateBlessings({ mobilityUsed = false, tangleCasts = false, 
     const convertedGain = convert && blessing.name === convert.to && result[convert.from].gainSources.some(source => source.available);
     blessing.stacks = convert && blessing.name === convert.from ? 0 : !cannotGain && (blessing.gainSources.some(source => source.available) || convertedGain) ? blessing.maxStacks : 0;
     if (convert && blessing.name === convert.from) blessing.convertedTo = convert.to;
+    // Each gain is a layer on its own timer (user decision 2026-11-04, src/blessing-layers.js; open question blessing-layer-timers): the held stacks
+    // are min(max, gains in the last D s). When every gain the Blessing has states its interval ("every N s", Thea's cycle), the stacks are that
+    // steady time average; any other gain (an event: hits, uses, Reaps, moving, …) has no rate here and holds the max, as before, assuming it comes
+    // at max ÷ D per second or faster (the tick engine runs those gains on the loop as layers).
+    if (blessing.stacks > 0) {
+      const gains = [...blessing.gainSources.filter((source) => source.available), ...(convertedGain ? result[convert.from].gainSources.filter((source) => source.available) : [])];
+      const streams = gains.map(periodicGainStream);
+      const seconds = Number(durationSeconds[blessing.name]) > 0 ? Number(durationSeconds[blessing.name]) : BASE_BLESSING_SECONDS;
+      if (streams.length && streams.every(Boolean)) {
+        const stats = periodicLayerStats(streams, seconds, blessing.maxStacks);
+        blessing.layers = { reading: "periodic", durationSeconds: seconds, maxStacks: blessing.maxStacks, streams, mean: stats.mean, peak: stats.peak, low: stats.low, shares: stats.shares, periodSeconds: stats.periodSeconds, reachesMax: stats.peak >= blessing.maxStacks };
+        blessing.stacks = stats.mean;
+      } else blessing.layers = { reading: "event", durationSeconds: seconds, maxStacks: blessing.maxStacks, mean: blessing.maxStacks, peak: blessing.maxStacks, low: blessing.maxStacks, shares: { [blessing.maxStacks]: 1 }, reachesMax: true, note: "a gain with no modeled rate: held at max (gains assumed at max ÷ duration per second or faster)" };
+    }
     // "Own N additional stacks of <Blessing>" (Arminius Guillotine; game affix 107853: node 621 adds N stacks of the Blessing's buff
     // 340 for as long as the item is worn): held whether or not a gain source exists, on top of the gained stacks and the max
     // (legendary audit 2026-10-22, provisional: open question legendary-own-blessing-stacks).

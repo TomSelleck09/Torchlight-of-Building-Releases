@@ -360,4 +360,43 @@ export function speedRecipeAdjuster({ modifierTexts = [], heroMemories = null } 
   };
 }
 
+// Tag-scoped Attack Speed (W6 follow-up of the wiring audit W1, 2026-11-03): "+3% Attack and Cast Speed for Channeled Skills" (talent; the
+// recipe writes attr 6001 on the Channeled tag), "+X% Attack Speed for Melee Skills". The weapon model reads build-wide Attack Speed only
+// (src/weapon-damage-model.js: its text reader takes the untagged wordings, its recipe reader leaves a tagged write to the text), so a tagged
+// write reached no attack. Here each line whose recipe writes Attack Speed on skill tags (not a conditional write, not an item-local one;
+// planner-made lines by the "for <Tag> Skills" wording) reaches an attack whose tags, with its supports' tag changes, carry them all; the
+// weapon model's own lines are left to it. Returns (tags: Set of catalog tag names) => { increased, additional: [], lines: [] }.
+const SCOPED_ATTACK_SPEED_TEXT = /^([+-]?\d+(?:\.\d+)?)% (additional )?(?:Attack and Cast Speed|Attack Speed) for ([A-Z][\w-]*(?: [A-Z][\w-]*)*?) Skills$/;
+export function scopedAttackSpeedAdjuster({ modifierTexts = [], weaponLineKind = () => null } = {}) {
+  const read = hitRecipeReader(modifierTexts);
+  const memo = new Map();
+  return (tags) => {
+    const key = [...tags].sort().join("|");
+    if (memo.has(key)) return memo.get(key);
+    const out = { increased: 0, additional: [], lines: [] };
+    for (const line of modifierTexts) {
+      if (line?.lineEffect) continue;
+      const text = squash(line.text);
+      if (!text || weaponLineKind(text)) continue;
+      const scale = Number(line.multiplier ?? 1) || 1;
+      const facts = read(line);
+      let parts = [];
+      if (facts.status !== "fallback") {
+        parts = facts.facts.filter((fact) => fact.kind === "attackSpeed" && !fact.local && fact.layer !== "base" && !fact.conditional && fact.skillTags?.some((tag) => tag !== "Active") && factReaches(fact, tags))
+          .map((fact) => ({ value: fact.value * scale, additional: fact.layer === "additional", tags: fact.skillTags }));
+      } else {
+        const match = text.match(SCOPED_ATTACK_SPEED_TEXT);
+        const wanted = match ? match[3].split(/ and | /).filter(Boolean) : [];
+        if (match && wanted.every((tag) => tags.has(tag))) parts = [{ value: Number(match[1]) * scale, additional: Boolean(match[2]), tags: wanted }];
+      }
+      for (const part of parts) {
+        if (part.additional) out.additional.push(part.value); else out.increased += part.value;
+        out.lines.push({ source: line.source, text: `${line.text} (Attack Speed on ${part.tags.join(" + ")} skills; this skill carries the tag${part.tags.length > 1 ? "s" : ""})`, value: part.value, additional: part.additional, origin: line.origin });
+      }
+    }
+    memo.set(key, out);
+    return out;
+  };
+}
+
 export { round4 };

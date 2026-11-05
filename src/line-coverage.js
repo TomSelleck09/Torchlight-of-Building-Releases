@@ -1,3 +1,4 @@
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { MOVEMENT_ATTACK_SPEED_SKILLS } from "./skill-hit-model.js";
 import { collectAilmentTypedSources, collectDamagingAilmentChance, collectAilmentDuration, CHANCE_TO_DAMAGE } from "./ailment-model.js";
@@ -34,10 +35,10 @@ import { classifyHitLine, splitHitLineText } from "./skill-hit-lines.js";
 import { MULTISTRIKE_SPEED_LINE, UNSTOPPABLE_FORCE_LINE, SENTRY_IDLE_LINE, SENTRY_START_LINE, FURY_LUCKY_LINE, CAST_SPEED_TO_CHARGE_LINE, SPELL_RIPPLE_LINE, SWEEPING_FURY_LINE, PROJECTILE_QUANTITY_LIMIT_LINE, MAIN_SPELL_REPEAT_LINE, SHADOW_QUANTITY_LINE, SHADOW_DAMAGE_LINE, SHADOW_CHANCE_LINE, BARRAGE_WAVE_CHANCE_LINE, BARRAGE_PER_WAVE_LINE, SPELL_BURST_USE_GAIN, DEMOLISHER_CONSUMED_LINE } from "./skill-hit-model.js";
 import { SOLID_RIVER_DAMAGE_LINE, SOLID_RIVER_TRIGGER_LINE } from "./activation-medium-events.js";
 import { TERRA_CHARGE_ON_USE } from "./selena-dance.js";
-import { ATTACK_AILMENT_CHANCE } from "./ailment-applications.js";
+import { ATTACK_AILMENT_CHANCE, CRIT_AILMENT_CHANCE } from "./ailment-applications.js";
 import { COMBO_POINTS_GAINED_LINE, COMBO_EXTRA_LINE } from "./combo-points.js";
-const CC_COMBAT_ENTRY_LINE = /^\+[\d.]+% (?:chance to Blind the target on hit|chance to inflict Slow on hit|chance to Weaken nearby enemies when triggering any skill|Intimidating effect)$/i;
-const MINION_AILMENT_LINE = /^(?:Adds [\d.]+ ?[-–] ?[\d.]+ Base (?:Ailment|Ignite|Trauma|Wilt) Damage to Minions|\+[\d.]+% chance for Minions to inflict (?:Damaging Ailments|Ignite|Trauma|Wilt))$/i;
+const CC_COMBAT_ENTRY_LINE = /^\+[\d.]+% Intimidating effect$/i;
+const MINION_AILMENT_LINE = /^(?:Adds [\d.]+ ?[-–] ?[\d.]+ Base (?:Ailment|Ignite|Trauma|Wilt) Damage to Minions|\+[\d.]+% chance for Minions to inflict (?:Damaging Ailments|Ignite|Trauma|Wilt)|\+[\d.]+% (?:Ignite|Trauma|Wilt|Numbed) chance for Minions)$/i;
 import { markLineKind } from "./mark-effect.js";
 import { pureHeartLineStatus } from "./pure-heart.js";
 import { REGAIN_ENABLERS } from "./regain-model.js";
@@ -545,6 +546,17 @@ function copyRuleStatus(text, planner) {
 
 function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (!text) return null;
+  // Crowd control held from the game recipes (src/crowd-control-recipes.js, wiring audit gap 1, 2026-11-03): the planner's combat entry
+  // decides (In calc where its Paralysis adds damage taken or a reader counts its types, No DPS effect where nothing reads them).
+  {
+    const line = normalizePercentageText(String(text)).replace(/\s+/g, " ").trim();
+    const holder = (planner?.lineEffects?.combat?.entries || []).find((item) => item.ccHolder && item.text === line);
+    if (holder) return holder.status;
+    // "+X% chance to inflict Frostbite" / "+X% Numbed chance" (game fields 2006490 / 2006530; src/enemy-ailments.js, wiring audit gap 3):
+    // In calc where the dummy carries that ailment (an inflicting skill deals Cold / Lightning hits), Inactive otherwise.
+    const chance = line.match(/^\+[\d.]+% (?:chance to inflict (Frostbite)|(Numbed) chance(?:, and \+[\d.]+% Numbed Effect)?)$/i);
+    if (chance && planner?.activation) return (enemyBuffSet(planner.mechanics?.enemyAilments)?.types() ?? (planner.mechanics?.enemyAilments?.types || []).map((type) => type.name)).includes(chance[1] ? "Frostbite" : "Numbed") ? "In calc" : "Inactive";
+  }
   // Legendary audit 2026-10-22 (src/legendary-line-status.js): the lines that audit brought into the calculation or settled.
   const legendary = legendaryLineStatus(text, planner, plannerEngines(planner));
   if (legendary) return legendary;
@@ -559,15 +571,17 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (/^During Spell Burst, this effect only takes effect on the first skill cast when Spell Burst is activated\.?$/i.test(censusLine)) return "No DPS effect";
   if (SENTRY_IDLE_LINE.test(censusLine)) return !planner?.activation ? "In calc" : (planner.skillHits || []).some((hit) => hit.modeled && (hit.rate?.sentryTiming?.idle || []).some((item) => item.value > 0)) ? "In calc" : "Inactive";
   if (SENTRY_START_LINE.test(censusLine)) return !planner?.activation ? "No DPS effect" : (planner.skillHits || []).some((hit) => hit.modeled && hit.profile?.sentry) ? "No DPS effect" : "Inactive";
-  // Crowd control by chance (Blind, Slow, Weaken) and "+X% Intimidating effect" (src/combat-states.js, 2026-11-03): the planner's combat
-  // entry decides (In calc where a crowd control counter or Wings of Light's Intimidated added effect reads them); without one the
-  // residual rules below stand (Blind's own effect: user decision 2026-10-25).
+  // "+X% Intimidating effect" (src/combat-states.js, 2026-11-03): the planner's combat entry decides (In calc where Wings of Light's
+  // Intimidated added effect reads it); without one the residual rules below stand. The crowd control holders are read at the top.
   if (CC_COMBAT_ENTRY_LINE.test(censusLine)) {
     const own = (planner?.lineEffects?.combat?.entries || []).find((item) => item.text === censusLine);
     if (own) return own.status;
   }
   // The Minions' ailment base and chance (src/minion-ailment-types.js, 2026-11-03; provisional): In calc where they add an ailment
   // type for the per-ailment-type counters; otherwise the line keeps its other readings (no Minion ailment damage is modeled).
+  // "+X% Numbed chance for Minions" (wiring audit gap 2, 2026-11-03): In calc where your Minions' Lightning hits keep Numbed, Inactive
+  // where the modeled Minions deal no Lightning.
+  if (/^\+[\d.]+% Numbed chance for Minions$/i.test(censusLine) && planner?.activation && (planner.minions || []).some((minion) => minion.modeled !== false)) return (planner.minionAilmentTypes?.types || []).some((type) => type.name === "Numbed" && type.uptime > 0) ? "In calc" : "Inactive";
   if (MINION_AILMENT_LINE.test(censusLine) && planner?.minionAilmentTypes?.active) return "In calc";
   if (FURY_LUCKY_LINE.test(censusLine)) return !planner?.activation ? "In calc" : (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.furyLucky?.active) ? "In calc" : "Inactive";
   // Reactive Rainbow's offensive half is read by src/combat-states.js (reactiveRainbowReversal; chunk 2, 2026-11-01).
@@ -895,7 +909,7 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
         return { part, source };
       }));
       // Chunk 6: a Lightning share taken out of Numbed's ramp moves the 5 s and 20 s windows, though sustained holds the same factors.
-      const numbedRamp = cap(passive.from) === "Lightning" && (planner.lineEffects?.state?.enemyAilments || []).includes("Numbed");
+      const numbedRamp = cap(passive.from) === "Lightning" && (enemyBuffSet(planner.lineEffects?.state)?.types() ?? planner.lineEffects?.state?.enemyAilments ?? []).includes("Numbed");
       if (!numbedRamp && pairs.length && pairs.every(({ part, source }) => source && Math.abs(unit(part) - unit(source)) <= 1e-9 * Math.max(1, unit(source)))) return "No DPS effect";
     }
     const used = passive.family === "multistrike" ? hits.some((hit) => hit.rate?.multistrike)
@@ -928,6 +942,12 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (planner?.activation && COMBO_POINTS_GAINED_LINE.test(text)) return (planner.skillHits || []).some((hit) => hit.modeled && hit.comboPoints) ? "In calc" : "Inactive";
   // "+X% chance for Attacks to inflict Damaging Ailments" (gear affix batch D; src/ailment-applications.js): In calc where a modeled
   // ailment has an Attack Skill applying it, Inactive otherwise.
+  // "+X% chance for Critical Strikes to inflict Damaging Ailments" (101080205; src/ailment-applications.js critAilmentChanceLines, wiring
+  // audit gap 3, 2026-11-03): In calc where a modeled ailment's non-beam inflicting skill can crit; the beam's Ignite ledger does not read it.
+  if (planner?.activation && CRIT_AILMENT_CHANCE.test(text)) {
+    const appliers = Object.values(planner.ailments || {}).filter((ailment) => ailment?.modeled).flatMap((ailment) => ailment.appliers || []);
+    return appliers.some((applier) => !applier.beam && applier.critChancePercent > 0 && applier.chancePercent > 0) ? "In calc" : appliers.some((applier) => applier.beam) ? "Not modeled" : "Inactive";
+  }
   if (planner?.activation && ATTACK_AILMENT_CHANCE.test(text)) return Object.values(planner.ailments || {}).some((ailment) => ailment?.modeled && (ailment.appliers || []).some((applier) => (applier.tags || []).includes("Attack") && applier.chancePercent > 0)) ? "In calc" : "Inactive";
   if (planner?.activation && DEMOLISHER_CONSUMED_LINE.test(text)) return (planner.skillHits || []).some((hit) => hit.modeled && hit.profile?.demolisher) ? "In calc" : "Inactive";
   // The Terra Charge gained on use moves a recast that consumes fewer than its max charges; a Terra hit already at the max reads No
@@ -1688,7 +1708,20 @@ export function refineCoverage(status, text, planner = context, baseForClause = 
     return engineLineStatus(clause, planner) ?? (base && base !== "Partly modeled" ? base : clauses.length === 1 ? status : "Not modeled");
   });
   if (!baseForClause && statuses.every((value, index) => value === (clauses.length === 1 ? status : "Not modeled") && engineLineStatus(clauses[index], planner) === null)) return status;
+  // A clause that is Inactive only because its exclusive group (moving / standing still, Caged Fury's distance moved, near / Distant, Low Life,
+  // …) holds the other alternative is the choice not taken, not a gap: it leaves the combine when another clause of the line reads something,
+  // as a single such line reads Inactive and its sibling line reads its own status (2026-11-05: Caged Fury's two halves read Partly modeled).
+  if (clauses.length > 1 && statuses.some((value) => value === "Inactive")) {
+    const kept = statuses.filter((value, index) => value !== "Inactive" || !exclusiveAlternativeNotTaken(clauses[index], planner));
+    if (kept.length && kept.length < statuses.length) return combineStatuses(kept);
+  }
   return combineStatuses(statuses);
+}
+
+// The clause's line resolves inactive under an exclusive condition group (src/line-conditions.js CONDITION_GROUPS): the other alternative holds.
+function exclusiveAlternativeNotTaken(clause, planner) {
+  const entry = resolveOnTheSpot(clause, planner);
+  return Boolean(entry && entry.group && entry.active === false && entry.status === "Inactive");
 }
 
 export function combineStatuses(statuses) {

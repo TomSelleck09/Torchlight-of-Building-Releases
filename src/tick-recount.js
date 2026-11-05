@@ -11,6 +11,8 @@
 // Nothing here is a user-facing choice: TICK_ENGINE_DRIVES is the one internal seam, and a compile or run failure leaves the planner's own
 // figures with a warning.
 import { compileTickLedger } from "./tick-ledger.js";
+import { blessingSeconds } from "./tick-layers.js";
+import { compileTriggerBus } from "./trigger-bus.js";
 import { runTickEngine } from "./tick-engine.js";
 import { calculateDummyRecount, summarizeRecount, windowTotals } from "./dummy-recount.js";
 
@@ -23,6 +25,11 @@ export const TICK_ENGINE_DRIVES = true;
 
 /** The planner's own continuous recount from the same inputs (the pre-engine timeline, the end check's base), never shown in the UI. */
 export const steadyRecount = (planner, { seconds = TICK_RECOUNT_SECONDS } = {}) => calculateDummyRecount(planner.dummyRecount.inputs, { seconds });
+/**
+ * The trigger bus for a planner result (W10, src/trigger-bus.js): null on the layers (TLI_TRIGGER_BUS unset or "layers", the default), else the
+ * compiled listeners, with the Blessing durations the layers use (src/tick-layers.js blessingSeconds). `mode` overrides the flag (a test).
+ */
+export const tickTriggerBus = (planner, { mode = undefined } = {}) => compileTriggerBus(planner, { mode, blessingSeconds: (name) => blessingSeconds(planner, name) });
 /** The recount timeline's length, the planner's 60 s (src/stats-sidebar.js reads the first 60 s). */
 export const TICK_RECOUNT_SECONDS = 60;
 
@@ -65,7 +72,7 @@ function overlayOpening(opening, totals) {
 export function driveWithTickEngine(planner, { seconds = TICK_RECOUNT_SECONDS, force = false } = {}) {
   const recount = planner?.dummyRecount;
   if ((!TICK_ENGINE_DRIVES && !force) || !recount?.timeline || !recount.inputs) return planner;
-  const spec = compileTickLedger(planner, { seconds });
+  const spec = compileTickLedger(planner, { seconds, bus: tickTriggerBus(planner) });
   const run = runTickEngine(spec, { seconds });
   const old = recount.timeline;
   // The metadata the recount card's click-to-exclude reads (src/dummy-recount.js excludeRecountSources): Ill Omen's and Turbulence's builders.
@@ -83,6 +90,8 @@ export function driveWithTickEngine(planner, { seconds = TICK_RECOUNT_SECONDS, f
     agilityBlessingUptime: run.buffs?.agility?.uptime ?? null, // read by the Blessing Duration badges (src/line-coverage.js)
     agilityBlessingLapses: run.buffs?.agility?.expiries ?? null, // how often Agility ran out (one built from 0 that never runs out has an uptime below 1)
     agilityBlessingPeak: run.buffs?.agility?.peakStacks ?? null, // the most Agility stacks held: below the planner's, longer stacks would add
+    // The trigger bus (W10, src/trigger-bus.js): its listeners, events and average holds, when TLI_TRIGGER_BUS gives it a trigger.
+    ...(run.bus ? { bus: run.bus } : {}),
     assumptions: run.assumptions
   };
   // The recount's own options stay readable (afflictionModel, recountStart); the Reaps now run on whole ticks, the engine's rule.

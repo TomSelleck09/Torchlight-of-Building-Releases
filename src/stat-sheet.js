@@ -10,6 +10,7 @@ import { statSheetPanelModel, statSheetPanelMarkup } from "./stat-sheet-panel.js
 import { elixirPanelLines } from "./elixir-model.js";
 import { statLineStatus } from "./stat-sheet-line-status.js";
 import { MAX_RESISTANCE_HARD_CAP_PERCENT } from "./game-attribute-defaults.js";
+import { sustainedBeamDps } from "./scorching-beam-delivery.js";
 const number = (value) => Number.isFinite(value) ? value : null;
 
 // "Report calculation" (src/app.js reportCalculation): right after the Active skill select here, and alone in the Damage
@@ -73,9 +74,11 @@ export function statSheetModel(planner, selectedKey, resources = {}) {
   const reapingDps = beam ? planner.combatProjection?.reapingDps || 0 : 0;
   // "Total modeled DPS": one definition on both paths (research/damage-path-switch-2026-10-12.md §4): the sustained hit
   // figure plus every DoT and Reaping as dealt to the target (mitigated), as damagePaths.sustained sums it.
-  const totalDps = cycle ? sustainedModeledDps({ hitDps: cycle.expectedDps, dotDps: ignite?.expectedDps || 0, reapingDps }) : null;
+  // The beam as delivered to the dummy (src/scorching-beam-delivery.js sustainedBeamDps), as damagePaths.sustained and the recount read it.
+  const beamDps = cycle ? sustainedBeamDps(planner.beamDelivery, cycle) : 0;
+  const totalDps = cycle ? sustainedModeledDps({ hitDps: beamDps, dotDps: ignite?.expectedDps || 0, reapingDps }) : null;
   // The same sum by recount source key, for the recount card's click-to-exclude (src/dummy-recount-panel.js).
-  const totalParts = cycle ? { beam: cycle.expectedDps, ignite: ignite?.expectedDps || 0, reaping: reapingDps } : undefined;
+  const totalParts = cycle ? { beam: beamDps, ignite: ignite?.expectedDps || 0, reaping: reapingDps } : undefined;
   const dummyDps = beam && planner.recountOpening?.seconds === 20 && (planner.beamDelivery || planner.bardDelivery)?.applicable
     ? planner.recountOpening.totalDpsApproximation : null;
   const dummyFiveSecondDamage = beam && planner.recountFiveSeconds?.seconds === 5 && (planner.beamDelivery || planner.bardDelivery)?.applicable

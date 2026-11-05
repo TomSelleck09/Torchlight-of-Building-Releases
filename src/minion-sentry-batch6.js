@@ -14,6 +14,7 @@
 // conditions: the game recipes named per rule (src/data/game/affix-recipes.generated.js). Counts and cadences the data leaves open
 // follow the Minion model's rules (src/minion-damage-model.js: deterministic cycle, every Minion of a summon acting alike, the dummy a
 // Boss within 10 m that never attacks) and are provisional: open questions minion-batch6-* / sentry-batch6-* in src/open-questions.js.
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { skillBuffValue, supportStone, gameLevelValue } from "./game-skill-data.js";
 
 const N = "([+-]?\\d+(?:\\.\\d+)?)";
@@ -819,7 +820,10 @@ const SENTRY_QUANTITY_LINE = /^(?:Max Sentry Quantity \+?(\d+)|\+?(\d+) (?:to )?
 export function applyBatch6SentryEdits(profile, effects, { modifierTexts = [], enemyAilments = null, boardSkillNames = null, deployCap = Infinity } = {}) {
   if (!profile) return { profile, notes: [], edited: false };
   const clauses = (effects?.clauses || []).filter((clause) => clause.batch6 && clause.family === "sentry" && !clause.neutral && !clause.notModeled && ["In calc", "Provisional"].includes(clause.status));
-  const ailments = new Set((enemyAilments?.types || []).map((type) => type.name).concat(Array.isArray(enemyAilments) ? enemyAilments : []));
+  // The enemy-ailment model's object carries the dummy's unit buff set (W8 step 2): its types; the names otherwise. The model names Freeze
+  // "Frozen" (state 4000110); Frost Core below asked for "Freeze", a name neither holds, until W8 step 3.
+  const buffSet = enemyBuffSet(enemyAilments);
+  const ailments = new Set(buffSet ? buffSet.types() : (enemyAilments?.types || []).map((type) => type.name).concat(Array.isArray(enemyAilments) ? enemyAilments : []));
   const name = profile.name;
   const durationLines = BATCH6_DURATION_SKILLS.has(name) ? (effects?.duration || []).filter((line) => ["In calc", "Provisional"].includes(line.status)) : [];
   const own = ["Ghost Blade Einherjar", "Frost Core", "Scorching Pulse"].includes(name);
@@ -872,7 +876,7 @@ export function applyBatch6SentryEdits(profile, effects, { modifierTexts = [], e
     for (const clause of kind("perMaxSentryQuantity")) if (component) component.extraAdditional.push({ source: clause.source, text: `${clean(clause.text)}: ${maxQuantity} Max Sentry Quantity × ${clause.value}% (game recipe ${clause.recipe})`, value: round(clause.value * Math.floor(maxQuantity / (clause.per || 1))), hitOnly: true });
     for (const clause of kind("sentryProximity")) if (component) component.extraAdditional.push({ source: clause.source, text: `${clean(clause.text)}: the Sentry deployed next to the dummy (best case; provisional)`, value: clause.value });
   }
-  if (name === "Frost Core" && ailments.has("Freeze")) {
+  if (name === "Frost Core" && (ailments.has("Frozen") || ailments.has("Freeze"))) {
     // Frost Core "If you are within 10m from the Sentry placed by the skill, the Sentry deals +32% additional damage to Frozen enemies":
     // the player stands by the Sentry at the dummy (within 10 m, best case) and the dummy is Frozen (≥ 100 Frostbite Rating).
     const component = find("sentry");

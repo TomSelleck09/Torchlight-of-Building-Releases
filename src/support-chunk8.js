@@ -10,6 +10,7 @@
 // Every other rule is a census family (conditionalAdditional, censusCrit, censusSpeed) settled in resolveChunk8Condition.
 import { DISTANT_STANDING_METERS } from "./dummy-target.js";
 import { resolveMark } from "./mark-effect.js";
+import { enemyBuffSet, ownCombatHeld } from "./unit-buff-set.js";
 
 const N = "([+-]?\\d+(?:\\.\\d+)?)";
 const num = (value) => Number(String(value).replace("−", "-"));
@@ -239,7 +240,7 @@ export function chunk8OwnStatus(clause, ctx) {
   const engine = ctx.engine;
   switch (clause.family) {
     case "chunk8Duration":
-      if (ctx.conditions && !(ctx.conditions.enemyAilments || []).some((name) => ["Ignite", "Trauma", "Wilt"].includes(name))) return s("Inactive", "no Damaging Ailment on the dummy to lengthen");
+      if (ctx.conditions && !(enemyBuffSet(ctx.conditions)?.holds("DotAilment") ?? (ctx.conditions.enemyAilments || []).some((name) => ["Ignite", "Trauma", "Wilt"].includes(name)))) return s("Inactive", "no Damaging Ailment on the dummy to lengthen");
       return engine === "skill-hit" || engine === "skill-dot" || engine === "scorching-beam" ? s("Provisional", "the Ailment Duration of this skill's own applications: Wilt's held stacks and the time a shared Ignite or Trauma timer stays up (src/ailment-model.js); no effect where the applications keep the timer alive", ["ailment"]) : s("Not modeled", "read for the skills that inflict ailments");
     case "chunk8Recovery":
       if (engine !== "skill-hit") return s("Inactive", "the supported skill has no modeled Demolisher Charge cadence");
@@ -251,7 +252,8 @@ export function chunk8OwnStatus(clause, ctx) {
     case "chunk8Deterioration":
       if (engine !== "skill-hit") return s("Inactive", "Deterioration comes from Hit Erosion Damage; the supported skill deals none here");
       if (ctx.conditions && !ctx.conditions.deteriorationActive) return s("Inactive", "the build inflicts no Deterioration (it needs a Deterioration chance and Hit Erosion Damage)");
-      if (clause.profane && ctx.conditions && !ctx.conditions.hasProfane) return s("Inactive", "no Profane held (game buff 3492)");
+      // Profane (buff 3492) on your unit buff set (W9 step 2), else the support state's field.
+      if (clause.profane && ctx.conditions && !(ownCombatHeld(ctx.conditions)?.hasProfane ?? ctx.conditions.hasProfane)) return s("Inactive", "no Profane held (game buff 3492)");
       return s("Provisional", "the Deterioration this skill's Erosion hits inflict, while the build has a Deterioration chance (src/skill-hit-model.js; share of that skill's Deterioration only)", ["skill-hit"]);
     case "chunk8SpeedShare":
       return engine === "skill-hit" ? s("In calc", "the skill's Projectile Speed share (src/skill-hit-model.js)", ["skill-hit"]) : s("Not modeled", "read on skill hits only");

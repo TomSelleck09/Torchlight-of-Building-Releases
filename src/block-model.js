@@ -54,7 +54,9 @@ function parsePlainBlockModifier(clean) {
   return null;
 }
 
-export function calculateBlock({ equipment, talents = [], slates = [], memories, pact, pactState = {}, talentState = {}, blockedRecently = false } = {}) {
+// `traitLines`: the hero's trait lines (planner.modifierTexts origin "trait"), so a plain trait block line counts (Rosa – High Court
+// Chariot's "+30% Attack and Spell Block Chance", game record 200000032; wiring fix W6b, 2026-11-03).
+export function calculateBlock({ equipment, talents = [], slates = [], memories, pact, pactState = {}, talentState = {}, blockedRecently = false, traitLines = [] } = {}) {
   const sources = [], unsupported = [], damageSources = [], ratingSources = [], conditionalSources = [];
   const add = (text, source, multiplier = 1) => {
     for (const clause of String(text || "").split(/\s*\|\s*|\s+·\s+|\r?\n/)) {
@@ -90,6 +92,7 @@ export function calculateBlock({ equipment, talents = [], slates = [], memories,
   }
   for (const slate of slates) for (const text of slateTalentLines(slate)) add(withoutSlateCoreName(text), slate.name);
   for (const line of [...(memories?.lines || []), ...(memories?.unsupported || [])]) add(line.text, line.source);
+  for (const line of traitLines) add(line.text, line.source, Number.isFinite(line.multiplier) ? line.multiplier : 1);
   if (pactState.kismetSlotMode) {
     // A Dual Kismet adds its lines once, with 2 or more copies on the page (src/kismet-effects.js dualKismetCopies).
     const dualCopies = dualKismetCopies(pactState);

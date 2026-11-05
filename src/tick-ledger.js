@@ -11,8 +11,12 @@
 // Lv16 references are checked (tests/tick-engine-references.test.js); other builds compile but stay unchecked.
 // Sessions 4 and 5: ailments, Affliction, Reaps and Scorching Beam run on the loop (src/tick-ailments.js), from planner.dummyRecount.inputs.
 // Session 6: Minions run on the loop (src/tick-minions.js), from planner.minions.
+// W10 steps 1 and 2a: with TLI_TRIGGER_BUS on "bus" the trigger bus (src/trigger-bus.js, compiled by the seam src/tick-recount.js and handed in as
+// option `bus`) owns trigger 1000033's and 1000030's listeners: each hit path of yours carries its event, each DoT record of yours raises one on
+// its ticks (the engine asks the bus whose it is), the engine dispatches them, and the layers yield the holds the bus owns (src/tick-layers.js
+// triggerBusLayer, placeHitGains, paralysisLayer, frostbiteLayer; the timed corrections on the DoT, beam and Minion paths).
 import { TICK_LAYERS, TICK_LAYER_KEYS, compileYougaProgram, yougaCoreHit } from "./tick-youga-layers.js";
-import { GENERAL_LAYERS, GENERAL_ORDER, addTarget, createLayerContext, finishTarget, generalHeldLayers } from "./tick-layers.js";
+import { GENERAL_LAYERS, GENERAL_ORDER, addTarget, createLayerContext, finishTarget, generalHeldLayers, minionTypeModifiers } from "./tick-layers.js";
 import { compilePlainProgram, plainUseKind, timerField } from "./tick-plain-skills.js";
 import { compileAilmentProgram } from "./tick-ailments.js";
 import { compileMinionProgram } from "./tick-minions.js";
@@ -154,11 +158,12 @@ function averagedSources(planner, paths, onLoop) {
  *   the recount's own reading), heldStrength ("dropped", the default: a limit-1 Ignite or Trauma is a held store, a weaker application does nothing; "refresh":
  *   the recount's chain, every success restarts the timer and the run's strongest is held), and on Minions minionCycle ("actor", the default, or
  *   "events", the planner's events on their ticks)
+ * @param {object} [options.bus] the trigger bus (src/tick-recount.js tickTriggerBus: null or absent on the layers, the default)
  * @returns {object} spec for runTickEngine, plus program ("youga" | "plain" | null), averagedLayers: [{ key, label, path, lines }], and when
  *   a program runs liveLayers ([{ key, label, lines, events }]); on the Youga build heldLayers ([{ key, label, reason, lines }]); with Minions on the
  *   loop minions ([{ key, label, mode, ramp, count, block }])
  */
-export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEYS, readings = {} } = {}) {
+export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEYS, readings = {}, bus: compiledBus = null } = {}) {
   const hits = (planner?.skillHits || []).filter((hit) => hit?.modeled && !hit.inactiveReason);
   const paths = Object.fromEntries(hits.map((hit) => [hit.key, hitPath(hit)]));
   const core = live.length ? yougaCoreHit(planner, hits) : null;
@@ -166,7 +171,9 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   const plainHits = live.length ? hits.filter((hit) => hit !== core && plainUseKind(hit)) : [];
   // One layer context for the build (src/tick-layers.js): the Core's skill first (speed "cast"), then every plain skill. The general layers
   // run over all of them in one pass; the Core's own layers on the Core (src/tick-youga-layers.js).
-  const options = { ...readings, live, layers: core ? TICK_LAYERS : GENERAL_LAYERS };
+  // The trigger bus (W10): null on the layers (the default), and with no layer context (`live: []` holds every layer at the planner's average).
+  const bus = live.length ? compiledBus : null;
+  const options = { ...readings, live, layers: core ? TICK_LAYERS : GENERAL_LAYERS, bus };
   const layerContext = live.length ? createLayerContext(planner, options) : null;
   // Every modeled hit is a target (chunk 15 session 3): the plain skills take the layers through their program, the static streams (triggered
   // skills, trigger rates such as True Flame Immolation) through their actions below.
@@ -183,13 +190,15 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   // Blessings gained only from the dummy (src/tick-layers.js onTargetBlessing) start at 0. Reading reapBlessing "held" is the recount's own
   // reading, for the checks that compare the engine with it: held from engagement, as before the on-target rule.
   const targetBlessings = readings.reapBlessing === "held" ? [] : layerContext?.targetBlessings ?? [];
-  if (readings.reapBlessing === "held" && layerContext?.prebuilt) for (const item of layerContext.targetBlessings || []) layerContext.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: item.seconds });
+  if (readings.reapBlessing === "held" && layerContext?.prebuilt) for (const item of layerContext.targetBlessings || []) layerContext.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: item.seconds, layered: true });
   // Aim's state on the loop (src/tick-layers.js aimLayer) enters a held Ignite or Trauma application's amount.
-  const ailmentProgram = live.length ? compileAilmentProgram(planner, { ...readings, targetBlessings }, timerField(readings), { aimBuff: layerContext?.once.has("aim") ? "aim" : null }) : null;
-  const plain = live.length ? compilePlainProgram(planner, plainHits, paths, readings, ailmentProgram, layered) : null;
+  const ailmentProgram = live.length ? compileAilmentProgram(planner, { ...readings, targetBlessings }, timerField(readings), { aimBuff: layerContext?.once.has("aim") ? "aim" : null, bus }) : null;
+  const plain = live.length ? compilePlainProgram(planner, plainHits, paths, readings, ailmentProgram, layered, bus) : null;
   if (plain) Object.assign(paths, plain.paths);
   if (ailmentProgram) Object.assign(paths, ailmentProgram.paths);
-  const minions = live.length ? compileMinionProgram(planner, { seconds, readings, timerFields: timerField(readings) }) : null;
+  // A layer's modifiers on the Minions' paths (W10 step 4a: the per-ailment-type Minion bodies, src/tick-layers.js minionTypeModifiers).
+  const minionModifiers = layerContext?.ailmentTypeMinion?.length ? (minion, skill) => minionTypeModifiers(layerContext, minion, skill) : null;
+  const minions = live.length ? compileMinionProgram(planner, { seconds, readings, timerFields: timerField(readings), bus, pathModifiers: minionModifiers }) : null;
   if (minions) Object.assign(paths, minions.paths);
   const layerOf = (hit) => hit === core ? program : layered.get(hit.key) || null;
   const averagedLayers = hits.flatMap((hit) => averagedLayersOf(planner, hit, layerOf(hit)));
@@ -220,23 +229,33 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   if (ailments) Object.assign(paths, ailments.paths);
   // An on-target Blessing (src/tick-layers.js onTargetBlessing) gains a stack on every Reap on the loop when it is gained when Reaping; its hit gains
   // are on the hits already. With nothing on the loop that can build it, it stays held, the planner's reading.
+  // With the trigger bus on 1000032 (W10 step 2b) the bus owns the Reap gain: it raises the gain from each Reap of yours on the loop (the same
+  // expected stacks), so nothing goes on the Reaps here.
   for (const item of targetBlessings) {
-    const onReaps = item.gains.reap && ailments?.reaps.length > 0;
-    if (onReaps) for (const reap of ailments.reaps) reap.onFire = [...(reap.onFire || []), { kind: "buff", buff: item.buff, seconds: item.seconds, stacks: 1, maxStacks: item.stacks }];
-    if (!onReaps && !item.hitPlaced && general) general.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: Infinity });
+    const busReap = Boolean(item.gains.reap && bus?.ownsReapBlessing(item.name));
+    const onReaps = item.gains.reap && ailments?.reaps.length > 0 && (!busReap || bus.placesReapBlessing(item.name));
+    if (onReaps && !busReap) for (const reap of ailments.reaps) reap.onFire = [...(reap.onFire || []), { kind: "buff", buff: item.buff, seconds: item.seconds, stacks: 1, maxStacks: item.stacks, layered: true }];
+    if (!onReaps && !item.hitPlaced && general) general.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: Infinity, layered: true });
   }
   const { actions, periodics, triggers } = ailments ?? { actions: allActions, periodics: allPeriodics, triggers: allTriggers };
   const onLoop = ailments ? { ailments: ailments.ailments, reaps: ailments.reaps, derived: ailments.derived, ...(ailmentProgram.affliction ? { affliction: ailmentProgram.affliction } : {}) } : {};
   const averaged = averagedSources(planner, paths, new Set([...(ailments?.reaps || []), ...(ailments?.derived || []), ...(minions?.minions || [])].map((item) => item.key)));
   assumptions.push(...averaged.map((item) => ({ id: `tick:averagedSource:${item.key}`, value: item.dps, text: `${item.label}: ${item.reason}.` })), ...(ailments?.assumptions || []));
+  // The bus's event on every hit path of yours (its strike hits, crit share, event tags), and its run state through the spec.
+  if (bus) {
+    Object.assign(paths, bus.withHitEvents(paths));
+    const uses = bus.useIds?.length > 0;
+    assumptions.push({ id: "tick:triggerBus", value: [...bus.ids].join(","), text: `Trigger bus (${[...bus.ids].join(", ")}): ${bus.listeners.length} listener${bus.listeners.length === 1 ? "" : "s"} on your hits${bus.ids.has(1000030) ? ", your DoT ticks" : ""}${bus.ids.has(1000030) || bus.ids.has(1000032) ? " and your Reaps" : ""}${uses ? ", and your skill uses by the planner's use sources" : ""}${bus.ids.has(1000047) ? ", your Minions' hits (1000047 on you, their own ids on them)" : ""}${bus.regainPools?.length ? ", your Regains" : ""}${bus.inflictIds?.length ? ", your ailment and DoT applications" : ""}; their buffs held on the loop as expected values${bus.owned.blur ? "; Blur from 0 on its gains" : ""}${bus.owned.reapStacks?.length ? `; Reaping Duration stacks from 0 on the Reaps (${bus.owned.reapStacks.join("; ")})` : ""}${bus.owned.useBlessings?.length ? `; ${bus.owned.useBlessings.join(", ")} Blessing pre-built and renewed by your uses` : ""}${bus.owned.profane ? "; Profane from 0 on your Wilt applications" : ""} (open questions trigger-bus-hit-events${bus.ids.has(1000030) || bus.ids.has(1000032) ? ", trigger-bus-dot-events" : ""}${bus.owned.blur ? ", trigger-bus-blur-from-reaps" : ""}${bus.owned.reapStacks?.length ? ", trigger-bus-reap-stacks" : ""}${uses ? ", trigger-bus-use-events" : ""}${bus.ids.has(1000047) || bus.regainPools?.length ? ", trigger-bus-minion-regain-events" : ""}${bus.owned.profane || Object.keys(bus.owned.inflictReaps || {}).length ? ", trigger-bus-inflict-events" : ""}).` });
+  }
+  const busSpec = bus ? { bus } : {};
   const dots = plain?.dots || [], ailmentLayers = ailments?.layers || [], plainProgram = Boolean(plain?.actions.length || plain?.dots.length || ailmentLayers.length || ailmentProgram?.actions.length || minions?.actions.length || general?.actions.length || general?.liveLayers.length);
   const held = [...(ailmentLayers.length ? ailmentProgram.held : []), ...(minions?.held || [])];
   const minionList = minions ? { minions: minions.minions } : {};
   const shared = general ? { speeds: general.speeds, triggers, collectors: general.collectors, initialBuffs: general.initialBuffs, queueOrder: general.queueOrder } : {};
   if (!program) {
     const generalLayers = general?.liveLayers || [], generalHeld = general && plainProgram ? general.heldLayers : [];
-    return { seconds, program: plainProgram ? "plain" : null, paths, ...shared, actions, periodics, dots, ...onLoop, ...minionList, averaged, averagedLayers, ...(plainProgram ? { liveLayers: [...generalLayers, ...(plain?.layers || []), ...ailmentLayers, ...(minions?.layers || [])] } : {}), ...(held.length || generalHeld.length ? { heldLayers: [...generalHeld, ...held] } : {}), assumptions };
+    return { seconds, program: plainProgram ? "plain" : null, paths, ...shared, ...busSpec, actions, periodics, dots, ...onLoop, ...minionList, averaged, averagedLayers, ...(plainProgram ? { liveLayers: [...generalLayers, ...(plain?.layers || []), ...ailmentLayers, ...(minions?.layers || [])] } : {}), ...(held.length || generalHeld.length ? { heldLayers: [...generalHeld, ...held] } : {}), assumptions };
   }
   const { liveLayers, heldLayers, queueOrder } = program;
-  return { seconds, program: "youga", ...shared, queueOrder, paths, actions, periodics, dots, ...onLoop, ...minionList, averaged, averagedLayers, liveLayers: [...liveLayers, ...(plain?.layers || []), ...ailmentLayers, ...(minions?.layers || [])], heldLayers: [...heldLayers, ...held], assumptions };
+  return { seconds, program: "youga", ...shared, ...busSpec, queueOrder, paths, actions, periodics, dots, ...onLoop, ...minionList, averaged, averagedLayers, liveLayers: [...liveLayers, ...(plain?.layers || []), ...ailmentLayers, ...(minions?.layers || [])], heldLayers: [...heldLayers, ...held], assumptions };
 }

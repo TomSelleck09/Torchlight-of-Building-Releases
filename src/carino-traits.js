@@ -40,8 +40,9 @@
 //   "+X% Reload Speed" lines; Shadow Magazine: 60051 increased → field 2100103 × P1, per whole 70% → Reload Quantity.
 // - Special Ammo (Ranger of Glory): every bullet a reload loads rolls field 2100107 once (FUN_141c2fab0) and takes a magazine place, a
 //   success picking one installed slot, uniformly, or the next in order with Crushing Gale Trigger (label 3030030). So each consumed
-//   bullet is Special with chance p, slot j with p ÷ k. A slot's bullet takes effect only when its support is not on the skill panel
-//   and fits the skill; otherwise it is spent with no effect (FUN_141c2edf0 → FUN_141c05780). Ammo Expert's and Well Prepared's bonus
+//   bullet is Special with chance p, slot j with p ÷ k. A slot's bullet takes effect when it fits the skill and its support is not on
+//   the skill panel, or is there at a lower level than the slot's (then it replaces the socketed copy on that cast: client reload
+//   component, encrypted-scripts survey 2026-11-03 finding 6); otherwise it is spent with no effect (FUN_141c2edf0 → FUN_141c05780). Ammo Expert's and Well Prepared's bonus
 //   (101010232) is once per cast with a counted Special Ammo; Landslide's (101010230) × the Special Ammo consumed
 //   (GetAmountOfAmmoConsume(1), duplicates and spent bullets included). The support level is Lv. 20 (provisional).
 // - Magic Shot: 50% per counted Special Ammo with the 8 s gate after the roll (103010048); 4 s × (1 + Magic Shot Duration + Skill Effect
@@ -197,10 +198,20 @@ export const DEFLECTION_SOURCES = [
   { pattern: /^Gains max stacks of Deflection on Evade$/i, kind: "evade" }
 ];
 
+// A Special Ammo slot's level (client reload component, encrypted-scripts survey 2026-11-03 finding 6): the slot's stone level plus the
+// additional levels read with the ammo tags (5006050–5006053). A planner slot stores no level, so it reads Lv. 20 and takes the same
+// support level lines as the socketed copy (no level line in the data is scoped to the ammo tags; provisional, `carino-special-ammo`).
+export function ammoLevel(socketedCopy) { return SPECIAL_AMMO_LEVEL + (Number(socketedCopy?.addedLevels) || 0); }
+// The ammo copy acts (and the socketed copy's tags are dropped for that cast) only when its level is higher; otherwise it is ignored.
+export function ammoOutlevels(socketedCopy) { return Boolean(socketedCopy) && ammoLevel(socketedCopy) > (Number(socketedCopy.effectiveLevel) || 0); }
+
 /** Ranger of Glory's Special Ammo slots: which selections count and why the others do not. */
-function specialAmmoSlots(hero, { expert, prepared, installedSupportNames = [] }) {
+function specialAmmoSlots(hero, { expert, prepared, installedSupportNames = [], installedSupports = [] }) {
   const selections = Array.isArray(hero?.carinoSpecialAmmoSupports) ? hero.carinoSpecialAmmoSupports : [];
   const installed = new Set(installedSupportNames);
+  // The socketed copies' levels (the highest one per name): { name, baseLevel, addedLevels, effectiveLevel }.
+  const socketed = new Map();
+  for (const entry of installedSupports) if (entry?.name && !(socketed.get(entry.name)?.effectiveLevel >= entry.effectiveLevel)) socketed.set(entry.name, entry);
   return [0, 1, 2].map((index) => {
     const name = String(selections[index] || "");
     if (!name) return null;
@@ -211,10 +222,13 @@ function specialAmmoSlots(hero, { expert, prepared, installedSupportNames = [] }
       : !support ? "not a support in the catalog"
       : premium && !prepared ? "Magnificent and Noble supports need Well Prepared"
       : !supportCanSupportProjectile(support, refdataSkillCatalogSs13) ? "cannot support Projectile Skills"
-      : installed.has(name) ? "it is on the skill panel (Special Ammo keyword: then it is not consumed)" : "";
+      : installed.has(name) && !ammoOutlevels(socketed.get(name)) ? `it is on the skill panel at Lv. ${socketed.get(name)?.effectiveLevel ?? "?"}, not below the slot's Lv. ${ammoLevel(socketed.get(name))} (an ammo copy acts only above the socketed copy's level)` : "";
+    // Client reload component (encrypted-scripts survey 2026-11-03, finding 6): an ammo copy of a socketed support acts, in place of the
+    // socketed copy, only when its level is higher.
+    const replaces = installed.has(name) && ammoOutlevels(socketed.get(name)) ? { socketedLevel: socketed.get(name).effectiveLevel, ammoLevel: ammoLevel(socketed.get(name)) } : null;
     // `loaded`: a reload rolls this slot's type. A support that is on the skill panel or cannot support Projectile Skills is still rolled:
     // its bullet takes a magazine place and is spent with no effect (FUN_141c2fab0, FUN_141c2edf0).
-    return { index, name, category: support?.category || null, eligible: !reason, loaded: open && Boolean(support) && !(premium && !prepared), reason };
+    return { index, name, category: support?.category || null, eligible: !reason, loaded: open && Boolean(support) && !(premium && !prepared), reason, ...(replaces && !reason ? { replaces } : {}) };
   }).filter(Boolean);
 }
 
@@ -372,7 +386,7 @@ export function carinoState({ heroId = "", hero = {}, modifierTexts = [], reques
   const expert = expertSlots.length > 0, prepared = preparedSlots.length > 0;
   let special = null;
   if (expert || prepared) {
-    const slots = specialAmmoSlots(hero, { expert, prepared, installedSupportNames: inputs.installedSupportNames || [] });
+    const slots = specialAmmoSlots(hero, { expert, prepared, installedSupportNames: inputs.installedSupportNames || [], installedSupports: inputs.installedSupports || [] });
     const eligible = slots.filter((slot) => slot.eligible), loaded = slots.filter((slot) => slot.loaded);
     const moon = first(lines, "moonSpecial");
     const gale = first(lines, "galeShare");

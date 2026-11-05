@@ -70,8 +70,8 @@ export function amEventFacts({ setups = [], activeNames = new Set(), skillHits =
         const hit = hitOf(setup.setupKey);
         const isBeam = beam && setup.setupKey === beam.setupKey;
         if (clause.source === "crit") {
-          // Crit determinations (src/crit-cache.js, 2026-10-27): one per hit group per use for cached skills.
-          const critHits = hit ? (hit.rate?.critChecksPerSecond ?? hit.rate?.hitsPerSecond ?? 0) * Math.max(0, Math.min(100, hit.crit?.chancePercent || 0)) / 100 : isBeam ? (beam.castsPerSecond || 0) * Math.max(0, Math.min(100, beam.critChancePercent || 0)) / 100 : 0;
+          // Crit events: every landing hit of a critting group (SS14 client R-b, 2026-11-04; determinations before).
+          const critHits = hit ? (hit.rate?.critEventsPerSecond ?? hit.rate?.hitsPerSecond ?? 0) * Math.max(0, Math.min(100, hit.crit?.chancePercent || 0)) / 100 : isBeam ? (beam.castsPerSecond || 0) * Math.max(0, Math.min(100, beam.critChancePercent || 0)) / 100 : 0;
           const events = clause.interval > 0 ? Math.min(critHits, 1 / clause.interval) : critHits;
           const perSecond = (clause.perEvent || 0) * events;
           instructions.push({ setupKey: setup.setupKey, source: clause.source, support: clause.support, perSecond, text: `${setup.name}: ${clause.perEvent} Instruction(s) per Critical Strike, ${round(critHits)} crit hits/s, at most one send per ${clause.interval} s → ${round(perSecond)}/s` });

@@ -1,3 +1,4 @@
+import { enemyBuffSet, ownCombatHeld } from "./unit-buff-set.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { yougaClauseKey, yougaLineStatus } from "./youga-ultimate-one.js";
 import { ADVANCED_ELEMENTAL_IMPACT_PERCENT, coldPulseState, cooldownSpeedFactor, frostfireCycle, frostfireLevels, infernalAverageStacks, purgatoryIntervals, stepsOf } from "./gemma-traits.js";
@@ -315,7 +316,7 @@ function resolveColdPulse(traits, state) {
   const dealsCold = Boolean(state.dealtDamageTypes?.has?.("Cold") || state.hitTypes?.has?.("Cold"));
   if (!dealsCold) return { pulse: null, reason: "no active skill deals Cold Damage, so Cold Pulse never triggers" };
   const intervalSeconds = Math.max(0.1, num(trigger[1]) + sumOf(traits, PATTERNS.pulseInterval));
-  const frostbitten = (state.enemyAilments || []).includes("Frostbite");
+  const frostbitten = enemyBuffSet(state)?.holds("Frostbite") ?? (state.enemyAilments || []).includes("Frostbite");
   const blooming = frostbitten && traits.some((item) => PATTERNS.pulseBlooming.test(item.clean));
   const otherFrostbiteOnHit = frostbitten && Boolean(state.frostbiteSource) && !/Cold Pulse/.test(state.frostbiteSource);
   const taken = traits.map((item) => item.clean.match(PATTERNS.pulseTaken)).find(Boolean);
@@ -495,7 +496,8 @@ function erikaVendettaEntry(line, module, state, { entry, derive, timedEffects, 
   else if (P.grant.test(text)) entry(line, module, Boolean(v.granted) && !inactive, inactive ? noVendetta : `applied: Active slot 3 holds a Lv. 20 ${v.skill} (hyperlink 10031 / 10032: stone, level, slot); the skill placed there is left out of the calculation`);
   else if (P.endless.test(text)) entry(line, module, Boolean(v.granted) && !inactive, inactive ? noVendetta : "applied: the granted Vendetta is Endless Vendetta (30 repeats, 10 s cooldown)");
   else if (P.hasten.test(text)) {
-    const hasten = Boolean(state.buffs?.hasHasten);
+    // Hasten from your unit buff set (W9 step 2), else the combat pass's `buffs`.
+    const hasten = Boolean((ownCombatHeld(state) ?? state.buffs)?.hasHasten);
     entry(line, module, hasten && !noVendetta, noVendetta || (hasten ? `Hasten is held: ${v.skill} has no cooldown (field 2006030 on tag 6100075, which both stones carry) and its casts gain +${v.hasten?.attackSpeedPercent || 0}% additional Attack Speed` : "no Hasten source"));
   } else if (P.manualPenalty.test(text)) entry(line, module, Boolean(incisive) && !noVendetta, noVendetta || `the manual Main Skill uses under Incisive take -${v.manualPenaltyPercent}% additional damage (game affix 6958220; taken off the Vendetta net gain, src/vendetta-model.js)`);
   else if (P.noActivationMedium.test(text)) {
@@ -579,7 +581,7 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
   const b6 = { switched: false };
   // Thea (B7): the settled state (Mountain of Sins reads the dummy's crowd control from the combat states) and its switches; Rosa's
   // switches (B11: the Trait Skill switch of Q-H7 and the best-case switches) once per call.
-  const thea = { switched: false, state: settleTheaCrowdControl(state.thea || null, state.enemyCrowdControl || null) };
+  const thea = { switched: false, state: settleTheaCrowdControl(state.thea || null, enemyBuffSet(state)?.crowdControlTypes() ?? state.enemyCrowdControl ?? null) };
   const rosa = { switched: false };
   // Sage (B8): the best-case switches are listed once per call.
   const sage = { switched: false };

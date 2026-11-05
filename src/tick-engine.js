@@ -16,7 +16,10 @@
 //   scaledTimerFrames, scaledGateReady. The speed is read at each check. Elapsed is frames ÷ 30 exactly (the client accumulates
 //   soft doubles, so exact breakpoints can differ by float noise; §3.3).
 // - Buff duration: seconds against world time, so the first tick at or after the end: buffExpiryFrame (no snap found; inferred).
-// - DoT: settles every tick, scaled by dt (Buff_Damage); type-1 records resolve in a first pass before hits (§4.1).
+// - DoT: settles every tick, scaled by dt (Buff_Damage); type-1 records resolve in a first pass before hits (§4.1). An ailment's last layer
+//   settles the remainder on its expiry tick, an independent stack expiring while others are held nothing (SS14 client, 2026-11-03:
+//   lastTickRemainder, expiringLayers). Frame order on SS14: the per-target Damage loop 0x141f07060 resolves type-1 records in 0x141ef5800's
+//   first loop, then the hits and Reaps in 0x141ef5290 (research/dot-timing-ss14-check-2026-11-03.md, point 3).
 // - "Recently": 4 s windows, 4 × FPS = 120 frames: RECENT_WINDOW_FRAMES, createCollector.
 // - Use time: seconds through phase timers, CAST_OVERSHOOT_RULE below (§3.4, open). A use reads its speed at the press.
 // - Charges: one recharge timer per skill, speed-scaled as a cooldown; a flat "-X s Cooldown" (reduceCooldowns) counts as elapsed time.
@@ -39,7 +42,10 @@
 // - Affliction: a scalar on the dummy. A DoT reads the rating at the start of the tick. A full-Affliction Reap is a continuous affix node, so it
 //   fires in the Affix stage, and its removal runs inside the Reap's dispatcher, before that tick's DoT pass (removalStage "beforeDot", open
 //   question tick-affliction-removal). The Reap's damage lands in the Damage stage. In the Damage loop the DoT pass, the hits, the Reaps, then the
-//   gain of rate ÷ 30, clamped to 0-100 (the per-target loop FUN_141d5c3f0 calls the gain 0x141c07a90 after them).
+//   gain of rate ÷ 30, clamped to 0-100 (the per-target loop FUN_141d5c3f0 calls the gain 0x141c07a90 after them), only while one of your DoT
+//   records is on the dummy (SS14 0x141d4cd50, research/oq-r1-r2-rea-2026-11-04.md R1.3). The first infliction (1000022, the first tick one of
+//   your DoT records exists, once per fight) gains Magmaskull's N instead when the build has it (spec.affliction.initial; src/initial-affliction.js).
+//   Any Reap of yours removes it beside a remover (R1.6), and the follower's clears come off the same rating (R1.9).
 // - Reaps (spec.reaps): one timer each (independent, user-confirmed). A Reap settles every DoT it reaches at that DoT's rate on the tick × its
 //   seconds × its settle scale, the expected base included, with no crit and no second resistance step: the path is past resistance already.
 //   Triggers: dealing damage over time, a success (a ready share, as the mean-field share of src/dummy-recount.js), full Affliction, or use events.
@@ -67,7 +73,8 @@ const CAST_OVERSHOOT_RULES = Object.freeze(["carry", "drop"]);
 /** Actor order inside a stage (provisional, not traced in the client; open question tick-actor-order). */
 export const ACTOR_ORDER = Object.freeze(["player", "minion", "follower"]);
 
-/** The stages of one tick, in the client's order (§7.1); Damage resolves type-1 DoT, then hits, then the Reap flush. */
+/** The stages of one tick, in the client's order (§7.1); Damage resolves type-1 DoT, then hits, then the Reap flush (SS14 too: 0x141f07060 →
+ * 0x141ef5800 DoT records then hit pre-compute, 0x141ef5290 hits then types 2–4; research/dot-timing-ss14-check-2026-11-03.md). */
 export const SYSTEM_ORDER = Object.freeze(["begin", "timerEvent", "command", "triggerAffix", "skill", "buff", "attack", "damage", "state", "end"]);
 
 // Float slack on phase timers (in frames), so an exact frame count (0.4 s = 12 frames) is not pushed one frame on by rounding error.
@@ -125,6 +132,19 @@ export function scaledTimerFrames(baseSeconds, speedFactor) {
 /** The tick a buff or DoT applied on `startFrame` ends: the first tick at or after start + duration. */
 export function buffExpiryFrame(startFrame, durationSeconds) {
   return startFrame + framesAtOrAfter(durationSeconds);
+}
+
+/**
+ * The share of a whole tick an ailment layer settles on its expiry tick (research/dot-timing-ss14-check-2026-11-03.md, SS14 client): the buff's
+ * own last frame settles the remainder 30 × D − (n − 1), n = ceil(30 × D), so a run lasting D s deals 30 × D ticks in total. A whole 30 × D
+ * returns 1 (the current reading, unsettled: the client removes a layer whose remaining time equals one frame, unless soft-float leaves it a hair
+ * above; open question tick-ailment-stack-mode).
+ */
+export function lastTickRemainder(durationSeconds) {
+  if (!Number.isFinite(durationSeconds) || !(durationSeconds > 0)) return 1;
+  const exact = durationSeconds * TICKS_PER_SECOND;
+  if (Math.abs(exact - Math.round(exact)) < 1e-9) return 1;
+  return Math.max(0, Math.min(1, exact - (framesAtOrAfter(durationSeconds) - 1)));
 }
 
 /** A cooldown record: when the timer last started. A new gate is ready. */
@@ -214,9 +234,12 @@ const modifierAmount = (world, modifier) => {
   if (modifier.maxAffliction) return ((atMaxAffliction(ratingRead(world)) ? modifier.maxAffliction.ratioAtFull : modifier.maxAffliction.ratioAtNone) - 1) * 100;
   // A state the run of an ailment carries (Scorch's stacks on the Ignite chain): a share of the percent by successes held, in expectation.
   if (modifier.ailmentShare) return modifier.percent * chainShare(world.ailmentRuns.get(modifier.ailmentShare.ailment).chain, modifier.ailmentShare.fractions);
-  // A (multiplies) line for every state held: (1 + X%)^n, as one amount.
+  // A (multiplies) line for every state held: (1 + X%)^n, as one amount. An entry with a `level` (a share of this tick, the trigger bus's hold of a
+  // type your Minions keep, W10 step 3c) counts that share. A `linear` one (an increased or penetration line per type, W10 step 4a) is X × n, up to
+  // its `capCount` types.
   if (modifier.count) {
-    const held = modifier.count.reduce((sum, entry) => sum + (entry.held ? 1 : buffStacks(world, entry.buff) > 0 ? 1 : 0), 0);
+    const held = modifier.count.reduce((sum, entry) => sum + (entry.held ? 1 : entry.level ? entry.level(world) : buffStacks(world, entry.buff) > 0 ? 1 : 0), 0);
+    if (modifier.linear) return modifier.percent * Math.min(modifier.capCount ?? Infinity, held);
     return held > 0 ? ((1 + modifier.percent / 100) ** held - 1) * 100 : 0;
   }
   const count = modifier.buff ? buffStacks(world, modifier.buff) : modifier.collector ? world.collectors.get(modifier.collector).total : 0;
@@ -284,6 +307,45 @@ function currentPathValue(world, path) {
 /** Stacks of a buff on this tick (0 when it is not active). */
 export const buffStacks = (world, key) => world.buffs.get(key)?.stacks || 0;
 
+// Layered buffs (the Blessings; user decision 2026-11-04, research/oq-blessing-refresh-2026-11-04.md, SS14 client): every gain adds layers with
+// their own full duration (the layer add 0x141d02810) and refreshes nothing; the layer timer pass (0x141d15bc0) counts each layer down on its own
+// and removes it on its own expiry tick (the buffExpiryFrame rule); at the cap the subtype-2 strategy (0x141d01450) removes the oldest layer, then
+// adds the new one. The stacks are the live layers. A layer carries an amount, so an expected gain (a share of a stack) is a share of a layer.
+// A consumption (node 623) takes the oldest layers first (provisional: which layers node 623 takes is not traced; blessing-layer-timers).
+const LAYER_EPS = 1e-12;
+// The sum of the layers, a whole count kept whole (shares of a layer would leave 3.9999999999999996 for 4).
+const layerTotal = (layers) => { const sum = layers.reduce((total, layer) => total + layer.amount, 0); const whole = Math.round(sum); return Math.abs(sum - whole) < 1e-9 ? whole : sum; };
+function takeOldest(layers, amount) {
+  let rest = amount;
+  while (rest > LAYER_EPS && layers.length) {
+    const oldest = layers[0];
+    if (oldest.amount <= rest + LAYER_EPS) { rest -= oldest.amount; layers.shift(); } else { oldest.amount -= rest; rest = 0; }
+  }
+}
+function layeredEntry(layers, startFrame) {
+  const live = layers.filter((layer) => layer.amount > LAYER_EPS);
+  return { stacks: layerTotal(live), layers: live, startFrame, expiryFrame: live.reduce((top, layer) => Math.max(top, layer.expiryFrame), 0) };
+}
+/** A layered gain: `amount` new layers ending on `expiryFrame`, the oldest removed first at the cap. Returns the entry (null when capped at 0). */
+export function addBuffLayers(entry, { amount, expiryFrame, maxStacks = 1, frame = 0 }) {
+  const layers = entry ? (entry.layers ? entry.layers.map((layer) => ({ ...layer })) : [{ expiryFrame: entry.expiryFrame, amount: entry.stacks }]) : [];
+  const cap = Math.max(0, maxStacks), add = Math.min(Math.max(0, amount), cap);
+  if (!(add > LAYER_EPS)) return entry ?? null;
+  const over = layerTotal(layers) + add - cap;
+  if (over > LAYER_EPS) takeOldest(layers, over);
+  layers.push({ expiryFrame, amount: add });
+  return layeredEntry(layers, entry?.startFrame ?? frame);
+}
+/** A buff held at engagement: plain (one count, one expiry), or layered ({ layered, layers: [{ seconds, stacks }] }, else all `stacks` ending at `seconds`). */
+function initialBuffEntry(item) {
+  const stacks = item.stacks ?? 1;
+  if (!item.layered) return { stacks, startFrame: 0, expiryFrame: buffExpiryFrame(0, item.seconds) };
+  const layers = (item.layers || [{ seconds: item.seconds, stacks }]).map((layer) => ({ expiryFrame: buffExpiryFrame(0, layer.seconds), amount: layer.stacks ?? 1 }));
+  // Oldest first: the layer ending first goes first at the cap.
+  layers.sort((a, b) => a.expiryFrame - b.expiryFrame);
+  return layeredEntry(layers, 0);
+}
+
 const resolve = (value, world) => typeof value === "function" ? value(world) : value;
 const seriesKey = (path) => path.source ?? path.key;
 const actorRank = (item) => { const rank = ACTOR_ORDER.indexOf(item.actor ?? "player"); return rank < 0 ? ACTOR_ORDER.length : rank; };
@@ -339,8 +401,14 @@ function newChain(spec) {
 // A held store (spec.store: mode 6 at a one-rank limit, src/held-ailment-store.js handed in through the spec) holds the DoT; a chain beside it
 // only when a modifier reads its success counts (Scorch's share of the Ignite run, keepChain).
 const newAilmentRun = (spec) => ({ chain: spec.stacking === "independent" || (spec.store && !spec.keepChain) ? null : newChain(spec), store: spec.store ? spec.store.create() : null, total: 0, lapses: 0, ended: 0 });
-const newAffliction = ({ perSecond = 0, removers = [], removalStage = "beforeDot", accrual = "fromStart" } = {}) => ({ rating: 0, perTick: perSecond / TICKS_PER_SECOND, removalStage, accrual, removers: removers.map((item) => ({ spec: item, gate: newGate(), fires: 0, firedFrame: 0 })), settleRating: undefined, lastRead: 0, readSum: 0, ticksAtMax: 0 });
-const newReap = (item) => ({ spec: item, gate: newGate(), fires: 0, ready: 1, recovering: [], head: 0, pendingMass: 0, pendingBase: 0, uses: item.startUses ?? 0 });
+// `initial`: Magmaskull's "Changes the initially inflicted Affliction to N" (src/initial-affliction.js), the first infliction's amount; `inflictedFrame`
+// the tick it landed on (0 before).
+const newAffliction = ({ perSecond = 0, removers = [], removalStage = "beforeDot", accrual = "whileDot", initial, clears = [] } = {}) => ({ rating: 0, perTick: perSecond / TICKS_PER_SECOND, removalStage, accrual, removers: removers.map((item) => ({ spec: item, gate: newGate(), fires: 0, firedFrame: 0 })), clears: clears.filter((item) => item.amount > 0 && item.eventSeconds > 0).map((item) => ({ spec: item, next: item.firstSeconds || 0, gateUntil: -Infinity, cleared: 0 })), settleRating: undefined, lastRead: 0, readSum: 0, ticksAtMax: 0, ...(Number.isFinite(initial) ? { initial, inflictedFrame: 0 } : {}) });
+// `pendingBy`: a Reap the trigger bus fires from several ailments (W10 step 4b, `spec.ailments`) keeps each one's fired share and base.
+const newReap = (item) => ({ spec: item, gate: newGate(), fires: 0, ready: 1, recovering: [], head: 0, pendingMass: 0, pendingBase: 0, pendingBy: new Map(), uses: item.startUses ?? 0 });
+// The ailments whose successes fire a "success" Reap: `spec.ailments` when the trigger bus hears every application of yours that fits the Reap's
+// row (W10 step 4b, src/trigger-bus.js inflictReapAilments), else the one ailment the recount rates it on.
+const reapAilments = (spec) => spec.ailments ?? [spec.ailment];
 
 // A list of whole ticks: { frame, effects }, those of one tick together.
 function timelineByFrame(items) {
@@ -383,7 +451,10 @@ function createWorld(spec, frames, trace) {
     ailmentRuns: new Map((spec.ailments || []).map((item) => [item.key, newAilmentRun(item)])),
     ailmentTicks: new Map((spec.ailments || []).map((item) => [item.key, { activeTicks: 0, baseTicks: 0 }])),
     affliction: newAffliction(spec.affliction),
-    buffs: new Map((spec.initialBuffs || []).map((item) => [item.buff, { stacks: item.stacks ?? 1, startFrame: 0, expiryFrame: buffExpiryFrame(0, item.seconds) }])),
+    // The origins (labels) the follower's and the Minions' actions fire their effects under: their DoT records are other attackers' entries on
+    // the Affliction list (tick-affliction-accrual).
+    otherOrigins: otherActorOrigins(spec),
+    buffs: new Map((spec.initialBuffs || []).map((item) => [item.buff, initialBuffEntry(item)])),
     collectors: new Map((spec.collectors || []).map((item) => [item.key, createCollectorFor(item)])),
     actions: byActor(spec.actions).map((item) => ({ spec: item, phase: null, carried: 0, endFrame: null, step: null, readySince: null, cooldown: item.cooldown ? newCooldown(item.cooldown) : null, presses: 0, uses: 0, timeline: item.timeline ? timelineByFrame(item.timeline) : null })),
     queues: new Set(), queueOrder: spec.queueOrder ?? "ready", queueEnds: new Map(), queueLast: new Map(),
@@ -392,9 +463,12 @@ function createWorld(spec, frames, trace) {
     accumulators: new Map(), buffTicks: new Map(), buffExpiries: new Map(),
     dotSpecs: new Map([...(spec.dots || []), ...(spec.ailments || [])].map((item) => [item.key, item])),
     reaps, reapByKey: new Map(reaps.map((reap) => [reap.spec.key, reap])),
-    reapWatchers: new Map([...new Set(reaps.map((reap) => reap.spec.ailment).filter(Boolean))].map((key) => [key, reaps.filter((reap) => reap.spec.trigger === "success" && reap.spec.ailment === key)])),
+    reapWatchers: new Map([...new Set(reaps.flatMap((reap) => reapAilments(reap.spec)).filter(Boolean))].map((key) => [key, reaps.filter((reap) => reap.spec.trigger === "success" && reapAilments(reap.spec).includes(key))])),
     averaged: (spec.averaged || []).map((item) => ({ ...item, startFrame: Math.max(1, framesAtOrAfter(item.fromSeconds ?? 0)) })),
-    attacks: [], hits: [], dotRecords: []
+    attacks: [], hits: [], dotRecords: [],
+    // The trigger bus (src/trigger-bus.js, W10), handed in through the spec like a held store, its runtime on this engine's timer rules: null on the
+    // layers. It also sees the Reaps on the loop (whose events it will hear; W10 step 3a).
+    bus: spec.bus ? spec.bus.create({ buffExpiryFrame, fixedIntervalFrames, ticksPerSecond: TICKS_PER_SECOND, reaps: spec.reaps || [] }) : null
   };
 }
 
@@ -548,6 +622,9 @@ function addStacks(world, spec, effect, chance, origin) {
     over -= cut;
     if (!(stack.weight > 1e-15)) record.head += 1;
   }
+  // tick-ailment-snapshot (SS14 client 0x141d22700 → 0x141d48bc0, research/oq-r1-r2-rea-2026-11-04.md R1.7, proven): a layer added rebuilds the
+  // record, which reads the attacker's multipliers afresh for all held stacks.
+  record.snap = snapshotAt(world, spec.path);
 }
 
 function expireStacks(world, key, record) {
@@ -580,6 +657,7 @@ function successReaches(world, ailment, success, successBase) {
     reap.ready -= fired;
     reap.pendingMass += fired;
     reap.pendingBase += fired * successBase / success;
+    if (reap.spec.ailments) { const entry = reap.pendingBy.get(ailment) ?? { mass: 0, base: 0 }; entry.mass += fired; entry.base += fired * successBase / success; reap.pendingBy.set(ailment, entry); }
     reap.recovering.push({ frame: world.frame, mass: fired });
   }
 }
@@ -604,7 +682,7 @@ function applyAilment(world, effect, origin) {
     if (!(share > 0)) continue;
     let success, successBase;
     if (run.store) {
-      // Mode 6 at a one-rank limit (spec.store): compared on the application's own amount, a weaker one does nothing. The variant is the
+      // Mode 6 at a one-rank limit (spec.store): compared on the application's own amount, a weaker one does nothing and is no success (no Reap "when inflicting", no bus event: R1.2, bug B1). The variant is the
       // application's own state that enters its amount (Aim's ailment line while Aim is up), read at the attempt.
       const { store } = spec, state = run.store, fresh = Math.max(0, 1 - state.held) * (effect.notActiveChance ?? effect.chance) * share;
       const variant = store.variantBuff && buffStacks(world, store.variantBuff) > 0 ? 1 : 0;
@@ -630,6 +708,8 @@ function applyAilment(world, effect, origin) {
     run.total += success;
     state.fires += success;
     successReaches(world, spec.key, success, successBase);
+    // The trigger bus (W10 step 4b): the application landed in this share of the attempt, so it raises 1000150 and 1000160 (per layer) on you.
+    if (world.bus) world.bus.emitInflict(world, spec, effect, success, (effects) => fireEffects(world, effects, origin));
   }
   note(world, "ailment", { ailment: spec.key, successes: run.total, by: origin });
   for (const key of effect.reapUses || []) countReapUse(world, key);
@@ -651,7 +731,45 @@ function snapshotAt(world, pathKey) {
   const indexes = snapshotIndexes(world, path);
   return indexes.length ? indexes.map((index) => modifierAmount(world, path.modifiers[index])) : null;
 }
-function snapshotDotAmount(world, path, dot, fresh) {
+// The SS14 expiry rule (research/dot-timing-ss14-check-2026-11-03.md): ailment stacks are layers of one buff. A layer that expires while others
+// are held is removed before the tick's settlement, so it deals nothing on that partial tick; the last layer settles the remainder
+// (lastTickRemainder). A shared-timer chain's or a held store's expiring group is always the run's last layer: the remainder. An independent stack
+// (Wilt) is in expectation the remainder × the chance that no other stack is held (each later stack absent at 1 − its expected weight, capped at
+// 1). Returns the base and held mass the expiring layers lose on this tick and the share each one keeps; null when nothing expires or the duration
+// is a whole number of ticks.
+function expiringLayers(world, spec, dot) {
+  if (!spec || !(dot.chain || dot.stacks)) return null;
+  const remainder = lastTickRemainder(spec.seconds);
+  if (remainder >= 1) return null;
+  if (dot.chain) {
+    let base = 0, held = 0, count = 0;
+    for (const group of dot.groups) {
+      if (world.frame < group.expiryFrame) break;
+      base += group.base * group.scale;
+      held += group.mass * group.scale;
+      count += 1;
+    }
+    return count ? { lostBase: (1 - remainder) * base, lostHeld: (1 - remainder) * held, groups: count, share: remainder } : null;
+  }
+  const { stacks } = dot;
+  let at = dot.head, base = 0, held = 0;
+  for (; at < stacks.length && world.frame >= stacks[at].expiryFrame; at += 1) { base += stacks[at].weight * stacks[at].value; held += stacks[at].weight; }
+  if (at === dot.head) return null;
+  let none = 1;
+  for (let other = at; other < stacks.length && none > 0; other += 1) none *= 1 - Math.min(1, stacks[other].weight);
+  const share = remainder * none;
+  return { lostBase: (1 - share) * base, lostHeld: (1 - share) * held, until: at, share };
+}
+
+// The chance an independent-stack record (Wilt) holds at least one stack on this tick: each expected stack weight is an independent chance, capped
+// at 1 (the trigger bus's DoT event, W10 step 2a).
+function stackPresence(record) {
+  let none = 1;
+  for (let at = record.head; at < record.stacks.length && none > 0; at += 1) none *= 1 - Math.min(1, record.stacks[at].weight);
+  return 1 - none;
+}
+
+function snapshotDotAmount(world, path, dot, fresh, expiring = null) {
   const indexes = snapshotIndexes(world, path), modifiers = path.modifiers || [];
   const current = modifiers.map((modifier) => modifierAmount(world, modifier));
   const valueAt = new Map();
@@ -668,10 +786,43 @@ function snapshotDotAmount(world, path, dot, fresh) {
   };
   let total = 0;
   // The group of this tick holds the moved successes (settling now) and the fresh runs (settling from the next tick): only the fresh base waits.
-  if (dot.chain) { for (const group of dot.groups) total += (group.base * group.scale - (fresh && group.frame === world.frame ? dot.freshBase : 0)) * valueOf(group.snap ?? null); }
-  else if (dot.stacks) { for (let at = dot.head; at < dot.stacks.length; at += 1) { const stack = dot.stacks[at]; total += stack.weight * stack.value * valueOf(stack.snap ?? null); } }
+  // An expiring layer keeps its share of this tick (expiringLayers).
+  if (dot.chain) { dot.groups.forEach((group, index) => { total += (group.base * group.scale - (fresh && group.frame === world.frame ? dot.freshBase : 0)) * (expiring && index < expiring.groups ? expiring.share : 1) * valueOf(group.snap ?? null); }); }
+  else if (dot.stacks) { const shared = dot.snap !== undefined; for (let at = dot.head; at < dot.stacks.length; at += 1) { const stack = dot.stacks[at]; total += stack.weight * stack.value * (expiring && at < expiring.until ? expiring.share : 1) * valueOf(shared ? dot.snap : stack.snap ?? null); } }
   else total = dotBase(dot) * valueOf(dot.snap ?? null);
   return total * FRAME_SECONDS;
+}
+
+// Another unit's clears of the rating (the follower's Pain Amplification): its damage events every `eventSeconds` from `firstSeconds`, each one
+// that finds the gate open and the rating at least `minRating` takes `amount` off and restarts the gate.
+function clearAffliction(world) {
+  const state = world.affliction;
+  if (!state?.clears.length) return;
+  for (const clear of state.clears) {
+    const { spec } = clear;
+    while (clear.next <= world.time + 1e-9) {
+      if (clear.next >= clear.gateUntil - 1e-9 && state.rating >= (spec.minRating ?? spec.amount) - 1e-9) {
+        state.rating = Math.max(0, state.rating - spec.amount);
+        clear.gateUntil = clear.next + (spec.gateSeconds || 0);
+        clear.cleared += spec.amount;
+        note(world, "afflictionCleared", { by: spec.source, rating: state.rating });
+      }
+      clear.next += spec.eventSeconds;
+    }
+  }
+}
+
+// One of your DoT records is on the dummy (the Affliction list's attacker entry holds an active record): the follower's and the Minions' are
+// other attackers.
+const ownDotHeld = (world) => { for (const dot of world.dots.values()) if (!world.otherOrigins.has(dot.by)) return true; return false; };
+function otherActorOrigins(spec) {
+  const origins = new Set();
+  for (const item of [...(spec.actions || []), ...(spec.periodics || []), ...(spec.triggers || [])]) {
+    if (!["follower", "minion"].includes(item.actor)) continue;
+    origins.add(item.label || item.key);
+    for (const step of item.steps || []) if (step.label) origins.add(step.label);
+  }
+  return origins;
 }
 
 // Who fires at full Affliction, and the rating left. A full-Affliction Reap's recovery gates its removal.
@@ -693,6 +844,18 @@ function fireRemovers(world) {
   return rating;
 }
 
+// A Reap of yours other than a remover's own: each remover takes its percentage off the rating, in expectation over the share that fired.
+function removeOnReap(world, key, mass) {
+  const state = world.affliction;
+  if (!state?.removers.length || state.removers.some((remover) => remover.spec.key === key)) return;
+  for (const remover of state.removers) {
+    const removed = Math.min(state.rating, remover.spec.removedPercent) * Math.min(1, mass);
+    if (!(removed > 0)) continue;
+    state.rating = Math.max(0, state.rating - removed);
+    note(world, "afflictionRemoved", { remover: remover.spec.key, by: key, rating: state.rating });
+  }
+}
+
 // One Reap: every DoT it reaches, at that DoT's rate on this tick × its seconds × its settle scale. `mass` is the share of a Reap that fired, and
 // `triggerBase` what that share holds of the ailment that fired it. The path is past resistance, so no second resistance step and no crit.
 function settleReap(world, reap, mass = 1, triggerBase = null, rating = undefined) {
@@ -700,18 +863,28 @@ function settleReap(world, reap, mass = 1, triggerBase = null, rating = undefine
   world.affliction.settleRating = rating;
   let total = 0;
   for (const [key, dot] of world.dots) {
-    const dotSpec = world.dotSpecs.get(key), settle = spec.dots?.[key], seconds = settle?.seconds ?? spec.reapSeconds ?? 0;
-    if (!dotSpec.path || !(seconds > 0)) continue;
-    const path = world.paths.get(dotSpec.path), base = key === spec.ailment && triggerBase !== null ? triggerBase : mass * dotBase(dot);
+    const dotSpec = world.dotSpecs.get(key), settle = spec.dots?.[key], heldSeconds = settle?.seconds ?? spec.reapSeconds ?? 0;
+    if (!dotSpec.path || !(heldSeconds > 0)) continue;
+    // A Reaping Duration stack held on the loop (the trigger bus, W10 step 3a: `durationScale`, this tick's seconds over the planner's).
+    const seconds = settle?.durationScale ? heldSeconds * settle.durationScale(world) : heldSeconds;
+    // Several firing ailments (W10 step 4b): each ailment's own share at the base its successes hold, the rest of the Reap at what the DoT holds.
+    const fired = triggerBase instanceof Map ? triggerBase.get(key) : null;
+    const path = world.paths.get(dotSpec.path), base = triggerBase instanceof Map ? (fired ? fired.base + (mass - fired.mass) * dotBase(dot) : mass * dotBase(dot)) : key === spec.ailment && triggerBase !== null ? triggerBase : mass * dotBase(dot);
     const value = base * currentPathValue(world, path) * seconds * (settle?.scale ?? spec.scale ?? 1);
     total += value;
-    if (parts) parts.push({ dot: key, base, seconds, value, amounts: (path.modifiers || []).map((modifier) => modifierAmount(world, modifier)) });
+    if (parts) parts.push({ dot: key, base, seconds, ...(settle?.durationScale ? { heldSeconds } : {}), value, amounts: (path.modifiers || []).map((modifier) => modifierAmount(world, modifier)) });
   }
   world.affliction.settleRating = undefined;
   reap.fires += mass;
   deal(world, spec.key, total, { kind: "reap", mass, ...(parts ? { parts } : {}) });
+  // tick-reap-any-source-removal (proven, research/oq-r1-r2-rea-2026-11-04.md R1.6): the removal (node 627) answers every 1000032 of its holder
+  // with no source check, so any Reap of yours removes the Affliction, in the share that fired; a remover's own Reap removes in fireRemovers.
+  if (spec.holder !== "follower" && mass > 0) removeOnReap(world, spec.key, mass);
   // What a Reap grants (a Blessing gained when Reaping): the share of a Reap that fired, in expectation.
   if (spec.onFire) fireEffects(world, spec.onFire.map((effect) => ({ ...effect, stacks: (effect.stacks ?? 1) * mass })), spec.label || spec.key);
+  // The trigger bus (W10 step 2b): the Reap raises 1000032 on its holder and 1000030 (SS14 client: a Reap's fixed amount is a settled damage
+  // event), in the share of the Reap that fired, after its damage as the onFire gains.
+  if (world.bus) world.bus.emitReap(world, spec, mass, (effects) => fireEffects(world, effects, spec.label || spec.key));
 }
 
 // The Reap flush, after the hits. A Reap's timer, speed-scaled, ends on the first tick with cd ≤ elapsed. Uses arm a Reap: it fires on the tick the
@@ -720,9 +893,10 @@ function flushReaps(world, dotDealt) {
   for (const reap of world.reaps) {
     const { spec } = reap;
     if (spec.trigger === "success") {
-      if (reap.pendingMass > 0) settleReap(world, reap, reap.pendingMass, reap.pendingBase);
+      if (reap.pendingMass > 0) settleReap(world, reap, reap.pendingMass, spec.ailments ? reap.pendingBy : reap.pendingBase);
       reap.pendingMass = 0;
       reap.pendingBase = 0;
+      reap.pendingBy.clear();
       continue;
     }
     if (spec.trigger === "affliction") {
@@ -748,6 +922,12 @@ function fireEffects(world, effects = [], origin) {
         break;
       case "buff": {
         const buff = world.buffs.get(effect.buff);
+        if (effect.layered) {
+          const entry = addBuffLayers(buff, { amount: effect.stacks ?? 1, expiryFrame: buffExpiryFrame(world.frame, effect.seconds), maxStacks: effect.maxStacks ?? 1, frame: world.frame });
+          if (entry) world.buffs.set(effect.buff, entry);
+          note(world, "buff", { buff: effect.buff, stacks: entry?.stacks ?? 0, by: origin, layered: true });
+          break;
+        }
         const stacks = Math.min(effect.maxStacks ?? 1, (buff?.stacks || 0) + (effect.stacks ?? 1));
         world.buffs.set(effect.buff, { stacks, startFrame: world.frame, expiryFrame: buffExpiryFrame(world.frame, effect.seconds) });
         note(world, "buff", { buff: effect.buff, stacks, by: origin });
@@ -757,6 +937,14 @@ function fireEffects(world, effects = [], origin) {
         // A charge spent: the stacks go down at once, the timers of the rest stay.
         const buff = world.buffs.get(effect.buff);
         if (!buff) break;
+        if (buff.layers) {
+          // A layered buff: the oldest layers go first (provisional, blessing-layer-timers).
+          takeOldest(buff.layers, effect.stacks ?? 1);
+          const entry = layeredEntry(buff.layers, buff.startFrame);
+          if (entry.stacks > LAYER_EPS) world.buffs.set(effect.buff, entry); else world.buffs.delete(effect.buff);
+          note(world, "buffConsumed", { buff: effect.buff, by: origin });
+          break;
+        }
         buff.stacks -= effect.stacks ?? 1;
         if (buff.stacks <= 0) world.buffs.delete(effect.buff);
         note(world, "buffConsumed", { buff: effect.buff, by: origin });
@@ -784,6 +972,11 @@ function fireEffects(world, effects = [], origin) {
         break;
       case "chance":
         rollAccumulator(world, effect, origin);
+        break;
+      case "use":
+        // A skill use of yours for the trigger bus (W10 step 3b, src/trigger-bus.js emitUse): its listeners' effects land here, at the use. Nothing
+        // on the layers (no bus, no use effect is compiled).
+        if (world.bus) world.bus.emitUse(world, effect, (effects) => fireEffects(world, effects, origin));
         break;
       case "reduceCooldowns":
         // All of the player's skills: the follower is another unit.
@@ -903,15 +1096,24 @@ const STAGES = {
       fireEffects(world, action.step ? action.step.effects : action.spec.effects, action.step?.label || action.spec.label || action.spec.key);
     }
   },
-  // 6. Buff: expiries, then DoT settlement. A DoT settles on its own last tick (provisional: the client's order inside the buff update
-  // was not traced), so one lasting D s deals exactly DPS × D, as the planner's continuous figure does.
+  // 6. Buff: expiries, then DoT settlement. A DoT settles on its own last tick. An ailment's last layer settles only the remainder of that tick,
+  // so a run lasting D s deals DPS × D; a Wilt stack expiring while others are held deals nothing on it (SS14 client, UBuffAction::Execute and
+  // the layer step, research/dot-timing-ss14-check-2026-11-03.md; a whole 30 × D keeps a full last tick, unsettled). A plain skill DoT keeps
+  // its full last tick.
   buff(world) {
     for (const [key, buff] of world.buffs) {
+      // A layered buff loses each layer on its own expiry tick; it ends with its last layer.
+      if (buff.layers && buff.layers.some((layer) => world.frame >= layer.expiryFrame)) {
+        const entry = layeredEntry(buff.layers.filter((layer) => world.frame < layer.expiryFrame), buff.startFrame);
+        if (entry.layers.length) { world.buffs.set(key, entry); note(world, "buffLayerExpired", { buff: key, stacks: entry.stacks }); continue; }
+      }
       if (world.frame < buff.expiryFrame) continue;
       world.buffs.delete(key);
       world.buffExpiries.set(key, (world.buffExpiries.get(key) || 0) + 1);
       note(world, "buffExpired", { buff: key });
     }
+    // The bus's holds end with the buffs: the first tick at or after their duration.
+    if (world.bus) world.bus.expire(world);
     const affliction = world.affliction;
     // The game's Affix stage runs before this one: a full-Affliction Reap's removal lands before the DoT pass (open question tick-affliction-removal).
     if (affliction.removalStage === "beforeDot") affliction.rating = fireRemovers(world);
@@ -921,15 +1123,23 @@ const STAGES = {
     for (const [key, dot] of world.dots) {
       if (world.frame < dot.firstSettleFrame) continue;
       const spec = world.dotSpecs.get(key), fresh = dot.freshFrame === world.frame;
-      // What landed on this tick first settles on the next, wherever in the tick it landed, so a DoT lasting D s settles exactly D × 30 ticks.
-      const base = dotBase(dot) - (fresh ? dot.freshBase : 0), heldNow = dot.chain ? dot.held - (fresh ? dot.freshHeld : 0) : dot.stacks ? dot.weight : 1;
+      // What landed on this tick first settles on the next, wherever in the tick it landed. An ailment layer expiring on this tick settles its
+      // share (expiringLayers: the remainder for the last layer, nothing for a Wilt stack while others are held; SS14 client, 2026-11-03).
+      // tick-ailment-snapshot (R1.7): a Wilt layer expiring while others are held rebuilds the record before this tick's settlement, re-reading
+      // the attacker's multipliers for every held stack.
+      if (dot.stacks && dot.head < dot.stacks.length && world.frame >= dot.stacks[dot.head].expiryFrame && world.frame < dot.stacks[dot.stacks.length - 1].expiryFrame) dot.snap = snapshotAt(world, spec.path);
+      const expiring = expiringLayers(world, world.ailmentSpecs.get(key), dot);
+      const base = dotBase(dot) - (fresh ? dot.freshBase : 0) - (expiring?.lostBase ?? 0), heldNow = (dot.chain ? dot.held - (fresh ? dot.freshHeld : 0) : dot.stacks ? dot.weight : 1) - (expiring?.lostHeld ?? 0);
       if (spec.path && base > 0) {
         const path = world.paths.get(spec.path);
         // tick-ailment-snapshot (chunk 0 finding, live since chunk 15 session 3): the attacker's time-varying multipliers are fixed at each
         // application, so a modifier flagged `attacker` reads the amounts its application snapshotted (per success group, per stack, per
         // record); the target-side ones (Affliction, the dummy's debuffs) read the tick.
-        const amount = snapshotIndexes(world, path).length ? snapshotDotAmount(world, path, dot, fresh) : base * currentPathValue(world, path) * FRAME_SECONDS;
+        const amount = snapshotIndexes(world, path).length ? snapshotDotAmount(world, path, dot, fresh, expiring) : base * currentPathValue(world, path) * FRAME_SECONDS;
         const record = { source: seriesKey(path), amount, dot: key, by: dot.by };
+        // The trigger bus (W10 step 2a): the record is a 1000030 event in the share of the tick it is on the dummy (a chain's or a held store's
+        // held mass, an expiring last layer included since it settles part of this tick; P(any stack) for independent stacks; a plain DoT 1).
+        if (world.bus) record.presence = dot.chain ? Math.min(1, Math.max(0, dot.held - (fresh ? dot.freshHeld : 0))) : dot.stacks ? stackPresence(dot) : 1;
         // With a trace each settlement keeps what it read, so a DoT series can be taken apart (src/tick-parity.js dotBudget).
         if (world.trace) { record.base = base; record.held = heldNow; record.amounts = (path.modifiers || []).map((modifier) => modifierAmount(world, modifier)); }
         world.dotRecords.push(record);
@@ -949,7 +1159,9 @@ const STAGES = {
     for (const { effect, origin } of world.attacks) {
       if (effect.kind === "event") { world.hits.push({ source: null, by: origin, onHit: effect.effects }); continue; }
       const path = world.paths.get(effect.path);
-      const hit = { source: seriesKey(path), amount: currentPathValue(world, path) * (effect.count ?? 1), path: path.key, by: origin, onHit: effect.onHit };
+      const hit = { source: seriesKey(path), amount: currentPathValue(world, path) * (effect.count ?? 1), path: path.key, units: effect.count ?? 1, by: origin, onHit: effect.onHit };
+      // A Minion hit's landings for the trigger bus (W10 step 3c, src/tick-minions.js; set only with a bus).
+      if (effect.landings !== undefined) hit.landings = effect.landings;
       // With a trace each hit keeps the amounts it read, so a run can be taken apart layer by layer (src/tick-parity.js).
       if (world.trace) { hit.amounts = (path.modifiers || []).map((modifier) => modifierAmount(world, modifier)); hit.count = effect.count ?? 1; hit.weight = effect.weight ?? 1; }
       world.hits.push(hit);
@@ -960,18 +1172,39 @@ const STAGES = {
   // DoTs active now and do not consume them.
   damage(world) {
     const dotDealt = world.dotRecords.length > 0;
-    for (const record of world.dotRecords) deal(world, record.source, record.amount, { kind: "dot", dot: record.dot, by: record.by, ...(record.amounts ? { amounts: record.amounts, base: record.base, held: record.held } : {}) });
+    for (const record of world.dotRecords) {
+      deal(world, record.source, record.amount, { kind: "dot", dot: record.dot, by: record.by, ...(record.amounts ? { amounts: record.amounts, base: record.base, held: record.held } : {}) });
+      // The trigger bus: a DoT record of yours dealing damage is a 1000030 event on this tick (one per record, open question dot-damage-trigger-events).
+      if (world.bus && record.presence > 0) world.bus.emitDot(world, record, (effects) => fireEffects(world, effects, record.by));
+    }
     world.dotRecords.length = 0;
     for (const hit of world.hits) {
       if (hit.source !== null) deal(world, hit.source, hit.amount, { kind: "hit", path: hit.path, by: hit.by, ...(hit.amounts ? { amounts: hit.amounts, count: hit.count, weight: hit.weight } : {}) });
       fireEffects(world, hit.onHit, hit.by);
+      // The trigger bus: the hit's event (its path carries it) to the listeners of its trigger, after the hit's own on-hit effects.
+      if (world.bus && hit.path) world.bus.emit(world, hit, (effects) => fireEffects(world, effects, hit.by));
     }
     world.hits.length = 0;
+    // follower-affix-pain-amplification (research/oq-r1-r2-rea-2026-11-04.md R1.9, proven: one rating on the dummy): the follower skill's damage events
+    // in this tick's hit pass clear their amount off your rating, at most once per gate, while the rating is at least the minimum.
+    clearAffliction(world);
     // The open reading of tick-affliction-removal: the removal after the Reap's damage. Either way the gain comes last (§3.2, §4.1).
-    const left = world.affliction.removalStage === "reap" ? fireRemovers(world) : null;
+    const before = world.affliction.rating, left = world.affliction.removalStage === "reap" ? fireRemovers(world) : null;
     flushReaps(world, dotDealt);
-    if (left !== null) world.affliction.rating = left;
-    if (world.affliction.accrual === "fromStart" || world.dots.size) world.affliction.rating = Math.max(0, Math.min(AFFLICTION_MAX, world.affliction.rating + world.affliction.perTick));
+    // The other Reaps' removals (removeOnReap) stay on top of the remover's own.
+    if (left !== null) world.affliction.rating = Math.max(0, world.affliction.rating - (before - left));
+    // tick-affliction-accrual (SS14 client 0x141d4cd50, research/oq-r1-r2-rea-2026-11-04.md R1.3, proven): the rating gains only while one of
+    // your DoT records (an ailment or a skill DoT; not the follower's or a Minion's, other attacker entries) is on the dummy, after this tick's
+    // DoT pass. "fromStart" (the earlier provisional reading) gains from engagement.
+    if (world.affliction.accrual === "fromStart" || ownDotHeld(world)) {
+      const affliction = world.affliction;
+      // The first infliction (the first tick the dummy gains Affliction: the first tick one of your DoT records exists, after that tick's DoT
+      // pass; engagement under "fromStart") raises 1000022 once per fight; Magmaskull's node 627 makes it N instead of that tick's gain
+      // (src/initial-affliction.js, R1.3). A removal changes the rating only, so it never re-fires. Without the line the gain is the tick's share.
+      const first = affliction.initial !== undefined && affliction.inflictedFrame === 0;
+      if (first) { affliction.inflictedFrame = world.frame; note(world, "initialAffliction", { rating: Math.min(AFFLICTION_MAX, affliction.rating + affliction.initial) }); }
+      affliction.rating = Math.max(0, Math.min(AFFLICTION_MAX, affliction.rating + (first ? affliction.initial : affliction.perTick)));
+    }
     // Sources the loop does not model yet: the planner's average, spread over the ticks (named in the result as averaged).
     for (const item of world.averaged) {
       if (world.frame < item.startFrame) continue;
@@ -983,6 +1216,7 @@ const STAGES = {
   // 9. FightResource, State, Collector: prune the windows.
   state(world) {
     for (const collector of world.collectors.values()) collectorPrune(collector, world.frame);
+    if (world.bus) world.bus.sample(world);
     for (const [key, buff] of world.buffs) {
       const held = world.buffTicks.get(key) || { ticks: 0, stackTicks: 0, peak: 0 };
       held.ticks += 1;
@@ -1038,23 +1272,28 @@ export const firstHitTimeline = (run) => ({ ...run, firstDamageSeconds: Number.i
  *   { create, attempt, group, expire } from src/held-ailment-store.js, variantBuff, variantCount; an attempt's kind is stream × variantCount +
  *   variant) with keepChain (a chain beside it for ailmentShare); independent: limit, value } (DPS = base × path)
  * @param {object} [spec.affliction] { perSecond, removers: [{ key, baseSeconds, speedFactor (or recoverySeconds), removedPercent, settle ("lastDot" reads
- *   the last DoT pass's rating) }], removalStage ("beforeDot" | "reap"), accrual ("fromStart" | "whileDot") }
- * @param {object[]} [spec.reaps] { key, label, baseSeconds, speedFactor, trigger, reapSeconds, scale, onFire (effects a Reap grants), dots: { [dot]: { seconds, scale } } }. trigger: none, a DoT
+ *   the last DoT pass's rating) }], removalStage ("beforeDot" | "reap"), accrual ("whileDot", default: only while one of your DoT records is held | "fromStart"), initial (the first infliction's amount:
+ *   Magmaskull, src/initial-affliction.js; absent, the first tick gains its share like any other) }
+ * @param {object[]} [spec.reaps] { key, label, baseSeconds, speedFactor, trigger, reapSeconds, scale, onFire (effects a Reap grants), holder ("follower": the follower's Reap, for the trigger bus; default yours), dots: { [dot]: { seconds, scale, durationScale (world → this tick's seconds over `seconds`: a Reaping Duration stack the trigger bus holds) } } }. trigger: none, a DoT
  *   was dealt this tick; "success", a success of `ailment`; "affliction", `remover` fired; "uses", `usesPerTrigger` uses counted by `reapUses` on an
  *   ailment effect or the effect "reapUse", from `startUses`
  * @param {object[]} [spec.derived] a series made from others when the run ends: { key, label, factor, builders: [series key], reason }
  * @param {object[]} [spec.collectors] { key, windowSeconds, seed: [{ frame, value }] (ticks ≤ 0, oldest first) }
- * @param {object[]} [spec.initialBuffs] buffs held at engagement: { buff, stacks, seconds }
+ * @param {object[]} [spec.initialBuffs] buffs held at engagement: { buff, stacks, seconds, layered, layers: [{ seconds, stacks }] (a layered buff's layers) }
  * @param {Record<string, {increasedPercent, additionalFactor, modifiers}>} [spec.speeds] named speeds, built like a path of base 1
  * @param {object[]} [spec.averaged] { key, label, dps, fromSeconds, reason }
- * Effects: { kind: "hit", path, count, weight (a use's share, for the trace), onHit } | { kind: "event", effects } | { kind: "buff", buff, seconds, stacks, maxStacks } |
+ * @param {object} [spec.bus] the trigger bus (src/trigger-bus.js compileTriggerBus): { create(helpers) } giving the run's state { emit(world, hit, fire),
+ *   emitDot(world, record, fire), emitReap(world, reapSpec, mass, fire), expire(world), sample(world), share(name), report() }; each hit of a path
+ *   with a `busEvent` raises that event, each DoT record dealt raises its DoT's event (the bus knows which are yours) in the share of the tick it is
+ *   on the dummy (`record.presence`), and each Reap its Reap event (its spec's `holder`) in the share that fired
+ * Effects: { kind: "hit", path, count, weight (a use's share, for the trace), onHit, landings (a Minion hit's landings for the trigger bus, W10 step 3c) } | { kind: "event", effects } | { kind: "buff", buff, seconds, stacks, maxStacks, layered (each gain its own layers and timers, the oldest out at the cap: the Blessings) } |
  * { kind: "dot", dot, seconds } | { kind: "collect", collector, value } | { kind: "delay", seconds, effects } |
  * { kind: "chance", key, probability, gate: { fixedSeconds }, effects } | { kind: "reduceCooldowns", seconds } |
- * { kind: "consume", buff, stacks } | { kind: "ailment", ailment, key, chance, notActiveChance, attempts, stream, stacks, value, reapUses: [reap key] } |
+ * { kind: "use", event, units } (a skill use for the trigger bus, W10 step 3b) | { kind: "consume", buff, stacks } | { kind: "ailment", ailment, key, chance, notActiveChance, attempts, stream, stacks, value, reapUses: [reap key] } |
  * { kind: "reapUse", reap }.
- * Modifiers (on a path or a speed): { buff | collector | count: [{ buff } | { held: true }] | affliction: true | maxAffliction: { ratioAtNone,
- *   ratioAtFull } | ailmentShare: { ailment, fractions } | amount: world => percent, requires: [buff], layer, percent, perStack, capPercent, perPoint,
- *   types, parts }.
+ * Modifiers (on a path or a speed): { buff | collector | count: [{ buff } | { held: true } | { level: world => share }] (with linear, capCount: a
+ *   per-type sum) | affliction: true | maxAffliction: { ratioAtNone, ratioAtFull } | ailmentShare: { ailment, fractions } | amount: world => percent,
+ *   requires: [buff], layer, percent, perStack, capPercent, perPoint, types, parts }.
  * @param {object} [options]
  * @param {number} [options.seconds] run length; default spec.seconds, else 54
  * @param {boolean} [options.trace] keep every stage and event, each naming its source
@@ -1095,11 +1334,13 @@ export function runTickEngine(spec, { seconds = spec?.seconds ?? 54, trace = fal
     // that never runs out reads an uptime below 1 from its opening alone).
     buffs: Object.fromEntries([...world.buffTicks].map(([key, held]) => [key, { uptime: held.ticks / frames, averageStacks: held.stackTicks / frames, expiries: world.buffExpiries.get(key) || 0, peakStacks: held.peak }])),
     // The rating the DoT pass read, over the run.
-    affliction: { averageRating: world.affliction.readSum / frames, ticksAtMax: world.affliction.ticksAtMax, removals: world.affliction.removers.reduce((sum, item) => sum + item.fires, 0), finalRating: world.affliction.rating },
+    affliction: { averageRating: world.affliction.readSum / frames, ticksAtMax: world.affliction.ticksAtMax, removals: world.affliction.removers.reduce((sum, item) => sum + item.fires, 0), finalRating: world.affliction.rating, ...(world.affliction.clears.length ? { cleared: world.affliction.clears.reduce((sum, item) => sum + item.cleared, 0) } : {}), ...(world.affliction.initial !== undefined ? { initial: world.affliction.initial, initialFrame: world.affliction.inflictedFrame } : {}) },
     // Expected successes, lapses and ticks held; the mean base while it was held.
     ailments: Object.fromEntries([...world.ailmentRuns].map(([key, item]) => { const held = world.ailmentTicks.get(key); return [key, { successes: item.total, lapses: item.lapses, activeTicks: held.activeTicks, meanBase: held.activeTicks ? held.baseTicks / held.activeTicks : 0 }]; })),
     // Expected fires per Reap.
     reaps: Object.fromEntries(world.reaps.map((reap) => [reap.spec.key, reap.fires])),
+    // The trigger bus's listeners, the events each heard and the expected successes, the average share of each buff it holds.
+    ...(world.bus ? { bus: world.bus.report() } : {}),
     trace: world.trace
   };
 }

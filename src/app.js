@@ -35,6 +35,7 @@ import { qolHelpButton, qolHelpTooltipHtml } from "./qol-help.js";
 import { followerPanelMarkup, followerPickerMarkup, followerSkillTooltipHtml, followerTooltipHtml, followerTooltipRarity, followerSkillSelectorView, followerSelectorEntries, followerSelectorInitialIndex, pickFollower, setFollowerSkill, followerSkillDraft, applyFollowerSkillDraft, followerDraftWithTier, followerDraftWithAffix, readHeroPanelTab, writeHeroPanelTab, followerOverviewMarkup } from "./follower-panel.js";
 import { followerById, followerRarityById } from "./follower-model.js";
 import { resolveTalentCandidate } from "./candidate-sources.js";
+import { withProphecyReplacements } from "./prophecy-of-revelation.js";
 import { calculateSelenaTownBaseline, calculateTalentSlateCandidate, calculatePactCandidate, calculateEquipmentCandidate, compareObservedDamageStates, calculateAuraLedger, calculateAvailableEnergy, allocateSkillEnergy, applyCapturedEnergyCosts, energyCostForSupportSlots, energyCostForSupportPositions, collectNormalizedGearModifiers, aggregateNormalizedModifiers } from "./engine.js";
 import { corrosionRemovesBaseAffixes } from "./gear-base-stats.js";
 import { legendaryGameBaseLines, missingLegendaryBaseLines } from "./legendary-base-lines.js";
@@ -1312,6 +1313,8 @@ const formatEffect = (key, value) => {
 };
 const nodeTitle = (node) => {
   if (node.replacedBy) return node.replacedBy;
+  // A Prophecy of Revelation replacement (talents carry no name): its type, as an uncaptured node's title.
+  if (node.prophecyOfRevelation) return `${titleCase(node.type || "micro")} Talent`;
   const effects = node.effectsPerRank || node.effects || {};
   return effectLabel(Object.keys(effects)[0] || "Talent node");
 };
@@ -1361,7 +1364,11 @@ function talentDisplayNodes(panel = currentTalentPanel()) {
   });
   const prism=(plannerState.talents.prismInventory||[]).find((item)=>item.id===plannerState.talents.installedPrisms?.[panel.name]);
   const coordinate=plannerState.talents.installedPrismNodes?.[panel.name];
-  return prismTalentNodes(nodes,prism,coordinate);
+  // Thea's Prophecy of Revelation (design decided 2026-11-03): on the 4th selected tree, while the trait is active (the planner's own
+  // flag), a replaced node shows its replacement's text in the tree and tooltip; its captured effect map is the original's, so it goes.
+  let prophecy=false; try { prophecy=Boolean(currentPlanner()?.prophecyOfRevelation); } catch { prophecy=false; }
+  const replaced=withProphecyReplacements(nodes,panel.name,(plannerState.talents.selectedTrees||[]).indexOf(panel.name),prophecy).map((node)=>{ if(!node.prophecyOfRevelation)return node; const { effects:_effects, effectsPerRank:_perRank, ...rest }=node; return rest; });
+  return prismTalentNodes(replaced,prism,coordinate);
 }
 
 function renderTalents() {
@@ -1428,7 +1435,7 @@ function renderTalents() {
     const prismGlow=Boolean(isAffected)&&prismAffectsNode(installedPrism,node.type);
     const icon = tliArt.talents[panel.name]?.[node.reflectedFrom||coordinate] || node.icon;
     const availability = canAllocateTalent({ panel:panel.name,node,graph,layouts,ranks:rankObject,prismCoordinate:hasInstalledPrism?installedPrismCoordinate:null,prerequisiteFreeCoordinates });
-    const label = node.placeholder ? "Unallocated " + node.type + " talent" : nodeTitle(node);
+    const label = (node.placeholder ? "Unallocated " + node.type + " talent" : nodeTitle(node)) + (node.prophecyOfRevelation ? ": " + escapeHtml(node.description || "") + " (replaced by Prophecy of Revelation)" : "");
     const nodeStyle='--column:' + (node.coordinate[0] + 1) + ';--row:' + (node.coordinate[1] + 1);
     const talentButton='<button type="button" role="gridcell" class="talent-node ' + (rank ? "allocated " : "") + (node.placeholder && !rank ? "available " : "") + (!rank && !availability.allowed ? "locked " : "") + (node.type === "legendary" ? "legendary-node " : "") + (isAffected ? "prism-affected-node " : "") + (prismGlow ? "prism-affected " : "") + (node.reflectedFrom ? "inverse-reflected-node " : "") + (placingPrism&&nativeTalentCoordinates.has(coordinate) ? "prism-placement-target " : "") + (isPrismNode ? "prism-covered-node " : "") + '" style="' + nodeStyle + '" data-coordinate="' + coordinate + '" data-node-type="' + (node.type || "captured") + '" aria-label="' + label + ", rank " + rank + " of " + max + (availability.allowed ? '' : ', ' + availability.reason) + (isAffected?", within Inverse Image reflected area":"") + '">' + (icon ? '<img class="talent-node-art" src="' + icon + '" alt="">' : '<span class="node-symbol">' + symbol + '</span>') + '<span class="node-rank">' + rank + "/" + max + "</span></button>";
     if(!isPrismNode)return talentButton;
@@ -2560,7 +2567,7 @@ function renderPacts() {
   // Kismet-slot pages: the game's limits (src/pact-limits.js) — Pact Points by character level, 9 Micro / 4 Medium Destinies plus
   // the Undetermined Fate slots. A count past its limit reads red (the extra items are not counted).
   $("#pact-kismet-summary").innerHTML=limits.applies
-    ?group("Pact Points",limits.points.allocated,limits.points.budget,`${limits.points.levelText}: ${limits.points.base} from level${limits.points.quest?` + ${limits.points.quest} quest (assumed done)`:""}${limits.points.extra?` + ${limits.points.extra} from Rare / Legendary Pactspirits`:""}, up to ${limits.points.cap}`)
+    ?group("Pact Points",limits.points.allocated,limits.points.budget,`${limits.points.levelText}: ${limits.points.base} from level${limits.points.quest?` + ${limits.points.quest} from the two progress steps (+1, +2; assumed done)`:""}${limits.points.extra?` + ${limits.points.extra} from Rare / Legendary Pactspirits`:""}, up to ${limits.points.cap}`)
       +group("Micro Kismets",limits.micro.installed+limits.micro.inFateSlots,limits.micro.limit+limits.micro.fateSlots,`${limits.micro.limit} Micro Fates${limits.micro.fateSlots?` + ${limits.micro.fateSlots} Undetermined Fate slot${limits.micro.fateSlots===1?"":"s"}`:""}`)
       +group("Medium Kismets",limits.medium.installed+limits.medium.inFateSlots,limits.medium.limit+limits.medium.fateSlots,`${limits.medium.limit} Medium Fates, Kismets and Dual Kismets${limits.medium.fateSlots?` + ${limits.medium.fateSlots} Undetermined Fate slot${limits.medium.fateSlots===1?"":"s"}`:""}`)
     :group("Micro Kismets",kismets.microCount,kismets.microMax)+group("Medium Kismets",kismets.mediumCount,kismets.mediumMax);
@@ -3688,7 +3695,7 @@ function plannerTooltipContent(element) {
         prismEffects=`<section class="basic-talent-prism"><h4>Prism effects <span>${escapeHtml(prismName(installed))}</span></h4>${affixes.length?affixes.map((affix)=>`<div class="talent-prism-affix ${affix.active?"active":"inactive"}"><b>${affix.tier} affix</b><p>${modifierTextMarkup(affix.displayEffect??affix.effect)} ${coverageBadge(affix.active?prismAffixCoverage(installed,affix.tier==="Rare"?"rareAffix":"legendaryAffix"):"Inactive")}</p><small>${escapeHtml(affix.reason)}</small></div>`).join(""):'<p class="talent-prism-none">No node-specific affix applies to this talent.</p>'}</section>`;
       }
     }
-    return {basicTalentHtml:`<div class="basic-talent-head"><span class="basic-talent-icon">${icon?`<img src="${escapeHtml(icon)}" alt="">`:"✦"}</span><div><small>${escapeHtml(type==="legendary"?"Legendary Medium Talent":`${titleCase(type)} Talent`)}</small><strong>${escapeHtml(title)}</strong></div><b>${rank}/${max}</b></div><div class="basic-talent-body">${effectRows||`<p>${modifierTextMarkup(node.description?talentEffectText(node.description,rank,inverseMultiplier):"Profession-tree node")}</p>${coverageBadge(talentLineCoverage(node.description||"",rank>0))}`}</div>${prismEffects}<footer>${rank>0?"Allocated":element.classList.contains("locked")?"Locked · prerequisites not met":"Click to allocate"}</footer>`};
+    return {basicTalentHtml:`<div class="basic-talent-head"><span class="basic-talent-icon">${icon?`<img src="${escapeHtml(icon)}" alt="">`:"✦"}</span><div><small>${escapeHtml(type==="legendary"?"Legendary Medium Talent":`${titleCase(type)} Talent`)}</small><strong>${escapeHtml(title)}</strong></div><b>${rank}/${max}</b></div><div class="basic-talent-body">${effectRows||`<p>${modifierTextMarkup(node.description?talentEffectText(node.description,rank,inverseMultiplier):"Profession-tree node")}</p>${coverageBadge(talentLineCoverage(node.description||"",rank>0))}`}${node.prophecyOfRevelation?'<small class="talent-prophecy-note">Replaced by Prophecy of Revelation</small>':""}</div>${prismEffects}<footer>${rank>0?"Allocated":element.classList.contains("locked")?"Locked · prerequisites not met":"Click to allocate"}</footer>`};
   }
   if (element.matches(".equipment-item,.inventory-item")) return gearTooltipContent(element);
   if (element.matches(".skill-setup")) {

@@ -1,3 +1,4 @@
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { curseTakenEffect, DEDICATED_CURSE_MODELS, NO_DUMMY_EFFECT_CURSES } from "./curse-effects.js";
 
@@ -61,11 +62,11 @@ export function itemTriggerEvent(trigger, state = {}) {
     case "moving": return state.moving !== false ? { active: true, reason: "moving (movement group: compared with standing still)" } : { active: false, reason: "standing still" };
     case "standingStill": return state.moving === false ? { active: true, reason: "standing still (movement group)" } : { active: false, reason: "moving (movement group)" };
     case "hit": return state.anyHit ? { active: true, reason: "the build hits more often than once per interval (provisional)" } : { active: false, reason: "no modeled hit" };
-    case "frostbite": return (state.enemyAilments || []).includes("Frostbite") ? { active: true, reason: "Frostbite on the dummy (enemy-ailment model)" } : { active: false, reason: "the build inflicts no Frostbite" };
+    case "frostbite": return (enemyBuffSet(state)?.holds("Frostbite") ?? (state.enemyAilments || []).includes("Frostbite")) ? { active: true, reason: "Frostbite on the dummy (enemy-ailment model)" } : { active: false, reason: "the build inflicts no Frostbite" };
     // Paralysis held by an on-hit source (debuffs.paralysis), or inflicted on its own clock (2026-10-14): Grudge's / Cripple's
     // chance Paralysis on a supported skill's hits and Witch Antelope's turns (`scheduledParalysis`: their labels).
     case "paralysis": {
-      if (state.paralysis) return { active: true, reason: "Paralysis on the dummy (combat states)" };
+      if (enemyBuffSet(state)?.holds("Paralysis", { stage: "debuff" }) ?? state.paralysis) return { active: true, reason: "Paralysis on the dummy (combat states)" };
       const scheduled = (state.scheduledParalysis || []).filter(Boolean);
       return scheduled.length ? { active: true, reason: `Paralysis inflicted by ${scheduled.join(", ")} (combat states; each inflicting can trigger it, at most once per interval)` } : { active: false, reason: "the build inflicts no Paralysis" };
     }

@@ -167,6 +167,13 @@ export function reapBudget(run, spec, key, { inputs, simulate, seconds, fromSeco
       timed: () => only({ timedDotLayers: inputs.timedDotLayers, timedEffects: inputs.timedEffects, channel: inputs.channel }) / held
     };
     const layers = names.map((name) => { const engine = engineLayers[name], recount = recountLayers[name]?.() ?? 1; return { key: name, engine, recount, factor: engine / recount }; });
+    // A Reaping Duration stack the trigger bus holds on the loop (W10 step 3a): each settle's seconds over the planner's (`heldSeconds`), weighted by
+    // what it settled; the recount holds the planner's seconds.
+    if (parts.some((part) => Number.isFinite(part.heldSeconds))) {
+      const held = parts.reduce((sum, part) => sum + part.value * (Number.isFinite(part.heldSeconds) && part.seconds > 0 ? part.heldSeconds / part.seconds : 1), 0);
+      const engine = held > 0 ? dotDamage / held : 1;
+      layers.push({ key: "reapDuration", engine, recount: 1, factor: engine });
+    }
     const engineBase = totalBase / engineFires, recountBase = baseDamage / recountFires;
     const ratio = dotDamage / dotRecount, firesFactor = engineFires / recountFires, baseFactor = engineBase / recountBase;
     const layerProduct = layers.reduce((product, layer) => product * layer.factor, 1), covariance = ratio / (firesFactor * baseFactor * layerProduct);

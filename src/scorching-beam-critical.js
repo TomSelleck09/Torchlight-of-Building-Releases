@@ -4,8 +4,18 @@ import { supportEffectsFor, criticalStrikeRatingIncreasePercent } from "./suppor
 import { controlSpellCriticalRatingPercent } from "./support-model.js";
 import { critPathMode } from "./recipe-hit-layers.js";
 import { critChanceOverTime, timeShareOf } from "./crit-time-states.js";
+import { ailmentRecordTags } from "./ailment-record-tags.js";
 
 const value = (object, key) => Number(object?.[key]) || 0;
+
+// Which Critical Strike Damage an ailment's own read (Instant Smash) admits (W9 step 4; research/node-114-trace-2026-11-03.md §8 #3;
+// research/oq-r1-r2-rea-2026-11-04.md "Instant Smash first"): "record" (default since the user decision of 2026-11-04, the SS14 client's
+// reading) leaves out the writes scoped to a skill type or tag, because the ailment request's tags pass a filter that keeps only the
+// inflicting skill's own id and the 7 whitelisted config_skill_tag rows (src/ailment-record-tags.js); "legacy" (the parity toggle) reads
+// the model's crit damage, every scoped line included. TLI_AILMENT_CRIT_SCOPE=legacy (environment or globalThis) or setAilmentCritScopeMode.
+let ailmentCritScopeOverride = null;
+export const ailmentCritScopeMode = () => ((ailmentCritScopeOverride ?? globalThis.TLI_AILMENT_CRIT_SCOPE ?? globalThis.process?.env?.TLI_AILMENT_CRIT_SCOPE) === "legacy" ? "legacy" : "record");
+export const setAilmentCritScopeMode = (mode) => { ailmentCritScopeOverride = mode === "record" || mode === "legacy" ? mode : null; };
 
 // The stripped Scorching Beam panel has 5% spell crit chance, equivalent to
 // 500 rating at 100 rating per chance point. Rating is never a chance bonus.
@@ -111,6 +121,20 @@ export function critLineReading(line, main) {
 /** "Guaranteed to land Critical Strikes" on the player (a gear / Dirge line; a Follower skill's own "This skill is …" is not it). */
 export const GUARANTEED_CRIT_LINE = /^Guaranteed to land Critical Strikes$/i;
 export const CRIT_NO_EXTRA_DAMAGE_LINE = /^Critical Strikes cannot deal additional damage$/i;
+/** "Cannot inflict Critical Strike(s)" on the player (label 3001211: game affix 101070012; SS14 client 0x141fc07a0 checks it first). */
+export const CANNOT_CRIT_LINE = /^Cannot inflict Critical Strikes?\.?$/i;
+/**
+ * The share of time the player cannot crit (label 3001211): 1 with a held "Cannot inflict Critical Strike" line, else the part-time
+ * windows marked `lineEffect.cannotCrit` (Ash, src/combat-states.js) combined as independent states. SS14 client (research/oq-r3-r4-rea-2026-11-04.md
+ * legendary-guaranteed-crit): "cannot crit" is checked before "guaranteed" (label 3001120), so it wins over a guaranteed crit.
+ */
+export function cannotCritShare(modifierTexts = []) {
+  const own = (line) => !["follower", "minion"].includes(line?.origin);
+  if (modifierTexts.some((line) => own(line) && !line.lineEffect?.timeShare && CANNOT_CRIT_LINE.test(String(line?.text ?? "").trim()))) return 1;
+  let none = 1;
+  for (const line of modifierTexts) if (own(line) && line.lineEffect?.cannotCrit) none *= 1 - Math.min(1, Math.max(0, Number(line.lineEffect.timeShare ?? 1)));
+  return 1 - none;
+}
 export const hasGuaranteedCrit = (modifierTexts = []) => modifierTexts.some((line) => GUARANTEED_CRIT_LINE.test(String(line?.text ?? "").trim()) && !["follower", "minion"].includes(line?.origin));
 
 // `critAdjust` (recipe step 3, research/recipe-interpreter-step1-2026-10-25.md §15): src/recipe-hit-aggregates.js critRecipeAdjuster —
@@ -138,7 +162,7 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
     if (!match) continue;
     const amount = Number(match[1]) * (line.multiplier ?? 1);
     if (match[2].toLowerCase() === "rating") lineCrit.rating += amount, lineCrit.sentryRating = (lineCrit.sentryRating || 0) + amount;
-    else lineCrit.damage.push({ source: line.source, value: amount, text: line.text });
+    else lineCrit.damage.push({ source: line.source, value: amount, text: line.text, scoped: true });
   }
   // Part-time crit terms (`lineEffect.timeShare`; research/lucky-crit-mechanics-2026-10-27.md): read at their full value (the line's
   // time average ÷ its share) as on / off states (src/crit-time-states.js); their crit damage stays time-averaged.
@@ -208,12 +232,14 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
   // "Guaranteed to land Critical Strikes" (Pantheon's Elegy: God of War's Dirge; game affix 937538880, node 107 label 3001120, a
   // flag): every hit crits (legendary audit batch 1, 2026-10-22). Crit never reaches ailments or Reaps (user-confirmed), so only
   // the hit share changes. Whether it overrides a "-100% Critical Strike Rating" line (Genius Battlegear) is not sourced: it does
-  // here (provisional, open question legendary-guaranteed-crit).
+  // here (SS14 client: the guaranteed branch never reads the chance). "Cannot inflict Critical Strike" (label 3001211) is checked first
+  // and wins (research/oq-r3-r4-rea-2026-11-04.md), so a guaranteed crit holds only outside those windows (Ash's uptime).
   const guaranteedCrit = hasGuaranteedCrit(modifierTexts);
+  const noCritShare = cannotCritShare(modifierTexts);
   // "Critical Strikes cannot deal additional damage" (Silent Aria): record 861697408 fixes attr 4803 at 100, so the hit engines give a crit 100% and keep the crit-only additional
   // lines (chunk 12). The crit damage figures below stay as the panel shows them (Instant Smash reads them; provisional).
   const critNoExtraDamage = modifierTexts.some((line) => CRIT_NO_EXTRA_DAMAGE_LINE.test(String(line?.text ?? "").trim()) && !["follower", "minion"].includes(line?.origin));
-  const criticalChancePercent = guaranteedCrit ? 100 : timeStates.chancePercent;
+  const criticalChancePercent = noCritShare >= 1 ? 0 : guaranteedCrit ? 100 * (1 - noCritShare) : timeStates.chancePercent;
   // Per-group breakdown for display; the sum is unchanged.
   const increasedCriticalDamageSources = [
     { source: "Gear", value: value(gear, "criticalStrikeDamagePercent:increased") },
@@ -225,10 +251,10 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
     { source: "Talents (Spell)", value: value(talent, "spellCriticalStrikeDamagePercent"), spellOnly: true },
     { source: "Slates (Spell)", value: value(slate, "spellCriticalStrikeDamagePercent"), spellOnly: true },
     ...lineCrit.damage,
-    ...scopedCritDamageLines(modifierTexts, main),
-    ...tagged.damage,
+    ...scopedCritDamageLines(modifierTexts, main).map((item) => ({ ...item, scoped: true })),
+    ...tagged.damage.map((item) => ({ ...item, scoped: true })),
     // The recipe's crit damage where it differs from the text reading of a line (one entry per line; none when they agree).
-    ...(recipeAdjust?.sources || [])
+    ...(recipeAdjust?.sources || []).map((item) => ({ ...item, recipeAdjust: true }))
   ].filter((item) => item.value);
   const spellOnlyCriticalDamagePercent = increasedCriticalDamageSources.filter((item) => item.spellOnly).reduce((sum, item) => sum + item.value, 0);
   const increasedCriticalDamagePercent = increasedCriticalDamageSources.reduce((sum, item) => sum + item.value, 0);
@@ -260,6 +286,24 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
     if (match && targetHasAilment) conditionalSources.push({ source: line.source, text: line.text, value: Number(match[1]) * line.multiplier });
   }
   const combatCriticalDamagePercent = criticalDamagePercent + conditionalSources.reduce((sum, item) => sum + item.value, 0);
+  // The Critical Strike Damage an ailment's own read admits (Instant Smash, game affix 11688709: node 114 from 48031 fromMod 5, read
+  // with the Trauma record's query; research/node-114-trace-2026-11-03.md §8 #3): the untagged writes and the ailment's own, never a
+  // write scoped to a skill type or tag (Spell, Attack, Fire Skill, Projectile, Sentry, Channeled, Area, Persistent, Terra, Main Skill …),
+  // because the ailment request keeps only the inflicting skill's id and the 7 whitelisted config_skill_tag rows (SS14 client, proven filter;
+  // the record's own build has two inferred links: research/oq-r1-r2-rea-2026-11-04.md, open question `ailment-record-skill-tags`). The
+  // recipe's per-line differences are read again with only the whitelisted tags the skill carries (src/ailment-record-tags.js; the model's
+  // Spell reach, its Spell-only part left out). The Fire Resistance crit damage and the conditional (recent-strike) lines stay.
+  // Default since the user decision of 2026-11-04 (was held behind TLI_AILMENT_CRIT_SCOPE=record); TLI_AILMENT_CRIT_SCOPE=legacy reads the
+  // model's crit damage, every scoped line included.
+  const scoped = ailmentCritScopeMode() === "record";
+  const recipeUntagged = scoped && critAdjust && critPathMode() === "recipe" ? critAdjust({ ...(main || {}), tags: ailmentRecordTags(main?.tags) }, modifierTexts) : null;
+  const ailmentSources = [
+    ...increasedCriticalDamageSources.filter((item) => !item.spellOnly && !item.scoped && !item.recipeAdjust),
+    ...(recipeUntagged?.sources || []).filter((item) => !item.spellOnly && item.value)
+  ];
+  const ailmentCriticalDamagePercent = scoped ? Math.max(100, baseline.spellCriticalStrikeDamagePercent + ailmentSources.reduce((sum, item) => sum + item.value, 0) + fireResistanceCriticalDamagePercent) : criticalDamagePercent;
+  const ailmentCombatCriticalDamagePercent = scoped ? ailmentCriticalDamagePercent + conditionalSources.reduce((sum, item) => sum + item.value, 0) : combatCriticalDamagePercent;
+  const ailmentExcludedCriticalDamageSources = scoped ? increasedCriticalDamageSources.filter((item) => item.spellOnly || item.scoped) : [];
   // Crit-only support lines ("+X% additional damage for the supported skill when it lands a Critical Strike": Critical
   // Strike Damage Increase) multiply the crit hits only (research/support-batch-2026-10-12.md B1). The factor is applied
   // by the caller to the beam hit cycle (src/planner.js); it never reaches Ignite or any DoT, and the crit damage
@@ -269,5 +313,5 @@ export function scorchingBeamCritical({ main, talentSlate, equipment, pact, modi
     // Build-wide "+X% additional damage on [<Tag>] Critical Strike" lines (src/crit-only-lines.js; residual batch A-2).
     ...critOnlyLinesFor(modifierTexts, main?.tags || [])];
   const critOnlyFactor = critOnlySources.reduce((factor, line) => factor * (1 + line.value / 100), 1);
-  return { recipe: recipeAdjust ? { mode: "recipe", unread: { differences: recipeAdjust.differences } } : { mode: critAdjust ? critPathMode() : "text" }, guaranteedCrit, critNoExtraDamage, taggedCrit: tagged, critOnlyFactor, critOnlySources, spellOnlyCriticalDamagePercent, luckyCrit, luckyCritCombat, critStates: timeStates.terms.length ? { states: timeStates.states, terms: timeStates.terms, averagedChancePercent: timeStates.averagedChancePercent } : null, lineCrit, baseRating, flatRating, increasedRatingPercent, rating, criticalChancePercent, baseCriticalDamagePercent: baseline.spellCriticalStrikeDamagePercent, increasedCriticalDamageSources, criticalDamagePercent, fireResistanceCriticalDamagePercent, fireResistanceSources, combatCriticalDamagePercent, conditionalSources, critsPerSecond, nonCritsPerSecond };
+  return { recipe: recipeAdjust ? { mode: "recipe", unread: { differences: recipeAdjust.differences } } : { mode: critAdjust ? critPathMode() : "text" }, guaranteedCrit, cannotCritShare: noCritShare, critNoExtraDamage, taggedCrit: tagged, critOnlyFactor, critOnlySources, spellOnlyCriticalDamagePercent, luckyCrit, luckyCritCombat, critStates: timeStates.terms.length ? { states: timeStates.states, terms: timeStates.terms, averagedChancePercent: timeStates.averagedChancePercent } : null, lineCrit, baseRating, flatRating, increasedRatingPercent, rating, criticalChancePercent, baseCriticalDamagePercent: baseline.spellCriticalStrikeDamagePercent, increasedCriticalDamageSources, criticalDamagePercent, fireResistanceCriticalDamagePercent, fireResistanceSources, combatCriticalDamagePercent, conditionalSources, ailmentCriticalDamagePercent, ailmentCombatCriticalDamagePercent, ailmentExcludedCriticalDamageSources, critsPerSecond, nonCritsPerSecond };
 }

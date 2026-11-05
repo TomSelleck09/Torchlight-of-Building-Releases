@@ -1,12 +1,20 @@
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { passiveSupportLines, physicalConversionBlocked } from "./passive-support-lines.js";
-import { critOnlyLinesFor, typedCritOnlyLinesFor } from "./crit-only-lines.js";
+import { critOnlyLinesFor, typedCritOnlyLinesFor, classifyCritOnlyLine } from "./crit-only-lines.js";
+// W9 step 3 (src/attribute-pool-hit.js): with TLI_POOL_HIT=pool the hit's attribute reads come from the tagged attribute pool.
+import { HitPool, hitPoolMode, PROJECTILE_SPEED, ATTACK_SPEED, CAST_SPEED } from "./attribute-pool-hit.js";
+import { sumValues, productValues, POOL_TAG } from "./attribute-pool.js";
+import { tracedConversionLines, lineKeyOf } from "./attribute-pool-build.js";
 import { luckyRollFraction } from "./lucky-damage.js";
 import { wholePercentRoll } from "./whole-percent-roll.js";
 import { finisherAmplificationPercent, CONSUMED_COMBO_POINTS, comboPointState, comboExtraState, expectedConsumedWithCritPoints, MAX_COMBO_POINTS_DEFAULT } from "./combo-points.js";
 import { doubleDamageForSkill } from "./double-damage.js";
 import { skillLevelDamageMultiplier } from "./engine.js";
 import { supportEffectsFor, projectileQuantityFalloff, allElementalState, movementChargeShare, ASSUMED_MOVEMENT_METERS_PER_SECOND } from "./support-effects.js";
+import { setupEventTagIds, skillTagsWithSupportChanges } from "./support-compatibility.js";
+import { lineTriggerRows, rowTagsFit } from "./trigger-rows.js";
+import { maxSpellBurstTotal } from "./max-spell-burst.js";
 import { shotgunVolley, shotgunVolleyText } from "./shotgun-effect.js";
 import { level85DummyDefenses, armourMitigationPercent } from "./target-hit-mitigation.js";
 import { classifyHitLine, splitHitLineText, scopeApplies, scopeLabel, ELEMENTAL_TYPES } from "./skill-hit-lines.js";
@@ -370,12 +378,14 @@ export function multistrikeSequence({ chancePercent = 0, incrementPercent = 0, i
 //   attack): repeats per use = E ÷ (1 + E) from multistrikeSequence (calculateSkillHit sets `share`). Big Stride's window
 //   (`window`, user-supplied 2026-10-14: every attack within 4 s after moving 8 m is a Steep Strike; the window held while
 //   moving, confirmed by a user-supplied answer 2026-10-15) makes it 1 while Moved recently holds (always moving: best case).
-// - Blade Cluster (reference data "Generates 2 additional Steep Strikes when the supported skill launches a Steep Strike"; user-supplied
-//   answer 2026-10-15, provisional; replaces the 2026-10-14 "+2 max stored attempts" reading): each launched Steep Strike
-//   produces N more Steep Strike hits on the same target, so the Steep Strike component's hits per launch are × (1 + N)
-//   (`clusterHits` = N). The extra hits are Steep Strikes (they take "+X% additional Steep Strike Damage" and the skill's
-//   crit), spend no attempt and add no Multistrike; they count in the skill's hits/s (src/planner.js hitRateFacts).
-export function steepStrikeState({ profile, supportLines = [], passiveLines = [] } = {}) {
+// - Blade Cluster (reference data "Generates 2 additional Steep Strikes when the supported skill launches a Steep Strike"): SS14 client
+//   (research/oq-r3-r4-rea-2026-11-04.md blade-cluster-hits; one link inferred: the reactions spawn into the casting instance):
+//   Split 352391 fires the normal Steep Strike and the two extra ones together as siblings whose hit rule has `bHitBrother` 0 and
+//   `bHitBrotherLabelValid` 1, so once one lands the other two are refused on the same dummy unless the skill has Shotgun Effect
+//   (label 3050340; then all three land at full damage, the reactions' falloff tables being empty). `clusterGenerated` = N, and
+//   `clusterHits` = N only with Shotgun Effect (`shotgunEffect`), else 0. Before 2026-11-04 (user-supplied answer 2026-10-15):
+//   every launch dealt × (1 + N) Steep Strike hits.
+export function steepStrikeState({ profile, supportLines = [], passiveLines = [], shotgunEffect = null } = {}) {
   const spec = profile?.steepStrike;
   if (!spec) return null;
   const window = supportLines.find((line) => line.kind === "guaranteedAfterMoving") || null;
@@ -391,7 +401,28 @@ export function steepStrikeState({ profile, supportLines = [], passiveLines = []
   const perChance = spec.multistrikeIncrementPerChancePercent || 0;
   return { chancePercent, sources, fromChance, share: fromChance ? (Number.isFinite(spec.forcedShare) ? spec.forcedShare : Math.min(1, Math.max(0, chancePercent / 100))) : null, ...(Number.isFinite(spec.forcedShare) ? { forcedShare: spec.forcedShare, forcedSource: spec.forcedSource || null } : {}), perChance, incrementAdditionalPercent: perChance * Math.max(0, chancePercent), source: spec.source || null,
     multistrikeAttempts: spec.multistrikeAttempts || null, window: window ? { source: window.source, text: window.text, meters: window.meters ?? null, seconds: window.seconds ?? null } : null, extraAttempts: extraAttempts.map((line) => ({ source: line.source, text: line.text, attempts: Number(line.attempts) || 0 })),
-    clusterHits: extraAttempts.reduce((total, line) => total + (Number(line.attempts) || 0), 0) };
+    clusterGenerated: extraAttempts.reduce((total, line) => total + (Number(line.attempts) || 0), 0),
+    clusterHits: shotgunEffect ? extraAttempts.reduce((total, line) => total + (Number(line.attempts) || 0), 0) : 0,
+    shotgunEffect: shotgunEffect || null };
+}
+
+/**
+ * Shotgun Effect on one setup (label 3050340, SS14 client: research/oq-r3-r4-rea-2026-11-04.md): every grant reads "… has / have the
+ * Shotgun Effect": the setup's own support clauses ("The supported skill has Shotgun Effect", 332712800 / 483352160 and their
+ * variants) and build lines "<Tag> Skills / <Tag> Projectiles have the Shotgun Effect" (297159 Projectile Skills, 763970 Bomb
+ * Projectiles) whose tag the skill carries. Returns the granting line { source, text } or null.
+ */
+export function shotgunEffectGrant({ setup = null, modifierTexts = [], tags = [] } = {}) {
+  const tagSet = new Set([...(tags || [])].map((tag) => String(tag).toLowerCase()));
+  for (const clause of setup?.supportEffects?.clauses || []) {
+    const text = String(clause?.text || "");
+    if (/(?:^|\. )the supported skill has (?:the )?Shotgun Effect/i.test(text)) return { source: clause.source || `Support: ${clause.support}`, text };
+  }
+  for (const line of modifierTexts || []) {
+    const match = String(line?.text || "").trim().match(/^(.+?) (?:Skills|Projectiles) have (?:the )?Shotgun Effect$/i);
+    if (match && match[1].split(/\s+/).every((word) => tagSet.has(word.toLowerCase()))) return { source: line.source || "build line", text: line.text };
+  }
+  return null;
 }
 
 /** Steep Strikes per use from stored attempts (Thunder Slash; see steepStrikeState): { share, repeatsPerUse, fromRepeats, window }. */
@@ -433,12 +464,22 @@ export function strikeHitsPerUse(components = [], hitsOf = (component) => compon
 /**
  * Projectiles of one hit group that reach the dummy per use, without Shotgun falloff: a fan's falloff-weighted hits
  * (`hitsPerUse` = per-use hits × shotgun.total) count each landing projectile once (× shotgun.reached / shotgun.total). Youga's
- * Recall (src/youga-ultimate-one.js) returns every one of them as a full-damage fresh hit.
+ * Recall (src/youga-ultimate-one.js) returns every one of them as a fresh hit event (its damage takes the pass's Shotgun falloff).
  */
 export function recalledProjectilesPerUse(component) {
   const hits = Number(component?.hitsPerUse) || 0;
   const shotgun = component?.shotgun;
   return shotgun && shotgun.total > 0 && Number.isFinite(shotgun.reached) ? hits / shotgun.total * shotgun.reached : hits;
+}
+
+/**
+ * Hit events that land on the dummy per use for one hit group: each projectile, strike or Shadow that passes the hit rule is one event,
+ * whatever its Shotgun falloff (SS14 client, research/trigger-events-rea-2026-11-04.md §1: one damage event per (entity, target) pair that
+ * passes the hit rule; the repeat multiplier scales that event's damage only). A Shotgun fan counts its landing projectiles
+ * (recalledProjectilesPerUse), a Shadows copy its expected Shadows × the copied group's landings (`landingsPerUse`, set below).
+ */
+export function landingsPerUse(component) {
+  return Number.isFinite(component?.landingsPerUse) ? component.landingsPerUse : recalledProjectilesPerUse(component);
 }
 
 /**
@@ -460,7 +501,7 @@ export function recalledProjectilesPerUse(component) {
  *   — each step's states are cumulative; each step becomes one additional-damage line (its factor over the previous step)
  * @param {object[]} p.extraCritOnly enemy crit-taken debuffs on the crit share ({ source, text, value }; Mark, src/mark-effect.js)
  */
-export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, projectileQuantityFixed = false, tagSpeedLines = [] } = {}) {
+export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null } = {}) {
   // Hero effects on one skill (src/youga-ultimate-one.js: Clockwork Core's Tangle cadence, its shared bonuses, Recall hits,
   // the crit cooldown reduction, the Spell Burst rules, the Alternate Spacetime lines): skill-local plain lines join the
   // modifier lines read below.
@@ -481,7 +522,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const attackProfile = Boolean(profile.weaponScaling);
   const base = skillHitBaseAtLevel(profile, level, attackProfile ? weapon : null);
   const timing = skillHitTiming(profile);
-  const skillTags = new Set(profile.tags || []);
+  // The stone filter's tag changes (setup.supportAddedTags / supportRemovedTags, src/planner.js: Split Shot: Rapid Advance adds
+  // Channeled, Whirlwind: Whirling Blade Projectile and Horizontal) put the tag on the skill itself, so every write scoped to it is
+  // admitted (GetAttr tag rule; wiring audit W1 gap 1).
+  const skillTags = skillTagsWithSupportChanges(profile.tags, setup);
   // Lines scoped to tags the skill text borrows ("Spell Damage bonus and additional bonus also apply to the skill's
   // Attack Damage": Moon Strike) reach the hit; the ailment inputs keep the skill's real tags.
   const scopeTags = new Set([...skillTags, ...(profile.lineScopeTags || [])]);
@@ -491,7 +535,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const tagEffects = supportEffectsFor(setup, { profile, engine: "skill-hit" }).tags;
   for (const line of tagEffects.add) scopeTags.add(line.tag);
   for (const line of tagEffects.remove) scopeTags.delete(line.tag);
-  const dealtTypes = profile.dealtTypes || [];
+  // The types the hit really deals, with a converted part's chain (the planner's hit pass, src/planner.js hitDealtTypes; 2026-11-05) judge the supports' typed lines
+  // (High Voltage's additional Lightning on an Attack whose weapon deals Lightning); the profile's types before that pass.
+  const dealtTypes = measuredDealtTypes?.length ? [...measuredDealtTypes] : profile.dealtTypes || [];
   const notes = [...(profile.notes || [])];
   const warnings = [...(profile.warnings || [])];
   const speedTypeForSupports = skillHitTiming(profile)?.speedType || "cast-speed";
@@ -520,8 +566,29 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     effects: { ...supportsRaw.effects, multistrike: [...supportsRaw.effects.multistrike, ...passive.multistrike], quantity: [...supportsRaw.effects.quantity, ...passive.quantity] }
   };
   notes.push(...supports.notes);
+  // The tagged attribute pool (W9 step 3; src/attribute-pool-hit.js), TLI_POOL_HIT=pool: the lines' hit readings, the supports' damage,
+  // crit, cooldown and penetration lines and the typed taken lines go in as writes; each part reads them by its query (the skill's tags,
+  // Hit, the setup's id) and its types. `attributePool`: the planner's build pool (record writes, conversion records), or none.
+  const hitPool = hitPoolMode() === "pool" ? new HitPool({ parent: attributePool, skillId: setup?.setupKey ?? setup?.instanceId ?? profile.name ?? null, scopeTags, skillTags }) : null;
+  if (hitPool) hitPool.addCritRating(supports.critRating);
+  // Conversion records the traced pool reads at this hit (TLI_POOL_CONVERSIONS=traced): their lines' legacy readings (a derived line, the
+  // Projectile Speed converter below) are dropped. Their sources here: the setup's "+X% Projectile Speed for the supported skill" clauses
+  // (written "for this skill": the setup's id, so only this hit's query sees them) and the hero's Projectile Speed (record writes).
+  const tracedLines = hitPool ? tracedConversionLines(attributePool) : new Set();
+  if (hitPool && tracedLines.size) {
+    for (const clause of setup?.supportEffects?.clauses || []) {
+      const match = normalizePercentageText(String(clause.text || "")).replace(/\s+/g, " ").trim().match(/^([+-]?\d+(?:\.\d+)?)% Projectile Speed for the supported skill$/i);
+      if (match) hitPool.addRecord({ attr: PROJECTILE_SPEED, mod: 3, value: Number(match[1]), requirement: [{ mine: [POOL_TAG.thisSkill] }], skillId: hitPool.skillId, source: { kind: "support", line: clause.source || `Support: ${clause.support}` } });
+    }
+    for (const line of heroEffects?.projectileSpeed || []) hitPool.addRecord({ attr: PROJECTILE_SPEED, mod: 3, value: line.value, requirement: null, source: { kind: "trait", line: line.source } });
+  }
+  // The supports' Critical Strike Rating lines (attack crit): Σ flat, Σ %, Π additional, from the pool or the list.
+  const supportCritSums = () => {
+    if (hitPool) { const read = hitPool.critRating(); return { flat: read.base, percent: read.increased, additionalFactor: read.additionalFactor }; }
+    return { flat: sum(supports.critRating.filter((line) => line.kind === "ratingFlat")), percent: sum(supports.critRating.filter((line) => line.kind === "ratingPercent")), additionalFactor: product(supports.critRating.filter((line) => line.kind === "ratingAdditional")) };
+  };
   // Steep Strike chance (Slash-Strike skills; steepStrikeState above).
-  const steepStrike = steepStrikeState({ profile, supportLines: supportsRaw.effects.steepStrike || [], passiveLines: passive.steepStrike || [] });
+  const steepStrike = steepStrikeState({ profile, supportLines: supportsRaw.effects.steepStrike || [], passiveLines: passive.steepStrike || [], shotgunEffect: profile?.steepStrike ? shotgunEffectGrant({ setup, modifierTexts, tags: [...scopeTags] }) : null });
   if (steepStrike) notes.push(steepStrike.fromChance
     ? `${profile.name}: Steep Strike chance ${round(steepStrike.chancePercent)}% (${steepStrike.sources.map((line) => `${line.source} +${round(line.value)}%`).join(", ")}) → ${round(steepStrike.share * 100)}% of attacks are Steep Strikes replacing the Sweep Slash (observed reading, Whirlwind Lv16 run 2026-10-12).`
     : `${profile.name}: cannot obtain Steep Strikes from Steep Strike chance; ${round(steepStrike.chancePercent)}% chance${steepStrike.sources.length ? ` (${steepStrike.sources.map((line) => `${line.source} +${round(line.value)}%`).join(", ")})` : ""}${steepStrike.perChance ? ` × ${steepStrike.perChance}% = +${round(steepStrike.incrementAdditionalPercent)}% additional Multistrike damage increment (provisional)` : ""}.`);
@@ -551,7 +618,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // unless the enemy-ailment model (src/enemy-ailments.js: a support such as Glacial Freeze on an active skill dealing Hit
   // <Type> Damage) finds the build inflicting it; the per-hit figures are still computed for reference.
   if (profile.requiresEnemyAilment && !inactiveReason) {
-    const present = Boolean(enemyAilments?.types?.some((type) => type.name === profile.requiresEnemyAilment));
+    const present = enemyBuffSet(enemyAilments)?.holds(profile.requiresEnemyAilment) ?? Boolean(enemyAilments?.types?.some((type) => type.name === profile.requiresEnemyAilment));
     if (!present) {
       inactiveReason = `${profile.requiresEnemyAilmentNote || `its trigger needs ${profile.requiresEnemyAilment} on the target`} and the build inflicts no ${profile.requiresEnemyAilment} (enemy-ailment model: a support such as Glacial Freeze on an active skill dealing Hit Cold Damage)`;
       warnings.push(`${profile.name}: inactive — ${inactiveReason}; its hits are shown for reference and its rate is 0.`);
@@ -573,6 +640,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // Recovery Speed lines) restores the text readers.
   const readRecipe = anyHitRecipeMode() ? hitRecipeReader(modifierTexts) : null;
   for (const line of modifierTexts.flatMap((item) => { const parts = splitHitLineText(item.text); return parts.length > 1 ? parts.map((text) => ({ ...item, text, compoundText: item.text })) : [item]; })) {
+    // Traced pool: a line resolved from a conversion line (its per-stat value) is read through the conversion record instead.
+    if (tracedLines.size && line.derivedFrom && tracedLines.has(lineKeyOf(line.source, line.derivedFrom))) continue;
     const channelParsed = channel ? classifyChannelLine(line.text) : null;
     if (channelParsed) { channelLines.push({ ...channelParsed, source: line.source, text: line.text, origin: line.origin, value: channelParsed.value * (line.multiplier ?? 1) }); continue; }
     const textParsed = classifyHitLine(line.text, { targetCursed, enemyAilments });
@@ -581,6 +650,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     if (!parsed) continue;
     const scaled = (value) => value * (line.multiplier ?? 1);
     const entry = { source: line.source, text: line.text, origin: line.origin, ...(parsed.recipe ? { recipe: parsed.recipe } : {}) };
+    if (hitPool && hitPool.addReading(parsed, line, entry, scaled)) continue;
     if (parsed.kind === "damage") damageLines.push({ ...entry, value: scaled(parsed.value), layer: parsed.layer, scope: parsed.scope, condition: parsed.condition, category: parsed.layer === "increased" ? "Increased damage" : "Additional damage" });
     else if (parsed.kind === "maxDamage") maxLines.push({ ...entry, value: scaled(parsed.value), scope: parsed.scope, category: "Additional Max Damage" });
     // "+X% additional [<scope>] Min Damage" (Impermanence, 2026-10-14; user-supplied reading, provisional): the lower roll only.
@@ -606,11 +676,15 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   }
   // Curse models the planner resolves itself (Scorch) and the skill's own hit debuffs (Blizzard) arrive as typed lines.
   // Moon's Dawn: Illumination (chunk 8; recipe 234465248: additional Max Damage, this skill).
-  for (const line of supports.effects.maxDamage || []) maxLines.push({ source: line.source, text: line.text, value: line.value, scope: null, category: "Additional Max Damage" });
+  const supportMax = (supports.effects.maxDamage || []).map((line) => ({ source: line.source, text: line.text, value: line.value, scope: null, category: "Additional Max Damage" }));
+  if (hitPool) hitPool.addSupportMax(supportMax); else maxLines.push(...supportMax);
   const typedTaken = (line, origin) => ({ source: line.source, text: line.text, origin, value: line.value, layer: line.layer || "additional", scope: { damageTypes: line.types ? new Set(line.types) : null, skillTags: null, hitOnly: false }, category: "Additional damage taken" });
-  for (const line of extraTaken) takenLines.push(typedTaken(line, "derived"));
-  for (const line of profile.selfDebuffTaken || []) takenLines.push(typedTaken({ ...line, source: `${profile.name}: hit debuff` }, "skill"));
+  const extraTakenLines = extraTaken.map((line) => typedTaken(line, "derived")), selfTakenLines = (profile.selfDebuffTaken || []).map((line) => typedTaken({ ...line, source: `${profile.name}: hit debuff` }, "skill"));
+  if (hitPool) { hitPool.addTaken(extraTakenLines, "model"); hitPool.addTaken(selfTakenLines, "skill"); } else takenLines.push(...extraTakenLines, ...selfTakenLines);
   for (const line of unspecifiedAdded) warnings.push(`${line.source}: "${line.text}" names no skill type (Spells / Attacks), so it is not added to ${profile.name}.`);
+  // Pool: the lines' added damage this skill admits (a "to Spells" line by its Spell tag, an "Attacks and Spells" line unless the weapon
+  // model reads it), in line order; the supports' and the weapon's follow as before.
+  if (hitPool) addedLines.push(...hitPool.added(Boolean(attackProfile && weapon)).entries);
   addedLines.push(...supports.added.map((line) => ({ ...line, origin: "support" })));
   // Towering Presence (src/towering-presence.js; core audit batch B5): the main-hand weapon's damage added to Spells, Spell skills only.
   if (skillTags.has("Spell") && !attackProfile) for (const line of modifierTexts) if (line.weaponToSpells) addedLines.push({ source: line.source, text: line.weaponToSpells.note, origin: "derived", type: line.weaponToSpells.type, min: line.weaponToSpells.min, max: line.weaponToSpells.max });
@@ -667,15 +741,23 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   }
   const alternating = (supports.effects.alternating || []).filter((line) => line.status === "Provisional" || line.status === "In calc");
   const alternatingSpeed = sum(alternating.filter((line) => line.kind === "speed"));
+  // Pool: the supports' (and this skill's own) speed lines "for this skill" on its speed attribute, the Multistrike speed lines on 6351.
+  const speedAttr = speedType === "attack-speed" ? ATTACK_SPEED : CAST_SPEED;
+  let speedWritten = 0;
+  const writeSpeed = () => { if (!hitPool) return; hitPool.addSupportSpeed(supports.castSpeed.slice(speedWritten), speedAttr); speedWritten = supports.castSpeed.length; };
+  if (hitPool) hitPool.addMultistrikeSpeed(multistrikeSpeedLines);
   if (alternatingSpeed) {
-    const pool = (speedType === "attack-speed" && Number.isFinite(attackSpeed?.increasedPercent) ? attackSpeed.increasedPercent : 0) + sum(supports.castSpeed.filter((line) => !line.additional)) + sum(multistrikeSpeedLines.filter((line) => !line.additional));
+    writeSpeed();
+    const pool = (speedType === "attack-speed" && Number.isFinite(attackSpeed?.increasedPercent) ? attackSpeed.increasedPercent : 0) + (hitPool ? hitPool.speed(speedAttr).increased : sum(supports.castSpeed.filter((line) => !line.additional))) + (hitPool ? hitPool.multistrikeSpeed().increased : sum(multistrikeSpeedLines.filter((line) => !line.additional)));
     const plain = Math.max(1e-9, 1 + pool / 100), fast = plain + alternatingSpeed / 100;
     const equivalent = (2 * plain * fast / (plain + fast) - plain) * 100;
     supports.castSpeed.push({ source: alternating.find((line) => line.kind === "speed").source, text: `+${alternatingSpeed}% Attack and Cast Speed on every 1st cast (Dual Onslaught, Dual Wielding) = +${round(equivalent)}% averaged over the alternating casts (provisional)`, value: equivalent, additional: false });
   }
   for (const line of alternating.filter((item) => item.kind === "damage")) supports.additional.push({ source: line.source, text: `+${line.value}% additional damage on every 2nd cast (Dual Onslaught, Dual Wielding) = +${round(line.value / 2)}% on average (provisional)`, value: line.value / 2, category: "Additional damage" });
-  const supportIncreasedSpeed = sum(supports.castSpeed.filter((line) => !line.additional)) + sum(multistrikeSpeedLines.filter((line) => !line.additional));
-  const supportAdditionalSpeed = product(supports.castSpeed.filter((line) => line.additional)) * product(multistrikeSpeedLines.filter((line) => line.additional));
+  writeSpeed();
+  const speedRead = hitPool ? hitPool.speed(speedAttr) : null, multistrikeSpeedRead = hitPool ? hitPool.multistrikeSpeed() : null;
+  const supportIncreasedSpeed = speedRead ? speedRead.increased + multistrikeSpeedRead.increased : sum(supports.castSpeed.filter((line) => !line.additional)) + sum(multistrikeSpeedLines.filter((line) => !line.additional));
+  const supportAdditionalSpeed = speedRead ? speedRead.additionalFactor * multistrikeSpeedRead.additionalFactor : product(supports.castSpeed.filter((line) => line.additional)) * product(multistrikeSpeedLines.filter((line) => line.additional));
   const pooledAttackSpeed = speedType === "attack-speed" && attackSpeed && Number.isFinite(attackSpeed.increasedPercent) && Number.isFinite(attackSpeed.weaponAttacksPerSecond) && (attackSpeed.factor || 0) > 0;
   const supportSpeedFactor = pooledAttackSpeed
     ? Math.max(0, 1 + (attackSpeed.increasedPercent + supportIncreasedSpeed) / 100) / Math.max(1e-9, 1 + attackSpeed.increasedPercent / 100) * supportAdditionalSpeed
@@ -706,7 +788,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   if (comboExtras?.sequenceReset.length) notes.push(`${profile.name}: "${comboExtras.sequenceReset[0].text}" (${comboExtras.sequenceReset[0].source}): the cycle is played without pauses (best case), so the reset time has no DPS effect.`);
   const baseUseTime = cycleStepSeconds ? cycleStepSeconds.reduce((total, seconds) => total + seconds, 0) : profile.cycle?.useTimeSeconds ?? timing?.useTimeSeconds ?? null;
   const useTime = baseUseTime != null ? baseUseTime / (speedType === "cast-speed" || speedType === "attack-speed" ? speedFactor : 1) : null;
-  const cooldownRecovery = [...cooldownLines, ...supports.cooldown];
+  if (hitPool) hitPool.addSupportCooldown(supports.cooldown);
+  const cooldownRecovery = hitPool ? hitPool.cooldown().entries : [...cooldownLines, ...supports.cooldown];
   const cooldownFactor = Math.max(0.0001, 1 + sum(cooldownRecovery.filter((line) => !line.additional)) / 100) * product(cooldownRecovery.filter((line) => line.additional));
   // A hero's flat cooldown reduction on events (Clockwork Core: -0.1 s per crit) as a divisor of the cooldown.
   // frameSnap (internal combat condition frameSnapCooldowns, off; not tied to the Config toggle, which snaps Reaps only; src/frame-snapping.js): each charge's cooldown
@@ -717,7 +800,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const terra = profile.useModel?.kind === "terra" ? profile.useModel : null;
   // Spell Burst stacks and full charge time (hoisted 2026-10-27 so Activation Medium: Burst Activation can read the charge time as its
   // trigger interval; the computation is unchanged).
-  const maxSpellBurst = modifierTexts.reduce((total, line) => { const match = String(line.text).match(/^\+(\d+) Max Spell Burst$/i); return total + (match ? Number(match[1]) * (line.multiplier ?? 1) : 0); }, 0);
+  // Σ "+N Max Spell Burst" × Π additional (Flash Flood's "Halves Spell Burst Upper Limit", game affix 101070006; src/max-spell-burst.js).
+  const maxSpellBurst = maxSpellBurstTotal(modifierTexts);
   const spellBurstStacks = Math.floor(maxSpellBurst);
   // Play Safe (game affix 8855: node 114 copies P1% of Cast Speed attr 60021 to Spell Burst Charge Speed attr 63601, mod 3
   // increased → increased and mod 4 additional → additional): only the character's Cast Speed (the build's cast-rate ledger,
@@ -820,9 +904,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // +25% write that cancels Bard's own −20% inside that ratio. So "+X% [additional] Channeled Skill Damage" reaches it, a net negative
   // increased sum does not, and the Bard line never does. Hits only: the rows write attr 5719, not the ailment attr 3604.
   if (bardSong) {
-    const channeledOnly = damageLines.filter((line) => line.scope?.skillTags?.size === 1 && line.scope.skillTags.has("Channeled") && !line.scope.damageTypes && !line.scope.hitOnly && !line.condition && !BARD_STATE_LINE.test(line.source || ""));
+    const channeledOnly = (hitPool ? hitPool.lineDamageItems() : damageLines).filter((line) => line.scope?.skillTags?.size === 1 && line.scope.skillTags.has("Channeled") && !line.scope.damageTypes && !line.scope.hitOnly && !line.condition && !BARD_STATE_LINE.test(line.source || ""));
     const increasedSum = channeledOnly.filter((line) => line.layer === "increased").reduce((sum, line) => sum + line.value, 0);
-    for (const line of channeledOnly) if (line.layer !== "increased" || increasedSum > 0) { line.scope = { ...line.scope, skillTags: null }; line.text = `${line.text} (Bard Song bubble: game affix 311410880)`; }
+    for (const line of channeledOnly) if (line.layer !== "increased" || increasedSum > 0) { line.scope = { ...line.scope, skillTags: null }; line.text = `${line.text} (Bard Song bubble: game affix 311410880)`; hitPool?.retagLineDamage(line); }
   }
   // Multistrike (Attack skills; reference data glossary: "Chance to perform an additional attack … If the chance exceeds 100%, one
   // additional attack will be performed with every 100% of the chance. +20% Attack Speed during Multistrikes … Mobility,
@@ -881,7 +965,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     if (attemptRepeatsDelta) steepStrike.multistrikeAttempts = { ...steepStrike.multistrikeAttempts, perRepeats: Math.max(1, (steepStrike.multistrikeAttempts.perRepeats || 2) + attemptRepeatsDelta), perRepeatsDelta: attemptRepeatsDelta };
     const attempts = steepAttemptShare({ multistrike, perRepeats: steepStrike.multistrikeAttempts.perRepeats || 2, window: Boolean(steepStrike.window) && movedRecently, ownRepeatsPerUse: steepStrike.multistrikeAttempts.ownRepeatsPerUse || 0 });
     Object.assign(steepStrike, { share: attempts.share, attempts });
-    notes.push(`${profile.name}: Steep Strike attempts (user-supplied mechanism 2026-10-14, provisional): 1 per ${steepStrike.multistrikeAttempts.perRepeats || 2} repeat attacks; ${round(attempts.repeatsPerUse)} repeat attacks per use (${multistrike ? `Multistrike ${round(multistrike.expectedExtraAttacks)} per sequence ÷ ${round(1 + multistrike.expectedExtraAttacks)} attacks` : "no Multistrike model: the skill's own repeated-sweep reading"}) → min(1, ${round(attempts.repeatsPerUse)} ÷ ${steepStrike.multistrikeAttempts.perRepeats || 2}) = ${round(attempts.fromRepeats)} Steep Strikes per use (0.1 before 2026-10-14)${steepStrike.window ? movedRecently ? `; ${steepStrike.window.source.replace(/^Support: /, "")}: every use within ${steepStrike.window.seconds} s after moving ${steepStrike.window.meters} m is a Steep Strike, the window held open while Moved recently is on (user-supplied reading, best case) → 1 per use` : `; ${steepStrike.window.source.replace(/^Support: /, "")}: Moved recently is off, so its window is closed` : ""}. Each Steep Strike replaces that use's Sweep Slash.${steepStrike.clusterHits > 0 ? ` ${steepStrike.extraAttempts.map((line) => line.source.replace(/^Support: /, "")).join(", ")}: each launched Steep Strike generates ${steepStrike.clusterHits} additional Steep Strikes on the same target → Steep Strike hits × ${1 + steepStrike.clusterHits} (no attempt spent, no Multistrike added; user-supplied answer 2026-10-15, provisional).` : ""}`);
+    notes.push(`${profile.name}: Steep Strike attempts (user-supplied mechanism 2026-10-14, provisional): 1 per ${steepStrike.multistrikeAttempts.perRepeats || 2} repeat attacks; ${round(attempts.repeatsPerUse)} repeat attacks per use (${multistrike ? `Multistrike ${round(multistrike.expectedExtraAttacks)} per sequence ÷ ${round(1 + multistrike.expectedExtraAttacks)} attacks` : "no Multistrike model: the skill's own repeated-sweep reading"}) → min(1, ${round(attempts.repeatsPerUse)} ÷ ${steepStrike.multistrikeAttempts.perRepeats || 2}) = ${round(attempts.fromRepeats)} Steep Strikes per use (0.1 before 2026-10-14)${steepStrike.window ? movedRecently ? `; ${steepStrike.window.source.replace(/^Support: /, "")}: every use within ${steepStrike.window.seconds} s after moving ${steepStrike.window.meters} m is a Steep Strike, the window held open while Moved recently is on (user-supplied reading, best case) → 1 per use` : `; ${steepStrike.window.source.replace(/^Support: /, "")}: Moved recently is off, so its window is closed` : ""}. Each Steep Strike replaces that use's Sweep Slash.${steepStrike.clusterGenerated > 0 ? ` ${steepStrike.extraAttempts.map((line) => line.source.replace(/^Support: /, "")).join(", ")}: each launched Steep Strike generates ${steepStrike.clusterGenerated} additional Steep Strikes, siblings of it that cannot hit the same enemy (hit rule bHitBrother 0; SS14 client)${steepStrike.clusterHits > 0 ? `, but the skill has Shotgun Effect (${steepStrike.shotgunEffect.source.replace(/^Support: /, "")}): all land → Steep Strike hits × ${1 + steepStrike.clusterHits} (no attempt spent, no Multistrike added)` : ": on the one dummy only one of them lands (no extra hits)"}.` : ""}`);
   }
   // Spell Burst (game manual, pasted by the user 2026-10-12; sourced): "When Spell Burst is fully charged, casting a Spell
   // Skill will activate Spell Burst, which will consume all stacks of Spell Burst charged and automatically cast the Spell
@@ -1017,7 +1101,12 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     return { ...bombSpec, bonusFactor, throwFactor, additionalFactor, throwsPerSecond, bombsPerSecond, firstSeconds, onField, lines };
   })() : null;
   if (bombs) notes.push(`${profile.name}: Blast Nova bombs (Q-H14, provisional): ${bombs.baseSpeed} throw/s × ${round(bombs.throwFactor)} (${round((bombs.speedShare ?? 1) * 100)}% of the Attack Speed bonuses ×${round(bombs.bonusFactor)})${bombs.additionalFactor !== 1 ? ` × ${round(bombs.additionalFactor)} additional Bomb Throwing Speed` : ""} = ${round(bombs.throwsPerSecond)} throws/s × ${round(bombs.bombsPerThrow)} bombs = ${round(bombs.bombsPerSecond)} bombs/s in place of its own casts; ${bombs.mode === "single" ? "one projectile of each bomb's all-direction volley hits the dummy" : bombs.mode === "volley" ? "Radiation Effect: each bomb lands the skill's volley at its Shotgun share" : "the bombs fire no projectiles"}; first detonation at ${bombs.firstSeconds == null ? "—" : round(bombs.firstSeconds)} s.`);
-  const manualUsesPerSecond = bombs ? bombs.bombsPerSecond : manualHits && intervalSeconds > 0 && !inactiveReason ? rateFactor * heroRateFactor / intervalSeconds : 0;
+  // Pressed skills share one action timeline (src/planner.js pressRotation, 2026-11-05; research/rosa-build-followups-2026-11-05.md §3): the
+  // Main Skill keeps `rotation.share` of its action time; a proc skill is pressed once every `rotation.pressEverySeconds`. A Main Skill bound by
+  // its cooldown or Terra (`rotation.timeBound` false; src/press-schedule.js) keeps its rate while its casts fit that share of the time.
+  const fullManualUsesPerSecond = bombs ? bombs.bombsPerSecond : manualHits && intervalSeconds > 0 && !inactiveReason ? rateFactor * heroRateFactor / intervalSeconds : 0;
+  const manualUsesPerSecond = bombs || !rotation ? fullManualUsesPerSecond : rotation.pressEverySeconds > 0 ? Math.min(fullManualUsesPerSecond, rateFactor * heroRateFactor / rotation.pressEverySeconds) : rotation.timeBound === false && useTime > 0 ? Math.min(fullManualUsesPerSecond, Math.max(0, Math.min(1, rotation.share ?? 1)) * rateFactor * heroRateFactor / useTime) : fullManualUsesPerSecond * Math.max(0, Math.min(1, rotation.share ?? 1));
+  if (rotation && !bombs && fullManualUsesPerSecond > 0) notes.push(`${profile.name}: ${rotation.text}`);
   // Extra triggered uses from outside the skill (Miraculous Gain's Main Skill triggers, src/elixir-model.js; user-supplied
   // 2026-10-19): added to the use rate as full uses of the skill.
   const outsideTriggerUsesPerSecond = extraTriggeredUses?.usesPerSecond > 0 && !inactiveReason && intervalSeconds > 0 ? extraTriggeredUses.usesPerSecond : 0;
@@ -1043,13 +1132,15 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const bingUsesPerSecond = (overload?.usesPerSecond || 0) + (machines?.usesPerSecond || 0);
   // "+X% chance to trigger the Main Spell Skill 1 additional time when using it" (weapon corrosion base affix). Record 222907: on a player's use (trigger
   // 1000074) of a skill tagged Main Skill and Spell and not Channeled, node 2320 casts the skill in position 1. So each manual use repeats once with the
-  // summed chance (at most 100%), as a full use of the skill; a repeat is no player use, so it does not roll again.
-  const repeatLines = setup?.role === "main" && skillTags.has("Spell") && !skillTags.has("Channeled") && manualUsesPerSecond > 0 ? modifierTexts.flatMap((line) => { const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(MAIN_SPELL_REPEAT_LINE); return match ? [{ source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }) : [];
-  const mainSpellRepeat = repeatLines.length ? { chancePercent: Math.min(100, Math.max(0, sum(repeatLines))), lines: repeatLines } : null;
-  if (mainSpellRepeat) { mainSpellRepeat.usesPerSecond = manualUsesPerSecond * mainSpellRepeat.chancePercent / 100; notes.push(`${profile.name}: ${round(mainSpellRepeat.chancePercent)}% chance to trigger the Main Spell Skill once more per use: + ${round(mainSpellRepeat.usesPerSecond)} uses/s (provisional).`); }
+  // summed chance (at most 100%), as a full use of the skill; a repeat is no player use, so it does not roll again. Only the player's uses
+  // roll it (wiring audit W2 gap 5, 2026-11-03): an Activation Medium / item-triggered Main Spell (1000060) does not, where before every
+  // use of the skill did (×1.05 on a triggered one).
   // The player's own uses (what "after using a … Skill" triggers count: Dual Kismet: Hunter's Hand, provisional): manual uses, not an
   // Activation Medium / gear / pact trigger or an outside trigger rate; a Multistrike sequence is one use.
   const playerUsesPerSecond = triggered || setup?.role === "item-trigger" || (rateModel && !rateModel.readyWhenPrebuilt) || bombs ? 0 : manualUsesPerSecond / (1 + (multistrike?.expectedExtraAttacks || 0));
+  const repeatLines = setup?.role === "main" && skillTags.has("Spell") && !skillTags.has("Channeled") && playerUsesPerSecond > 0 ? modifierTexts.flatMap((line) => { const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(MAIN_SPELL_REPEAT_LINE); return match ? [{ source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }) : [];
+  const mainSpellRepeat = repeatLines.length ? { chancePercent: Math.min(100, Math.max(0, sum(repeatLines))), lines: repeatLines } : null;
+  if (mainSpellRepeat) { mainSpellRepeat.usesPerSecond = playerUsesPerSecond * mainSpellRepeat.chancePercent / 100; notes.push(`${profile.name}: ${round(mainSpellRepeat.chancePercent)}% chance to trigger the Main Spell Skill once more per use: + ${round(mainSpellRepeat.usesPerSecond)} uses/s (provisional).`); }
   const ownUsesPerSecond = manualUsesPerSecond + heroTriggerUsesPerSecond + outsideTriggerUsesPerSecond + bingUsesPerSecond + (mainSpellRepeat?.usesPerSecond || 0);
   // Selena – Lonely Ensemble's Crimson Shades (hero trait audit B13; src/selena-leftover-traits.js crimsonShadeState, provisional): each
   // Main Terra cast, at most once per summon interval (1 s), summons `count` Shades that each cast the Main Terra once on the dummy at
@@ -1064,6 +1155,15 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     return { count: shadeSpec.count, summonsPerSecond, usesPerSecond: summonsPerSecond * shadeSpec.count, factor: shadeSpec.factor, additionalPercent: shadeSpec.additionalPercent, terraChargePercent: terraValue, relative, source: shadeSpec.source };
   })() : null;
   const usesPerSecond = ownUsesPerSecond + (crimsonShade?.usesPerSecond || 0);
+  // Uses by source (wiring audit W2 gap 5, 2026-11-03): the player's presses (trigger 1000074), Spell Burst's automatic casts (1000074: they
+  // inherit the activating cast's flag, SS14 client, research/use-events-rea-2026-11-04.md §1; the planner keeps them in playerUsesPerSecond for
+  // the 1000074 readers; resource consumption leaves them out, its stated rule), Multistrike repeats (a repeat of your use is a 1000074 event, a
+  // repeat of a triggered use raises none: same note, read in src/planner.js) and triggered uses (1000060: Activation Medium, item, outside and
+  // hero triggers, the Main Spell repeat, Crimson Shades, Ingenuity Overload casts).
+  const spellBurstAutoUsesPerSecond = playerUsesPerSecond > 0 && spellBurst && !multistrike ? playerUsesPerSecond * (1 - 1 / spellBurst.rateFactor) : 0;
+  const multistrikeRepeatUsesPerSecond = multistrike ? manualUsesPerSecond * multistrike.expectedExtraAttacks / (1 + multistrike.expectedExtraAttacks) : 0;
+  const pressedUsesPerSecond = Math.max(0, playerUsesPerSecond - spellBurstAutoUsesPerSecond);
+  const usesBySource = { manual: pressedUsesPerSecond, spellBurstAuto: spellBurstAutoUsesPerSecond, multistrikeRepeat: multistrikeRepeatUsesPerSecond, triggered: Math.max(0, usesPerSecond - pressedUsesPerSecond - spellBurstAutoUsesPerSecond - multistrikeRepeatUsesPerSecond) };
   if (crimsonShade) {
     const average = (ownUsesPerSecond + crimsonShade.usesPerSecond * crimsonShade.relative) / Math.max(1e-9, usesPerSecond);
     if (Math.abs(average - 1) > 1e-12) supports.additional.push({ source: "Crimson Shade casts (Selena – Lonely Ensemble)", text: `${round(crimsonShade.usesPerSecond)} Crimson Shade casts/s at ×${round(crimsonShade.relative)} (${crimsonShade.additionalPercent}% additional damage${crimsonShade.terraChargePercent ? `, the cast's +${round(crimsonShade.terraChargePercent)}% Terra Charge bonus kept: game affix 976528768 gives the consumed charges back` : ""}) among ${round(usesPerSecond)} uses/s: average ×${round(average)} (hero trait audit B13, provisional)`, value: (average - 1) * 100, category: "Additional damage" });
@@ -1099,7 +1199,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   if (demolisherRecovery) notes.push(`${profile.name}: +${round(demolisherRecovery)}% Demolisher Charge Restoration Speed: a Charge every ${round(demolisherEvery)} s.`);
   // Charged Pummel: Charge Reduction (recipe 404583872): at max channeled stacks 3 stacks of the buff, each consumption gives the Charge back, so every release consumes one.
   const demolisherInstant = profile.demolisher && (supports.effects.demolisherRecovery || []).some((line) => line.kind === "instant");
-  const demolisherShare = profile.demolisher && intervalSeconds > 0 ? (demolisherInstant ? 1 : Math.min(1, intervalSeconds / demolisherEvery)) : 0;
+  const useGapSeconds = rotation?.pressEverySeconds > 0 && intervalSeconds > 0 ? Math.max(intervalSeconds, rotation.pressEverySeconds) : intervalSeconds;
+  const demolisherShare = profile.demolisher && intervalSeconds > 0 ? (demolisherInstant ? 1 : Math.min(1, useGapSeconds / demolisherEvery)) : 0;
   // First use: the opening cast completes after its use time (a cooldown- or Terra-bound skill does not wait a whole
   // interval first). Flame Jet Lv16 dummy run 2026-10-11: the 21 s average (121) sits near the steady figure, so damage
   // starts with the first cast, not one interval in. A rate-model skill waits for its first trigger; a release channel's
@@ -1325,13 +1426,14 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // casts that crit (one check per cast: 1 − (1 − c)^hits) carries N points into the next Finisher (expected value; provisional). The
   // crit chance here is the skill's chance read the way the crit block below reads it (supports' and tagged rating on the attack crit).
   const comboCritChance = comboExtras?.pointsOnCrit > 0 ? (() => {
-    if (crit.guaranteedCrit) return 1;
+    if (crit.guaranteedCrit) return 1 - (crit.cannotCritShare || 0);
     const base = attackProfile ? (crit.attackCrit || weapon?.crit || null) : null;
     const tagged = base ? crit.taggedCrit || { ratingPercent: 0, ratingFlat: 0 } : null;
     if (base && (supports.critRating.length || tagged.ratingPercent || tagged.ratingFlat)) {
-      const flat = sum(supports.critRating.filter((line) => line.kind === "ratingFlat")) + tagged.ratingFlat;
-      const percent = sum(supports.critRating.filter((line) => line.kind === "ratingPercent")) + tagged.ratingPercent;
-      const rating = Math.max(0, ((base.weaponRating || 0) + (base.flatRating || 0) + flat) * Math.max(0, 1 + ((base.increasedRatingPercent || 0) + percent) / 100) * product(supports.critRating.filter((line) => line.kind === "ratingAdditional")));
+      const own = supportCritSums();
+      const flat = own.flat + tagged.ratingFlat;
+      const percent = own.percent + tagged.ratingPercent;
+      const rating = Math.max(0, ((base.weaponRating || 0) + (base.flatRating || 0) + flat) * Math.max(0, 1 + ((base.increasedRatingPercent || 0) + percent) / 100) * own.additionalFactor);
       return Math.min(100, rating / 100) / 100;
     }
     return Math.max(0, Math.min(100, crit.criticalChancePercent || 0)) / 100;
@@ -1367,10 +1469,12 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   for (const line of supports.effects.penetration || []) {
     if (line.kind === "perWave") {
       const waves = (base.components.find((component) => String(component.componentKey ?? component.key ?? "").split(/[+>:]/)[0] === "waves")?.hitsPerUse ?? (typeof profile.components?.find((component) => component.key === "waves")?.perUse === "number" ? profile.components.find((component) => component.key === "waves").perUse : 1)) + (barrage?.extraWaves || 0);
-      penetrationLines.push({ source: line.source, text: `${line.text}: mean over ${round(waves)} waves`, value: line.value * Math.max(0, waves - 1) / 2, damageTypes: new Set(["Cold"]), category: "Penetration" });
+      const item = { source: line.source, text: `${line.text}: mean over ${round(waves)} waves`, value: line.value * Math.max(0, waves - 1) / 2, damageTypes: new Set(["Cold"]), category: "Penetration" };
+      if (hitPool) hitPool.addPenetration(item); else penetrationLines.push(item);
     } else if (line.kind === "elementalToErosion") {
-      const top = Math.max(0, ...["Fire", "Cold", "Lightning"].map((type) => sum(penetrationLines.filter((item) => item.damageTypes.has(type)))));
-      if (top > 0) penetrationLines.push({ source: line.source, text: `${line.text}: ${line.value}% × ${round(top)}% Elemental Penetration`, value: line.value / 100 * top, damageTypes: new Set(["Erosion"]), category: "Penetration" });
+      const top = Math.max(0, ...["Fire", "Cold", "Lightning"].map((type) => hitPool ? hitPool.penetration(type).base : sum(penetrationLines.filter((item) => item.damageTypes.has(type)))));
+      const item = { source: line.source, text: `${line.text}: ${line.value}% × ${round(top)}% Elemental Penetration`, value: line.value / 100 * top, damageTypes: new Set(["Erosion"]), category: "Penetration" };
+      if (top > 0) { if (hitPool) hitPool.addPenetration(item); else penetrationLines.push(item); }
     }
   }
   // "+X% additional skill damage when Demolisher Charge is consumed" (DEMOLISHER_CONSUMED_LINE).
@@ -1393,7 +1497,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     // Sweep Slash keeps its profile count less the share (1.2 − share: the profile's +20% repeated sweep stays a sweep).
     const attemptMode = Boolean(steepStrike?.attempts) && component.steep;
     const steepRole = (steepStrike?.fromChance || attemptMode) && component.steep ? component.steep : null;
-    // Blade Cluster (2026-10-15): each launched Steep Strike → 1 + clusterHits Steep Strike hits (steepStrikeState).
+    // Blade Cluster: each launched Steep Strike → 1 + clusterHits Steep Strike hits, clusterHits 0 without Shotgun Effect (steepStrikeState).
     const clusterFactor = steepRole?.role === "steep" ? 1 + (steepStrike.clusterHits || 0) : 1;
     const steepPerUse = !steepRole ? null : attemptMode
       ? (steepRole.role === "sweep" ? Math.max(0, (typeof component.perUse === "number" ? component.perUse : 1) - steepStrike.share) : steepStrike.share * (steepRole.perSteep ?? 1) * clusterFactor)
@@ -1485,16 +1589,21 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // Recalled hits (src/youga-ultimate-one.js; provisional): the recalling hit group (its typed parts share a strike key) lands
   // again `hitsFactor` times per use on average, as its own strike, with the Recalled-only lines. Added flat damage and
   // conversions reach it like the group it copies.
-  // Each Recall is a full-damage fresh hit (user-supplied 2026-10-18; no Shotgun falloff), so it counts the projectiles that
-  // reach the dummy, not the falloff-weighted hits: a 3-bolt fan at 60% falloff lands 2.2 weighted hits but Recalls 3 bolts.
-  // Before 2026-10-18 the Recalled group copied the weighted count (2.2 × Recalls), contradicting that reading.
+  // Each Recall pass is its own Shotgun wave (SS14 client, research/oq-r3-r4-rea-2026-11-04.md youga-recall-falloff: every
+  // Recall gives each bolt a fresh hit state in the cast's instance, keyed by the pass number, so the bolts of one pass are
+  // siblings and count each other's hits; earlier passes are other groups). So a pass deals the cast's falloff-weighted hits
+  // (1 + c × (n − 1)), and every landing projectile is still one hit event (`landingsPerUse`, the trigger bus and crit events).
+  // Before 2026-11-04 each Recall was a full-damage hit with no falloff (user-supplied 2026-10-18): a 3-bolt fan at 60%
+  // falloff counted 3 Recalled hits per pass, now 2.2.
   const recall = heroEffects?.recall;
   if (recall?.hitsFactor > 0) {
     const group = components.filter((component) => !component.addedOnly && (component.strikeKey ?? component.componentKey) === recall.strikeKey);
     for (const component of group) {
       const key = `${component.componentKey}:recall`;
       const projectiles = recalledProjectilesPerUse(component);
-      components.push({ ...component, componentKey: key, strikeKey: `${component.strikeKey ?? component.componentKey}:recall`, label: `${component.label} (Recalled)`, hitsPerUse: projectiles * recall.hitsFactor, hitsDetail: `${round(projectiles)}${component.shotgun?.total > 0 ? ` projectile${projectiles === 1 ? "" : "s"} reaching the dummy (no Shotgun falloff on a Recall)` : ""} × ${round(recall.hitsFactor)} Recalls per use (${round(recall.recallsPerProjectile)} per projectile × ${round(recall.shareOfUses * 100)}% of uses inside Stasis Vault; provisional)`, shotgun: null, recalled: true, extraAdditional: [...(component.extraAdditional || []), ...(recall.additional || [])], added: { min: 0, max: 0 }, addedSources: [] });
+      const weighted = Number(component.hitsPerUse) || 0;
+      const fan = component.shotgun?.total > 0;
+      components.push({ ...component, componentKey: key, strikeKey: `${component.strikeKey ?? component.componentKey}:recall`, label: `${component.label} (Recalled)`, hitsPerUse: weighted * recall.hitsFactor, landingsPerUse: projectiles * recall.hitsFactor, hitsDetail: `${round(weighted)}${fan ? ` falloff-weighted hit${weighted === 1 ? "" : "s"} (${round(projectiles)} projectile${projectiles === 1 ? "" : "s"} reaching the dummy; each Recall pass is its own Shotgun wave: SS14 client)` : ""} × ${round(recall.hitsFactor)} Recalls per use (${round(recall.recallsPerProjectile)} per projectile × ${round(recall.shareOfUses * 100)}% of uses inside Stasis Vault; provisional)`, shotgun: null, recalled: true, extraAdditional: [...(component.extraAdditional || []), ...(recall.additional || [])], added: { min: 0, max: 0 }, addedSources: [] });
     }
     if (group.length && recall.note) notes.push(`${profile.name}: ${recall.note}.`);
   }
@@ -1544,7 +1653,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   if (shadows?.weight > 0) {
     for (const component of [...components]) {
       if (!(component.hitsPerUse > 0)) continue;
-      components.push({ ...component, componentKey: `${component.componentKey}:shadow`, strikeKey: `${component.strikeKey ?? component.componentKey}:shadow`, label: `${component.label} (Shadows)`, hitsPerUse: component.hitsPerUse * shadows.weight, hitsDetail: `${component.hitsDetail} × ${round(shadows.weight)} for ${shadows.count} Shadow${shadows.count === 1 ? "" : "s"} on the one dummy (1 + 70% Shotgun falloff × ${shadows.count - 1}; game manual 1001010820 / 1001010821, reference data Phantom; provisional)`, shotgun: null, shadow: true, extraAdditional: [...(component.extraAdditional || []), ...shadows.damage], added: { ...component.added }, addedSources: [...component.addedSources] });
+      components.push({ ...component, componentKey: `${component.componentKey}:shadow`, strikeKey: `${component.strikeKey ?? component.componentKey}:shadow`, label: `${component.label} (Shadows)`, hitsPerUse: component.hitsPerUse * shadows.weight, hitsDetail: `${component.hitsDetail} × ${round(shadows.weight)} for ${shadows.count} Shadow${shadows.count === 1 ? "" : "s"} on the one dummy (1 + 70% Shotgun falloff × ${shadows.count - 1}; game manual 1001010820 / 1001010821, reference data Phantom; provisional)`, shotgun: null, shadow: true, landingsPerUse: landingsPerUse(component) * shadows.expectedCount, extraAdditional: [...(component.extraAdditional || []), ...shadows.damage], added: { ...component.added }, addedSources: [...component.addedSources] });
     }
     notes.push(`${profile.name}: ${shadows.count} Shadow${shadows.count === 1 ? "" : "s"} (${shadows.sources.map((item) => `${item.source} +${round(item.value)}`).join(", ")}; base 0, game manual 1001010820): each use's attack is repeated by the Shadows on the dummy at × ${round(shadows.weight)} (70% Shotgun falloff after the first; reference data Phantom)${shadows.damage.length ? `, with ${shadows.damage.map((line) => line.text).join("; ")}` : ""} (provisional).`);
   } else if (shadows?.damage.length) notes.push(`${profile.name}: no Shadow (Shadow Quantity 0, game manual 1001010820), so the additional Shadow Damage lines reach nothing.`);
@@ -1635,7 +1744,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     if (!scopeTags.has("Projectile")) return null;
     const converters = modifierTexts.flatMap((line) => {
       const match = normalizePercentageText(String(line.text || "")).replace(/\s+/g, " ").trim().match(/^(\d+(?:\.\d+)?)% of the Projectile Speed bonus is also applied to (the additional bonus for )?Projectile Damage$/i);
-      return match ? [{ source: line.source, text: line.text, share: Number(match[1]) * (line.multiplier ?? 1), layer: match[2] ? "additional" : "increased" }] : [];
+      // Traced pool: the line's node 114 record is read at the hit instead (src/attribute-pool-build.js); the state keeps the converter.
+      return match ? [{ source: line.source, text: line.text, share: Number(match[1]) * (line.multiplier ?? 1), layer: match[2] ? "additional" : "increased", ...(tracedLines.size && tracedLines.has(lineKeyOf(line.source, line.text)) ? { traced: true } : {}) }] : [];
     });
     // Rain of Arrows' own line (field 2006129; chunk 8): "25% of bonuses to Projectile Speed for this skill (up to 200%) also apply to this skill's additional
     // damage", the bonus read up to 200%; Rain of Arrows: Swift Flight's row sets the share (recipe 23468732).
@@ -1658,14 +1768,21 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const increasedPercent = sources.reduce((total, line) => total + line.value, 0);
     return { increasedPercent, sources, converters };
   })();
-  const galeLines = (projectileSpeedState?.converters || []).map((converter) => {
+  // Every converter's reading for the working (`projectileSpeed.lines`, the badges); a traced one (its node 114 record read at the hit,
+  // src/attribute-pool-build.js) is shown, flagged, and stays out of the damage lists (the pool's conversion entry carries it).
+  const galeReadings = (projectileSpeedState?.converters || []).map((converter) => {
     const value = converter.share / 100 * Math.min(converter.capPercent ?? Infinity, Math.max(0, projectileSpeedState.increasedPercent));
-    return { source: converter.source, text: `+${round(value)}% ${converter.layer === "additional" ? "additional " : ""}Projectile Damage (${converter.text}: ${converter.share}% × +${round(projectileSpeedState.increasedPercent)}% increased Projectile Speed = ${projectileSpeedState.sources.map((line) => `${round(line.value)} ${line.source}`).join(" + ")}; additional Projectile Speed not converted; game affix node 114)`, value, layer: converter.layer, category: converter.layer === "additional" ? "Additional damage" : "Increased damage", origin: "derived" };
+    return { source: converter.source, text: `+${round(value)}% ${converter.layer === "additional" ? "additional " : ""}Projectile Damage (${converter.text}: ${converter.share}% × +${round(projectileSpeedState.increasedPercent)}% increased Projectile Speed = ${projectileSpeedState.sources.map((line) => `${round(line.value)} ${line.source}`).join(" + ")}; additional Projectile Speed not converted; game affix node 114)`, value, layer: converter.layer, category: converter.layer === "additional" ? "Additional damage" : "Increased damage", origin: "derived", ...(converter.traced ? { traced: true } : {}) };
   }).filter((line) => line.value > 0);
+  const galeLines = galeReadings.filter((line) => !line.traced);
   const auraLines = [];
+  // Label 3000114 (Rosa – Unsullied Blade, record 101070122): the Spell tag joins an Attack hit's query for the damage scale stage only, so
+  // a [Spell] write the Aura holds (Precise: Spell Amplification, buff 15073 affix 10091901) reaches the Attack's hits (2026-11-05,
+  // research/oq-rosa-build-2026-11-04.md §8; client 0x141fc3b7d). A skill with both tags takes it once.
+  const spellScaleStage = scopeTags.has("Spell") || (spellTagOnAttack && scopeTags.has("Attack"));
   for (const entry of auraEntries) {
     const effects = entry.effectiveEffects || {};
-    if (effects.additionalSpellDamagePercent && scopeTags.has("Spell")) auraLines.push({ source: `Aura: ${entry.name} / Spell Damage`, text: `+${round(effects.additionalSpellDamagePercent)}% additional Spell Damage`, value: effects.additionalSpellDamagePercent, category: "Additional damage", origin: "derived" });
+    if (effects.additionalSpellDamagePercent && spellScaleStage) auraLines.push({ source: `Aura: ${entry.name} / Spell Damage`, text: `+${round(effects.additionalSpellDamagePercent)}% additional Spell Damage`, value: effects.additionalSpellDamagePercent, category: "Additional damage", origin: "derived" });
     if (effects.additionalAreaDamagePercent && skillTags.has("Area")) auraLines.push({ source: `Aura: ${entry.name} / Area Damage`, text: `+${round(effects.additionalAreaDamagePercent)}% additional Area Damage`, value: effects.additionalAreaDamagePercent, category: "Additional damage", origin: "derived" });
     // Skill-tag and typed aura stats (gear-pact batch G4): Cruelty "+X% additional Attack Damage" (Attack skills), Fearless
     // "+X% additional Melee Skill Damage" (Melee skills), Charged Flames / Frigid Domain / Electric Conversion "+X% additional
@@ -1721,15 +1838,17 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // this setup's tags) join the attack crit like the supports' lines (residual batch).
   const taggedRating = attackCritBase ? crit.taggedCrit || { ratingPercent: 0, ratingFlat: 0 } : { ratingPercent: 0, ratingFlat: 0 };
   if (attackCritBase && (supports.critRating.length || taggedRating.ratingPercent || taggedRating.ratingFlat)) {
-    const flat = sum(supports.critRating.filter((line) => line.kind === "ratingFlat")) + taggedRating.ratingFlat;
-    const percent = sum(supports.critRating.filter((line) => line.kind === "ratingPercent")) + taggedRating.ratingPercent;
-    const additionalFactor = product(supports.critRating.filter((line) => line.kind === "ratingAdditional"));
+    const own = supportCritSums();
+    const flat = own.flat + taggedRating.ratingFlat;
+    const percent = own.percent + taggedRating.ratingPercent;
+    const additionalFactor = own.additionalFactor;
     const rating = Math.max(0, ((attackCritBase.weaponRating || 0) + (attackCritBase.flatRating || 0) + flat) * Math.max(0, 1 + ((attackCritBase.increasedRatingPercent || 0) + percent) / 100) * additionalFactor);
     supportCrit = { rating, chancePercent: Math.min(100, rating / 100), sources: supports.critRating, base: { weaponRating: attackCritBase.weaponRating || 0, flatRating: attackCritBase.flatRating || 0, increasedRatingPercent: attackCritBase.increasedRatingPercent || 0 } };
   }
   // "Guaranteed to land Critical Strikes" (src/scorching-beam-critical.js hasGuaranteedCrit): every hit crits, the attack and
-  // dual-wield paths included (legendary audit batch 1; provisional, open question legendary-guaranteed-crit).
-  let critChance = crit.guaranteedCrit ? 1 : Math.max(0, Math.min(100, supportCrit ? supportCrit.chancePercent : crit.criticalChancePercent || 0)) / 100;
+  // dual-wield paths included (legendary audit batch 1; SS14 client 0x141fc07a0: the guaranteed branch reads no chance).
+  // "Cannot inflict Critical Strike" (label 3001211) is checked before the guaranteed flag (SS14 client): its share never crits.
+  let critChance = crit.guaranteedCrit ? 1 - (crit.cannotCritShare || 0) : (crit.cannotCritShare || 0) >= 1 ? 0 : Math.max(0, Math.min(100, supportCrit ? supportCrit.chancePercent : crit.criticalChancePercent || 0)) / 100;
   // Default crit damage: config_attributes 4803, 150% (2026-10-17 game attribute data).
   // "Critical Strikes cannot deal additional damage" (Silent Aria): record 861697408 fixes attr 4803 Critical Strike Damage at 100 and nothing else, so the crit-only additional
   // lines, which are damage writes on the crit tag, still apply (chunk 12; src/scorching-beam-critical.js critNoExtraDamage).
@@ -1737,10 +1856,21 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const townCritDamage = crit.critNoExtraDamage ? 1 : Math.max(100, crit.criticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT) / 100;
   // Build-wide "+X% additional damage on [<Tag>] Critical Strike" lines (src/crit-only-lines.js) join the supports' crit-only list.
   // The planner's enemy crit-taken debuffs (Mark on the dummy, src/mark-effect.js) act on the crit share the same way.
-  const critOnlySources = [...supports.critOnlyAdditional, ...critOnlyLinesFor(modifierTexts, [...scopeTags]), ...extraCritOnly];
-  const critOnlyFactor = product(critOnlySources);
+  // Pool: the supports' crit-only lines, every line's crit-only reading (its skill tag and the crit tag 5001010 as the requirement, so the
+  // part's query admits it), the planner's crit-taken debuffs on the dummy; the crit share's query reads the writes that need the crit tag.
+  if (hitPool) {
+    hitPool.addCritOnly(supports.critOnlyAdditional, { kind: "support" });
+    const critTags = new Map();
+    const critLines = modifierTexts.flatMap((line) => { const rule = classifyCritOnlyLine(line.text); const value = rule ? rule.value * (line.multiplier ?? 1) : 0; if (!value) return []; const item = { source: line.source, text: `${line.text} (crit hits only)`, value }; critTags.set(item, rule.tag); return [item]; });
+    hitPool.addCritOnly(critLines, { kind: "text", tagOf: (item) => critTags.get(item) });
+    hitPool.addCritOnly(extraCritOnly, { kind: "model", unit: "dummy" });
+  }
+  const critOnlyRead = hitPool ? hitPool.critOnly() : null;
+  const critOnlySources = critOnlyRead ? critOnlyRead.entries : [...supports.critOnlyAdditional, ...critOnlyLinesFor(modifierTexts, [...scopeTags]), ...extraCritOnly];
+  const critOnlyFactor = critOnlyRead ? productValues(critOnlyRead.taken.writes, critOnlyRead.own.additionalFactor) : product(critOnlySources);
   // Typed crit-only lines ("+14% additional Cold Damage on Critical Strike", census #15): per component of that type (below).
   const typedCritOnlySources = typedCritOnlyLinesFor(modifierTexts);
+  if (hitPool) hitPool.addTypedCritOnly(typedCritOnlySources);
   // Alternate dual wielding (user-confirmed 2026-10-14): each swing uses its own hand's crit rating with the build-wide lines
   // (the supports' and tagged rating lines, the cap, crit damage, crit-only lines); the hands are not averaged. Each hand's
   // chance: the supports' formula on that hand's weapon rating, or the planner's per-hand chance (crit.hands: Lucky / Sentry
@@ -1749,12 +1879,13 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const handCrits = weaponHands ? weaponHands.map((hand, index) => {
     let chancePercent;
     if (supportCrit) {
-      const flat = sum(supports.critRating.filter((line) => line.kind === "ratingFlat")) + taggedRating.ratingFlat;
-      const percent = sum(supports.critRating.filter((line) => line.kind === "ratingPercent")) + taggedRating.ratingPercent;
-      const rating = Math.max(0, ((hand.weaponRating || 0) + (attackCritBase.flatRating || 0) + flat) * Math.max(0, 1 + ((attackCritBase.increasedRatingPercent || 0) + percent) / 100) * product(supports.critRating.filter((line) => line.kind === "ratingAdditional")));
+      const own = supportCritSums();
+      const flat = own.flat + taggedRating.ratingFlat;
+      const percent = own.percent + taggedRating.ratingPercent;
+      const rating = Math.max(0, ((hand.weaponRating || 0) + (attackCritBase.flatRating || 0) + flat) * Math.max(0, 1 + ((attackCritBase.increasedRatingPercent || 0) + percent) / 100) * own.additionalFactor);
       chancePercent = Math.min(100, rating / 100);
     } else chancePercent = crit.hands?.[index]?.criticalChancePercent ?? hand.chancePercent;
-    if (crit.guaranteedCrit) chancePercent = 100;
+    if (crit.guaranteedCrit) chancePercent = 100 * (1 - (crit.cannotCritShare || 0));
     const chance = Math.max(0, Math.min(100, chancePercent || 0)) / 100;
     return { hand: hand.hand, share: hand.share, chancePercent: chance * 100, factor: (1 - chance) + chance * critDamage * critOnlyFactor, townFactor: (1 - chance) + chance * townCritDamage * critOnlyFactor };
   }) : null;
@@ -1818,22 +1949,30 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const trinityByType = trinityFactors(components, trinity, { attack: scopeTags.has("Attack") });
   if (trinityByType) notes.push(`${profile.name}: ${trinity.text} (${trinity.source}): ${[...trinityByType.factors].map(([type, factor]) => `${type} ×${round(factor)}`).join(", ")} (one of three elements per hit, client weights 1 ÷ (1 + share)⁴; an element the hit does not deal can be picked, and then the hit deals nothing).`);
   else if (trinity && !scopeTags.has("Attack")) notes.push(`${profile.name}: ${trinity.text}: Attack hits only (records 474135584 / 293710144, tags Attack + Hit).`);
+  // Pool: the supports' increased / additional damage lines (after the lines, as in the lists), and the skill's Armor penetration.
+  if (hitPool) { hitPool.addSupportIncreased(supports.increased); hitPool.addSupportAdditional(supports.additional); }
+  const armourPenetrationRead = hitPool ? hitPool.armourPenetration() : null;
   // Per component.
   const perType = components.map((component) => {
+    // A converted part counts as its original and its final type: the SS14 conversion pass (0x141fc3a80; SS13 0x141e14330) gives the new
+    // record the target type's start masks OR the source record's, and the scale step reads every attribute in those masks (W9 step 4,
+    // proven; user-stated 2026-10-12, Q8).
     const types = component.scopeTypes || (component.converted ? [component.originalType, component.type] : [component.type]);
     const additionalTypes = component.additionalScopeTypes || types;
     const applies = (line) => scopeApplies(line.scope, { damageTypes: types, skillTags: scopeTags });
     const appliesAdditional = (line) => scopeApplies(line.scope, { damageTypes: additionalTypes, skillTags: scopeTags });
+    // Pool reads of this part (the hit's query, the part's types; the additional and taken reads by its additional-scope types).
+    const increasedRead = hitPool ? hitPool.damage(3, types) : null, additionalRead = hitPool ? hitPool.damage(4, additionalTypes) : null;
     // Typed crit-only lines (census #15): one more factor on this component's crit share, Σ over the types it counts as.
-    const typedCritOnly = product(typedCritOnlySources.filter((line) => additionalTypes.includes(line.type)));
+    const typedCritOnly = hitPool ? hitPool.typedCritOnly(additionalTypes).additionalFactor : product(typedCritOnlySources.filter((line) => additionalTypes.includes(line.type)));
     const typedCritExtra = (chance, damage) => chance * damage * critOnlyFactor * (typedCritOnly - 1);
     const typedHand = (hand) => typedCritOnly === 1 ? hand : { ...hand, factor: hand.factor + typedCritExtra(hand.chancePercent / 100, critDamage), townFactor: hand.townFactor + typedCritExtra(hand.chancePercent / 100, townCritDamage) };
     const componentCritFactor = handCrits ? critFactor : critFactor + typedCritExtra(critChance, critDamage);
     const componentTownCritFactor = handCrits ? townCritFactor : townCritFactor + typedCritExtra(critChance, townCritDamage);
     const componentIncreased = (component.extraIncreased || []).map((line) => ({ ...line, category: "Increased damage", origin: "skill" }));
-    const increased = [...damageLines.filter((line) => line.layer === "increased" && applies(line)), ...supports.increased.filter((line) => applies(line)), ...(channelState?.increased || []), ...weaponIncreased, ...componentIncreased, ...galeLines.filter((line) => line.layer === "increased")];
+    const increased = [...(increasedRead ? increasedRead.entries : [...damageLines.filter((line) => line.layer === "increased" && applies(line)), ...supports.increased.filter((line) => applies(line))]), ...(channelState?.increased || []), ...weaponIncreased, ...componentIncreased, ...galeLines.filter((line) => line.layer === "increased")];
     const componentLines = (component.extraAdditional || []).map((line) => ({ ...line, category: "Additional damage", origin: "skill" }));
-    const additional = [...damageLines.filter((line) => line.layer === "additional" && appliesAdditional(line)), ...supports.additional.filter((line) => !line.scopeTypes || line.scopeTypes.some((type) => additionalTypes.includes(type))), ...levelLine, ...sentryNearbyLines, ...terraLine, ...grantedLines, ...speedBonusLine.filter((line) => line.value > 0), ...galeLines.filter((line) => line.layer === "additional"), ...(channelState?.additional || []), ...componentLines, ...auraLines.filter((line) => !line.types || line.types.some((type) => additionalTypes.includes(type))), ...mainStatLines, ...doubleDamageLines, ...weaponAdditional.filter((line) => !(handCrits && line.hand === "main")), ...(restrictionLine(typeRestriction, component.type, "hit damage") ? [restrictionLine(typeRestriction, component.type, "hit damage")] : []), ...(trinityLine(trinity, trinityByType, component.type) ? [trinityLine(trinity, trinityByType, component.type)] : [])];
+    const additional = [...(additionalRead ? additionalRead.entries : [...damageLines.filter((line) => line.layer === "additional" && appliesAdditional(line)), ...supports.additional.filter((line) => !line.scopeTypes || line.scopeTypes.some((type) => additionalTypes.includes(type)))]), ...levelLine, ...sentryNearbyLines, ...terraLine, ...grantedLines, ...speedBonusLine.filter((line) => line.value > 0), ...galeLines.filter((line) => line.layer === "additional"), ...(channelState?.additional || []), ...componentLines, ...auraLines.filter((line) => !line.types || line.types.some((type) => additionalTypes.includes(type))), ...mainStatLines, ...doubleDamageLines, ...weaponAdditional.filter((line) => !(handCrits && line.hand === "main")), ...(restrictionLine(typeRestriction, component.type, "hit damage") ? [restrictionLine(typeRestriction, component.type, "hit damage")] : []), ...(trinityLine(trinity, trinityByType, component.type) ? [trinityLine(trinity, trinityByType, component.type)] : [])];
     // Combo Finisher crit and Double Damage extras (census item #9; src/combo-points.js comboExtraState), on the Finisher's hits only:
     // "+X% Critical Strike Damage for Combo Finishers" (727988544, flat crit damage) and "+X% additional damage for every 1 Combo Point
     // consumed on Critical Strike from Combo Finishers" (157017744, X × consumed points on the crit share) change the crit factor
@@ -1856,31 +1995,33 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       }
     }
     const combatAdditional = [...combatLines];
-    const taken = takenLines.filter((line) => appliesAdditional(line));
-    const maxOnly = maxLines.filter((line) => applies(line));
-    const minOnly = minLines.filter((line) => applies(line));
-    const penetration = penetrationLines.filter((line) => line.damageTypes.has(component.type));
-    const increasedFactor = Math.max(0, 1 + sum(increased) / 100);
-    const takenFactor = Math.max(0, 1 + sum(taken.filter((line) => line.layer === "increased")) / 100) * product(taken.filter((line) => line.layer === "additional"));
-    const penetrationPercent = sum(penetration);
+    const takenRead = hitPool ? hitPool.taken(additionalTypes) : null, maxRead = hitPool ? hitPool.max(types) : null, minRead = hitPool ? hitPool.min(types) : null, penetrationRead = hitPool ? hitPool.penetration(component.type) : null;
+    const taken = takenRead ? takenRead.entries : takenLines.filter((line) => appliesAdditional(line));
+    const maxOnly = maxRead ? maxRead.entries : maxLines.filter((line) => applies(line));
+    const minOnly = minRead ? minRead.entries : minLines.filter((line) => applies(line));
+    const penetration = penetrationRead ? penetrationRead.entries : penetrationLines.filter((line) => line.damageTypes.has(component.type));
+    // Pool sums continue in list order (the pool's writes first, then the model's entries), so they equal one list's sum.
+    const increasedFactor = Math.max(0, 1 + (increasedRead ? sumValues(increased.slice(increasedRead.entries.length), increasedRead.increased) : sum(increased)) / 100);
+    const takenFactor = takenRead ? Math.max(0, 1 + takenRead.increased / 100) * takenRead.additionalFactor : Math.max(0, 1 + sum(taken.filter((line) => line.layer === "increased")) / 100) * product(taken.filter((line) => line.layer === "additional"));
+    const penetrationPercent = penetrationRead ? penetrationRead.base : sum(penetration);
     const resistancePercent = resistanceOf(component.type);
     const resistanceFactor = Math.max(0, 1 - (resistancePercent - penetrationPercent) / 100);
     // "+X% Armor DMG Mitigation Penetration": points off the (capped) armour mitigation of every hit type (sourced trace;
     // no floor after the subtraction: provisional). src/target-hit-mitigation.js armourMitigationPercent.
-    const armourPenetration = armourPenetrationLines;
-    const armour = armourMitigationPercent({ physical: component.type === "Physical", armourPercent, nonPhysicalArmourPercent, penetrationPercent: sum(armourPenetration) });
+    const armourPenetration = armourPenetrationRead ? armourPenetrationRead.entries : armourPenetrationLines;
+    const armour = armourMitigationPercent({ physical: component.type === "Physical", armourPercent, nonPhysicalArmourPercent, penetrationPercent: armourPenetrationRead ? armourPenetrationRead.base : sum(armourPenetration) });
     const armourFactor = armour.factor;
-    const maxFactor = product(maxOnly);
+    const maxFactor = maxRead ? maxRead.additionalFactor : product(maxOnly);
     // Additional Min / Max Damage scale this component's own lower / upper roll (per damage type: a Physical-scoped line reaches
     // Physical components only) before the roll is averaged; a negative total floors at 0.
-    const minFactor = Math.max(0, product(minOnly));
+    const minFactor = Math.max(0, minRead ? minRead.additionalFactor : product(minOnly));
     const roll = { min: (component.min + component.added.min) * minFactor, max: (component.max + component.added.max) * maxFactor };
     // Attack panels (Hammer of Ash / Whirlwind / Split Shot Lv16 runs 2026-10-12): "Total Main-Hand Attack Damage" is the
     // weapon × % hit after the dummy's Physical armour (0.5) or non-Physical armour × resistance (0.49), without the
     // Demolisher expectation, and "Attack DPS" is that hit × attack speed × crit (observed on the three panels; see
     // research/attack-weapon-tests-2026-10-12.md). Spell panels show the unmitigated hit (Ring of Blades, Flame Jet).
     const townAdditionalFactor = product(attackProfile ? additional.filter((entry) => !/: Demolisher Charge$/.test(entry.source || "")) : additional);
-    const additionalFactor = product(additional) * product(combatAdditional);
+    const additionalFactor = (additionalRead ? productValues(additional.slice(additionalRead.entries.length), additionalRead.additionalFactor) : product(additional)) * product(combatAdditional);
     // Lucky / Very Lucky Damage (manual "Lucky & Unlucky"): the best of N uniform rolls, min + (max − min) × N / (N + 1).
     // Census #11 (2026-10-27): with the build's whole Lucky state (src/lucky-damage.js luckyRollFraction) the scoped lines reach this
     // component's damage type and the skill's tags, Unlucky and part-time windows enter the expected fraction of the range, and
@@ -1907,15 +2048,15 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     // armour and typed Damage taken lines (provisional).
     const converted = takenConversion && takenConversion.share > 0 && component.type === takenConversion.from ? (() => {
       const to = takenConversion.to;
-      const toTaken = takenLines.filter((line) => scopeApplies(line.scope, { damageTypes: [to], skillTags: scopeTags }));
+      const toTaken = hitPool ? hitPool.taken([to]).entries : takenLines.filter((line) => scopeApplies(line.scope, { damageTypes: [to], skillTags: scopeTags }));
       const toTakenFactor = Math.max(0, 1 + sum(toTaken.filter((line) => line.layer === "increased")) / 100) * product(toTaken.filter((line) => line.layer === "additional"));
-      const toResistanceFactor = Math.max(0, 1 - (resistanceOf(to) - sum(penetrationLines.filter((line) => line.damageTypes.has(to)))) / 100);
+      const toResistanceFactor = Math.max(0, 1 - (resistanceOf(to) - (hitPool ? hitPool.penetration(to).base : sum(penetrationLines.filter((line) => line.damageTypes.has(to))))) / 100);
       const toArmourFactor = armourMitigationPercent({ physical: to === "Physical", armourPercent, nonPhysicalArmourPercent, penetrationPercent: sum(armourPenetration) }).factor;
       return { share: takenConversion.share, to, source: takenConversion.source, takenFactor: toTakenFactor, resistanceFactor: toResistanceFactor, armourFactor: toArmourFactor, factor: toTakenFactor * toArmourFactor * toResistanceFactor };
     })() : null;
     const targetFactor = converted ? (1 - converted.share) * takenFactor * armourFactor * resistanceFactor + converted.share * converted.factor : takenFactor * armourFactor * resistanceFactor;
     const perHit = perHitBeforeTarget * targetFactor;
-    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, label: component.label, ...(component.recalled ? { recalled: true } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true } : {}), type: component.type, originalType: component.originalType, converted: component.converted, addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
+    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, label: component.label, ...(component.recalled ? { recalled: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true, landingsPerUse: component.landingsPerUse } : {}), type: component.type, originalType: component.originalType, converted: component.converted, ...(component.scopeTypes ? { scopeTypes: [...component.scopeTypes] } : {}), addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
   });
 
   if (typeRestriction) {
@@ -1925,8 +2066,13 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // Hit events per use: one per strike (strikeHitsPerUse); damage still sums every typed part below.
   const hitsPerUse = strikeHitsPerUse(perType);
   // Crit determinations per use (src/crit-cache.js; research/lucky-crit-mechanics-2026-10-27.md §4): per hit for a skill whose damage
-  // crit cache is off, else one per hit group per use. The crit-event readers (src/planner.js hitRateFacts, Nether King's recent
-  // non-crit stacks, Instructions on crit) count these; damage is unchanged.
+  // crit cache is off, else one per hit group per use. They count the rolls (a Lucky re-roll is per determination); damage is unchanged.
+  // Crit events (SS14 client, research/oq-aeterna-stack-modes-2026-11-04.md R-b, 2026-11-04): every hit event of a critting group carries
+  // the crit tag and raises the crit events (0x141fbaac0 runs per event), so the crit-event readers (src/planner.js hitRateFacts, Aeterna
+  // Martyr, Nether King's recent non-crit stacks, Instructions on crit) count the landing hit events × the crit share: `critEventsPerUse`
+  // (each landing projectile, strike, Shadow or Recall once, the typed parts of one strike once). Before 2026-11-04 they counted the
+  // determinations. The once-per-frame-per-source cap of a flagged listener is not applied here (the tick engine's bus applies it).
+  const critEventsPerUse = strikeHitsPerUse(perType, landingsPerUse);
   const critCache = critCacheFor(profile.name);
   const critChecksPerUse = critCache.cached ? cachedCritChecksPerUse(components.filter((component) => perType.some((part) => (part.strikeKey ?? part.key) === (component.strikeKey ?? component.componentKey)))) : hitsPerUse;
   const hitPerUse = perType.reduce((total, component) => total + component.perHit * component.hitsPerUse, 0);
@@ -1972,7 +2118,15 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // 19348734; the cast checks the cooldown). Exactly 1 ring projectile hits a single boss per ring (user-supplied 2026-10-19,
   // Google AI Mode answer, not tested in game): one extra projectile hit per ring at the average hit dealt × (1 − 60%). The
   // ring hit is not counted as a hit of the skill (no on-hit chains from it).
-  const furyLine = setup?.role === "main" && skillTags.has("Projectile") && skillTags.has("Horizontal") && !skillTags.has("Vertical") && !channel && !sentry_ ? modifierTexts.map((line) => ({ line, match: normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(SWEEPING_FURY_LINE) })).find((item) => item.match) : null;
+  // Which skills: the record's 1000033 row (wiring audit W2 gap 1, 2026-11-03): `mine` Ranged 6001130, Horizontal 6001111, Projectile
+  // 6001110 and Main Skill 6020000 all on the hit, `notMine` the ring copy's 6010110, Sentry 6000360, Channeled 6000030 and Vertical
+  // 6001113 none, checked against the setup's game stone tags with its supports' tag changes (setupEventTagIds); before, Projectile +
+  // Horizontal alone, so a Spell (Ice Lances) or Melee (Hammer of Ash) Main Skill cast rings (×2.10 on each). Without the recipe table the
+  // record's tags are read from the text.
+  const furyText = setup?.role === "main" && !channel && !sentry_ ? modifierTexts.map((line) => ({ line, match: normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(SWEEPING_FURY_LINE) })).find((item) => item.match) : null;
+  const furyRow = furyText ? (lineTriggerRows(furyText.line)?.rows || []).find((row) => row.trigger === 1000033) || { mine: [6001130, 6001111, 6001110, 6020000], notMine: [6010110, 6000360, 6000030, 6001113] } : null;
+  const furyLine = furyText && rowTagsFit(furyRow, setupEventTagIds(setup, profile.tags || [])) ? furyText : null;
+  if (furyText && !furyLine) notes.push(`${profile.name}: Sweeping Fury needs a Main Ranged Horizontal Projectile Skill that is not Sentry, Vertical or Channeled (game affix 19348734, trigger 1000033 tags); ${profile.name} is not one.`);
   const sweepingFury = furyLine && hitPerUse > 0 && hitsPerUse > 0 && usesPerSecond > 0 ? (() => {
     const chance = Math.min(1, Number(furyLine.match[1]) / 100), additionalPercent = Number(furyLine.match[2]) * (furyLine.line.multiplier ?? 1), interval = Number(furyLine.match[3]);
     const hitsPerSecond = hitsPerUse * usesPerSecond;
@@ -2048,7 +2202,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const steadyWindow = (terra || channel || rateModel?.readyWhenPrebuilt) && prebuiltSelfBuffs;
   const continuousWindowDps = (seconds) => steadyWindow ? dps : dps * Math.max(0, seconds - (Number.isFinite(firstUseSeconds) && firstUseSeconds >= 0 ? firstUseSeconds : 0)) / seconds;
   const windowDps = (seconds) => !(usesPerSecond > 0) ? 0 : bombs && Number.isFinite(bombs.firstSeconds) ? (seconds + 1e-9 < bombs.firstSeconds ? 0 : perUse * (Math.floor((seconds - bombs.firstSeconds) * usesPerSecond + 1e-9) + 1) / seconds) : terra || channel || rateModel ? continuousWindowDps(seconds) : cycleSteps ? cycleWindowDamage(seconds) / seconds : perUse * windowUses(seconds) / seconds;
-  const primary = perType.find((component) => !component.addedOnly) || perType[0] || null;
+  // The primary part: the first own part that deals damage (2026-11-05: a part a Trinity pick or "-100% Gear Physical Damage" leaves at 0,
+  // the Rosa build's Physical sweep, read ×0 in the panel rows); the first own part when none does.
+  const primary = perType.find((component) => !component.addedOnly && component.perUse > 0) || perType.find((component) => !component.addedOnly) || perType[0] || null;
   const key = `hit:${setup?.setupKey || setup?.instanceId || profile.name}`;
   // A built-in Reap per hit of a retriggered skill (census batch 6: Scorching Pulse's second pulse, `reapsPerUse`).
   const reapsPerUse = Math.max(1, Number(profile.builtInReaping?.reapsPerUse) || 1);
@@ -2076,7 +2232,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     level, baseLevel: base.level, effectiveness: primary?.effectiveness ?? base.effectiveness, components: perType, primary,
     // Double Damage chance of the hits (condition-unread batch 3: "when dealing Double Damage recently" reads the event rate).
     doubleDamageChancePercent: wholePercentRoll(doubleDamage.chancePercent),
-    rate: { useTimeSeconds: baseUseTime, speedType, speedFactor, supportSpeedFactor, spellBurstBlock: spellBurstBlock || null, overloadBurstBlock: overloadBurstBlock || null, castFrequency: sentry ? { factor: castFrequencyFactor, sources: castFrequencyLines, weaponAttacksPerSecond: sentry.weaponAttackSpeed ? weaponAttacksPerSecond || 0 : null } : null, furyLucky: furyLucky ? { active: furyActive, share: furyActive ? spellBurst.share : 0, source: furyLucky.line.source, minStacks: Number(furyLucky.match[1]) } : null, sentryTiming: sentry ? { idle: sentryIdleLines.map((line) => ({ source: line.source, text: line.text, value: line.value, share: line.sentryIdle.share })), startTimeFactor: sentryStartFactor, startTime: sentryStartLines } : null, sentryQuantity: sentry ? { count: sentryQuantity, base: sentry.baseQuantity ?? 1, sources: sentryQuantityLines, deployCap: Number.isFinite(sentryDeployCap) ? sentryDeployCap : null } : null, conversions: supports.conversion, addedAs: supports.addedAs, castSpeedSources: speedType === "attack-speed" ? [...(attackSpeed?.sources || []), ...supports.castSpeed, ...multistrikeSpeedLines, ...(ownSpeedLine ? [ownSpeedLine] : [])] : [...(castSpeed.sources || []), ...supports.castSpeed], attackSpeed: speedType === "attack-speed" ? attackSpeed : null, effectiveUseTimeSeconds: useTime, cooldownSeconds: timing?.cooldownSeconds || 0, charges: timing?.charges || 0, cooldownFactor, cooldownSources: cooldownRecovery, effectiveCooldownSeconds: effectiveCooldown, useModel: triggered ? `triggered (every ${round(triggerInterval)} s; provisional)` : terra ? `${terra.label || "terra"} (${terra.durationSeconds} s ${terra.label === "sentry" ? "sentry" : "ground effect"})` : release ? `channel and release (${channelState.maxStacks} stacks × ${round(useTime || 0)} s, ${round(intervalSeconds || 0)} s per cycle)` : channel ? `channel (${round(baseUseTime)} s interval, ${channelState.maxStacks} stacks held)` : rateModel ? `trigger rate (${round(usesPerSecond)} per second)` : profile.cycle ? "combo cycle" : "cast", terraDurationSeconds: terra?.durationSeconds ?? null, intervalSeconds, usesPerSecond, playerUsesPerSecond, firstUseSeconds, hitsPerUse, hitsPerUseBasis: provisionalComponents.length ? "provisional" : "text", hitsPerUseNote: perType.filter((component) => !component.addedOnly).map((component) => `${component.label}: ${component.hitsDetail} — ${component.note}`).join(" · "), hitsPerSecond: usesPerSecond * hitsPerUse, critChecksPerUse, critChecksPerSecond: usesPerSecond * critChecksPerUse, critCache: { cached: critCache.cached, reason: critCache.reason }, source: timing?.source || null, refdataCastSeconds: timing?.refdataCastSeconds ?? null, demolisherShare, multistrike, spellBurst, spellBurstBlock: skillTags.has("Spell") ? spellBurstBlock || (spellBurstStacks < 1 ? "no Max Spell Burst" : null) : "it is not a Spell Skill", bardSong, crimsonShade, bombs: bombs ? { mode: bombs.mode, bonusFactor: bombs.bonusFactor, throwFactor: bombs.throwFactor, additionalFactor: bombs.additionalFactor, throwsPerSecond: bombs.throwsPerSecond, bombsPerThrow: bombs.bombsPerThrow, bombsPerSecond: bombs.bombsPerSecond, firstSeconds: bombs.firstSeconds, onField: bombs.onField, lines: bombs.lines } : null, overload, machines, rateComponents, extraProjectiles: falloffFactor && projectileTargets.length ? { count: extraProjectiles, falloff: falloffFactor } : null, trigger: triggered ? { source: triggerLine.source, text: triggerLine.text, intervalSeconds: triggerInterval, kind: triggerLine.kind, provisional: true } : null },
+    rate: { useTimeSeconds: baseUseTime, speedType, speedFactor, supportSpeedFactor, spellBurstBlock: spellBurstBlock || null, overloadBurstBlock: overloadBurstBlock || null, castFrequency: sentry ? { factor: castFrequencyFactor, sources: castFrequencyLines, weaponAttacksPerSecond: sentry.weaponAttackSpeed ? weaponAttacksPerSecond || 0 : null } : null, furyLucky: furyLucky ? { active: furyActive, share: furyActive ? spellBurst.share : 0, source: furyLucky.line.source, minStacks: Number(furyLucky.match[1]) } : null, sentryTiming: sentry ? { idle: sentryIdleLines.map((line) => ({ source: line.source, text: line.text, value: line.value, share: line.sentryIdle.share })), startTimeFactor: sentryStartFactor, startTime: sentryStartLines } : null, sentryQuantity: sentry ? { count: sentryQuantity, base: sentry.baseQuantity ?? 1, sources: sentryQuantityLines, deployCap: Number.isFinite(sentryDeployCap) ? sentryDeployCap : null } : null, conversions: supports.conversion, addedAs: supports.addedAs, castSpeedSources: speedType === "attack-speed" ? [...(attackSpeed?.sources || []), ...supports.castSpeed, ...multistrikeSpeedLines, ...(ownSpeedLine ? [ownSpeedLine] : [])] : [...(castSpeed.sources || []), ...supports.castSpeed], attackSpeed: speedType === "attack-speed" ? attackSpeed : null, effectiveUseTimeSeconds: useTime, cooldownSeconds: timing?.cooldownSeconds || 0, charges: timing?.charges || 0, cooldownFactor, cooldownSources: cooldownRecovery, effectiveCooldownSeconds: effectiveCooldown, useModel: triggered ? `triggered (every ${round(triggerInterval)} s; provisional)` : terra ? `${terra.label || "terra"} (${terra.durationSeconds} s ${terra.label === "sentry" ? "sentry" : "ground effect"})` : release ? `channel and release (${channelState.maxStacks} stacks × ${round(useTime || 0)} s, ${round(intervalSeconds || 0)} s per cycle)` : channel ? `channel (${round(baseUseTime)} s interval, ${channelState.maxStacks} stacks held)` : rateModel ? `trigger rate (${round(usesPerSecond)} per second)` : profile.cycle ? "combo cycle" : "cast", terraDurationSeconds: terra?.durationSeconds ?? null, intervalSeconds, usesPerSecond, playerUsesPerSecond, pressedUsesPerSecond, usesBySource, firstUseSeconds, hitsPerUse, hitsPerUseBasis: provisionalComponents.length ? "provisional" : "text", hitsPerUseNote: perType.filter((component) => !component.addedOnly).map((component) => `${component.label}: ${component.hitsDetail} — ${component.note}`).join(" · "), hitsPerSecond: usesPerSecond * hitsPerUse, critChecksPerUse, critChecksPerSecond: usesPerSecond * critChecksPerUse, critEventsPerUse, critEventsPerSecond: usesPerSecond * critEventsPerUse, critCache: { cached: critCache.cached, reason: critCache.reason }, source: timing?.source || null, refdataCastSeconds: timing?.refdataCastSeconds ?? null, demolisherShare, demolisherEverySeconds: profile.demolisher ? demolisherEvery : null, fullManualUsesPerSecond, rotation: rotation || null, multistrike, spellBurst, spellBurstBlock: skillTags.has("Spell") ? spellBurstBlock || (spellBurstStacks < 1 ? "no Max Spell Burst" : null) : "it is not a Spell Skill", bardSong, crimsonShade, bombs: bombs ? { mode: bombs.mode, bonusFactor: bombs.bonusFactor, throwFactor: bombs.throwFactor, additionalFactor: bombs.additionalFactor, throwsPerSecond: bombs.throwsPerSecond, bombsPerThrow: bombs.bombsPerThrow, bombsPerSecond: bombs.bombsPerSecond, firstSeconds: bombs.firstSeconds, onField: bombs.onField, lines: bombs.lines } : null, overload, machines, rateComponents, extraProjectiles: falloffFactor && projectileTargets.length ? { count: extraProjectiles, falloff: falloffFactor } : null, trigger: triggered ? { source: triggerLine.source, text: triggerLine.text, intervalSeconds: triggerInterval, kind: triggerLine.kind, provisional: true } : null },
     weapon: attackProfile ? { damageByType: weapon?.damageByType || {}, mainHand: weapon?.mainHand ? { name: weapon.mainHand.name, type: weapon.mainHand.type, hands: weapon.mainHand.hands } : null, dualWielding: Boolean(weapon?.dualWielding), dualWieldMode: weapon?.dualWieldMode || null, hands: weapon?.hands ? weapon.hands.map((hand) => ({ hand: hand.hand, name: hand.name, type: hand.type, share: hand.share, critRating: hand.critRating, attackSpeed: hand.attackSpeed })) : null, percents: base.weaponPercents } : null,
     crit: { ...crit, chancePercent: critChance * 100, townDamagePercent: townCritDamage * 100, combatDamagePercent: critDamage * 100, critOnlyFactor, critOnlySources, supportRating: supportCrit, factor: critFactor, townFactor: townCritFactor, hands: handCrits ?? crit.hands ?? null },
     town: { perUse: townPerUse, dps: townPerUse * usesPerSecond, perUseNoCrit: townPerUseNoCrit, dpsNoCrit: townPerUseNoCrit * usesPerSecond, hitsPerUse: strikeHitsPerUse(perType, townHits), formula: attackProfile ? "one hit of the primary component after the dummy's armour / resistance × attack speed × crit, without the Demolisher expectation (observed on the Hammer of Ash / Whirlwind / Split Shot Lv16 panels 2026-10-12: 298 / 358 / 472)" : channel ? "average hit × one hit per channel use × channel uses per second (cast-speed scaled); town layers only (Ring of Blades panel runs 2026-10-11: matched with the crit expectation, 537 = 178.9 × 3.003)" : "average hit (with crit) × hits per use × uses per second; town layers only (hypothesis for the character panel's skill DPS)" },
@@ -2112,7 +2268,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     // Steep Strike chance (Slash-Strike skills; steepStrikeState): total, sources, share or the Multistrike increment it feeds.
     steepStrike,
     // Gale-type Projectile Speed → Projectile Damage conversion (projectileSpeedState): the increased pool and the lines it gave.
-    projectileSpeed: projectileSpeedState ? { increasedPercent: projectileSpeedState.increasedPercent, sources: projectileSpeedState.sources, converters: projectileSpeedState.converters.map(({ source, text, share, layer }) => ({ source, text, share, layer })), lines: galeLines } : null,
+    projectileSpeed: projectileSpeedState ? { increasedPercent: projectileSpeedState.increasedPercent, sources: projectileSpeedState.sources, converters: projectileSpeedState.converters.map(({ source, text, share, layer }) => ({ source, text, share, layer })), lines: galeReadings } : null,
     modeled: perUse > 0 && usesPerSecond > 0
   };
 }

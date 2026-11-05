@@ -6,6 +6,7 @@
 // Calculations are unchanged; every control writes the same combat state keys as before.
 import { escapeHtml } from "./html.js";
 import { aimUptimeControl } from "./aim-controls.js";
+import { PRESS_SWITCH, PRESS_SWITCH_LABEL, PRESS_SWITCH_HELP } from "./press-schedule.js";
 
 // Manual mode lists only the conditions this build has a source for (read from the automatic-mode probe planner).
 const manualConditionLabels = [
@@ -95,15 +96,19 @@ export function configurationPanelMarkup({ planner, combat, probe = null, active
   const scenario = [
     toggleRow({ label: "Best case", note: "Conditions this build can create are on. Off: only what you switch on below.", attrs: "data-auto-combat-conditions", checked: automatic }),
     toggleRow({ label: "Own buffs built before the fight", note: prebuilt ? "Channel stacks and other own buffs start full; the dummy starts clean" : "Windows start cold: channel stacks at their minimum", attrs: 'data-combat-condition="prebuiltSelfBuffs"', checked: prebuilt }),
+    // Other active skills pressed on the dummy (src/press-schedule.js; condition castOtherSkills, default on, 2026-11-05).
+    toggleRow({ label: PRESS_SWITCH_LABEL, note: PRESS_SWITCH_HELP, attrs: `data-combat-condition="${PRESS_SWITCH}"`, checked: combat.conditions?.[PRESS_SWITCH] !== false }),
     automatic ? "" : section({ key: "manual", title: "Manual conditions", count: applicableManualConditions(planner, probe).length, open: open.manual, body: manualConditionsHtml(planner, probe, activeNames) })
   ].join("");
   const choices = automatic ? planner.assumptions || [] : [];
   const bestCase = planner.bestCaseAssumptions || [];
-  const bestCaseBody = `${bestCase.map((item) => `<label class="toggle-row" title="${escapeHtml(item.text)}"><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.note || item.text)}</small></span><input type="checkbox" data-best-case="${escapeHtml(item.toggle)}"${item.on !== false ? " checked" : ""}></label>`).join("")}`;
+  // The press rotation's lines (one per pressed skill and the Main Skill's share; src/press-schedule.js), listed above the switches.
+  const pressLines = (planner.pressRotation?.assumptions || []).filter((item) => item.id === "pressRotation" || /^pressRotation:(?!free$|unresolved$)/.test(item.id));
+  const bestCaseBody = `${pressLines.map((item) => `<p class="stat-sheet-note config-press-line">${escapeHtml(item.text)}</p>`).join("")}${bestCase.map((item) => `<label class="toggle-row" title="${escapeHtml(item.text)}"><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.note || item.text)}</small></span><input type="checkbox" data-best-case="${escapeHtml(item.toggle)}"${item.on !== false ? " checked" : ""}></label>`).join("")}`;
   const sections = [
     section({ key: "scenario", title: "Scenario", open: open.scenario !== false, body: scenario }),
     choices.length ? section({ key: "choices", title: "Choices that can't both hold", count: choices.length, open: open.choices !== false, body: choicesHtml(choices, format) }) : "",
-    bestCase.length ? section({ key: "assumptions", title: "Best-case assumptions", count: bestCase.length, open: open.assumptions, body: bestCaseBody, extraClass: "best-case-assumptions" }) : "",
+    bestCase.length || pressLines.length ? section({ key: "assumptions", title: "Best-case assumptions", count: bestCase.length + pressLines.length, open: open.assumptions, body: bestCaseBody, extraClass: "best-case-assumptions" }) : "",
     section({ key: "advanced", title: "Advanced", open: open.advanced, body: advancedHtml(planner, combat) })
   ].join("");
   return `<section class="stat-sheet-banner stat-sheet-banner-wide config-banner" aria-label="Configuration"><h2>Configuration <small>${automatic ? "Best case" : "Manual"}</small><button type="button" class="config-best-case-button" data-best-case-reset>Set all to best case</button></h2><div class="config-sections">${sections}</div></section>`;

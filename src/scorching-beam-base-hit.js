@@ -79,7 +79,9 @@ export const strippedBeamHitCoefficientEvidence = Object.freeze({
 // converted by src/planner.js), each its own hit part on both packets: raw × 41% effectiveness × the 49% packet coefficient × the Shotgun
 // sum × that part's own ledger factor (src/scorching-beam-hit.js `typed`) × `targetFactor`, the part's dummy mitigation relative to the
 // Fire packets' (the consumers apply the Fire resistance change to the whole cycle; src/planner.js). Its Min / Max factors are its own.
-export function scorchingBeamSustainedHits({ effectiveLevel = 20, levelFactor = 1, damageFactor = 1, maxDamageFactor = 1, minDamageFactor = 1, addedFireDamage = { min: 0, max: 0 }, typedParts = [], castsPerSecond = 3.003003, criticalChancePercent = 5, criticalDamagePercent = 150, beams = 1 } = {}) {
+// `explodes` false (Scorching Beam: Immolate (Noble), "No explosions will be generated at max channeled stacks"): the channel is held at full
+// stacks, so the cycle has no explosion packet and no explosion rate (bug B5, 2026-11-04; research/selena-trauma-gap-2026-11-04.md §7).
+export function scorchingBeamSustainedHits({ effectiveLevel = 20, levelFactor = 1, damageFactor = 1, maxDamageFactor = 1, minDamageFactor = 1, addedFireDamage = { min: 0, max: 0 }, typedParts = [], castsPerSecond = 3.003003, criticalChancePercent = 5, criticalDamagePercent = 150, beams = 1, explodes = true } = {}) {
   const packets = scorchingBeamBaseHits({ effectiveLevel, levelFactor });
   if (!packets) return null;
   const cycleUses = packets.maxChannelStacks;
@@ -96,7 +98,7 @@ export function scorchingBeamSustainedHits({ effectiveLevel = 20, levelFactor = 
   const typedSum = typed.reduce((total, part) => ({ min: total.min + part.perPacket.min, max: total.max + part.perPacket.max }), { min: 0, max: 0 });
   const scale = (range) => ({ min: (range.min + addedFireDamage.min * 0.41) * packetFactor * minOf(minDamageFactor) + typedSum.min, max: (range.max + addedFireDamage.max * 0.41) * packetFactor * Math.max(0, maxDamageFactor) + typedSum.max });
   const beam = scale(packets.beam);
-  const explosion = scale(packets.explosion);
+  const explosion = explodes ? scale(packets.explosion) : { min: 0, max: 0 };
   const perUse = {
     min: beam.min + explosion.min / cycleUses,
     max: beam.max + explosion.max / cycleUses
@@ -106,7 +108,7 @@ export function scorchingBeamSustainedHits({ effectiveLevel = 20, levelFactor = 
   const averagePerUse = (perUse.min + perUse.max) / 2;
   const windowSeconds = 5;
   const beamUsesInWindow = safeRate * windowSeconds;
-  const explosionsInWindow = beamUsesInWindow / cycleUses;
+  const explosionsInWindow = explodes ? beamUsesInWindow / cycleUses : 0;
   const averageBeamDamage = (beam.min + beam.max) / 2;
   const averageExplosionDamage = (explosion.min + explosion.max) / 2;
   return {
@@ -121,7 +123,8 @@ export function scorchingBeamSustainedHits({ effectiveLevel = 20, levelFactor = 
     beam,
     explosion,
     cycleUses,
-    explosionRate: safeRate / cycleUses,
+    explodes,
+    explosionRate: explodes ? safeRate / cycleUses : 0,
     castsPerSecond: safeRate,
     criticalFactor,
     perUse,

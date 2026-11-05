@@ -60,7 +60,7 @@ const sharedChainCells = (ailment, rate, R) => (Math.max(1, Math.ceil(ailment.du
 /** Option defaults reproduce today's figures (parity); the alternatives are §E open questions. */
 export const DEFAULT_RECOUNT_OPTIONS = Object.freeze({
   afflictionModel: "configured",   // "configured": the configured Affliction rating holds from t = 0; "simulated": A(t) from 0
-  afflictionAccrual: "windowStart", // "windowStart": Affliction accrues from engagement; "whileDot": only while a DoT is active
+  afflictionAccrual: "whileDot", // "whileDot": only while a DoT is active (SS14 client, research/oq-r1-r2-rea-2026-11-04.md R1.3); "windowStart": from engagement
   reapTiming: "continuous",        // "continuous": Reaps fire as soon as ready; "tick": triggers wait for the next 1/30 s tick
   retention: "strongest",          // "strongest": the run keeps its strongest rolls; "newest": the newest rolls replace older ones
   recountStart: "engage"           // "engage": the meter starts at engagement; "firstDamage": at the first hit
@@ -281,12 +281,13 @@ class IndependentStacks {
 }
 
 // Which ailment's success triggers an application Reap: "inflicting Ignite" → Ignite; otherwise the
-// damaging ailment with the highest chance (the planner's successfulApplicationsPerSecond takes the max).
+// damaging ailment with the highest chance (the planner's successfulApplicationsPerSecond takes the max). A skill's own DoT is no
+// ailment (wiring audit W2 gap 2, 2026-11-03: its buff record has no Ailment tag 5100001; inferred link).
 function triggerAilmentIndex(source, ailments) {
   if (source.triggerKey) return ailments.findIndex((ailment) => ailment.key === source.triggerKey);
   if (source.trigger === "inflicting Ignite") return ailments.findIndex((ailment) => ailment.key === "ignite");
   let best = -1;
-  ailments.forEach((ailment, index) => { if (!ailment.silent && (best < 0 || ailment.chance > ailments[best].chance)) best = index; });
+  ailments.forEach((ailment, index) => { if (!ailment.silent && !ailment.skillDot && (best < 0 || ailment.chance > ailments[best].chance)) best = index; });
   return best;
 }
 
@@ -409,6 +410,8 @@ export function simulateDummyTimeline(inputs, { seconds = 60, stepSeconds = RECO
   const channel = channelFactorFn(inputs.channel, rate);
   const firstMaxSeconds = Math.min(...ailments.map((ailment) => ailment.maxAffliction?.firstMaxSeconds ?? Infinity));
   let affliction = 0;
+  // Magmaskull (src/initial-affliction.js): the first infliction puts the simulated rating at N, once per fight, as the tick engine does.
+  let initialAffliction = simulatedAffliction && Number.isFinite(inputs.initialAffliction?.value) ? Math.max(0, Math.min(100, inputs.initialAffliction.value)) : null;
   const maxFraction = (ailment, time, rating) => !ailment.maxAffliction ? 0
     : simulatedAffliction ? (rating >= 100 - EPS ? 1 : 0)
       : (time >= ailment.maxAffliction.firstMaxSeconds - EPS ? ailment.maxAffliction.steadyFraction : 0);
@@ -441,6 +444,24 @@ export function simulateDummyTimeline(inputs, { seconds = 60, stepSeconds = RECO
   // A source can be held until a start-up time (a max-channeled-stacks Reap waits for the opening channel).
   const readyAt = reaping.map((source) => Math.max(0, source.firstReadySeconds || 0));
   const meanField = reaping.map(() => ({ readyMass: 1, pending: [] }));
+  // tick-reap-any-source-removal (proven, research/oq-r1-r2-rea-2026-11-04.md R1.6): a full-Affliction remover's removal answers every Reap of
+  // yours, so another source's Reap takes its percentage off the rating too, in the share that fired (the follower's Reaps are its own unit's).
+  const removalsOnReap = reaping.filter((source) => source.trigger === "full Affliction").map((source) => Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 100)));
+  const removeOnReap = (source, mass) => {
+    if (source.trigger === "full Affliction" || source.holder === "follower" || !removalsOnReap.length || !(mass > 0)) return;
+    for (const removed of removalsOnReap) affliction = Math.max(0, affliction - Math.min(affliction, removed) * Math.min(1, mass));
+  };
+  // follower-affix-pain-amplification (research/oq-r1-r2-rea-2026-11-04.md R1.9): the follower skill's damage events clear their amount off the one
+  // rating on the dummy, at most once per gate, while it is at least the minimum (as src/tick-engine.js clearAffliction).
+  const clears = simulatedAffliction ? (inputs.afflictionClears || []).filter((item) => item.amount > 0 && item.eventSeconds > 0).map((item) => ({ item, next: item.firstSeconds || 0, gateUntil: -Infinity })) : [];
+  const runClears = (time) => {
+    for (const clear of clears) {
+      while (clear.next <= time + EPS) {
+        if (clear.next >= clear.gateUntil - EPS && affliction >= (clear.item.minRating ?? clear.item.amount) - EPS) { affliction = Math.max(0, affliction - clear.item.amount); clear.gateUntil = clear.next + (clear.item.gateSeconds || 0); }
+        clear.next += clear.item.eventSeconds;
+      }
+    }
+  };
   const accruing = (time) => afflictionPerSecond > 0 && (options.afflictionAccrual === "windowStart" || anyDotActive(time));
   const timedDue = (index, time) => {
     const source = reaping[index];
@@ -472,7 +493,7 @@ export function simulateDummyTimeline(inputs, { seconds = 60, stepSeconds = RECO
       const others = ailments.reduce((sum, ailment, j) => j === triggerIndex ? sum : sum + chains[j].stats(time).base * reapPerBase(source, ailment, time, affliction), 0);
       const triggerPerBase = reapPerBase(source, ailments[triggerIndex], time, affliction);
       if (index === jointIndex) {
-        if (result.fireProb > 0) bySource[source.key][bin] += result.fireBase * triggerPerBase + result.fireProb * others;
+        if (result.fireProb > 0) { bySource[source.key][bin] += result.fireBase * triggerPerBase + result.fireProb * others; removeOnReap(source, result.fireProb); }
         return;
       }
       const state = meanField[index];
@@ -481,6 +502,7 @@ export function simulateDummyTimeline(inputs, { seconds = 60, stepSeconds = RECO
       const fired = state.readyMass * result.successProb;
       bySource[source.key][bin] += fired * (result.successBase / result.successProb * triggerPerBase + others);
       state.readyMass -= fired;
+      removeOnReap(source, fired);
       const recovery = recoveryOf(source);
       state.pending.push({ at: tick ? snapToTick(time + recovery) : time + recovery, mass: fired });
     });
@@ -511,7 +533,9 @@ export function simulateDummyTimeline(inputs, { seconds = 60, stepSeconds = RECO
       bySource[source.key][bin] += ailments.reduce((sum, ailment, j) => sum + chains[j].stats(time).base * reapPerBase(source, ailment, time, affliction), 0);
       readyAt[index] = time + recoveryOf(source);
       if (source.trigger === "full Affliction") affliction = Math.max(0, affliction - Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 100)));
+      else removeOnReap(source, 1);
     }
+    runClears(time);
     if (time >= seconds - EPS) break;
 
     // 2. Next event.
@@ -519,9 +543,11 @@ export function simulateDummyTimeline(inputs, { seconds = 60, stepSeconds = RECO
     const consider = (candidate) => { if (candidate > time + EPS && candidate < nextTime) nextTime = candidate; };
     if (nextUse <= lastUse) consider(useAt(nextUse));
     for (const own of ownUses) if (own && own.nextUse <= own.lastUse) consider(own.useAt(own.nextUse));
+    for (const clear of clears) consider(clear.next);
     consider((Math.floor(time / stepSeconds + EPS) + 1) * stepSeconds);
     for (const chain of chains) consider(chain.nextExpiryAfter(time));
     const isAccruing = accruing(time);
+    if (isAccruing && initialAffliction !== null) { affliction = Math.min(100, affliction + initialAffliction); initialAffliction = null; }
     if (isAccruing && affliction < 100 - EPS) consider(time + (100 - affliction) / afflictionPerSecond);
     consider(channel.fullAt);
     for (const edge of timed.boundaries) consider(edge);

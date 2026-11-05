@@ -14,7 +14,11 @@ import { fateExtraSlots } from "./fate-slot-unlocks.js";
 // installation", Pactspirit help), so their nodes cost nothing here.
 //   "Legendary and Rare Pactspirits can provide additional Pact Points" (manual 3005010122) is config_servant's field: 0 for Magic, 1 for Rare, 2 for Legendary Battle pact spirits,
 //   0 on Drop spirits, which Func_Pet_ExtraPointDescription prints as "Unlock %s Pact Nodes in advance": earlier points, never past the cap (chunk 13).
-//   Provisional (open question pact-point-budget): the quest's +3 is taken as done from Lv. 90 (where the 30 cap is reached).
+//   The +3 (encrypted-scripts survey 2026-11-03, finding 7): config_contract_level gives the schedule above and 30 from Lv. 90 on;
+//   config_contract_point_tattoo_slot adds the 3 points in two progress steps, +1 (condition 1006, with one Undetermined Fate slot)
+//   and +2 (condition 1007, with two), both progress conditions (config_cond_event), not a character level. Each step also unlocks
+//   pact points 111 / 211, 311, read as each section's 11th node, the Undetermined Fate Slots node (inferred). Best case (open
+//   question pact-point-budget): both steps done at any level, so the cap is 33.
 //
 // Destiny install limits (game manual 2005030222 / 2005030224): "Up to 9 can be installed in Micro Destiny Slots" (Micro Fates),
 // "Up to 4 … Medium" (Medium Fates, Kismets and Dual Kismets: manual 2005030121 / 2005030226 / 2005030228). An Undetermined Fate
@@ -30,8 +34,9 @@ import { fateExtraSlots } from "./fate-slot-unlocks.js";
 export const MICRO_DESTINY_LIMIT = 9;
 export const MEDIUM_DESTINY_LIMIT = 4;
 export const PACT_POINT_LEVEL_CAP = 30;
-export const PACT_POINT_QUEST_BONUS = 3;
-export const PACT_POINT_QUEST_LEVEL = 90;
+// The two progress steps (config_contract_point_tattoo_slot rows 7 and 8): best case, both done.
+export const PACT_POINT_QUEST_STEPS = Object.freeze([Object.freeze({ condition: 1006, points: 1 }), Object.freeze({ condition: 1007, points: 2 })]);
+export const PACT_POINT_QUEST_BONUS = PACT_POINT_QUEST_STEPS.reduce((sum, step) => sum + step.points, 0);
 export const PACT_POINT_MAX = 33;
 export const PACT_RARITY_EXTRA_POINTS = Object.freeze({ Magic: 0, Rare: 1, Legendary: 2 });
 
@@ -47,15 +52,17 @@ const spiritEntry = (name) => pactspiritCatalogSs13.find((entry) => entry.name =
 const isBattleSpirit = (name) => spiritEntry(name)?.category !== "Drop";
 const kismetEntry = (name) => kismetCatalogSs13.find((entry) => entry.name === name) || null;
 
-/** The Pact Point budget of a page at a character level: { level, levelStored, base, quest, extra, sources, budget }. */
+/** The Pact Point budget of a page at a character level: { level, levelStored, base, quest, questSteps, extra, sources, budget }. */
 export function pactPointBudget(pacts = {}, { level = 100, levelStored = false } = {}) {
   const base = pactPointsForLevel(level);
-  const quest = level >= PACT_POINT_QUEST_LEVEL ? PACT_POINT_QUEST_BONUS : 0;
+  // Both progress steps taken as done (best case; they are not tied to a character level).
+  const questSteps = PACT_POINT_QUEST_STEPS.map((step) => ({ ...step, done: true }));
+  const quest = questSteps.reduce((sum, step) => sum + (step.done ? step.points : 0), 0);
   const sources = (pacts.selectedSpirits || []).filter((name) => name && isBattleSpirit(name)).map((name) => ({ spirit: name, rarity: spiritEntry(name)?.rarity || "", points: PACT_RARITY_EXTRA_POINTS[spiritEntry(name)?.rarity] || 0 })).filter((item) => item.points);
   const extra = sources.reduce((sum, item) => sum + item.points, 0);
   // "Up to 30 points at Lv. 90. The upper limit increases to 33 points after completing the quest."
   const cap = quest ? PACT_POINT_MAX : PACT_POINT_LEVEL_CAP;
-  return { level, levelStored, base, quest, extra, sources, cap, budget: Math.min(cap, base + quest + extra) };
+  return { level, levelStored, base, quest, questSteps, extra, sources, cap, budget: Math.min(cap, base + quest + extra) };
 }
 
 /**

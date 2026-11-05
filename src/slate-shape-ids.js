@@ -15,7 +15,9 @@
 //
 // Crafted slates (ShapeId 10X1): X is the shape's place in the order Z1, Z2, L1, L2, O1, T1. The game's item_base table
 // lists each god's six crafted bases 2600G1..2600G6 with the icons Z1, Z2, L1, L2, O1, T1 in that order, and the logged
-// ShapeIds 1011 / 1021 / 1031 / 1041 / 1061 are confirmed on boards. The ShapeId names the slate's current shape; it can
+// ShapeIds 1011 / 1021 / 1031 / 1041 / 1061 are confirmed on boards. The client's config_talent_block_shape (encrypted-scripts
+// survey 2026-11-03, finding 8) holds every shape's cells around its turning cell: turned half way round, they give these tables
+// exactly, O1 included (its turning cell is [1,1] here); the last digit of a crafted id is the god (0-5). The ShapeId names the slate's current shape; it can
 // differ from the base's icon. The game never mirrors a slate, so Z2 / L2 are the mirror images of Z1 / L1, pivot included.
 // plannerIndex is the planner's crafted shape key <god>-<index> (Z, L, O, T); the planner places Z2 / L2 flipped.
 //
@@ -28,8 +30,8 @@ export const CRAFTED_SLATE_SHAPES = {
   1021: { code: "Z2", plannerIndex: 0, cells: [[1,0],[0,1],[1,1],[0,2]], anchor: [1,1] },
   1031: { code: "L1", plannerIndex: 1, cells: [[0,0],[1,0],[2,0],[2,1]], anchor: [2,0] },
   1041: { code: "L2", plannerIndex: 1, cells: [[0,0],[1,0],[2,0],[0,1]], anchor: [0,0] },
-  // O1: the id follows the game's base order (not yet seen on a board); its pivot is unknown.
-  1051: { code: "O1", plannerIndex: 2, cells: [[0,0],[1,0],[0,1],[1,1]], anchor: null, provisionalId: true },
+  // O1: the id and its turning cell from the client's shape table (not yet seen on a board).
+  1051: { code: "O1", plannerIndex: 2, cells: [[0,0],[1,0],[0,1],[1,1]], anchor: [1,1] },
   1061: { code: "T1", plannerIndex: 3, cells: [[1,0],[0,1],[1,1],[2,1]], anchor: [1,1] }
 };
 
@@ -43,9 +45,12 @@ export const LEGENDARY_SLATE_GEOMETRY = {
   "Fallen Starlight": { shapeIds: [2020], anchor: [0,0] },
   "A Corner of Divinity": { shapeIds: [2030], anchor: [1,0] },
   "Pedigree of Gods": { shapeIds: [2090], anchor: [1,1] },
-  // Never logged yet: the pivot is unknown; neither turns in the planner. Footprints match the in-game previews
-  // (reference/slates, 2026-09-20); Residence of Stars' is the same at every quarter turn (turnKeepsFootprint).
-  "Space Rift": { shapeIds: [], anchor: null },
+  // Never logged yet; neither turns in the planner. Footprints match the in-game previews (reference/slates, 2026-09-20);
+  // Residence of Stars' is the same at every quarter turn (turnKeepsFootprint), its pivot unknown. Space Rift from the client's
+  // shape table (encrypted-scripts survey 2026-11-03, finding 8): id 2080, the upright column with rotation forbidden, turning
+  // about its third cell from the top here. Shape 2081 (a row of six) is not Space Rift's: it belongs to Last God's Revelation, a
+  // retired template (full pass 2026-11-03, finding 7).
+  "Space Rift": { shapeIds: [2080], anchor: [0,2] },
   "Residence of Stars": { shapeIds: [], anchor: null },
   // Game text (config_multi_language, SS13 and SS14): a Nether King's Divinity is placed by its Source, "the grid where the
   // Anchor is located", and "automatically changes shape according to the location of the Source"; each Offspring (the

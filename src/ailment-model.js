@@ -389,19 +389,25 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   // Crit-damage-scaled bonus (Instant Smash): counts Critical Strike Damage modifiers
   // above the 150% base. Assumption: the displayed bonus, not the 150% base, is counted.
   // Crit damage above the config_attributes 4803 default of 150% (2026-10-17 game attribute data).
-  const critBonusTown = Math.max(0, (crit.criticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT) - BASE_CRITICAL_DAMAGE_PERCENT);
-  const critBonusCombat = Math.max(0, (crit.combatCriticalDamagePercent ?? crit.criticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT) - BASE_CRITICAL_DAMAGE_PERCENT);
+  // The ailment's own read (src/scorching-beam-critical.js ailmentCriticalDamagePercent): no write scoped to a skill type or tag.
+  const critBonusTown = Math.max(0, (crit.ailmentCriticalDamagePercent ?? crit.criticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT) - BASE_CRITICAL_DAMAGE_PERCENT);
+  const critBonusCombat = Math.max(0, (crit.ailmentCombatCriticalDamagePercent ?? crit.combatCriticalDamagePercent ?? crit.criticalDamagePercent ?? BASE_CRITICAL_DAMAGE_PERCENT) - BASE_CRITICAL_DAMAGE_PERCENT);
   const perCritDamage = (bonus) => typed.perCritDamageAdditional.map((line) => ({ source: line.source, text: line.text, value: line.value * bonus / line.per }));
   // "Recently" is 4 s; a recipe-read line carries its timed buff's own duration (node 306, 4 s on Aeterna Martyr's line).
-  const recentCritStacks = (cap, windowSeconds = 4) => {
+  // The stacks held: min(Poisson(crits/s × window), cap). Each stack its own timer (SS14 client: node 306 mode 3, the least-remaining stack renewed at the count; research/oq-aeterna-stack-modes-2026-11-04.md R-a).
+  // The factor is fixed when the ailment is applied (the attacker's layers enter the DoT record at application: research/core-formulas-chunk0-
+  // 2026-10-31.md §5), so the held DoT reads E[(1 + v)^S] over the stack distribution, not (1 + v)^E[S] (bug B2, 2026-11-04; research/selena-
+  // trauma-gap-2026-11-04.md §7: ×1.024 on the Selena Trauma SS14 build).
+  const recentCritStacks = (cap, windowSeconds = 4, perStack = 1) => {
     const mean = Math.max(0, crit.critsPerSecond || 0) * windowSeconds;
-    let expected = 0, probability = Math.exp(-mean), cumulative = 0;
-    for (let count = 0; count < cap; count++) { expected += count * probability; cumulative += probability; probability *= mean / (count + 1); }
-    return expected + cap * Math.max(0, 1 - cumulative);
+    let expected = 0, factor = 0, probability = Math.exp(-mean), cumulative = 0;
+    for (let count = 0; count < cap; count++) { expected += count * probability; factor += perStack ** count * probability; cumulative += probability; probability *= mean / (count + 1); }
+    const capped = Math.max(0, 1 - cumulative);
+    return { stacks: expected + cap * capped, factor: factor + perStack ** cap * capped };
   };
   const perRecentCrit = typed.perRecentCritAdditional.map((line) => {
-    const stacks = recentCritStacks(line.cap, line.windowSeconds ?? 4);
-    return { source: line.source, text: line.text, stacks, factor: (1 + line.value / 100) ** stacks };
+    const { stacks, factor } = recentCritStacks(line.cap, line.windowSeconds ?? 4, 1 + line.value / 100);
+    return { source: line.source, text: line.text, stacks, factor, meanStackFactor: (1 + line.value / 100) ** stacks };
   });
   const critOnlyFactor = product(typed.critOnlyAdditional.map((line) => line.value));
 
@@ -453,13 +459,23 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const averageApplication = streams.length === 1 ? averageApplicationFor(streams[0])
     : stackRate > 0 ? streams.reduce((sum, applier) => sum + averageApplicationFor(applier) * applier.successesPerSecond * stacksOf(applier), 0) / stackRate
     : ((base.min + base.max) / 2) * (1 + ((crit.criticalChancePercent || 0) / 100) * (critOnlyFactor - 1));
-  const activeStacksAt = (time) => Math.min(stackLimit, stackRate * Math.min(time, durationSeconds));
+  // SS14 client (research/dot-timing-ss14-check-2026-11-03.md): a Wilt stack expiring while other stacks are held is removed before that tick's
+  // settlement, so it deals ceil(30 × D) − 1 whole ticks; the last stack of a run deals the remainder (30 × D in all). The share of stacks that
+  // are the last one is read as the chance that no other stack arrived in the stack's duration, e^(−stack rate × D) (an approximation of the
+  // engine's per-stack product). A whole 30 × D keeps D (unsettled, open question tick-ailment-stack-mode).
+  const settledSeconds = (() => {
+    const exact = durationSeconds * 30;
+    if (!independent || !(durationSeconds > 0) || Math.abs(exact - Math.round(exact)) < 1e-9) return durationSeconds;
+    const whole = Math.ceil(exact - 1e-9) - 1;
+    return (whole + (exact - whole) * Math.exp(-stackRate * durationSeconds)) / 30;
+  })();
+  const activeStacksAt = (time, seconds = settledSeconds) => Math.min(stackLimit, stackRate * Math.min(time, seconds));
   const anyBase = base.max > 0 || streams.some((applier) => baseFor(applier).max > 0);
   // Shared-timer stacks above a limit of 1: the expected occupied stacks of a run of sustainedSeconds (unit-valued rolls).
   const steadyActiveStacks = independent ? Math.min(stackLimit, stackRate * durationSeconds)
     : !(anyBase && successesPerSecond > 0) ? 0
     : stackLimit > 1 ? heldStacks((applier) => applier.applicationsPerSecond * sustainedSeconds, true) : 1;
-  const windowStacks = (seconds) => { let total = 0; const slices = 80; for (let index = 0; index < slices; index++) total += activeStacksAt(seconds * (index + 0.5) / slices); return total / slices; };
+  const windowStacks = (seconds, held = settledSeconds) => { let total = 0; const slices = 80; for (let index = 0; index < slices; index++) total += activeStacksAt(seconds * (index + 0.5) / slices, held); return total / slices; };
   // Ignite and Trauma at a one-rank limit (every stream's application fills it): the held store on each stream's regular schedule (user decision
   // 2026-11-02), with the conditional buffs at their averages, as everywhere on this path. The steady figure is the expected held amount, lapses
   // included; the windows start from a clean dummy.
@@ -468,6 +484,9 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     const roll = rollFor(applier);
     return { min: roll.min, max: roll.max, critChance: roll.critChancePercent / 100, critFactor: roll.critFactor, doubleChance: roll.doubleChancePercent / 100, weight: heldWeights[index] };
   })), { streams: streams.map((applier, index) => ({ kind: index, rate: applier.applicationsPerSecond, chance: applier.chancePercent / 100 })), durationSeconds, windows: [5, 20] }) : null;
+  // combat.landedPerSecond: the applications that land (fill or replace the held stack); a strictly weaker one raises no success event (SS14
+  // client, research/oq-r1-r2-rea-2026-11-04.md R1.2), so "when inflicting" Reaps read it (bug B1, 2026-11-04). successesPerSecond stays the
+  // attempts × chance (the chance readers).
   const windowStrongest = (seconds) => {
     if (heldRun && heldRun.windows[seconds] !== undefined) return heldRun.windows[seconds];
     if (!(seconds > 0) || !streams.length) return 0;
@@ -484,9 +503,15 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     ? averageApplication * windowStacks(seconds) * combatFactor
     : windowStrongest(seconds) * combatFactor) * windowResistance(seconds);
   const steadyStrongest = independent
-    ? averageApplication * steadyActiveStacks
+    ? averageApplication * Math.min(stackLimit, stackRate * settledSeconds)
     : heldRun ? heldRun.steadyBase
     : strongestAt((applier) => applier.applicationsPerSecond * sustainedSeconds);
+  // What a Reap settles (it reads the held stacks, not a tick's settlement, SS14 client 2026-11-03): Wilt's stacks over their full duration and
+  // the held store with no expiry-tick remainder; the same figure for everything else.
+  const reapBasis = (seconds) => independent
+    ? averageApplication * (seconds ? windowStacks(seconds, durationSeconds) * windowResistance(seconds) : steadyActiveStacks) * combatFactor
+    : heldRun ? (seconds ? (heldRun.heldWindows[seconds] ?? 0) * windowResistance(seconds) : heldRun.heldBase) * combatFactor
+    : seconds ? window(seconds) : steadyStrongest * combatFactor;
   const applierSummary = resolvedAppliers.map((applier) => ({
     key: applier.key, name: applier.name, setupKey: applier.setupKey ?? null, main: Boolean(applier.main), tags: applier.tags || [], level: applier.level ?? null,
     applicationsPerSecond: applier.applicationsPerSecond, chancePercent: applier.chancePercent, shownChancePercent: applier.shownChancePercent, successesPerSecond: applier.successesPerSecond,
@@ -497,6 +522,8 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   return {
     key: ailmentKey, name: definition.name, damageType: definition.damageType, typeRestriction,
     base, chancePercent, shownChancePercent: chance.shownPercent ?? chancePercent, rawChancePercent, durationSeconds, stackLimit, applicationsPerSecond: totalApplicationsPerSecond, stacksPerApplication,
+    // The main skill's added flat damage per hit that node 381 lines take a share of (null: none), and the share in the base: the line badges.
+    flatAdded: flatAdded || null, flatBase: flat,
     appliers: applierSummary,
     town: { perBaseFactor: townPerBase, minimumDps: base.min * townPerBase, maximumDps: base.max * townPerBase },
     // A full-Affliction Reap settles this DoT at 100 rating.
@@ -508,7 +535,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     maxAfflictionResistance: maxAfflictionResistance ? { reductionPercent: maxAfflictionResistance.reductionPercent, steadyFraction: maxAfflictionResistance.steadyFraction, firstMaxSeconds: maxAfflictionResistance.firstMaxSeconds, recount: maxAfflictionResistance.recount, sources: shared.maxAfflictionResistanceSources || [] } : null,
     // Affliction damage taken is 1 + rating × afflictionPerPoint (the dummy recount rescales DoTs over time).
     afflictionPerPoint: (afflictionFactor(100) - 1) / 100,
-    combat: { factor: combatFactor, steadyDps: steadyStrongest * combatFactor, steadyStrongestBase: steadyStrongest, stacking, steadyActiveStacks, stackRate, averageApplication, successesPerSecond, doubleChancePercent, fiveSecondAverageDps: window(5), twentySecondAverageDps: window(20), critOnlyFactor, recentCritStacks: perRecentCrit, heldStore: heldRun ? { rule: "a weaker application does nothing", steadyHeldProbability: heldRun.steadyHeld } : null },
+    combat: { factor: combatFactor, steadyDps: steadyStrongest * combatFactor, steadyStrongestBase: steadyStrongest, stacking, steadyActiveStacks, stackRate, averageApplication, successesPerSecond, landedPerSecond: heldRun ? heldRun.landedPerSecond : successesPerSecond, doubleChancePercent, fiveSecondAverageDps: window(5), twentySecondAverageDps: window(20), settledDurationSeconds: settledSeconds, reapBasisDps: { 0: reapBasis(0), 5: reapBasis(5), 20: reapBasis(20) }, critOnlyFactor, recentCritStacks: perRecentCrit, heldStore: heldRun ? { rule: "a weaker application does nothing", steadyHeldProbability: heldRun.steadyHeld } : null },
     // Step factors in application order; their product equals combat.factor.
     steps: {
       increasedFactor: 1 + increasedPercent / 100,

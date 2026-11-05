@@ -12,10 +12,13 @@ import { slateTalentLines } from "./nether-king-authority.js";
 const elements = ["Fire", "Cold", "Lightning", "Erosion"];
 export function parseResistanceModifier(text) {
   const clean = normalizePercentageText(text).replace(/^.*:\s*/, "").replace(/^\[[^\]]+\]\s*/, "").trim();
-  const match = clean.match(/^([+-]?[\d.]+)\s*%\s+(?:(Max|Maximum)\s+)?(Fire|Cold|Lightning|Erosion|Elemental|All) Resistance$/i);
+  // "+10% Fire and Cold Resistance" (Gemma – Ice-Fire Embrace, game record 200000044: attr writes on both types), "+8% Elemental and Erosion
+  // Resistance": one value on each named type (wiring fix W6b, 2026-11-03; these read unsupported before).
+  const match = clean.match(/^([+-]?[\d.]+)\s*%\s+(?:(Max|Maximum)\s+)?(Fire|Cold|Lightning|Erosion|Elemental|All)(?: and (Fire|Cold|Lightning|Erosion|Elemental))? Resistance$/i);
   if (!match) return null;
-  const kind = match[3].toLowerCase();
-  return { value: Number(match[1]), maximum: Boolean(match[2]), elements: kind === "all" ? elements : kind === "elemental" ? elements.slice(0, 3) : elements.filter(element => element.toLowerCase() === kind) };
+  const kindElements = (kind) => kind === "all" ? elements : kind === "elemental" ? elements.slice(0, 3) : elements.filter(element => element.toLowerCase() === kind);
+  const named = new Set([...kindElements(match[3].toLowerCase()), ...(match[4] ? kindElements(match[4].toLowerCase()) : [])]);
+  return { value: Number(match[1]), maximum: Boolean(match[2]), elements: elements.filter(element => named.has(element)) };
 }
 
 // "0.5% Elemental Resistance per 3000 Armor. Stacks up to 6%" / "… Erosion Resistance …" (The Brave Legendary Medium Talent; game recipes
@@ -26,7 +29,9 @@ export const ARMOR_RESISTANCE_LINE = /^\+?(\d+(?:\.\d+)?)%\s+(Fire|Cold|Lightnin
 const armorResistanceClause = (text) => normalizePercentageText(String(text || "")).replace(/^.*:\s*/, "").trim().match(ARMOR_RESISTANCE_LINE);
 
 /** @param {object} p `armorPool`: () => the character's total Armor; without it the per-Armor lines stay in `unsupported`. */
-export function calculateResistances({ equipment, talents = [], slates = [], memories, pact, pactState = {}, talentState = {}, aura, armorPool = null } = {}) {
+// `traitLines`: the hero's trait lines (planner.modifierTexts origin "trait"), so a plain trait resistance line counts (Gemma –
+// Ice-Fire Embrace's "+10% Fire and Cold Resistance"; wiring fix W6b, 2026-11-03).
+export function calculateResistances({ equipment, talents = [], slates = [], memories, pact, pactState = {}, talentState = {}, aura, armorPool = null, traitLines = [] } = {}) {
   const sources = [], unsupported = [];
   const add = (text, source, multiplier = 1, capsOnly = false) => {
     for (const clause of String(text || "").split(/\n|\||;|\s+·\s+/)) {
@@ -71,6 +76,7 @@ export function calculateResistances({ equipment, talents = [], slates = [], mem
   }
   for (const slate of slates) for (const text of slateTalentLines(slate)) add(withoutSlateCoreName(text), slate.name);
   for (const line of [...(memories?.lines || []), ...(memories?.unsupported || [])]) add(line.text, line.source);
+  for (const line of traitLines) add(line.text, line.source, Number.isFinite(line.multiplier) ? line.multiplier : 1);
   // Pact totals already include allocated native nodes and rolled Kismets.
   for (const element of [...elements, "Elemental"]) {
     const value = pact?.totals?.[element.toLowerCase() + "ResistancePercent"] || 0;

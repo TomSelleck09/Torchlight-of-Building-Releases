@@ -235,7 +235,8 @@ function classifyEffect(effect, all, cfg = AILMENT_RECIPE.trauma) {
       if (effect.type !== cfg.key) return none(`${effect.type} chance`);
       // A chance write scoped to some applications is not build-wide (2026-10-27): the Attack tag 6001090 (101080109 / 200000027 "+X%
       // chance for Attacks to inflict Damaging Ailments") joins each Attack Skill's own chance in src/ailment-applications.js
-      // (attackAilmentChanceLines), never the build-wide chance a Spell's ailments read; the crit tag 5001010 (101080205) has no reader.
+      // (attackAilmentChanceLines), never the build-wide chance a Spell's ailments read; the crit tag 5001010 (101080205) joins each
+      // skill's own chance × its crit chance there too (critAilmentChanceLines, wiring audit gap 3, 2026-11-03).
       const scope = tagList(tags, "mine").find((tag) => SKILL_TAG(tag) || tag === TAG.crit);
       if (scope) return unplaceable(SKILL_TAG(scope) ? "needs the inflicting skill's tag (per-applier gate in src/ailment-applications.js)" : "chance on Critical Strikes only (no per-crit chance reader)");
       // "+X% Ignite Chance against enemies that haven't been Ignited" (2214789): the chance field gated on the target NOT being Ignited.

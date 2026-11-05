@@ -188,6 +188,7 @@ export const COMMAND_SPEED = /^\+?(\d+(?:\.\d+)?)% Minion Attack and Cast Speed 
 export const COMMAND_RETURN_PER_SECOND = 13;
 export const COMMAND_RETURN_PER_POINT = 0.7;
 export const COMMAND_CAP = 100;
+const COMMAND_PERIODIC = /^Gains (\d+(?:\.\d+)?) point\(s\) of Command every (\d+(?:\.\d+)?) ?s when there is an Elite within \d+(?:\.\d+)? ?m$/i;
 const COMMAND_ON_MINION_CRIT = /^Gains (\d+(?:\.\d+)?) Command every second for [\d.]+ ?s when Minions land a Critical Strike$/i;
 export const MAX_COMMAND = /^([+-]\d+(?:\.\d+)?) Max Command\b/i;
 export const COMMAND_DAMAGE_PER_POINT = 3;
@@ -200,6 +201,10 @@ export function commandState(modifierTexts = [], { full = true, minionsCrit = fa
   const sources = modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_GAIN); return match ? [{ source: line.source, text: norm(line.text), value: valueOf(line, norm(line.text), Number(match[1]), { concept: "commandPerSecond", bucket: "flat" }).value * (line.multiplier ?? 1) }] : []; });
   // Cry of Divinity (legendary audit batch 8): "Gains 8 Command every second for 3 s when Minions land a Critical Strike": a Command
   // source while a modeled Minion crits (it crits far more often than every 3 s; provisional).
+  // Record 28100 in its own wording, "Gains N point(s) of Command every T s when there is an Elite within M m" (node 627 adds resource 9,
+  // gate 206 cooldown p1, gate 189 an Elite in range; the talent catalog prints it "+N Command per second"): N ÷ T per second while the
+  // dummy, an Elite, stands in range (best case, you stand by it; wiring fix W6b, 2026-11-03).
+  sources.push(...modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_PERIODIC); return match && Number(match[2]) > 0 ? [{ source: line.source, text: norm(line.text), value: round(Number(match[1]) / Number(match[2]) * (line.multiplier ?? 1)) }] : []; }));
   if (minionsCrit) sources.push(...modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_ON_MINION_CRIT); return match ? [{ source: line.source, text: norm(line.text), value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }));
   if (!sources.length) return null;
   const perSecond = sources.reduce((total, item) => total + item.value, 0);

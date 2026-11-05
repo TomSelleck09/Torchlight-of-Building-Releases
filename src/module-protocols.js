@@ -43,6 +43,17 @@ const RECORDS = Object.entries(MODULE_AFFIXES).map(([id, row]) => Object.freeze(
 const BY_ID = new Map(RECORDS.map((record) => [record.id, record]));
 /** One module affix row by its config_modifier id, or null. */
 export const moduleAffixById = (id) => BY_ID.get(Number(id)) || null;
+/**
+ * A row as the planner stores it: a rollable row as is; a weight-0 row as its rollable twin with the same affix and pool, if any. The
+ * client's module pool table lists both Aura Overwrite: Frigid Domain rows on the Ultimate item (772000064 weight 3, 772000069 weight 0,
+ * the same affix 15920997 and value; encrypted-scripts full pass 2026-11-03, finding 14), so a logged 772000069 is Frigid Domain, kept
+ * as 772000064. Other weight-0 rows have no twin and stay unrollable.
+ */
+export function rollableModuleAffix(record) {
+  if (!record) return null;
+  if (record.weight > 0) return record;
+  return RECORDS.find((other) => other.weight > 0 && other.affix === record.affix && other.pool === record.pool) || null;
+}
 /** The rollable module affixes (weight > 0), Programs, Protocols, then the Ultimate-only families. */
 export function moduleAffixOptions() {
   return RECORDS.filter((record) => record.weight > 0).sort((a, b) => FAMILY_ORDER.indexOf(a.family) - FAMILY_ORDER.indexOf(b.family) || a.id - b.id);
@@ -60,8 +71,8 @@ export function normalizeModuleProtocols(value) {
     if (!Array.isArray(list) || ["__proto__", "constructor", "prototype"].includes(key)) continue;
     const seen = new Set();
     const slots = list.slice(0, MODULE_AFFIX_SLOT_COUNT).map((entry) => {
-      const record = entry && typeof entry === "object" ? moduleAffixById(entry.id) : null;
-      if (!record || record.weight <= 0 || seen.has(record.affix)) return null;
+      const record = rollableModuleAffix(entry && typeof entry === "object" ? moduleAffixById(entry.id) : null);
+      if (!record || seen.has(record.affix)) return null;
       seen.add(record.affix);
       return { id: record.id };
     });

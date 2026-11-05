@@ -66,8 +66,10 @@ export function collectModifierTexts({ equipment, disabledSlots = [], talents = 
       if (!(node.rank > 0) || node.replacedBy) continue;
       // An Inverse Image copy keeps the coordinate it was reflected from (src/recipe-interpreter.js lineGameIds: the talent id is
       // the source node's). Its Effect Range reaches each clause by the record's number forms (src/inverse-image-values.js).
-      if (node.reflectedFrom) for (const clause of splitClauses(node.description)) push(clause, `${panel.name} talent (${node.coordinate})`, "talent", reflectedClauseScale(clause, node.rank, node.inverseEffectMultiplier ?? 1), undefined, undefined, { reflectedFrom: node.reflectedFrom });
-      else push(node.description, `${panel.name} talent (${node.coordinate})`, "talent", node.rank);
+      // A Prophecy of Revelation replacement (src/prophecy-of-revelation.js) names its own record for the recipe reader.
+      const own = node.talentGameId ? { talentGameId: node.talentGameId } : undefined;
+      if (node.reflectedFrom) for (const clause of splitClauses(node.description)) push(clause, `${panel.name} talent (${node.coordinate})`, "talent", reflectedClauseScale(clause, node.rank, node.inverseEffectMultiplier ?? 1), undefined, undefined, { reflectedFrom: node.reflectedFrom, ...(own || {}) });
+      else push(node.description, `${panel.name} talent (${node.coordinate})`, "talent", node.rank, undefined, undefined, own);
     }
     for (const core of panel.activeCores || []) push(core.description, `${panel.name} core: ${core.name}`, "core");
     const prism = talentState.prismInventory?.find((item) => item.id === talentState.installedPrisms?.[panel.name]);

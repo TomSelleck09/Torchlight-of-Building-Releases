@@ -3,9 +3,12 @@
 // Sourced: game manual 1000000420 "If a skill can deal damage more than once (such as Spiral Strike), the Critical Strike
 // determination is usually only carried out once"; the SkillEditor damage component's `closeDamageCritCache` flag switches the cache
 // off per damage index (src/data/game/skill-crit-cache.generated.js, scripts/build-skill-crit-cache.mjs: 21 of 3,798 components —
-// persistent, channelled and repeating area skills, Scorching Beam's beam among them). Average damage is the same either way; the
-// count of crit EVENTS is not, and crit-triggered effects read that count (Tremble's Numbed buff, Electric Overload, Juggernaut stacks,
-// Nether King's per-recent-non-crit stacks, Instructions on crit, Husk).
+// persistent, channelled and repeating area skills, Scorching Beam's beam among them). Average damage is the same either way.
+// Crit EVENTS are not determinations (SS14 client, research/oq-aeterna-stack-modes-2026-11-04.md R-b, 2026-11-04): every hit event of a
+// critting group carries the crit tag and raises the crit events, so the crit-triggered effects (Aeterna Martyr, Tremble's Numbed buff,
+// Electric Overload, Juggernaut stacks, Nether King's per-recent-non-crit stacks, Instructions on crit, Husk) count the landing hits × the
+// crit share (src/skill-hit-model.js critEventsPerUse); the determinations below count only the rolls (a Lucky re-roll is per
+// determination). The shared roll is cached per (cast instance, attack entity group field, attacker class); a key of 0 rolls per event.
 //
 // Reading (provisional, open question crit-cache-events):
 // - A skill with a cache-off damage index rolls per hit: crit events = hit events (strikeHitsPerUse), as before 2026-10-27. The
@@ -14,8 +17,8 @@
 // - Any other skill makes one determination per hit group (strike key) per use: min(1, the group's hits per use ÷ the hits one launch
 //   makes) — repeated hits and projectiles of one volley share their launch's determination; a fractional count (a Steep Strike on
 //   39% of uses, a Finisher on a third of the cycle) is that share of uses. Multistrike repeats are separate uses (separate attacks),
-//   each Sentry, each extra Combo Finisher and each of Blade Cluster's generated Steep Strikes its own (the user-supplied 2026-10-15
-//   reading: the generated Steep Strikes count in the skill's crit hits/s).
+//   each Sentry and each extra Combo Finisher its own (Blade Cluster's generated Steep Strikes land only with Shotgun Effect since
+//   2026-11-04: src/skill-hit-model.js steepStrikeState).
 // - Cache scope (per cast, per damage entity or per damage index) is not settled by the data (research §6 point 3).
 
 import { SKILL_CRIT_CACHE_OFF } from "./data/game/skill-crit-cache.generated.js";

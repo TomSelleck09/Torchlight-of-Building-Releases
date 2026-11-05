@@ -77,7 +77,7 @@ export function heldStoreLevels(kinds, { bins = HELD_STORE_BINS } = {}) {
  */
 export function newHeldState(levels) {
   const size = levels.values.length;
-  return { kind: "held", chain: true, values: levels.values, tie: levels.tie, kinds: levels.kinds, byLevel: new Float64Array(size), added: new Float64Array(size), groups: [], spare: [], held: 0, base: 0, freshFrame: 0, freshHeld: 0, freshBase: 0, successBase: 0, by: null };
+  return { kind: "held", chain: true, values: levels.values, tie: levels.tie, kinds: levels.kinds, byLevel: new Float64Array(size), added: new Float64Array(size), groups: [], spare: [], held: 0, base: 0, freshFrame: 0, freshHeld: 0, freshBase: 0, successBase: 0, attemptSuccess: 0, by: null };
 }
 
 /** This tick's group (a held stack applied on this tick), created on the first attempt of the tick. */
@@ -92,8 +92,11 @@ export function heldGroup(state, frame, expiryFrame, snap = null) {
 const totals = (state) => { let held = 0, base = 0; for (const group of state.groups) { held += group.mass; base += group.base; } state.held = held; state.base = base; };
 
 /**
- * One attempt. `group` is this tick's (heldGroup). Returns the probability of a success; state.successBase is the held amount those successes leave
- * (a weaker success keeps the held amount: it counts as an application, and the store does nothing with it).
+ * One attempt. `group` is this tick's (heldGroup). Returns the probability that the application lands (it fills an empty slot or replaces the
+ * held stack); state.successBase is the amount those landed applications hold. A strictly weaker application is no success: the client's add
+ * returns false at the limit and raises none of the success events (SS14 0x141d01d49 / 0x141d436d0: 1000150, 1000160, 1000110, 1000111; research/
+ * oq-r1-r2-rea-2026-11-04.md R1.2, proven), so a Reap "when inflicting" or a bus listener hears only the landed share (bug B1, 2026-11-04;
+ * research/selena-trauma-gap-2026-11-04.md §7). state.attemptSuccess keeps the old count (chance × held + fresh) for reports.
  * @param {object} state newHeldState
  * @param {number} kindIndex the kind of this application (stream × variant)
  * @param {number} chance the chance when a stack is held
@@ -105,6 +108,7 @@ export function heldAttempt(state, kindIndex, chance, notActiveChance, group, fr
   const { values, tie, byLevel: held, added, groups } = state, kind = state.kinds[kindIndex], { pmf, survival } = kind;
   const fresh = Math.max(0, 1 - state.held) * notActiveChance;
   state.successBase = 0;
+  state.attemptSuccess = 0;
   if (!(fresh > 0) && !(chance > 0 && state.held > 0)) {
     // Nothing can land: this tick's group, if this attempt opened it, goes again.
     if (!(group.mass > 0) && group.high < group.low && groups[groups.length - 1] === group) { groups.pop(); state.spare.push(group.cells); }
@@ -122,8 +126,7 @@ export function heldAttempt(state, kindIndex, chance, notActiveChance, group, fr
     addedBase += mass * values[level];
     below += held[level];
   }
-  // What stays: 1 − c × S_k of each held level; a weaker success keeps its amount.
-  let weakerBase = 0;
+  // What stays: 1 − c × S_k of each held level.
   if (chance > 0) {
     held.fill(0);
     for (const item of groups) {
@@ -131,7 +134,6 @@ export function heldAttempt(state, kindIndex, chance, notActiveChance, group, fr
       for (let level = item.low; level <= item.high; level += 1) {
         const cell = item.cells[level];
         if (!(cell > 0)) continue;
-        weakerBase += cell * chance * (1 - survival[level]) * values[level];
         const kept = cell * (1 - chance * survival[level]);
         if (kept > TINY) { item.cells[level] = kept; held[level] += kept; mass += kept; base += kept * values[level]; } else item.cells[level] = 0;
       }
@@ -156,8 +158,9 @@ export function heldAttempt(state, kindIndex, chance, notActiveChance, group, fr
   if (state.freshFrame !== frame) { state.freshFrame = frame; state.freshHeld = 0; state.freshBase = 0; }
   state.freshHeld += fresh;
   state.freshBase += fresh * kind.mean;
-  state.successBase = addedBase + weakerBase;
-  return chance * before + fresh;
+  state.successBase = addedBase;
+  state.attemptSuccess = chance * before + fresh;
+  return addedMass;
 }
 
 /** The groups whose timer ends on this tick go: returns the mass that ended. */
@@ -177,7 +180,8 @@ export function heldExpire(state, frame) {
 
 /**
  * The store on a regular schedule, on whole 1/30 s ticks as the engine runs it: each stream attempts at first + (k − 1) ÷ rate (default first
- * 1 ÷ rate), on the first tick at or after; a tick settles what is held before its attempts, and a stack lasts ceil(30 × duration) ticks. The
+ * 1 ÷ rate), on the first tick at or after; a tick settles what is held before its attempts, and a stack lasts ceil(30 × duration) ticks, the
+ * last one at the remainder (30 × duration in all). The
  * steady path's figures (src/ailment-model.js, src/theoretical-sources.js): its conditional buffs stay averages, so a stream has one kind here.
  * @param {ReturnType<typeof heldStoreLevels>} levels
  * @param {object} options
@@ -185,39 +189,55 @@ export function heldExpire(state, frame) {
  * @param {number} options.durationSeconds
  * @param {number[]} [options.windows] window lengths from engagement, in seconds
  * @param {number} [options.fps]
- * @returns {{ steadyBase: number, steadyHeld: number, windows: Record<number, number>, steadyFromSeconds: number, seconds: number }} expected held
- *   amount (lapses included) and held probability, over the steady span and over each window from a clean dummy
+ * @returns {{ steadyBase: number, steadyHeld: number, windows: Record<number, number>, heldBase: number, heldWindows: Record<number, number>, landedPerSecond: number, steadyFromSeconds: number, seconds: number }}
+ *   expected settled amount per tick (lapses included, the expiry tick at its remainder) and held probability, over the steady span and over each
+ *   window from a clean dummy; `heldBase` / `heldWindows` the amount held on a tick with no remainder, which a Reap reads (it reads the held
+ *   stack, not the tick's settlement); `landedPerSecond` the applications that land (fill or replace) per second over the steady span (landed per attempt × the rates), the
+ *   successes a Reap "when inflicting" or another success listener hears (bug B1)
  */
 export function heldStoreRun(levels, { streams, durationSeconds, windows = [5, 20], fps = 30 }) {
   const live = streams.filter((stream) => stream.rate > 0 && ((stream.chance ?? 0) > 0 || (stream.notActiveChance ?? stream.chance ?? 0) > 0));
-  const empty = { steadyBase: 0, steadyHeld: 0, windows: Object.fromEntries(windows.map((seconds) => [seconds, 0])), steadyFromSeconds: 0, seconds: 0 };
+  const empty = { steadyBase: 0, steadyHeld: 0, windows: Object.fromEntries(windows.map((seconds) => [seconds, 0])), heldBase: 0, heldWindows: Object.fromEntries(windows.map((seconds) => [seconds, 0])), landedPerSecond: 0, steadyFromSeconds: 0, seconds: 0 };
   if (!live.length || !(durationSeconds > 0)) return empty;
   const slowest = Math.max(...live.map((stream) => 1 / stream.rate));
   const steadyFromSeconds = Math.max(20, 4 * durationSeconds + slowest), seconds = steadyFromSeconds + Math.max(30, 6 * durationSeconds, 4 * slowest);
   const frames = Math.round(seconds * fps), steadyFrom = Math.round(steadyFromSeconds * fps);
   const atOrAfter = (time) => { let frame = Math.ceil(time * fps - 1e-9); while (frame / fps < time - 1e-12) frame += 1; return Math.max(1, frame); };
   const life = Math.max(1, atOrAfter(durationSeconds));
+  // The held stack is the run's last layer, so its expiry tick settles the remainder 30 × D − (life − 1) (SS14 client, research/dot-timing-ss14-
+  // check-2026-11-03.md; src/tick-engine.js lastTickRemainder). A whole 30 × D keeps the full last tick (unsettled).
+  const exact = durationSeconds * fps, remainder = Math.abs(exact - Math.round(exact)) < 1e-9 ? 1 : Math.max(0, Math.min(1, exact - (life - 1)));
   const state = newHeldState(levels);
   const next = live.map((stream) => ({ stream, count: 0, frame: atOrAfter(stream.firstSeconds ?? 1 / stream.rate) }));
-  const sums = new Float64Array(frames + 1), heldSums = new Float64Array(frames + 1);
+  const sums = new Float64Array(frames + 1), heldSums = new Float64Array(frames + 1), baseSums = new Float64Array(frames + 1);
+  let landed = 0, attempts = 0;
   for (let frame = 1; frame <= frames; frame += 1) {
-    sums[frame] = sums[frame - 1] + state.base;
-    heldSums[frame] = heldSums[frame - 1] + state.held;
+    let lostBase = 0, lostHeld = 0;
+    if (remainder < 1) for (const group of state.groups) { if (frame < group.expiryFrame) break; lostBase += group.base; lostHeld += group.mass; }
+    sums[frame] = sums[frame - 1] + state.base - (1 - remainder) * lostBase;
+    baseSums[frame] = baseSums[frame - 1] + state.base;
+    heldSums[frame] = heldSums[frame - 1] + state.held - (1 - remainder) * lostHeld;
     heldExpire(state, frame);
     for (const item of next) {
       while (item.frame === frame) {
         const { stream } = item;
-        heldAttempt(state, stream.kind, stream.chance ?? 0, stream.notActiveChance ?? stream.chance ?? 0, heldGroup(state, frame, frame + life), frame);
+        const success = heldAttempt(state, stream.kind, stream.chance ?? 0, stream.notActiveChance ?? stream.chance ?? 0, heldGroup(state, frame, frame + life), frame);
+        if (frame > steadyFrom) { landed += success; attempts += 1; }
         item.count += 1;
         item.frame = atOrAfter((stream.firstSeconds ?? 1 / stream.rate) + item.count / stream.rate);
       }
     }
   }
   const span = frames - steadyFrom;
+  const windowsOf = (series) => Object.fromEntries(windows.map((window) => { const end = Math.min(frames, Math.round(window * fps)); return [window, end > 0 ? series[end] / end : 0]; }));
   return {
     steadyBase: (sums[frames] - sums[steadyFrom]) / span,
     steadyHeld: (heldSums[frames] - heldSums[steadyFrom]) / span,
-    windows: Object.fromEntries(windows.map((window) => { const end = Math.min(frames, Math.round(window * fps)); return [window, end > 0 ? sums[end] / end : 0]; })),
+    windows: windowsOf(sums),
+    heldBase: (baseSums[frames] - baseSums[steadyFrom]) / span,
+    heldWindows: windowsOf(baseSums),
+    // Landed per attempt × the streams' own rates, so the whole-tick schedule's rounding stays out of the rate.
+    landedPerSecond: attempts > 0 ? landed / attempts * live.reduce((sum, stream) => sum + stream.rate, 0) : 0,
     steadyFromSeconds, seconds
   };
 }

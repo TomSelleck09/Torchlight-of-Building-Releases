@@ -30,13 +30,16 @@ export function conditionalAuraEffect(modifierTexts = [], state = {}) {
     const resolved = resolveLineCondition(split.condition, state);
     const bodyValue = split.bodies.reduce((sum, body) => sum + Number(body.match(AURA_BODY)[1]), 0) * (line.multiplier ?? 1);
     const value = bodyValue * (resolved.factor ?? 1);
-    const active = resolved.active === true && state.auraCount > 0;
+    // An Aura (or a Focus skill in an Aura slot) to apply the Aura Effect to: the ledger's entries (`auraEntryCount`); the count a
+    // condition reads (`auraCount`) is the game's, buffs tagged 5100305 (W9 step 4).
+    const anyAura = (state.auraEntryCount ?? state.auraCount) > 0;
+    const active = resolved.active === true && anyAura;
     const perSmc = split.condition.key === "perSealedManaCompensation";
     // Game affix 898342 is a linear attribute conversion (node 114, Sealed Mana Compensation → Aura Effect): the rate holds even
     // when the global SMC is 0, since an Aura's own supports (Restrain) give it SMC of its own.
-    if (perSmc && state.auraCount > 0) perSealedManaCompensation += bodyValue / split.condition.params.every;
+    if (perSmc && anyAura) perSealedManaCompensation += bodyValue / split.condition.params.every;
     if (active) { percent += value; if (!perSmc) conditionalPercent += value; }
-    lines.push({ text, source: line.source, value, active, key: split.condition.key, conditionText: state.auraCount > 0 ? resolved.conditionText : "no active Aura", provisional: Boolean(resolved.provisional) });
+    lines.push({ text, source: line.source, value, active, key: split.condition.key, conditionText: anyAura ? resolved.conditionText : "no active Aura", provisional: Boolean(resolved.provisional) });
   }
   return { percent: round4(percent), conditionalPercent: round4(conditionalPercent), perSealedManaCompensation, lines };
 }

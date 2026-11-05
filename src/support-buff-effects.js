@@ -59,6 +59,16 @@ export function resolveSupportBuffs({ setups = [], activeNames = new Set(), cool
       lines.push({ text: `+${round(line.value)}% Elemental Damage`, source: `${setup.name}: ${line.support} (while the Empower Skill lasts; held, provisional)`, origin: "derived", multiplier: 1, supportBuff: true });
       entries.push({ setupKey: setup.setupKey, support: line.support, value: line.value, uptime: 1, text: `${setup.name}: ${line.support} +${line.value}% Elemental Damage, the Empower buff held (best case; provisional)` });
     }
+    // Howling Gale: Eye of the Gale (game record 239448224, buff 10851 on the holder; wiring fix W6b): the Gale follows you, so while
+    // the skill channels you stand in it (held: best case, as Rapid Sweep's Gale): your additional Attack and Cast Speed and your
+    // increased Projectile Speed, read by every skill and the Projectile Speed conversions (Gale 114414, 101140017).
+    for (const line of clausesOf(setup, "eyeOfTheGale")) {
+      const source = `${setup.name}: ${line.support} (you stand in the Gale, which follows you; held while channeling, provisional)`;
+      lines.push({ text: `+${round(line.value)}% additional Attack Speed`, source, origin: "derived", multiplier: 1, supportBuff: true });
+      lines.push({ text: `+${round(line.value)}% additional Cast Speed`, source, origin: "derived", multiplier: 1, supportBuff: true });
+      if (line.projectileSpeed) lines.push({ text: `+${round(line.projectileSpeed)}% Projectile Speed`, source, origin: "derived", multiplier: 1, supportBuff: true });
+      entries.push({ setupKey: setup.setupKey, support: line.support, value: line.value, uptime: 1, text: `${setup.name}: ${line.support} +${line.value}% additional Attack and Cast Speed and +${line.projectileSpeed ?? 0}% Projectile Speed inside the Gale (held while channeling; provisional)` });
+    }
     for (const line of clausesOf(setup, "gladiatorsRoar")) {
       const cooldown = cooldownOf(setup);
       const seconds = line.seconds || 0;

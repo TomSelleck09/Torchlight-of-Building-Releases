@@ -16,10 +16,14 @@ import { frameSnap as snapToFrames } from "./frame-snapping.js";
 
 const value = (ledger, stat, type) => ledger[`${stat}:${type}`] || 0;
 // The beam's held Ignite at one rank (user decision 2026-11-02; src/held-ailment-store.js): the expected held amount (lapses included) on
-// regular attempts at `rate`, the not-Ignited chance while nothing is held; `weight` the stacks one application holds.
+// regular attempts at `rate`, the not-Ignited chance while nothing is held; `weight` the stacks one application holds. `settled` takes the
+// expiry tick at its remainder (SS14 client, research/dot-timing-ss14-check-2026-11-03.md), the Ignite's own damage; `held` the amount held on a
+// tick, which a Reap reads; `landed` the applications per second that land (fill or replace), the successes a Reap "when inflicting" hears
+// (a strictly weaker one raises no success event, SS14 client, research/oq-r1-r2-rea-2026-11-04.md R1.2; bug B1, 2026-11-04).
 function heldIgniteBase({ min, max, weight, rate, chancePercent, notActiveChancePercent = chancePercent, durationSeconds }) {
-  if (!(rate > 0) || !(max > 0) || !(durationSeconds > 0)) return 0;
-  return heldStoreRun(heldStoreLevels([{ min, max, weight }]), { streams: [{ kind: 0, rate, chance: chancePercent / 100, notActiveChance: notActiveChancePercent / 100 }], durationSeconds, windows: [] }).steadyBase;
+  if (!(rate > 0) || !(max > 0) || !(durationSeconds > 0)) return { settled: 0, held: 0, landed: 0 };
+  const run = heldStoreRun(heldStoreLevels([{ min, max, weight }]), { streams: [{ kind: 0, rate, chance: chancePercent / 100, notActiveChance: notActiveChancePercent / 100 }], durationSeconds, windows: [] });
+  return { settled: run.steadyBase, held: run.heldBase, landed: run.landedPerSecond };
 }
 // `detail` carries what the line does (its tooltip text and/or stat key) so consumers such as
 // the shared ailment layers can tell Fire/Elemental-only effects from generic ones.
@@ -57,7 +61,9 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     if (!match && /Base Ignite Damage/i.test(text) && !/of the added Flat Damage's/i.test(text)) unmodeledBaseIgnite.push(`${item.name}: ${text}`);
     return match ? { source: item.name, text, min: Number(match[1]), max: Number(match[2]) } : null;
   }).filter(Boolean));
-  const flameFocusBase = ["Flame Focus", "Precise: Flame Focus"].filter((name) => activeNames.has(name)).map((name) => entry(`Aura: ${name}`, 2, "Base Ignite", "SS13 level-20 tooltip"));
+  // Flame Focus's buff (either form, board or item-granted): config_char_buff 10450 / 10451 affix 132023 "Adds 2 - 2 Base Ignite Damage",
+  // read in build-mechanics.js (src/focus-buffs.js, W6c 2026-11-03; was a hand-kept 2 for a board copy only).
+  const flameFocusBase = (extraSources.focusBuff?.base || []).map((line) => ({ ...entry(line.source, line.min, "Base Ignite", "game record", { text: line.text }), max: line.max }));
   // Evil Heart Armor / Confusion Elemental Belt on the beam (`igniteBaseSettle`, src/planner.js; src/ailment-model.js ailmentBaseSettle): the
   // base above × the reduction, then + the share of the beam's added flat damage, as base entries so the ledger shows the working.
   // `beamSettle`: the generic Ignite path settles the base itself.
@@ -167,7 +173,9 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     entry("Equipment: ailments", value(gear, "ailmentChancePercent", "increased"), "Ignite application chance"),
     entry("Pacts: Ignite chance", pact.totals.chanceToIgniteTargetsPercent || 0, "Ignite application chance"),
     entry("Pacts: damaging ailments", pact.totals.damagingAilmentChancePercent || 0, "Ignite application chance"),
-    ...["Flame Focus", "Precise: Flame Focus"].filter((name) => activeNames.has(name)).map((name) => entry(`Aura: ${name}`, (aura?.entries || []).find((item) => item.name === name)?.effectiveEffects?.igniteChancePercent ?? (name === "Flame Focus" ? 10 : 15), "Ignite application chance")),
+    // Flame Focus's buff: affix 101080071 "+X% chance to Ignite targets" × Focus Buff Effect (its record carries no Aura tag, so Aura
+    // Effect does not scale it; W6c 2026-11-03: it read 10 / 15 × Aura Effect before).
+    ...(extraSources.focusBuff?.chance || []).map((line) => entry(line.source, line.value, "Ignite application chance", "game record", { text: line.text })),
     ...["Ailment Amplification", "Precise: Ailment Amplification"].filter((name) => activeNames.has(name)).map((name) => entry(`Aura: ${name}`, (aura?.entries || []).find((item) => item.name === name)?.effectiveEffects?.ailmentChancePercent || 0, "Ignite application chance")),
     // `skillScoped`: lines of the main skill and its supports only. Every other entry is build-wide and is
     // the Ignite chance every inflicting skill starts from (src/ailment-applications.js igniteGlobalChanceSources).
@@ -476,7 +484,7 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     const applicationRate = Math.max(0, reapingApplicationAttemptsPerSecond ?? input.applicationsPerSecond);
     const applicationAttempts = sustainedRunSeconds * applicationRate;
     // One stack: the held store (user decision 2026-11-02; src/held-ailment-store.js), the expected held roll on the beam's regular attempts.
-    const expectedBase = heldIgniteBase({ min: baseRange.min, max: baseRange.max, weight: 1, rate: applicationRate, chancePercent: input.applicationChancePercent, notActiveChancePercent: notIgnitedApplicationChancePercent, durationSeconds: input.durationSeconds });
+    const { settled: expectedBase, held: heldBase, landed: landedPerSecond } = heldIgniteBase({ min: baseRange.min, max: baseRange.max, weight: 1, rate: applicationRate, chancePercent: input.applicationChancePercent, notActiveChancePercent: notIgnitedApplicationChancePercent, durationSeconds: input.durationSeconds });
     return {
       baseRange: { ...baseRange },
       mode: "one-stack",
@@ -484,7 +492,10 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
       stacksPerApplication: input.stacksPerApplication,
       expectedBaseDamage: Number(expectedBase.toFixed(4)),
       expectedDps: Number((expectedBase * ailmentOnly.perStackDps.max / baseRange.max).toFixed(4)),
+      // What a Reap settles: the held stack, with no expiry-tick remainder.
+      reapBasisDps: Number((heldBase * ailmentOnly.perStackDps.max / baseRange.max).toFixed(4)),
       applicationAttempts: Number(applicationAttempts.toFixed(4)),
+      landedPerSecond,
       durationSeconds: input.durationSeconds,
       applicationChancePercent: input.applicationChancePercent,
       notIgnitedApplicationChancePercent,
@@ -500,11 +511,11 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     // An application that fills the limit (Selena's 13 stacks against 8 to 10) is one rank: the held store (2026-11-02), limit × the held roll.
     // A limit that holds several applications keeps the whole-run strongest stacks.
     const oneRank = input.stacksPerApplication >= igniteLimit;
-    const expectedBaseSum = oneRank
-      ? heldIgniteBase({ min: baseRange.min, max: baseRange.max, weight: igniteLimit, rate: applicationRate, chancePercent: input.applicationChancePercent, notActiveChancePercent: notIgnitedApplicationChancePercent, durationSeconds: input.durationSeconds })
+    const held = oneRank ? heldIgniteBase({ min: baseRange.min, max: baseRange.max, weight: igniteLimit, rate: applicationRate, chancePercent: input.applicationChancePercent, notActiveChancePercent: notIgnitedApplicationChancePercent, durationSeconds: input.durationSeconds }) : null;
+    const expectedBaseSum = held ? held.settled
       : expectedRetainedAilmentBaseSum({ min: baseRange.min, max: baseRange.max, chancePercent: input.applicationChancePercent, attempts: applicationAttempts, stacksPerApplication: input.stacksPerApplication, maximumActiveStacks: igniteLimit });
     const damagePerBase = modeled.perStackDps.max / baseRange.max;
-    const expectedDps = expectedBaseSum * damagePerBase;
+    const expectedDps = expectedBaseSum * damagePerBase, reapBasisDps = held ? held.held * damagePerBase : expectedDps;
     return {
       mode: "multi-stack",
       baseRange: { ...baseRange },
@@ -512,11 +523,14 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
       damagePerBase,
       expectedActiveStacks: modeled.sustainedStacks,
       expectedDps,
-      dpsRange: { min: expectedDps, max: expectedDps },
+      reapBasisDps,
+      // The Reaps' basis (activeDotDps): the held stacks, with no expiry-tick remainder.
+      dpsRange: { min: reapBasisDps, max: reapBasisDps },
       applicationChancePercent: input.applicationChancePercent,
       notIgnitedApplicationChancePercent,
       maxAffliction,
       applicationAttempts,
+      ...(held ? { landedPerSecond: held.landed } : {}),
       durationSeconds: input.durationSeconds,
       maximumActiveStacks: igniteLimit,
       stacksPerApplication: input.stacksPerApplication,
@@ -524,7 +538,7 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     };
   })() : null);
   const activeDotDps = strongestOneStack
-    ? { min: strongestOneStack.expectedDps, max: strongestOneStack.expectedDps }
+    ? { min: strongestOneStack.reapBasisDps, max: strongestOneStack.reapBasisDps }
     : expectedActiveIgnite?.dpsRange || sustained.sustainedDps;
   // A Reap that triggers on full Affliction settles the DoT while the target is at 100 rating.
   const fullAfflictionScale = active("affliction") && sustained.factors?.afflictionTaken > 0
@@ -538,11 +552,13 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
   // A Reap is True Damage: the Ignite it settles drops its "damage applied to Life" lines (patch notes 2026-10-15;
   // src/true-damage.js). Ignite's own ticks keep them.
   const trueDamage = trueDamageSettleScale(additionalSources);
+  // A Reap "when inflicting Ignite" hears the applications that land: at one rank the held store's landed rate (bug B1), else every success.
+  const reapIgnitesPerSecond = Number.isFinite(expectedActiveIgnite?.landedPerSecond) ? expectedActiveIgnite.landedPerSecond : successfulIgnitesPerSecond;
   const modeledReapingSources = reapingSources.map((source) => {
     const settledScale = source.trigger === "full Affliction" ? fullAfflictionScale : 1;
     const settledResistanceScale = source.trigger === "full Affliction" ? fullAfflictionResistanceScale : 1;
-    const calculate = (damageOverTimeDps) => calculateReaping({ damageOverTimeDps, baseReapingDurationSeconds: source.baseDurationSeconds, baseRecoverySeconds: source.baseRecoverySeconds, reapingDurationPercent, reapingRecoverySpeedPercent, additionalRecoverySpeedPercents: reapingAdditionalRecoverySpeedPercents, afflictionPerSecond: passiveAfflictionPerSecond, trigger: source.trigger, afflictionRemovedPercent: source.afflictionRemovedPercent, successfulApplicationsPerSecond: successfulIgnitesPerSecond });
-    return { ...source, successfulApplicationsPerSecond: ["inflicting Ignite", "inflicting an ailment"].includes(source.trigger) ? successfulIgnitesPerSecond : null, settledAfflictionScale: settledScale, settledResistanceScale, trueDamageScale: trueDamage.scale, minimum: calculate(activeDotDps.min * settledScale * settledResistanceScale * trueDamage.scale), maximum: calculate(activeDotDps.max * settledScale * settledResistanceScale * trueDamage.scale) };
+    const calculate = (damageOverTimeDps) => calculateReaping({ damageOverTimeDps, baseReapingDurationSeconds: source.baseDurationSeconds, baseRecoverySeconds: source.baseRecoverySeconds, reapingDurationPercent, reapingRecoverySpeedPercent, additionalRecoverySpeedPercents: reapingAdditionalRecoverySpeedPercents, afflictionPerSecond: passiveAfflictionPerSecond, trigger: source.trigger, afflictionRemovedPercent: source.afflictionRemovedPercent, successfulApplicationsPerSecond: reapIgnitesPerSecond });
+    return { ...source, successfulApplicationsPerSecond: ["inflicting Ignite", "inflicting an ailment"].includes(source.trigger) ? reapIgnitesPerSecond : null, settledAfflictionScale: settledScale, settledResistanceScale, trueDamageScale: trueDamage.scale, minimum: calculate(activeDotDps.min * settledScale * settledResistanceScale * trueDamage.scale), maximum: calculate(activeDotDps.max * settledScale * settledResistanceScale * trueDamage.scale) };
   });
   const primaryReapingSource = modeledReapingSources[0];
   const totalReaping = (bound) => ({ ...primaryReapingSource[bound], reapingDps: modeledReapingSources.reduce((sum, source) => sum + source[bound].reapingDps, 0) });

@@ -12,12 +12,24 @@
 // Timers come from the game files where the note says so (recipes in src/data/game/affix-recipes.generated.js, config_char_buff, the
 // manual); provisional readings are named in `assumptions` and in the open questions tick-*.
 import { partFactorAt, sourceFactorAt } from "./timed-effects.js";
+import { enemyBuffSet, playerBuffSet } from "./unit-buff-set.js";
+import { plainUseKind } from "./tick-plain-skills.js";
+import { blessingDurationSeconds } from "./blessing-layers.js";
+// Your buffs from your unit buff set (W9 step 2, planner.playerBuffs): the Blessings' entries in the Blessing model's shape (name "Focus",
+// stacks, maxStacks, gainSources, consumptionCycle …), and Aim's and Periodic Burst's series (the planner's own model objects); the
+// planner's fields with TLI_BUFF_SET=off.
+const ownBlessingEntries = (planner) => { const own = playerBuffSet(planner); return own?.staged("blessing") ? own.blessings().map((entry) => ({ ...entry, name: entry.label })) : planner.blessings?.entries || []; };
+const ownSeries = (planner, name, old) => { const own = playerBuffSet(planner); return own?.staged("timed") ? own.seriesOf(name) : old; };
 
 export const TICKS_PER_SECOND = 30;
 export const RECENT_SECONDS = 4; // game hyperlink 103; the client's 120-frame window
 // Default durations (config_char_buff column holding the manual's 10 s for Blessings; recipes pass duration -2, "the record's default").
 export const SPELL_AGGRESSION_SECONDS = 10, FRAIL_SECONDS = 10;
-export const BASE_BLESSING_SECONDS = 10; // manual: "The base duration of Agility Blessing is 10s", all stacks refreshed on gain, all lost at the end
+// A Blessing lasts 10 s (manual 1002010120 / 1002010220 / 1002010320, Tenacity / Agility / Focus). Each gain is a layer on its own timer: it adds
+// one layer with its full duration and refreshes nothing, the oldest layer goes at the cap, and the Blessing ends with its newest layer (SS14
+// client, the layer add 0x141d02810 and the layer timer pass 0x141d15bc0; user decision 2026-11-04, research/oq-blessing-refresh-2026-11-04.md;
+// it replaces the manual's "every gain refreshes all stacks"; open question blessing-layer-timers). Every Blessing buff effect is `layered`.
+export const BASE_BLESSING_SECONDS = 10;
 // Ailments on the dummy: Frostbite's initial 1.5 s (manual), Numbed's default 2 s with each stack on its own timer (keyword 762),
 // Ignite and Trauma 4 s (src/ailment-model.js). Frozen follows Frostbite (manual: "Freeze ends when Frostbite ends").
 export const AILMENT_SECONDS = Object.freeze({ Frostbite: 1.5, Frozen: 1.5, Numbed: 2, Ignite: 4, Trauma: 4 });
@@ -98,7 +110,9 @@ export function createLayerContext(planner, options) {
       cooldown: { increasedPercent: sumValues(cooldownLines.filter((line) => line.kind !== "additional")), additionalFactor: cooldownLines.filter((line) => line.kind === "additional").reduce((factor, line) => factor * (1 + line.value / 100), 1), modifiers: [] }
     },
     actions: [], triggers: [], periodics: [], collectors: [], initialBuffs: [], followerEvents: new Map(),
-    paths: {}, report: new Map(), assumptions: [], once: new Set()
+    paths: {}, report: new Map(), assumptions: [], once: new Set(),
+    // The trigger bus (src/trigger-bus.js, W10): null on the layers. Its listeners replace the layers' event-driven holds they own.
+    bus: options.bus ?? null
   };
   ctx.isLive = (key) => ctx.live.has(key);
   ctx.reported = (key) => {
@@ -177,7 +191,7 @@ export function addTarget(ctx, hit, path, { speedKey = `cast:${hit.key}`, core =
 // One builder per layer. Each takes its lines out of every target, and adds the events that switch them on, once.
 
 export function aimLayer(ctx) {
-  const { aim } = ctx.planner;
+  const aim = ownSeries(ctx.planner, "Aim", ctx.planner.aim);
   if (!ctx.isLive("aim") || !aim?.active) return;
   let any = false;
   for (const target of ctx.targets) {
@@ -231,7 +245,7 @@ export function spellAggressionLayer(ctx) {
 }
 
 export function periodicBurstLayer(ctx) {
-  const burst = ctx.planner.periodicBurst;
+  const burst = ownSeries(ctx.planner, "Periodic Burst", ctx.planner.periodicBurst);
   const entry = burst?.entries?.find((item) => item.active), line = burst?.lines?.[0];
   if (!ctx.isLive("periodicBurst") || !entry || !line) return;
   const full = Number((String(line.source).match(/\+([\d.]+)% ×/) || [])[1]) || entry.value / entry.uptime;
@@ -244,11 +258,7 @@ export function periodicBurstLayer(ctx) {
   ctx.reported("periodicBurst").events = `+${full}% for ${entry.durationSeconds} s every ${entry.periodSeconds} s from t = 0`;
 }
 
-export const blessingSeconds = (planner, name) => {
-  const pattern = new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% (?:${name} )?Blessing Duration$`, "i");
-  const bonus = (planner.modifierTexts || []).reduce((sum, line) => { const match = String(line.text).match(pattern); return match ? sum + Number(match[1]) * (line.multiplier ?? 1) : sum; }, 0);
-  return BASE_BLESSING_SECONDS * (1 + bonus / 100);
-};
+export const blessingSeconds = (planner, name) => blessingDurationSeconds(planner.modifierTexts || [], name);
 
 /**
  * A Blessing the build gains only from the dummy (user decisions 2026-11-02): when Reaping ("Gains 1 stack(s) of Focus Blessing when Reaping"), on
@@ -265,37 +275,53 @@ export const onTargetBlessing = (entry) => {
   const hits = read.filter((item) => item.kind !== "reap").map(({ text, kind }) => ({ when: kind, chance: Math.min(1, (Number((text.match(/(\d+(?:\.\d+)?) ?% chance/i) || [])[1]) || 100) / 100), stacks: Number((text.match(/(\d+) stacks?(?:\(s\))? of/i) || [])[1]) || 1 }));
   return { reap: read.some((item) => item.kind === "reap"), hits };
 };
+/** The texts of onTargetBlessing's hit gains, in its order (the trigger bus matches a gain it owns by its text). */
+const onTargetHitTexts = (entry) => (entry?.gainSources || []).filter((item) => item.available !== false).map((item) => String(item.text || "")).filter((text) => !/\bwhen Reaping\b/i.test(text));
 /** The Reap case of onTargetBlessing (the 2026-11-02 Reap-only rule): a gain when Reaping, every other gain on the dummy too. */
 export const reapOnlyBlessing = (entry) => Boolean(onTargetBlessing(entry)?.reap);
 
 // An on-target Blessing's hit gains on every hit on the loop: one crit determination per hit group (game recipe 103010039 for Agility on crit, node
-// 188 chance), at the gain's chance × the share of determinations that crit (or do not). Returns whether any gain landed on a hit.
-function placeHitGains(ctx, gains, buff, seconds, maxStacks) {
+// 188 chance), at the gain's chance × the share of determinations that crit (or do not). Returns whether any gain landed on a hit. A gain the trigger
+// bus owns (src/trigger-bus.js, its record on trigger 1000033) is the bus's: it fires there, from every hit of its event.
+function placeHitGains(ctx, gains, buff, seconds, maxStacks, entry) {
   let placed = false;
+  const texts = onTargetHitTexts(entry);
+  const owned = (index) => Boolean(ctx.bus?.ownsBlessingGain(entry.name, texts[index]));
+  if (gains.hits.some((gain, index) => owned(index)) && ctx.bus.placesBlessing(entry.name)) placed = true;
   for (const target of ctx.targets) {
     const crit = Math.max(0, Math.min(1, (target.hit.crit?.chancePercent ?? 0) / 100));
-    for (const gain of gains.hits) {
+    for (const gain of gains.hits.filter((item, index) => !owned(index))) {
       const share = gain.when === "crit" ? crit : gain.when === "nonCrit" ? 1 - crit : 1;
       if (!(gain.chance * share > 0)) continue;
-      target.onHit.push({ kind: "chance", key: `${buff}Blessing:${gain.when}`, probability: gain.chance * share, effects: [{ kind: "buff", buff, seconds, stacks: gain.stacks, maxStacks }] });
+      target.onHit.push({ kind: "chance", key: `${buff}Blessing:${gain.when}`, probability: gain.chance * share, effects: [{ kind: "buff", buff, seconds, stacks: gain.stacks, maxStacks, layered: true }] });
       placed = true;
     }
   }
   return placed;
 }
 
+// A Blessing's own per-stack line (src/planner.js: "<Blessing> Blessing (blessing model)"). With Divine Grace (the base effect replaced by +4%
+// additional damage per stack, src/blessing-model.js) the line is "<Blessing> Blessing (Divine Grace) (blessing model)": it reads the loop's stacks
+// only when something on the loop keeps that Blessing up as in game (`kept`: a gain the layers place, its on-target gains building it, or the trigger
+// bus renewing its use, Regain or Minion gains, W10 step 3c). Else it stays held at the planner's value: on the layers nothing renews a gain on a
+// skill use, so claiming it there would show a lapse that does not happen in game (Erika's Focus and Agility, 10 s in).
+const ownBlessingLine = (name, kept) => new RegExp(kept ? String.raw`^${name} Blessing (?:\(Divine Grace\) )?\(blessing model\)` : String.raw`^${name} Blessing \(blessing model\)`);
+const busRenews = (ctx, name) => Boolean(ctx.bus?.owned?.useBlessings?.includes(name) || ctx.bus?.owned?.eventBlessings?.includes(name));
+
 export function blessingLayer(ctx) {
   if (!ctx.isLive("blessings")) return;
   const { planner } = ctx;
-  const entries = planner.blessings?.entries || [];
+  const entries = ownBlessingEntries(planner);
   const focus = entries.find((entry) => entry.name === "Focus"), agility = entries.find((entry) => entry.name === "Agility");
   const perStackLines = (planner.lineEffects?.lines || []).filter((line) => line.status === "In calc" && ["blessingPerStack", "blessingActive"].includes(line.condition));
   const bodyOf = (line) => (line.bodies || []).map((body) => body.derivedText).filter(Boolean);
   let any = false;
   if (focus?.stacks > 0) {
     const seconds = blessingSeconds(planner, "Focus");
+    const focusPeriodic = Number((String((focus.gainSources || []).find((item) => item.available !== false && /every ([\d.]+) ?s/.test(item.text))?.text).match(/every ([\d.]+) ?s/) || [])[1]) > 0;
+    const focusKept = focusPeriodic || Boolean(onTargetBlessing(focus)) || busRenews(ctx, "Focus");
     for (const target of ctx.targets) {
-      for (const line of target.claimPattern("blessings", /^Focus Blessing \(blessing model\)/)) { target.addModifier(line, { buff: "focus", perStack: true, percent: line.value / focus.stacks, steadyAmount: line.value }); any = true; }
+      for (const line of target.claimPattern("blessings", ownBlessingLine("Focus", focusKept))) { target.addModifier(line, { buff: "focus", perStack: true, percent: line.value / focus.stacks, steadyAmount: line.value }); any = true; }
       for (const source of perStackLines.filter((line) => /Focus Blessing/.test(line.text))) {
         for (const text of bodyOf(source)) {
           const lines = target.claim("blessings", (line) => line.source === source.source && line.text === text);
@@ -318,38 +344,157 @@ export function blessingLayer(ctx) {
       // Game recipe 5583405 (Night Feather): while buff 12090 is up, 1 stack every P1 s (node 206, buff 380, its record's duration). A gain
       // tied to the Clockwork Core's Tangles waits for the Core; any other periodic gain runs from t = 0.
       const needsCore = ctx.targets.some((target) => target.core) && /Night Feather|Tangle|Clockwork/.test(`${gain?.source} ${gain?.text}`);
-      if (every > 0) ctx.periodics.push({ key: "focusGain", actor: "player", label: gain.source, intervalSeconds: every, ...(needsCore ? { requiresBuff: "coreActive" } : {}), effects: [{ kind: "buff", buff: "focus", seconds, stacks: 1, maxStacks: focus.maxStacks }] });
+      if (every > 0) ctx.periodics.push({ key: "focusGain", actor: "player", label: gain.source, intervalSeconds: every, ...(needsCore ? { requiresBuff: "coreActive" } : {}), effects: [{ kind: "buff", buff: "focus", seconds, stacks: 1, maxStacks: focus.maxStacks, layered: true }] });
       // A gain only from the dummy (onTargetBlessing) starts at 0: its hit gains go on the hits here, src/tick-ledger.js puts a Reap gain on the
       // Reaps on the loop, src/tick-ailments.js the stacks on the DoT paths.
       const gains = onTargetBlessing(focus);
-      if (gains) { addTargetBlessing(ctx, { buff: "focus", name: "Focus", stacks: focus.stacks, seconds, gains, hitPlaced: placeHitGains(ctx, gains, "focus", seconds, focus.maxStacks) }); any = true; }
-      else if (ctx.prebuilt) ctx.initialBuffs.push({ buff: "focus", stacks: focus.stacks, seconds });
+      if (gains) { addTargetBlessing(ctx, { buff: "focus", name: "Focus", stacks: focus.stacks, seconds, gains, hitPlaced: placeHitGains(ctx, gains, "focus", seconds, focus.maxStacks, focus) }); any = true; }
+      // A Blessing the trigger bus builds from its only gains, on Regains or your Minions' damage (W10 step 3c), starts at 0 as well.
+      else if (ctx.prebuilt && !ctx.bus?.busBuildsBlessing?.("Focus")) ctx.initialBuffs.push(prebuiltBlessing("focus", focus, seconds, focus.layers?.reading === "periodic" ? every : 0));
     }
   }
-  if (agility?.stacks > 0) {
+  // Agility a Regain spends (node 623, W10 step 4a): the planner holds the cycle's average (src/consumption-procs.js regainAgilitySpend). The loop
+  // runs the spend only when the trigger bus raises the Regains and holds the gate-184 row that spends it: then Agility runs from its own gains
+  // (its stacks before the spend, which may average 0) and the bus's Regains take them. Otherwise nothing on the loop spends it: held at the planner's.
+  const regainSpend = planner.lineEffects?.state?.consumption?.regainSpend;
+  const spentOnRegain = Boolean(regainSpend?.active && agility);
+  const busSpends = spentOnRegain && Boolean(ctx.bus?.spendsBlessing?.("agility"));
+  if (spentOnRegain && !busSpends && ctx.first("agilityRegainSpend")) ctx.reported("blessings").lines.push({ layer: "held", source: "Agility Blessing (blessing model)", text: `held at the planner's ${agility.stacks} (Regains spend it; nothing on the loop spends it without the trigger bus's Regains)`, value: agility.stacks });
+  if ((agility?.stacks > 0 && !spentOnRegain) || (busSpends && (agility.heldBeforeConsumption ?? agility.stacks) > 0)) {
     const seconds = blessingSeconds(planner, "Agility");
-    const speedPer = agility.attackAndCastSpeedPercent / agility.stacks;
+    const speedPer = agility.stacks > 0 ? agility.attackAndCastSpeedPercent / agility.stacks : 0;
     const gains = onTargetBlessing(agility);
     const gain = (agility.gainSources || []).find((item) => /(\d+(?:\.\d+)?)% chance to gain Agility Blessing on Critical Strike/i.test(item.text));
     const chance = Number((String(gain?.text).match(/(\d+(?:\.\d+)?)% chance/) || [])[1]) / 100;
+    const agilityKept = Boolean(gains) || chance > 0 || busRenews(ctx, "Agility");
     for (const target of ctx.targets) {
-      for (const line of target.claimPattern("blessings", /^Agility Blessing \(blessing model\)/)) { target.addModifier(line, { buff: "agility", perStack: true, percent: line.value / agility.stacks, steadyAmount: line.value }); any = true; }
+      // (A Regain spend can leave the planner's average at 0: no per-stack value to read then, and the lines hold 0.)
+      if (agility.stacks > 0) for (const line of target.claimPattern("blessings", ownBlessingLine("Agility", agilityKept))) { target.addModifier(line, { buff: "agility", perStack: true, percent: line.value / agility.stacks, steadyAmount: line.value }); any = true; }
       if (speedPer && target.speedKey) { target.addSpeed("blessings", { source: "Agility Blessing (blessing model)", text: `+${speedPer}% Attack and Cast Speed per stack` }, { buff: "agility", perStack: true, layer: "increased", percent: speedPer, steadyAmount: agility.attackAndCastSpeedPercent }); any = true; }
       // Game recipe 103010039: on a crit, node 188 chance, buff 320. One crit determination per hit group. (An on-target Agility places it below.)
-      if (!gains && chance > 0 && target.hit.crit?.chancePercent > 0) target.onHit.push({ kind: "chance", key: "agilityBlessing", probability: chance * target.hit.crit.chancePercent / 100, effects: [{ kind: "buff", buff: "agility", seconds, stacks: 1, maxStacks: agility.maxStacks }] });
+      if (!gains && chance > 0 && target.hit.crit?.chancePercent > 0 && !ctx.bus?.ownsBlessingGain("Agility", gain.text)) target.onHit.push({ kind: "chance", key: "agilityBlessing", probability: chance * target.hit.crit.chancePercent / 100, effects: [{ kind: "buff", buff: "agility", seconds, stacks: 1, maxStacks: agility.maxStacks, layered: true }] });
     }
     if (ctx.first("agilityStart")) {
-      if (gains) addTargetBlessing(ctx, { buff: "agility", name: "Agility", stacks: agility.stacks, seconds, gains, hitPlaced: placeHitGains(ctx, gains, "agility", seconds, agility.maxStacks) });
-      else if (ctx.prebuilt) ctx.initialBuffs.push({ buff: "agility", stacks: agility.stacks, seconds });
+      if (gains) addTargetBlessing(ctx, { buff: "agility", name: "Agility", stacks: agility.stacks, seconds, gains, hitPlaced: placeHitGains(ctx, gains, "agility", seconds, agility.maxStacks, agility) });
+      // Pre-built Agility a Regain spends on the loop starts at its stacks before the spend (the Regains take them from there).
+      else if (ctx.prebuilt && !ctx.bus?.busBuildsBlessing?.("Agility")) ctx.initialBuffs.push({ buff: "agility", stacks: busSpends ? agility.heldBeforeConsumption ?? agility.stacks : agility.stacks, seconds, layered: true });
+      if (busSpends) any = true;
     }
   }
   const fromZero = (ctx.targetBlessings || []).map((item) => `${item.name} from 0, built on ${[item.gains.reap ? "the Reaps" : "", item.gains.hits.length ? "the hits" : ""].filter(Boolean).join(" and ")} (its only gains)`);
-  if (any) ctx.reported("blessings").events = `Focus ${focus?.stacks ?? 0}, Agility ${agility?.stacks ?? 0}: ${fromZero.length ? `${fromZero.join("; ")}; ` : ""}${ctx.prebuilt ? "the rest full at engagement (prebuilt), " : "from zero, "}renewed by their gains (every gain refreshes all stacks; manual)`;
+  if (any) ctx.reported("blessings").events = `Focus ${focus?.stacks ?? 0}, Agility ${agility?.stacks ?? 0}: ${fromZero.length ? `${fromZero.join("; ")}; ` : ""}${ctx.prebuilt ? "the rest full at engagement (prebuilt), " : "from zero, "}each gain a layer on its own timer (the oldest out at the cap; SS14 client, blessing-layer-timers)`;
+}
+
+/**
+ * A Blessing held at engagement (prebuiltSelfBuffs), layered: its stacks all ending at its duration, as built just before engaging; a periodic gain
+ * (every T s) that cannot hold the max (T × max > duration) starts on the layers its gains leave at engagement instead, the steady pattern
+ * (gains at −T, −2T, … still running), so the opening does not hold more than the gain can.
+ */
+export function prebuiltBlessing(buff, entry, seconds, everySeconds = 0) {
+  const max = entry.maxStacks ?? entry.stacks;
+  if (!(everySeconds > 0) || !(everySeconds * max > seconds) || !Number.isFinite(seconds)) return { buff, stacks: entry.stacks, seconds, layered: true };
+  const layers = [];
+  for (let k = 1; k * everySeconds < seconds - 1e-9 && layers.length < max; k += 1) layers.push({ seconds: seconds - k * everySeconds, stacks: 1 });
+  return { buff, stacks: layers.length, seconds, layered: true, layers };
 }
 
 // An on-target Blessing (onTargetBlessing): src/tick-ledger.js puts its Reap gain on the loop's Reaps, or holds it when nothing can build it.
 function addTargetBlessing(ctx, entry) {
   ctx.targetBlessings = [...(ctx.targetBlessings || []), entry];
+}
+
+/**
+ * The trigger bus's readers (W10 steps 1 and 2a, src/trigger-bus.js): a crowd control counter (Wings of Light's Intimidated added effect, the "for
+ * every type of crowd control" counter, Self-Delusion) whose types or Intimidated the bus holds reads the loop on every hit: its derived line comes
+ * out at the planner's value and goes back at the count held on this tick. A counter the planner times (its timed effect) is dropped from the
+ * recount's series on that hit. A timed part the bus holds (Paralysis's damage taken, when the bus drives both of your triggers) stays in the
+ * recount's series and a correction puts the loop's level in its place on each hit the series reaches (the DoT, beam and Minion paths take the same
+ * correction in src/tick-ailments.js and src/tick-minions.js). The bus's own events (crowd control, Paralysis, Intimidated, Blessing gains) need
+ * nothing here: the engine raises them from each hit's path and each DoT record of yours.
+ */
+export function triggerBusLayer(ctx) {
+  const bus = ctx.bus;
+  if (!bus) return;
+  ctx.labels.set("triggerBus", `Trigger bus (${[...bus.ids].join(", ")})`);
+  const read = new Set();
+  for (const counter of bus.counters) {
+    for (const target of ctx.targets) {
+      const lines = target.claim("triggerBus", (line) => line.source === counter.source && counter.bodies.includes(line.text));
+      for (const line of lines) target.addModifier(line, { layer: "additional", steadyAmount: line.value, amount: (world) => bus.counterPercent(counter, world) });
+      if (lines.length) { read.add(counter.source); if (counter.timedId) target.timedIds.add(counter.timedId); }
+    }
+  }
+  const timed = ctx.planner.dummyRecount?.inputs?.timedEffects;
+  if (bus.timedParts?.length && ctx.isLive("timed") && timed?.parts?.length) {
+    for (const target of ctx.targets) {
+      const correction = bus.timedCorrection(timed.shares?.[target.hit.key]);
+      if (correction) { target.modifiers.push(correction); read.add(`${bus.timedParts.map((part) => part.name).join(", ")} on ${target.hit.name}`); }
+    }
+  }
+  // Blur on the hits (W10 step 3a, src/trigger-bus.js blurCorrection): a hit part whose ledger holds a line read while Blur is active reads the
+  // share of the tick the bus holds Blur (the DoT paths take theirs in src/tick-ailments.js).
+  if (bus.owned.blur) for (const target of ctx.targets) {
+    const corrections = bus.blurCorrection({ kind: "hit", key: target.hit.key, parts: target.parts });
+    if (corrections.length) { target.modifiers.push(...corrections); read.add(`Blur on ${target.hit.name}`); }
+  }
+  // Profane on the hits (W10 step 4b, src/trigger-bus.js profaneCorrection): a hit part whose ledger holds Profane's line reads the share of the tick
+  // the bus holds Profane, from your Wilt applications (the DoT paths take theirs in src/tick-ailments.js).
+  if (bus.owned.profane) for (const target of ctx.targets) {
+    const corrections = bus.profaneCorrection({ kind: "hit", key: target.hit.key, parts: target.parts });
+    if (corrections.length) { target.modifiers.push(...corrections); read.add(`Profane on ${target.hit.name}`); }
+  }
+  // W10 step 3b: each use of a hit skill raises its use event (src/trigger-bus.js useEffect), with the share of one planner use the action is: a
+  // Tangle's cast, a cast or an area 1, a channel's hit 1 ÷ its hits per use, a Combo step 1 ÷ the steps (src/tick-plain-skills.js), a static
+  // stream's use 1 (src/tick-ledger.js). It lands with the use's other on-use events, before its hits.
+  let uses = 0;
+  if (bus.useIds?.length) for (const target of ctx.targets) {
+    const kind = target.core ? null : plainUseKind(target.hit);
+    const units = kind === "channel" ? 1 / (Number(target.hit.rate.hitsPerUse) || 1) : kind === "cycle" ? 1 / (target.hit.profile?.cycle?.steps?.length || 1) : 1;
+    const effect = bus.useEffect(target.hit.key, units);
+    if (effect) { target.onUse.push(effect); uses += 1; }
+  }
+  // Willpower's stacks (src/trigger-bus.js section 7) on its skill's hits: the clause's line at ((1 + X%)^stacks − 1), as a share of the planner's
+  // ((1 + X%)^cap − 1), so at the cap it is the planner's value exactly.
+  for (const holder of bus.willpower || []) for (const target of ctx.targets.filter((item) => item.hit.setupKey === holder.setupKey)) {
+    const lines = target.claim("triggerBus", (line) => line.source === holder.source && String(line.text).startsWith(holder.text));
+    const atCap = (1 + holder.perStackPercent / 100) ** holder.cap - 1;
+    for (const line of lines) target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", steadyAmount: line.value, amount: (world) => line.value * ((1 + holder.perStackPercent / 100) ** world.bus.useStacks(holder.key) - 1) / atCap });
+    if (lines.length) read.add(`Willpower on ${target.hit.name}`);
+  }
+  // The "used recently" windows (section 8) on every hit: each derived damage line at the share of the tick its window is held.
+  for (const recent of bus.recentWindows || []) for (const target of ctx.targets) {
+    const lines = target.claim("triggerBus", (line) => line.source === recent.source && line.layer !== "taken" && recent.bodies.includes(line.text));
+    for (const line of lines) target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", steadyAmount: line.value, amount: (world) => world.bus.selfShare(recent.name) * line.value });
+    if (lines.length) read.add(`${recent.name} on ${target.hit.name}`);
+  }
+  // W10 step 3c: the "Regained in the last N s" windows and stacks (src/trigger-bus.js section 10) on every hit's damage lines and on the Cast or
+  // Attack Speed lines that carry them (each speed once): the planner's value × the loop's stacks over the planner's (a window: its value while a
+  // Regain is held), from 0 at engagement.
+  for (const counter of bus.regainCounters || []) {
+    const ratio = (world) => { const held = world.bus.regainStacks(counter.key); return Number.isFinite(counter.cap) ? Math.min(counter.cap, held) / counter.plannerStacks : held > 0 ? 1 : 0; };
+    const speeds = new Set();
+    for (const target of ctx.targets) {
+      const lines = target.claim("triggerBus", (line) => line.source === counter.source && line.layer !== "taken" && counter.bodies.includes(line.text));
+      for (const line of lines) target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", steadyAmount: line.value, amount: (world) => line.value * ratio(world) });
+      const speedSources = target.speedKind === "attack" ? target.attackSources : target.speedKind === "cast" ? ctx.planner.lineEffects?.castSpeed?.sources : null;
+      const carried = target.speedKey && !speeds.has(target.speedKey) ? (speedSources || []).filter((item) => item.source === counter.source && counter.bodies.includes(item.text) && Number(item.value)) : [];
+      for (const speed of carried) target.addSpeed("triggerBus", { source: speed.source, text: speed.text }, { layer: speed.additional ? "additional" : "increased", steadyAmount: Number(speed.value), amount: (world) => Number(speed.value) * ratio(world) });
+      if (carried.length) speeds.add(target.speedKey);
+      if (lines.length || carried.length) read.add(`${counter.text} on ${target.hit.name}`);
+    }
+  }
+  const owned = [...bus.owned.crowdControl, ...(bus.owned.paralysis ? ["Paralysis"] : []), ...(bus.owned.intimidated ? ["Intimidated"] : []), ...(bus.owned.minionAilments || []).map((name) => `${name} (your Minions')`)];
+  const report = ctx.reported("triggerBus");
+  const raised = [bus.ids.has(1000033) || bus.ids.has(1000030) ? "each hit of yours that lands (one event per projectile or strike)" : "", bus.ids.has(1000030) ? "each tick a DoT record of yours deals damage" : "", bus.ids.has(1000032) || bus.ids.has(1000030) ? "each Reap" : "", uses ? `each use of your ${uses} hit skill${uses === 1 ? "" : "s"} (split by the planner's use sources)` : "", bus.inflictIds?.length ? "each ailment or DoT application of yours that lands (1000150 once, 1000160 per layer)" : ""].filter(Boolean);
+  const useText = `${bus.owned.useBlessings?.length ? `; ${bus.owned.useBlessings.join(", ")} Blessing renewed by your uses (pre-built at engagement)` : ""}${bus.owned.willpower?.length ? "; Willpower's stacks from your own uses of its skill" : ""}${bus.owned.recentUse?.length ? `; ${bus.owned.recentUse.join(", ")} held from your uses` : ""}`;
+  const blurText = bus.owned.blur ? `; Blur from 0, held while a gain of it is younger than its duration (its gains are all on the bus), read by ${bus.blur.dots.size + bus.blur.hits.size ? `${bus.blur.dots.size} DoT path${bus.blur.dots.size === 1 ? "" : "s"} and ${bus.blur.hits.size} hit${bus.blur.hits.size === 1 ? "" : "s"}` : "nothing on the loop"}` : bus.seen?.length ? `; ${bus.seen.join(", ")} seen, not owned${bus.seenReasons?.Blur ? ` (${bus.seenReasons.Blur})` : ""}` : "";
+  // Step 4b: Profane from your Wilt applications, the Reaps on applying an ailment.
+  const inflictReaps = Object.entries(bus.owned.inflictReaps || {});
+  const inflictText = `${bus.owned.profane ? "; Profane from 0, held 10 s from each application of yours that fits its gain, read on its line's hit parts and DoTs" : bus.seenReasons?.Profane ? `; Profane seen, not owned (${bus.seenReasons.Profane})` : ""}${inflictReaps.length ? `; ${inflictReaps.map(([key, ailments]) => `${key} fired by ${ailments.join(", ")} applications`).join("; ")}` : ""}`;
+  const stacksText = bus.owned.reapStacks?.length ? `; Reaping Duration stacks from 0 on the Reaps (${bus.owned.reapStacks.join("; ")}), each Reap's seconds at the stacks held on its tick` : "";
+  // Step 3c: your Minions' hits and your Regains.
+  const minionRegainText = `${bus.ids.has(1000047) ? "; your Minions' hits raise 1000047 (and their own 1000033 / 1000030 on them)" : ""}${bus.regainPools?.length ? `; your Regains (${bus.regainPools.map((pool) => `${pool.key === "life" ? "Life" : "Energy Shield"} every ${pool.intervalSeconds} s`).join(", ")}) on your hits` : ""}${bus.owned.eventBlessings?.length ? `; ${bus.owned.eventBlessings.join(", ")} Blessing renewed by Regains or your Minions' damage` : ""}${bus.owned.regainWindows?.length ? `; "Regained in the last N s" lines (${bus.owned.regainWindows.length}) from 0 on the Regains` : ""}`;
+  report.events = `trigger ${[...bus.ids].join(", ")} raised by ${raised.join(", ")}; ${bus.listeners.length} listener${bus.listeners.length === 1 ? "" : "s"}: ${owned.length ? `${owned.join(", ")} held on the dummy while an event that could have put it there is younger than its duration (expected values)` : "no buff on the dummy"}${bus.owned.blessings.length ? `; ${bus.owned.blessings.join(", ")} Blessing gains through the chance accumulator` : ""}${bus.owned.reapBlessings?.length ? `; ${bus.owned.reapBlessings.join(", ")} Blessing gains on your Reaps` : ""}${blurText}${inflictText}${stacksText}${useText}${minionRegainText}${bus.owned.firstFlake ? "; First Flake of Strange Snow's deemed Frostbite Rating counts the types on the loop" : ""}${read.size ? `; read on the loop by ${[...read].join(", ")}` : ""}`;
 }
 
 export function tidewellLayer(ctx) {
@@ -385,8 +530,11 @@ function followerParalysisSkill(ctx, effect) {
 }
 
 export function paralysisLayer(ctx) {
-  const effect = (ctx.planner.lineEffects?.combat?.timedEffects || []).find((item) => item.id === "chanceParalysis" && item.active);
-  if (!ctx.isLive("paralysis") || !effect) return;
+  // The one Paralysis debuff's series from the dummy's unit buff set (W8 step 3: the combat pass's support-chance schedule), else the timed effect.
+  const buffs = enemyBuffSet(ctx.planner.lineEffects?.state), series = buffs?.seriesOf("Paralysis");
+  const effect = buffs ? (series ? { source: series.source, text: series.text, reason: series.reason, parts: [series.part] } : null) : (ctx.planner.lineEffects?.combat?.timedEffects || []).find((item) => item.id === "chanceParalysis" && item.active);
+  // The trigger bus holds the whole Paralysis series when it drives both of your triggers (W10 step 2a): the follower's casts are one of its clocks.
+  if (!ctx.isLive("paralysis") || !effect || ctx.bus?.owned.paralysis) return;
   const skill = followerParalysisSkill(ctx, effect);
   if (!skill) return;
   const part = effect.parts[0];
@@ -402,7 +550,9 @@ export function paralysisLayer(ctx) {
 
 // An ailment lands on the hit of whoever inflicts it: the follower skill the planner names, else the targets dealing that type, else every target.
 function addAilmentEvent(ctx, type, effect, dealt = null) {
-  const skill = String(ctx.planner.lineEffects?.state?.enemyAilmentSources?.[type] || "").match(/^Follower: (.+?) [IVX]+\b/)?.[1];
+  // The first source of the enemy-ailment model's entry on the dummy's unit buff set (src/unit-buff-set.js, W8 step 1), else its source map.
+  const buffs = enemyBuffSet(ctx.planner.lineEffects?.state);
+  const skill = String((buffs ? buffs.primary(type, { stage: "model" })?.source : ctx.planner.lineEffects?.state?.enemyAilmentSources?.[type]) || "").match(/^Follower: (.+?) [IVX]+\b/)?.[1];
   if (skill) {
     if (!ctx.followerEvents.has(skill)) ctx.followerEvents.set(skill, []);
     ctx.followerEvents.get(skill).push(effect);
@@ -425,7 +575,14 @@ export function frailLayer(ctx) {
 export function frostbiteLayer(ctx) {
   if (!ctx.isLive("frostbite")) return;
   let any = false;
-  for (const target of ctx.targets) for (const line of target.claim("frostbite", (line) => /^Frostbite\b/.test(line.source) || /against Frozen enemies/.test(line.text))) { target.addModifier(line, { buff: "frostbite", percent: line.value, steadyAmount: line.value }); any = true; }
+  // First Flake of Strange Snow on the trigger bus (W10 step 2a): the Frostbite line's Cold Damage taken is linear in the rating, so it reads the
+  // deemed rating on this tick ÷ the planner's (exactly 1 while the deemed bonus is the planner's), while Frostbite is held.
+  const firstFlake = ctx.bus?.owned.firstFlake ? ctx.bus : null;
+  for (const target of ctx.targets) for (const line of target.claim("frostbite", (line) => /^Frostbite\b/.test(line.source) || /against Frozen enemies/.test(line.text))) {
+    if (firstFlake && /^Frostbite \(keyword 735/.test(line.source) && /Cold Damage taken$/.test(line.text)) target.addModifier(line, { requires: ["frostbite"], percent: line.value, amount: (world) => line.value * firstFlake.firstFlakeScale(world), steadyAmount: line.value });
+    else target.addModifier(line, { buff: "frostbite", percent: line.value, steadyAmount: line.value });
+    any = true;
+  }
   if (!any) return;
   addAilmentEvent(ctx, "Frostbite", { kind: "buff", buff: "frostbite", seconds: AILMENT_SECONDS.Frostbite }, "Cold");
   ctx.reported("frostbite").events = "the first Cold hit inflicts the fixed rating (manual), so Frozen too at 100+; each hit renews it";
@@ -433,20 +590,26 @@ export function frostbiteLayer(ctx) {
 
 export function numbedLayer(ctx) {
   if (!ctx.isLive("numbed")) return;
-  const effect = (ctx.planner.lineEffects?.combat?.timedEffects || []).find((item) => item.id === "numbed");
-  const part = effect?.parts?.[0];
+  // Numbed's stack series from the dummy's unit buff set (W8 step 3), else the combat pass's timed effect.
+  const buffs = enemyBuffSet(ctx.planner.lineEffects?.state);
+  const part = buffs ? buffs.seriesOf("Numbed")?.part ?? undefined : (ctx.planner.lineEffects?.combat?.timedEffects || []).find((item) => item.id === "numbed")?.parts?.[0];
   const maxStacks = part?.schedule?.maxStacks ?? 10;
   const stacks = ctx.options.numbedStacks ?? maxStacks;
+  // Numbed only your Minions keep, held by the trigger bus from their Lightning landings (W10 step 3c): its stacks the planner's (src/combat-states.js
+  // minionNumbedStacks: stacks × the share) scaled by the bus's share on this tick over the planner's.
+  const busShare = ctx.bus?.ownsMinionAilment?.("Numbed") ? ctx.bus.minionAilmentShare("Numbed") : null;
   let any = false;
   for (const target of ctx.targets) {
     const line = target.claimPattern("numbed", /^Numbed\b/)[0];
     if (!line) continue;
     const perStack = part?.percent ?? line.value / maxStacks;
-    target.addModifier(line, { collector: "numbed", perStack: true, percent: perStack, capPercent: perStack * stacks, steadyAmount: line.value });
+    if (busShare > 0) target.addModifier(line, { percent: line.value, amount: (world) => line.value * world.bus.share("Numbed") / busShare, steadyAmount: line.value });
+    else target.addModifier(line, { collector: "numbed", perStack: true, percent: perStack, capPercent: perStack * stacks, steadyAmount: line.value });
     for (const id of TIMED_IDS.numbed) target.timedIds.add(id);
     any = true;
   }
   if (!any) return;
+  if (busShare > 0) { ctx.reported("numbed").events = "held by the trigger bus from your Minions' Lightning landings (2 s each), its stacks the planner's × the loop's share over the planner's"; return; }
   ctx.collectors.push({ key: "numbed", windowSeconds: AILMENT_SECONDS.Numbed });
   addAilmentEvent(ctx, "Numbed", { kind: "collect", collector: "numbed" }, "Lightning");
   ctx.reported("numbed").events = `one stack per Numbing hit, each on its own ${AILMENT_SECONDS.Numbed} s (keyword 762), up to ${stacks}; the per-damage threshold is not counted (open question tick-numbed-stacks)`;
@@ -457,34 +620,125 @@ export function curseLayer(ctx) {
   let any = false;
   for (const target of ctx.targets) for (const line of target.claimPattern("curse", /curse \(Lv\./)) { target.addModifier(line, { buff: "curse", percent: line.value, steadyAmount: line.value }); any = true; }
   if (!any || !ctx.first("curse")) return;
-  const skill = ctx.planner.curseLimit?.active?.[0] || "Curse";
+  const buffs = enemyBuffSet(ctx.planner.lineEffects?.state);
+  const skill = (buffs ? buffs.seriesOf("Curse")?.skill : ctx.planner.curseLimit?.active?.[0]) || "Curse";
   const interval = prepareEvery(ctx.planner, skill) ?? FRAME_SECONDS;
   // Terrain of Malice holds the curse on enemies in the area, so one cast keeps it (src/skill-coverage.js: curse uptime is continuous).
   ctx.triggers.push({ key: "curse", actor: "player", label: `${skill} (Preparation every ${interval} s)`, intervalSeconds: interval, effects: [{ kind: "buff", buff: "curse", seconds: Infinity }] });
   ctx.reported("curse").events = `Preparation's first check (node 206, inCdOnCreating false) casts it on tick 1; one cast holds it`;
 }
 
+// Per-ailment-type lines (W10 step 4a): every line that counts the dummy's ailment types, each body read the planner's way (src/line-conditions.js):
+// "for every type of Ailment the enemy has" (condition ailmentTypes: Warlock (6,3), Dirty Tricks, Elder Sage Girdle) counts every type, "for each
+// type of Elemental Ailment" (elementalAilmentTypes: Goddess of Knowledge's penetration) the Elemental ones (game keyword 101: Ignite, Frostbite,
+// Freeze, Numbed). An increased, additional or penetration body is its per-type value × the types held now (the planner's factor, a sum; "per
+// Ailment on enemies, up to" capped at its count), a "(multiplies)" body (1 + X%)^n (the planner's power). n counts each type on the dummy on this
+// tick: a type your hits (or the follower's) keep, held from its own inflicting hit for the ailment's duration; a type only your Minions keep
+// (src/minion-ailment-types.js), its share of the tick: the trigger bus's hold from their landings when it drives 1000047 (W10 step 3c), else the
+// planner's uptime (nothing on the layers runs their ailments). The hit bodies come out of each hit's ledger (a penetration body out of the
+// resistance step, as penetrationLayer does); the Minion bodies ("When Minions deal damage, …") reach the Minions' paths as their factor over the
+// planner's (minionTypeModifiers, src/tick-minions.js: a Minion path carries the planner's per-use value). A DoT body keeps the planner's reading
+// (trauma-build's "+X% additional Ailment Damage (multiplies)": the beam's types would need the loop's ailment runs, not hit events).
+const TYPE_CONDITIONS = new Set(["ailmentTypes", "elementalAilmentTypes"]);
+const ELEMENTAL_AILMENT_TYPES = new Set(["Ignite", "Frostbite", "Freeze", "Frozen", "Numbed"]);
+// The types held on this tick from a count's entries (the engine's count rule, src/tick-engine.js modifierAmount).
+const typesHeldAt = (world, entries) => entries.reduce((sum, entry) => sum + (entry.held ? 1 : entry.level ? entry.level(world) : (world.buffs.get(entry.buff)?.stacks || 0) > 0 ? 1 : 0), 0);
+// A body's factor at n types: (1 + X%)^n multiplied, else 1 + X% × min(cap, n).
+const typeFactorAt = (line, n) => line.multiplies ? (1 + line.perType / 100) ** n : 1 + line.perType * Math.min(line.capCount ?? Infinity, n) / 100;
+
 export function ailmentTypeLayer(ctx) {
   if (!ctx.isLive("ailmentTypes")) return;
-  const source = (ctx.planner.lineEffects?.lines || []).find((line) => line.condition === "ailmentTypes" && !/Minion/.test(line.text));
-  const percent = Number((String(source?.text).match(/\+([\d.]+)% additional Hit Damage \(multiplies\)/) || [])[1]);
   const state = ctx.planner.lineEffects?.state || {};
-  if (!source || !(percent > 0)) return;
-  const types = state.enemyAilments || [];
+  const sources = (ctx.planner.lineEffects?.lines || []).filter((line) => TYPE_CONDITIONS.has(line.condition) && line.status === "In calc" && line.active !== false && (line.bodies || []).some((body) => body.derivedText));
+  if (!sources.length) return;
+  const buffs = enemyBuffSet(state);
+  const all = buffs?.types() ?? state.enemyAilments ?? [];
+  const elemental = buffs ? buffs.types("ElementalAilment") : all.filter((type) => ELEMENTAL_AILMENT_TYPES.has(type));
+  // A type only your Minions keep: held by the trigger bus from their landings (W10 step 3c), else at the planner's uptime.
+  const fromBus = (type) => Boolean(ctx.bus?.ownsMinionAilment?.(type));
+  // (With TLI_BUFF_SET=off: the planner's own map of the types only your Minions keep, with their uptime.)
+  const minionUptime = state.enemyAilmentUptime || {};
+  const minionOnly = (type) => buffs ? buffs.heldOnlyBy(type, "minion", { stage: "model" }) : Object.prototype.hasOwnProperty.call(minionUptime, type);
+  const minionShare = (type) => buffs ? buffs.share(type, { stage: "model" }) : Number(minionUptime[type]) || 0;
+  const entryOf = (type) => fromBus(type) ? { level: (world) => world.bus.share(type) } : minionOnly(type) ? { level: () => minionShare(type) } : { buff: `ailment:${type}` };
+  const minions = (ctx.planner.minions || []).filter((minion) => minion?.modeled);
+  const minionLists = (minion) => (minion.skills || []).flatMap((skill) => [...(skill.increased || []), ...(skill.additional || [])]);
+  const report = ctx.reported("ailmentTypes"), described = [];
   let any = false;
-  for (const target of ctx.targets) {
-    const line = target.claim("ailmentTypes", (item) => item.source === source.source && /additional Hit Damage$/.test(item.text))[0];
-    if (!line) continue;
-    target.addModifier(line, { count: types.map((type) => ({ buff: `ailment:${type}` })), percent, steadyAmount: line.value });
-    any = true;
+  ctx.ailmentTypeMinion = [];
+  for (const source of sources) {
+    const types = source.condition === "elementalAilmentTypes" ? elemental : all;
+    const count = types.map(entryOf), multiplies = Boolean(source.params?.multiplies);
+    const capCount = Number(source.params?.capCount) > 0 ? Number(source.params.capCount) : undefined;
+    for (const body of source.bodies || []) {
+      const perType = Number(String(body.body ?? "").match(/^([+-]?[\d.]+)/)?.[1]);
+      if (!body.derivedText || !Number.isFinite(perType) || !perType) continue;
+      const read = { source: source.source, text: body.derivedText, perType, multiplies, capCount, count };
+      const how = multiplies ? `(1 + ${perType}%)^n` : `${perType}% × n${capCount ? ` (n up to ${capCount})` : ""}`;
+      let reached = false;
+      for (const target of ctx.targets) {
+        if (/Resistance Penetration$/.test(body.derivedText)) {
+          // Through the resistance step: each part's static factor loses the planner's held penetration and the modifier puts back the loop's.
+          const value = Number(body.derivedText.match(/^\+([\d.]+)%/)?.[1]);
+          const holders = value > 0 ? target.parts.filter((part) => inList(target.componentOf(part)?.penetration, read)) : [];
+          if (!holders.length) continue;
+          for (const part of holders) {
+            const component = target.componentOf(part), net = part.netResistancePercent ?? component.resistancePercent - component.penetrationPercent;
+            part.base *= (100 - net - value) / (100 - net);
+            part.netResistancePercent = net + value;
+          }
+          target.modifiers.push({ source: source.source, text: body.derivedText, layer: "penetration", liveKey: "ailmentTypes", count, linear: true, ...(capCount ? { capCount } : {}), percent: perType, parts: holders.map((part) => part.key), steadyAmount: value });
+          if (!reached) report.lines.push({ layer: "penetration", source: source.source, text: body.derivedText, value });
+          reached = true;
+          continue;
+        }
+        for (const line of target.claim("ailmentTypes", (item) => item.source === source.source && item.text === body.derivedText)) {
+          target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", count, percent: perType, ...(multiplies ? {} : { linear: true, ...(capCount ? { capCount } : {}) }), steadyAmount: line.value });
+          reached = true;
+        }
+      }
+      // A Minion body: kept for src/tick-minions.js when a modeled Minion's skill holds it.
+      const onMinions = minions.some((minion) => minionLists(minion).some((item) => item.source === read.source && item.text === read.text));
+      if (onMinions) { ctx.ailmentTypeMinion.push(read); report.lines.push({ layer: "minion", source: source.source, text: body.derivedText, value: Number(body.derivedText.match(/^\+([\d.]+)%/)?.[1]) || 0 }); }
+      if (reached || onMinions) { any = true; described.push(`${source.source} ${how}${onMinions && !reached ? " (Minions)" : onMinions ? " (and its Minions)" : ""}`); }
+    }
   }
   if (!any || !ctx.first("ailmentTypes")) return;
-  for (const type of types) addAilmentEvent(ctx, type, { kind: "buff", buff: `ailment:${type}`, seconds: AILMENT_SECONDS[type] ?? 4 }, type === "Frostbite" || type === "Frozen" ? "Cold" : type === "Numbed" ? "Lightning" : null);
-  ctx.reported("ailmentTypes").events = `(1 + ${percent}%)^n with n the ailment types held now: ${types.join(", ")}, each on its own inflicting hit`;
+  const eventTypes = [...new Set([...all, ...elemental])].filter((type) => !fromBus(type) && !minionOnly(type));
+  for (const type of eventTypes) addAilmentEvent(ctx, type, { kind: "buff", buff: `ailment:${type}`, seconds: AILMENT_SECONDS[type] ?? 4 }, type === "Frostbite" || type === "Frozen" ? "Cold" : type === "Numbed" ? "Lightning" : null);
+  const minionTypes = [...new Set([...all, ...elemental])].filter((type) => fromBus(type) || minionOnly(type));
+  report.events = `${described.join("; ")}, with n the ailment types held now: ${eventTypes.join(", ")}, each on its own inflicting hit${minionTypes.length ? `; ${minionTypes.join(", ")} only your Minions keep, at ${minionTypes.some(fromBus) ? "the trigger bus's share from their landings" : "the planner's uptime"}` : ""}`;
+}
+
+/**
+ * The per-type Minion bodies on one Minion skill's path (W10 step 4a; src/tick-minions.js): the path's base holds the planner's per-use value, so
+ * each body goes on as its factor at the types held now over the planner's: an additional one (1 + X%)^n ÷ its held factor, an increased one
+ * (100 + I − held + X × n) ÷ (100 + I) on the skill's increased pool I. steadyAmount 0: at the planner's count the factor is 1.
+ */
+export function minionTypeModifiers(ctx, minion, skillName) {
+  const lines = ctx?.ailmentTypeMinion || [];
+  const skill = (minion?.skills || []).find((item) => item.name === skillName);
+  if (!lines.length || !skill) return [];
+  const out = [];
+  for (const line of lines) {
+    const additional = (skill.additional || []).find((item) => item.source === line.source && item.text === line.text);
+    const increased = (skill.increased || []).find((item) => item.source === line.source && item.text === line.text);
+    if (additional) {
+      const held = 1 + (Number(additional.value) || 0) / 100;
+      if (held > 0) out.push({ source: line.source, text: `${line.text} (Minions), at the ailment types held now`, liveKey: "ailmentTypes", layer: "additional", steadyAmount: 0, amount: (world) => (typeFactorAt(line, typesHeldAt(world, line.count)) / held - 1) * 100 });
+    }
+    if (increased) {
+      const pool = 100 + (Number(skill.increasedSum) || 0), held = Number(increased.value) || 0;
+      if (pool > 0) out.push({ source: line.source, text: `${line.text} (Minions), at the ailment types held now`, liveKey: "ailmentTypes", layer: "additional", steadyAmount: 0, amount: (world) => ((pool - held + (typeFactorAt(line, typesHeldAt(world, line.count)) - 1) * 100) / pool - 1) * 100 });
+    }
+  }
+  return out;
 }
 
 export function markLayer(ctx) {
-  const { mark } = ctx.planner, line = mark?.critOnlyLine, source = mark?.sources?.find((item) => item.on === "crit");
+  // The Mark's chance per crit from the dummy's unit buff set (W8 step 3), else the planner's crit source.
+  const buffs = enemyBuffSet(ctx.planner.lineEffects?.state);
+  const { mark } = ctx.planner, line = mark?.critOnlyLine, source = buffs ? buffs.seriesOf("Mark") : mark?.sources?.find((item) => item.on === "crit");
   if (!ctx.isLive("mark") || !line || !source) return;
   let any = false;
   for (const target of ctx.targets) {
@@ -617,7 +871,7 @@ export function followerProgram(ctx) {
 // With CDR ≥ 40% the refill is full, so the events reproduce the planner's held stacks exactly; below it the stacks saw-tooth between casts.
 export function trueFlameLayer(ctx) {
   const target = ctx.targets.find((item) => item.hit.name === "True Flame Immolation" && item.hit.rate?.usesPerSecond > 0);
-  const entries = (ctx.planner.blessings?.entries || []).filter((entry) => ["Focus", "Tenacity"].includes(entry.name) && entry.consumptionCycle?.source === "True Flame Immolation");
+  const entries = ownBlessingEntries(ctx.planner).filter((entry) => ["Focus", "Tenacity"].includes(entry.name) && entry.consumptionCycle?.source === "True Flame Immolation");
   if (!target || entries.length !== 2) return;
   const stacksOf = (world, key) => world.buffs.get(key)?.stacks || 0;
   const held = entries.reduce((sum, entry) => sum + (entry.consumptionCycle.held ?? entry.stacks), 0);
@@ -636,16 +890,16 @@ export function trueFlameLayer(ctx) {
     const buff = entry.name.toLowerCase(), cycle = entry.consumptionCycle, max = cycle.maxStacks ?? entry.maxStacks;
     target.after.push({ kind: "consume", buff, stacks: 1e9 });
     const refill = cycle.fills ? max : cycle.refill ?? 0;
-    if (refill > 0) target.after.push({ kind: "buff", buff, seconds: Infinity, stacks: refill, maxStacks: max });
+    if (refill > 0) target.after.push({ kind: "buff", buff, seconds: Infinity, stacks: refill, maxStacks: max, layered: true });
     // Other gains between casts at their rate (a timed line, an Elixir cast): one stack per 1 ÷ rate s.
-    if (cycle.gainPerSecond > 0 && !cycle.fills && ctx.first(`trueFlameGain:${buff}`)) ctx.periodics.push({ key: `trueFlameGain:${buff}`, actor: "player", label: `${entry.name} Blessing gains between True Flame casts`, intervalSeconds: 1 / cycle.gainPerSecond, effects: [{ kind: "buff", buff, seconds: Infinity, stacks: 1, maxStacks: max }] });
-    if (ctx.prebuilt && buff === "tenacity" && ctx.first("tenacityStart")) ctx.initialBuffs.push({ buff, stacks: cycle.held ?? entry.stacks, seconds: Infinity });
+    if (cycle.gainPerSecond > 0 && !cycle.fills && ctx.first(`trueFlameGain:${buff}`)) ctx.periodics.push({ key: `trueFlameGain:${buff}`, actor: "player", label: `${entry.name} Blessing gains between True Flame casts`, intervalSeconds: 1 / cycle.gainPerSecond, effects: [{ kind: "buff", buff, seconds: Infinity, stacks: 1, maxStacks: max, layered: true }] });
+    if (ctx.prebuilt && buff === "tenacity" && ctx.first("tenacityStart")) ctx.initialBuffs.push({ buff, stacks: cycle.held ?? entry.stacks, seconds: Infinity, layered: true });
   }
   ctx.reported("trueFlame").events = `each cast reads Focus ${focus.consumptionCycle.held} and Tenacity ${tenacity.consumptionCycle.held} (the planner's held stacks), removes them all and grants ${focus.consumptionCycle.refill} / ${tenacity.consumptionCycle.refill} back (${Math.round(focus.consumptionCycle.cooldownRecoveryPercent * 100) / 100}% Cooldown Recovery Speed)`;
 }
 
 /** The general builders in their order; the Youga program interleaves its own among them (src/tick-youga-layers.js). */
-export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, timedLayer, followerProgram]);
+export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, timedLayer, followerProgram]);
 
 /** What stays held on purpose on any build, with why. */
 export function generalHeldLayers(ctx) {

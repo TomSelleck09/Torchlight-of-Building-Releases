@@ -327,7 +327,7 @@ export function hitLineFromFacts(facts, textParsed, state = null) {
       // Spells and Attacks alike.
       const any = to.has("any"), spells = to.has("Spell") || any, attacks = to.has("Attack") || any;
       if (!spells && !attacks) return undefined;
-      return { kind: "added", min: fact.min, max: fact.max, type: fact.type, to: spells ? "spells" : "other", alsoAttacks: attacks, recipe };
+      return { kind: "added", min: fact.min, max: fact.max, type: fact.type, to: spells ? "spells" : "other", alsoAttacks: attacks, addedTo: [...to], recipe };
     }
     case "castSpeed": return ownTags.length ? undefined : { kind: "castSpeed", value: fact.value, additional: fact.layer === "additional", recipe };
     case "cooldownRecovery": return ownTags.length ? undefined : { kind: "cooldownRecovery", value: fact.value, additional: fact.layer === "additional", recipe };

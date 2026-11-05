@@ -146,7 +146,10 @@ export function ailmentAppliersFor({ ailmentKey, candidates = [], modifierTexts 
       // Alternate Spacetime Youga: Hound's Fangs (14849901) and Shadow Shot (15240669) are typed writes on trigger 1000031 of this
       // skill with no Hit tag, so they reach the skill's own ailment of that type (core-formulas §14).
       const typedOwn = new RegExp(`additional ${AILMENT_DAMAGE_TYPE[ailmentKey]} Damage`, "i");
-      const hitLines = (candidate.hit?.primary?.additional || []).filter((line) => (/^(?:Support: |Activation Medium: Terra )/.test(line.source || "") && supportedSkillAdditional.test(line.text || "") && !line.condition) || line.source === `${candidate.name} level ${candidate.level}` || (/^Selves of All Realms: (?:Hound's Fangs|Shadow Shot) /.test(line.source || "") && typedOwn.test(line.text || "")));
+      // Youga's Clockwork Core bonuses (attr 5719 on tag 6300059, Core-fired casts): the ailment request keeps 6300059 (config_skill_tag
+      // whitelist, research/oq-r1-r2-rea-2026-11-04.md R2, proven), so the ailments those casts inflict take them; every hit of a
+      // Core-supported skill is Core-fired, so the share is 1 (src/youga-ultimate-one.js markCore).
+      const hitLines = (candidate.hit?.primary?.additional || []).filter((line) => (/^(?:Support: |Activation Medium: Terra )/.test(line.source || "") && supportedSkillAdditional.test(line.text || "") && !line.condition) || line.source === `${candidate.name} level ${candidate.level}` || (/^Selves of All Realms: (?:Hound's Fangs|Shadow Shot) /.test(line.source || "") && typedOwn.test(line.text || "")) || line.clockworkCore === true);
       let own = 1;
       for (const line of [...hitLines, ...ownAilmentSupportLines(candidate.setup, ailmentKey)]) { own *= 1 + line.value / 100; scaleSources.push({ source: line.source, text: line.text, factor: 1 + line.value / 100 }); }
       if (!hitLines.some((line) => line.source === `${candidate.name} level ${candidate.level}`) && candidate.level > 20) {
@@ -212,8 +215,12 @@ export function ailmentAppliersFor({ ailmentKey, candidates = [], modifierTexts 
     // "+X% chance for Attacks to inflict Damaging Ailments" (gear affix batch D; game affix 101080109: the three chance fields
     // 2006480 / 2006510 / 2006520 on the Attack tag 6001090): an Attack Skill's applications only, the main one included.
     const attackChance = tags.has("attack") ? attackAilmentChanceLines(ailmentKey, modifierTexts) : [];
-    if (!isMain || globalChanceSources || attackChance.length) {
-      const chance = skillAilmentChance({ ailmentKey, globalSources: [...globalChance, ...attackChance], setup: candidate.setup });
+    // "+X% chance for Critical Strikes to inflict Damaging Ailments" (101080205: the three chance fields on the Critical Strike tag
+    // 5001010; wiring audit gap 3, 2026-11-03): only the applications a Critical Strike makes take it, so each skill's chance adds
+    // X × its crit chance (exact while chance + X stays within 100%; provisional). The beam's Ignite keeps its ledger (not read there).
+    const critChance = !candidate.beam && Number(candidate.critChancePercent) > 0 ? critAilmentChanceLines(ailmentKey, modifierTexts, candidate.critChancePercent) : [];
+    if (!isMain || globalChanceSources || attackChance.length || critChance.length) {
+      const chance = skillAilmentChance({ ailmentKey, globalSources: [...globalChance, ...attackChance, ...critChance], setup: candidate.setup });
       ({ sources: chanceSources, percent: chancePercent, rawPercent: rawChancePercent, shownPercent: shownChancePercent } = chance);
     }
     // B8: the skill's own scoped base and its supports' extra stacks belong to its applications only.
@@ -240,6 +247,20 @@ export function attackAilmentChanceLines(ailmentKey, modifierTexts = []) {
   return modifierTexts.flatMap((line) => {
     const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(ATTACK_AILMENT_CHANCE);
     return match && (/^Damaging Ailments$/i.test(match[2]) || match[2].toLowerCase() === name) ? [{ source: line.source, text: `${line.text} (Attack Skills)`, value: Number(match[1]) * (line.multiplier ?? 1) }] : [];
+  });
+}
+
+// Crit-scoped ailment chance lines ("+X% chance for Critical Strikes to inflict Damaging Ailments", 101080205): the share of a skill's
+// applications its Critical Strikes make, X × crit chance (wiring audit gap 3, 2026-11-03).
+export const CRIT_AILMENT_CHANCE = /^\+?([+-]?\d+(?:\.\d+)?)% chance for Critical Strikes to inflict (Damaging Ailments|Ignite|Trauma|Wilt)$/i;
+export function critAilmentChanceLines(ailmentKey, modifierTexts = [], critChancePercent = 0) {
+  const name = String(ailmentDefinitions[ailmentKey]?.name || "").toLowerCase();
+  const crit = Math.max(0, Math.min(100, Number(critChancePercent) || 0)) / 100;
+  return modifierTexts.flatMap((line) => {
+    const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(CRIT_AILMENT_CHANCE);
+    if (!match || line.origin === "derived" || !(/^Damaging Ailments$/i.test(match[2]) || match[2].toLowerCase() === name)) return [];
+    const value = Number(match[1]) * (line.multiplier ?? 1);
+    return [{ source: line.source, text: `${line.text} × ${Math.round(crit * 10000) / 100}% crit chance (Critical Strikes' applications)`, value: value * crit }];
   });
 }
 

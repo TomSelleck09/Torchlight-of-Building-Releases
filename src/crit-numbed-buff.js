@@ -24,9 +24,10 @@ const round = (value) => Math.round(value * 10000) / 10000;
  * @param {Map<string, object>|null} p.hitRateFacts setupKey → { critHitsPerSecond } from the planner's hit pass (null before it)
  * @returns {{ lines: object[], entries: object[], setupKeys: string[] }}
  */
-export function resolveCritNumbedBuffs({ setups = [], activeNames = new Set(), enemyAilments = [], lightningHitters = new Map(), hitRateFacts = null } = {}) {
+export function resolveCritNumbedBuffs({ setups = [], activeNames = new Set(), enemyAilments = [], enemyBuffs = null, lightningHitters = new Map(), hitRateFacts = null } = {}) {
   const entries = [];
-  const numbed = enemyAilments.includes("Numbed");
+  // Numbed on the dummy from its unit buff set (W8 step 2; `enemyBuffs`), else the names list.
+  const numbed = enemyBuffSet(enemyBuffs)?.holds("Numbed") ?? enemyAilments.includes("Numbed");
   for (const setup of setups) {
     if (setup.enabled === false || !activeNames.has(setup.name)) continue;
     for (const clause of (setup.supportEffects?.clauses || []).filter((item) => item.family === "critBuff" && item.kind === "numbedEffect")) {
@@ -46,4 +47,5 @@ export function resolveCritNumbedBuffs({ setups = [], activeNames = new Set(), e
   const strongest = entries.filter((entry) => entry.active).sort((a, b) => b.value - a.value)[0] || null;
   const lines = strongest ? [{ text: `+${strongest.value}% Numbed Effect`, source: `${strongest.skill}: ${strongest.support} (+${strongest.base}% Numbed Effect for ${strongest.seconds} s on Critical Strike × ${strongest.uptime} uptime; the stronger Numbed the dummy keeps)`, origin: "derived", multiplier: 1, critNumbedBuff: true }] : [];
   return { lines, entries, setupKeys: entries.map((entry) => entry.setupKey) };
-}
+}import { enemyBuffSet } from "./unit-buff-set.js";
+

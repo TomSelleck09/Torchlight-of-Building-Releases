@@ -15,9 +15,12 @@
 // resolveBatch4Condition below, and their badge is censusStatus's (In calc, Provisional for a provisional reading, Inactive with the
 // reason when the condition does not hold). Without a planner state (direct engine calls, the census) nothing is applied (Provisional).
 // Provisional readings: open questions support-conditional-batch4-* in src/open-questions.js.
+import { enemyBuffSet, ownCombatHeld } from "./unit-buff-set.js";
 import { dummyTarget, explicitRadiusHolds, DISTANT_STANDING_METERS } from "./dummy-target.js";
 import { WEAPON_WORDS, RECENTLY_SECONDS } from "./line-conditions.js";
 import { allSkillEffectsSs13 } from "./data/skills/all-skill-effects-ss13.generated.js";
+// Your Fervor Rating on your unit buff set (W9 step 2: a level), else the support state's field (TLI_BUFF_SET=off).
+const ownFervorRating = (state) => Number(ownCombatHeld(state)?.fervorRating ?? state?.fervorRating) || 0;
 
 const N = "([+-]?\\d+(?:\\.\\d+)?)";
 const num = (value) => Number(String(value).replace("−", "-"));
@@ -200,15 +203,35 @@ function projectileQuantityBonus(full, state) {
   const build = Number(state.projectileQuantityBuild) || 0;
   return { own, build, total: own + build };
 }
-function skillAreaState(full, state) {
+// The skill's own Skill Area buff ("This skill X% Skill Area for each stack of buff … Stacks up to N time(s)", granted "when this skill
+// defeats an enemy or hits an Elite": Berserking Blade, buff 10060 / 101010414 on "this skill"): the dummy is an Elite, so the stacks are
+// held at their cap with own buffs built before engaging, else the 20 s window's average of a build from 0 at the hit rate (2026-11-05).
+function ownSkillAreaBuff(full, state, hitsRate) {
+  const text = (allSkillEffectsSs13[full.skillName] || []).join("\n");
+  const per = text.match(/^This skill ([\d.]+)% Skill Area for each stack of buff$/im);
+  const cap = text.match(/^Stacks up to (\d+) time\(s\)\.?$/im);
+  if (!per || !cap || !/Grant a stack of buff when this skill (?:defeats an enemy or )?hits an Elite/i.test(text)) return null;
+  const held = ownStacks(num(cap[1]), hitsRate, state.prebuiltSelfBuffs !== false);
+  return { value: round(num(per[1]) * held.stacks), text: `${full.skillName}'s own buff: ${num(per[1])}% × ${round(held.stacks)} stacks (the dummy is an Elite; ${held.text})` };
+}
+// The hit's Skill Area: the stat sheet's increased lines, the combat-only increased writes the sheet leaves out (`state.combatSkillArea`:
+// Fervor's added base effect, Baptism: Impassive), the skill's own buff and this skill's supports (increased); the supports' additional
+// lines. Node 114 reads the source on the hit's own query, so every write the Steep Strike query holds counts (records in
+// research/oq-rosa-build-2026-11-04.md §6; 2026-11-05).
+function skillAreaState(full, state, hitsRate = null) {
   const texts = setupTexts(full);
   const sheet = Number(state.skillAreaPercent) || 0;
   const supportIncreased = lineValue(texts, SUPPORT_AREA);
+  const own = ownSkillAreaBuff(full, state, hitsRate);
+  const combat = [...(state.combatSkillArea || []).filter((item) => item.value), ...(own?.value ? [own] : [])];
+  const combatIncreased = combat.reduce((sum, item) => sum + item.value, 0);
   const additional = texts.flatMap((text) => { const match = String(text).match(SUPPORT_AREA_ADDITIONAL); return match ? [num(match[1])] : []; });
-  const increased = sheet + supportIncreased;
-  const total = ((1 + increased / 100) * additional.reduce((product, value) => product * (1 + value / 100), 1) - 1) * 100;
-  return { sheet, supportIncreased, increased, additional, additionalSum: additional.reduce((a, b) => a + b, 0), total };
+  const increased = sheet + supportIncreased + combatIncreased;
+  const additionalProduct = additional.reduce((product, value) => product * (1 + value / 100), 1);
+  const total = ((1 + increased / 100) * additionalProduct - 1) * 100;
+  return { sheet, supportIncreased, combat, combatIncreased, increased, additional, additionalSum: additional.reduce((a, b) => a + b, 0), additionalCombined: (additionalProduct - 1) * 100, total };
 }
+const combatAreaText = (area) => area.combat.length ? ` + combat ${area.combat.map((item) => `${round(item.value)}% (${item.text || item.source})`).join(" + ")}` : "";
 // Own-buff stacks: at their cap with own buffs built before engaging; else the 20 s window's average of a linear build from 0 at
 // `perSecond` stacks per second (provisional).
 function ownStacks(cap, perSecond, prebuilt) {
@@ -220,7 +243,7 @@ function ownStacks(cap, perSecond, prebuilt) {
 }
 const skillGainsFervor = (skillName) => (allSkillEffectsSs13[skillName] || []).some((text) => /Gains Fervor when this skill hits/i.test(String(text)));
 function heldFervor(full, state) {
-  const own = Number(state.fervorRating) || 0;
+  const own = ownFervorRating(state);
   if (own > 0) return { rating: own, text: `the build's Fervor Rating ${round(own)} (src/combat-states.js)` };
   if (skillGainsFervor(full.skillName)) return { rating: FERVOR_MAX_RATING, text: `${full.skillName} "Gains Fervor when this skill hits": the Max Fervor Rating ${FERVOR_MAX_RATING} while it keeps hitting the dummy` };
   return { rating: 0, text: "no Fervor source (the build has no Fervor and the skill gains none)" };
@@ -231,6 +254,9 @@ const hasComponent = (full, key) => (full.profile?.components || []).some((compo
  * Settle one batch-4 clause (src/support-effects.js resolveCensusCondition hands every `batch4` clause here).
  * @returns {{ active, appliedValue, conditionText, provisional?, componentParts?, shadowParts?, demolisherConsumedValue?, barragePerWave?, minionSkill?, unmodeled? }}
  */
+// The dummy's Frostbite Rating from its unit buff set (W8 step 2), else the state's field.
+const frostbiteRatingOf = (state) => { const level = enemyBuffSet(state)?.level("Frostbite"); return level != null ? Number(level) || 0 : Number(state?.frostbiteRating) || 0; };
+
 export function resolveBatch4Condition(clause, full, siblings = [], setupKey = null) {
   const state = full.conditions;
   if (clause.condition === "unmodeledHit") return { active: false, appliedValue: 0, unmodeled: true, conditionText: clause.reason };
@@ -257,19 +283,19 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
       return dummyTarget.elite ? apply(clause.value, `the training dummy counts as an Elite (a Boss; src/dummy-target.js): +${clause.value}% on the Massive Fang's hits (${recipe})`) : off("the dummy is not an Elite");
     case "frozenTarget": {
       if (!hits) return off("the supported skill deals no hits");
-      const rating = Number(state.frostbiteRating) || 0;
+      const rating = frostbiteRatingOf(state);
       if (rating < 100) return off(`the dummy is not Frozen (Frostbite Rating ${round(rating)} < 100; Freeze needs 100, user-confirmed 2026-10-18)`);
       return apply(clause.value, `the dummy is Frozen (Frostbite Rating ${round(rating)} ≥ 100, user-confirmed 2026-10-18): +${clause.value}% on ${clause.shadow ? "the Shadows' (Phantoms') hits" : `the ${clause.component} hits`} (${recipe})`);
     }
     case "perFrostbiteRating": {
       if (!hits) return off("the supported skill deals no hits");
-      const rating = Math.max(0, Number(state.frostbiteRating) || 0);
+      const rating = Math.max(0, frostbiteRatingOf(state));
       const applied = Math.min(clause.cap, clause.value * rating);
       return applied > 0 ? apply(applied, `the dummy's Frostbite Rating ${round(rating)} (src/combat-states.js) × ${clause.value}% = +${round(applied)}% (up to +${clause.cap}%; ${recipe}, on the skill's hits)`) : off("the dummy carries no Frostbite Rating");
     }
     case "numbedConsumed": {
       if (!hits) return off("the supported skill deals no hits");
-      if (!(state.enemyAilments || []).includes("Numbed")) return off("the dummy is not Numbed (enemy-ailment model)");
+      if (!(enemyBuffSet(state)?.holds("Numbed") ?? (state.enemyAilments || []).includes("Numbed"))) return off("the dummy is not Numbed (enemy-ailment model)");
       // Buff 10093 lasts `seconds`; the next one starts on the first hit after the `interval` gate: average gap half a hit interval.
       const uptime = hitsRate == null ? 1 : hitsRate > 0 ? clause.seconds / (clause.interval + 1 / (2 * hitsRate)) : 0;
       const factor = Math.min(1, uptime);
@@ -310,7 +336,7 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
       const fervor = heldFervor(full, state);
       if (fervor.rating < clause.need) return off(`${fervor.text}: below ${clause.need}`);
       const held = ownStacks(clause.cap, clause.perUse ? usesRate : 1 / clause.every, prebuilt);
-      return apply(clause.value * held.stacks, `${fervor.text} ≥ ${clause.need}: ${clause.perUse ? "one stack per use" : `one stack per ${clause.every} s`}, ${held.text}: +${clause.value}% × ${round(held.stacks)} (${recipe})`, { provisional: !prebuilt || fervor.rating === FERVOR_MAX_RATING && !(Number(state.fervorRating) > 0) });
+      return apply(clause.value * held.stacks, `${fervor.text} ≥ ${clause.need}: ${clause.perUse ? "one stack per use" : `one stack per ${clause.every} s`}, ${held.text}: +${clause.value}% × ${round(held.stacks)} (${recipe})`, { provisional: !prebuilt || fervor.rating === FERVOR_MAX_RATING && !(ownFervorRating(state) > 0) });
     }
     case "steepStrikeFervor":
       return apply(clause.value, `on the Steep Strike's hits (${recipe}: the cast that launches a Steep Strike takes it; the recipe has no Fervor gate); the ${clause.consumed} Fervor Rating each Steep Strike consumes is not taken off the held Rating (provisional)`, { provisional: true });
@@ -330,14 +356,18 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
       return quantity.total > 0 ? apply(clause.value * quantity.total, `+${quantity.total} Projectile Quantity (this skill's supports ${quantity.own}, the build's lines ${quantity.build}; the skill's own "+N" text is not counted, as the Hound's Fangs reading): +${clause.value}% × ${quantity.total} (${recipe}; provisional)`, { provisional: true }) : off("no Projectile Quantity bonus on the skill or the build");
     }
     case "skillAreaAtLeast": {
-      const area = skillAreaState(full, state);
-      const text = `Skill Area bonus ${round(area.total)}% ((1 + ${round(area.increased)}% increased: stat sheet ${round(area.sheet)}% + this skill's supports ${round(area.supportIncreased)}%)${area.additional.length ? ` × ${area.additional.map((value) => `(1 + ${value}%)`).join(" × ")}` : ""} − 1)`;
+      const area = skillAreaState(full, state, hitsRate);
+      const text = `Skill Area bonus ${round(area.total)}% ((1 + ${round(area.increased)}% increased: stat sheet ${round(area.sheet)}% + this skill's supports ${round(area.supportIncreased)}%${combatAreaText(area)})${area.additional.length ? ` × ${area.additional.map((value) => `(1 + ${value}%)`).join(" × ")}` : ""} − 1)`;
       return area.total >= clause.threshold ? apply(clause.value, `${text} ≥ ${clause.threshold}% (${recipe}; build-wide additional Skill Area lines are not read: provisional)`, { provisional: true }) : off(`${text} < ${clause.threshold}%`);
     }
     case "skillAreaToSteep": {
-      const area = skillAreaState(full, state);
-      const bonus = area.increased + area.additionalSum;
-      return bonus > 0 ? apply(clause.value / 100 * bonus, `${clause.value}% × (${round(area.increased)}% increased Skill Area (stat sheet ${round(area.sheet)}% + this skill's supports ${round(area.supportIncreased)}%) + ${round(area.additionalSum)}% additional) = +${round(clause.value / 100 * bonus)}% on the Steep Strike's hits (${recipe}; provisional)`, { provisional: true }) : off("no Skill Area bonus on the skill or the build");
+      // Two node-114 rows (recipe 553331072): row 1 reads Σ increased Skill Area (fromMod 3), row 2 the combined additional (fromMod 4,
+      // Π(1 + a) − 1); each writes its own additional factor (toMod 4) on the Steep Strike's hits: (1 + p × increased)(1 + p × additional).
+      const area = skillAreaState(full, state, hitsRate);
+      const p = clause.value / 100, rows = [p * area.increased, p * area.additionalCombined].filter((value) => value > 0);
+      if (!rows.length) return off("no Skill Area bonus on the skill or the build");
+      const text = `${clause.value}% × ${round(area.increased)}% increased Skill Area (stat sheet ${round(area.sheet)}% + this skill's supports ${round(area.supportIncreased)}%${combatAreaText(area)}) = +${round(p * area.increased)}%${area.additionalCombined > 0 ? `, and ${clause.value}% × ${round(area.additionalCombined)}% additional = +${round(p * area.additionalCombined)}% (a second factor)` : ""} on the Steep Strike's hits (${recipe}; provisional)`;
+      return on(text, { componentParts: rows.map((value) => ({ component: clause.component, value: round(value) })), provisional: true });
     }
     case "linksBelowMax": {
       const stacks = additionalChannelStacks(full, state);

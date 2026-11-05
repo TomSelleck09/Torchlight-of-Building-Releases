@@ -46,7 +46,7 @@ function repeatedEvents(events, seconds) {
 
 const timedModifier = (factorAt) => ({ source: "Timed effects", text: "Timed effects over time, as the recount reads them", liveKey: "timed", layer: "additional", steadyAmount: 0, amount: (world) => (factorAt(world.frame * FRAME_SECONDS) - 1) * 100 });
 
-function compileMinion(minion, scheduled, timedEffects, { seconds, readings, timerFields }) {
+function compileMinion(minion, scheduled, timedEffects, { seconds, readings, timerFields, bus = null, pathModifiers = null }) {
   const { key, count, cycle, troopCount } = minion;
   const skills = new Map((minion.skills || []).map((skill) => [skill.name, skill]));
   const block = actorBlock(minion, skills), actor = !block && readings.minionCycle !== "events";
@@ -63,14 +63,23 @@ function compileMinion(minion, scheduled, timedEffects, { seconds, readings, tim
     const mean = own.reduce((sum, item) => sum + item.value, 0) / own.length, base = mean > 0 ? mean : 1;
     bases.set(event.skill, base);
     const factor = timedShareFactor(timedEffects, event.timedShare);
+    // The trigger bus (W10 step 2a): a timed part it holds on the loop (Paralysis's damage taken) in place of the series' schedule.
+    const correction = factor && bus ? bus.timedCorrection(event.timedShare) : null;
+    // The trigger bus (W10 step 3c): the Minion skill's hit event (1000047 on you, its own ids on the Minion), with the troop's ramp when it runs live.
+    const busEvent = bus?.minionEventFor ? bus.minionEventFor(key, event.skill) : null;
+    // A layer's modifiers on this Minion skill (W10 step 4a: the per-ailment-type Minion bodies, src/tick-layers.js minionTypeModifiers).
+    const layered = typeof pathModifiers === "function" ? pathModifiers(minion, event.skill) : [];
     paths[`${key}:${event.skill}`] = {
-      label, source: key, kind: "hit",
+      label, source: key, kind: "hit", ...(busEvent ? { busEvent: ramp ? { ...busEvent, outBuff, outCount: count } : busEvent } : {}),
       parts: [{ key: event.skill, type: event.type ?? null, base, increasedPercent: 0, additionalFactor: 1 }],
-      modifiers: [...(ramp ? [rampModifier] : []), ...(factor ? [timedModifier(factor)] : [])],
+      modifiers: [...(ramp ? [rampModifier] : []), ...(factor ? [timedModifier(factor)] : []), ...(correction ? [correction] : []), ...layered],
       working: { skill: event.skill, role: skill?.role ?? null, meanPerUse: mean, hitsPerUse: skill?.hitsPerUse ?? null, perHitNoBuff: skill?.perHitNoBuff ?? null, perHitBuffed: skill?.perHitBuffed ?? null, useTimeSeconds: skill?.effectiveUseTimeSeconds ?? null, cooldownSeconds: skill?.cooldownSeconds ?? null, minions: count }
     };
   }
-  const hitOf = (event) => ({ kind: "hit", path: `${key}:${event.skill}`, count: event.value / bases.get(event.skill), ...((event.weight ?? 1) !== 1 ? { weight: event.weight } : {}) });
+  // A hit's landings for the trigger bus (W10 step 3c; only with a bus): the skill's hits per use (one per Minion for a persistent tick) × the Minions
+  // the event counts (all of them on the actor's ramp, which the bus scales by the Minions out) × its weight.
+  const landingsOf = (event) => (event.tick !== undefined ? 1 : Number(skills.get(event.skill)?.hitsPerUse) || 1) * (ramp ? count : event.minionsOut > 0 ? event.minionsOut : count) * (event.weight ?? 1);
+  const hitOf = (event) => ({ kind: "hit", path: `${key}:${event.skill}`, count: event.value / bases.get(event.skill), ...((event.weight ?? 1) !== 1 ? { weight: event.weight } : {}), ...(bus?.minionEventFor && paths[`${key}:${event.skill}`]?.busEvent ? { landings: landingsOf(event) } : {}) });
   const timelineOf = (list) => {
     const frames = new Map();
     for (const event of repeatedEvents(list, seconds)) {
@@ -116,13 +125,15 @@ function compileMinion(minion, scheduled, timedEffects, { seconds, readings, tim
  * @param {number} options.seconds the run length
  * @param {object} [options.readings] minionCycle: MINION_CYCLE_READINGS
  * @param {object} [options.timerFields] the cast reading's fields, shared with the player's skills
+ * @param {object} [options.bus] the trigger bus (src/trigger-bus.js, W10): its timed corrections on the Minions' timed series, or null
+ * @param {Function} [options.pathModifiers] (minion, skill name) => the modifiers a layer puts on that Minion skill's path (W10 step 4a), or null
  * @returns {{ paths, actions, layers, held, assumptions, minions: [{ key, label, mode, ramp, count, block }] } | null}
  */
-export function compileMinionProgram(planner, { seconds, readings = {}, timerFields = {} }) {
+export function compileMinionProgram(planner, { seconds, readings = {}, timerFields = {}, bus = null, pathModifiers = null }) {
   const modeled = (planner?.minions || []).filter((minion) => minion.modeled && minion.events?.length);
   if (!modeled.length) return null;
   const inputs = planner.dummyRecount?.inputs;
-  const compiled = modeled.map((minion) => compileMinion(minion, inputs?.scheduledHits?.find((item) => item.key === minion.key), inputs?.timedEffects, { seconds, readings, timerFields }));
+  const compiled = modeled.map((minion) => compileMinion(minion, inputs?.scheduledHits?.find((item) => item.key === minion.key), inputs?.timedEffects, { seconds, readings, timerFields, bus, pathModifiers }));
   const per = (minion, index) => compiled[index].entry;
   const eventsText = (item, minion) => item.mode === "actor"
     ? `one actor: ${minion.cycle.summonCastSeconds} s summon, then ${minion.cycle.rule}; each use the planner's value, on whole ticks`

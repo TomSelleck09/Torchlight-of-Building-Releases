@@ -451,7 +451,8 @@ function contextSplit(inputs, suffix, chainTypes) {
 const chainTypesOf = (context) => {
   const primary = context.hit?.primary;
   if (primary?.converted && primary.originalType && primary.originalType !== primary.type) return [primary.originalType, primary.type];
-  return [context.damageType].filter(Boolean);
+  // The primary part's own type (2026-11-05: a Physical-tagged Attack whose weapon deals only Elemental damage has a Fire primary part).
+  return [primary?.type ?? context.damageType].filter(Boolean);
 };
 
 function differenceReason(id, game, planner, inputs, plannerSide, plannerResult) {

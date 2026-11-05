@@ -2,6 +2,7 @@ import { normalizePercentageText } from "./percentage-text.js";
 import { classifyDamageLine } from "./damage-line-classifier.js";
 import { dummyTarget, dummyTargetWord } from "./dummy-target.js";
 import { gameDamageLayer } from "./affix-bucket.js";
+import { enemyBuffSet } from "./unit-buff-set.js";
 
 // Modifier-line reader for the generic spell-hit engine (src/skill-hit-model.js).
 // Plain "+X% [additional] <scope> Damage" and "+X% <type> [Resistance] Penetration" templates go through
@@ -57,6 +58,8 @@ function scopeOf(phrase) {
 // ailmentStateNames; kept here to avoid an import cycle through src/combat-states.js).
 const ENEMY_STATE_AILMENTS = Object.freeze({ Ignited: "Ignite", Traumatized: "Trauma", Withered: "Wilt", Wilted: "Wilt", Frostbitten: "Frostbite", Numbed: "Numbed", Frozen: "Frozen" });
 const hasEnemyAilment = (enemyAilments, name) => typeof enemyAilments?.has === "function" ? Boolean(enemyAilments.has(name)) : (enemyAilments?.types || []).some((type) => type?.name === name);
+// Ignited / Traumatized and the Ailment group from the dummy's unit buff set (src/unit-buff-set.js, W8 step 1); null with TLI_BUFF_SET=off.
+const setHolds = (enemyAilments, name) => { const buffs = name === "Ignite" || name === "Trauma" ? enemyBuffSet(enemyAilments) : null; return buffs ? buffs.holds(name) : hasEnemyAilment(enemyAilments, name); };
 
 // "against Elites" / "against Bosses" hold on the dummy (Boss, so also Elite); "against Cursed enemies"
 // holds when the planner says the target is cursed. "against <State> enemies" (Frozen, Frostbitten, Ignited, Numbed, …) and
@@ -74,8 +77,8 @@ function parseCondition(text, { targetCursed = false, enemyAilments = null, gene
   if (/^Cursed enemies$/i.test(text)) return targetCursed ? { ok: true, condition: "against Cursed enemies (curse on the dummy)" } : { ok: false };
   if (!genericBody) return { ok: false };
   const state = text.match(/^(\w+) enemies$/);
-  if (state && ENEMY_STATE_AILMENTS[state[1]]) return hasEnemyAilment(enemyAilments, ENEMY_STATE_AILMENTS[state[1]]) ? { ok: true, condition: `against ${state[1]} enemies (enemy-ailment model: the dummy is ${state[1]})` } : { ok: false };
-  if (/^enemies affected by Ailments$/i.test(text)) return (enemyAilments?.count || 0) > 0 ? { ok: true, condition: "against enemies affected by Ailments (enemy-ailment model)" } : { ok: false };
+  if (state && ENEMY_STATE_AILMENTS[state[1]]) return setHolds(enemyAilments, ENEMY_STATE_AILMENTS[state[1]]) ? { ok: true, condition: `against ${state[1]} enemies (enemy-ailment model: the dummy is ${state[1]})` } : { ok: false };
+  if (/^enemies affected by Ailments$/i.test(text)) return (enemyBuffSet(enemyAilments)?.count() ?? enemyAilments?.count ?? 0) > 0 ? { ok: true, condition: "against enemies affected by Ailments (enemy-ailment model)" } : { ok: false };
   return { ok: false };
 }
 

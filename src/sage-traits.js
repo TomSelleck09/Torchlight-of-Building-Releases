@@ -214,6 +214,11 @@ export function sageState({ heroId = "", hero = {}, modifierTexts = [], boardEli
   const functional = readFunctional(applied.filter((name) => KIND_OF[name] === "functional"), ingredientFactor, bottleElixir);
   // The Special bottle is Active slot 3 (node 2410 skillPos 3, confirmed in game 2026-11-02): the Hero tab's choice, else the Elixir in slot 3.
   const specialElixirName = first(lines, "specialBottle") ? scent.specialElixir || slotElixirs[3] || "" : "";
+  // The client's picker offers only Elixir Skills (tag 6000420) for both bottle slots (config_hero_character_custom_slot: slot 2 with
+  // 3 Ingredient slots, slot 3 with 2; encrypted-scripts survey 2026-11-03, finding 5). A saved non-Elixir skill there stays on the
+  // board as saved (its own damage unchanged) and is flagged; it is never a bottle Elixir.
+  const slotNonElixirs = inputs.activeSlotNonElixirs || {};
+  const slotMisfits = [[2, "Basic", bottleLine], [3, "Special", first(lines, "specialBottle")]].filter(([slot, , line]) => line && slotNonElixirs[slot]).map(([slot, label]) => ({ slot, bottle: label.toLowerCase(), name: slotNonElixirs[slot], note: `${slotNonElixirs[slot]} in Active slot ${slot} (the ${label} Scent Bottle): only Elixir Skills fit the Scent Bottle slots in game; kept as saved, not a bottle Elixir` }));
   const specialChosen = INGREDIENTS.special.includes(scent.special) ? scent.special : "";
   const specialApplied = !specialElixirName || !first(lines, "specialIngredients") ? [] : omni ? INGREDIENTS.special.filter((name) => name !== specialChosen) : specialChosen ? [specialChosen] : [];
   // Its Functional slot is the "any Scent Bottle" slot of Pungent Stimulant Salt (rows 2211–2235 are tied to that trait's tier); no Ingredient Effect.
@@ -382,12 +387,15 @@ export function sageState({ heroId = "", hero = {}, modifierTexts = [], boardEli
   if (special) assumptions.push({ id: "sage:specialScentBottle", value: specialShare, text: `Sage – Special Scent Bottle: ${special.name}${specialApplied.length || specialFunctional.length ? ` with ${[...specialApplied, ...specialFunctionalApplied].join(", ")}${omni ? " (Omni-Elixir Side Effect: the unselected Ingredients)" : ""}` : " with no Ingredient"}; ${[...Object.values(specialRead).map((item) => item.reason), ...specialFunctional.map((item) => item.reason)].join("; ") || (specialApplied.length ? "Block only" : "no Functional Ingredient progress")}; Elixir Skill Effect ×${special.effectFactor}. The skill board is not changed (provisional, research/hero-sage-chunk1-2026-10-31.md).` });
   if (ambition?.value > 0) assumptions.push({ id: "sage:scentOfAmbition", value: ambition.uptime, text: `Scent of Ambition: +${ambition.percent}% additional Elixir Skill Effect up ${pct(ambition.uptime)}% of the time (${round(totalCasts)} Elixir casts/s ÷ ${ambition.casts} × ${ambition.seconds} s), time-averaged (provisional).` });
   if (nectar?.value > 0) assumptions.push({ id: "sage:everlastingNectar", value: nectar.value, text: `Everlasting Nectar: ${nectar.ratio}% of the Max Life (+${nectar.life}%) and Max Mana (+${nectar.mana}%) bonuses = +${nectar.value}% Elixir Skill Effect (cap +${nectar.cap}%; provisional).` });
-  return { heroId, scent, bottleElixir, chosen, applied, omni: Boolean(omni), ingredientFactor: round(ingredientFactor), functional, functionalProgress: round(functionalProgress), elixirSetups: bottleSetups, elixirExtraLines: extraLines, specialElixirName, specialChosen, specialApplied, specialRead, specialFunctionalChosen, specialFunctionalApplied, specialFunctional, specialFunctionalNote, preparedCurseFactor: preparedCurse?.factor ?? 1,
+  for (const misfit of slotMisfits) assumptions.push({ id: `sage:bottleSlotNonElixir:${misfit.slot}`, value: 0, text: `Sage – ${misfit.note} (the game's skill picker; encrypted-scripts survey 2026-11-03).` });
+  return { heroId, scent, bottleElixir, chosen, applied, slotMisfits, omni: Boolean(omni), ingredientFactor: round(ingredientFactor), functional, functionalProgress: round(functionalProgress), elixirSetups: bottleSetups, elixirExtraLines: extraLines, specialElixirName, specialChosen, specialApplied, specialRead, specialFunctionalChosen, specialFunctionalApplied, specialFunctional, specialFunctionalNote, preparedCurseFactor: preparedCurse?.factor ?? 1,
     elixirs, basic, special, basicActive: round(basicActive), totalCasts: round(totalCasts), ambition, nectar, ingredientRead, prepared, immortality, restorationKept, switches, assumptions,
     needsRates: allFunctional.some((item) => item.name === "Husk" || item.name === "Sword Lily Leaf") || applied.includes("Razor Leaf") || applied.includes("Twinspine Flower"), ingredientLines: Object.fromEntries([...ingredientText.entries()].map(([key, item]) => [key, item.line.clean])) };
 }
 
 const L = (status, reason, extra = {}) => ({ status, reason, ...extra });
+// A saved non-Elixir skill in a bottle slot: its note joins the bottle line's badge reason.
+const withMisfit = (reason, state, bottle) => [reason, ...(state?.slotMisfits || []).filter((misfit) => misfit.bottle === bottle).map((misfit) => misfit.note)].filter(Boolean).join("; ");
 
 /** One Sage clause: { key, status, reason, bodies }, or null when the line is not a Sage clause. */
 export function sageLineRead(heroId, text, state, { revived = false } = {}) {
@@ -416,7 +424,7 @@ function lineRead(key, text, state) {
   const anyUp = (state.elixirs?.setups || []).some((setup) => setup.uptime > 0 && setup.values.some((value) => value.damage));
   switch (key) {
     case "restorationKept": return state.immortality?.active ? L("In calc", `Restoration at full Life is not removed, so it is all excess for Elixir of Immortality: ${state.immortality.reason}`) : L("No DPS effect", "Restoration Effects (Life / Mana recovery) only");
-    case "basicBottle": return L(bottle.status, bottle.reason);
+    case "basicBottle": return L(bottle.status, withMisfit(bottle.reason, state, "basic"));
     case "basicIngredients": {
       if (!bottle.ok && !bottle.restoration) return L(bottle.status, bottle.reason);
       const dmg = state.applied.filter((name) => KIND_OF[name] === "damage");
@@ -476,9 +484,9 @@ function lineRead(key, text, state) {
       return anyUp || state.immortality?.active || state.prepared.some((entry) => entry.active) || Object.values(state.ingredientRead).some((entry) => entry.active) ? L("In calc", `${n.ratio}% × (+${n.life}% Max Life + ${n.mana}% Max Mana bonus) = +${n.value}% Elixir Skill Effect (cap +${n.cap}%; provisional)`) : L((state.elixirs?.setups || []).length ? "Not on dummy" : "Inactive", (state.elixirs?.setups || []).length ? "no Elixir Effect is up on the dummy" : "no Elixir Skill");
     }
     case "specialBottle": {
-      if (Object.values(state.specialRead).some((entry) => entry.active)) return L("In calc", `${state.specialElixirName} in the Special Scent Bottle: ${Object.values(state.specialRead).map((entry) => entry.reason).join("; ")}`);
-      if (!specialBottle.ok) return L(specialBottle.status, specialBottle.reason);
-      return state.special.values.some((value) => value.damage) ? L("In calc", specialBottle.reason) : L("No DPS effect", `${state.specialElixirName} in the Special Scent Bottle, with no damage from the bottle`);
+      if (Object.values(state.specialRead).some((entry) => entry.active)) return L("In calc", withMisfit(`${state.specialElixirName} in the Special Scent Bottle: ${Object.values(state.specialRead).map((entry) => entry.reason).join("; ")}`, state, "special"));
+      if (!specialBottle.ok) return L(specialBottle.status, withMisfit(specialBottle.reason, state, "special"));
+      return state.special.values.some((value) => value.damage) ? L("In calc", withMisfit(specialBottle.reason, state, "special")) : L("No DPS effect", withMisfit(`${state.specialElixirName} in the Special Scent Bottle, with no damage from the bottle`, state, "special"));
     }
     case "specialIngredients": {
       if (!state.specialElixirName) return L("Inactive", "no Elixir in the Special Scent Bottle");

@@ -89,6 +89,54 @@ export function blurGainRate(sources = [], facts = null) {
   return { perSecond: modeled.reduce((sum, item) => sum + item.rate, 0), modeled, unmodeled, any: read.length > 0 };
 }
 
+// Node 623 on a Regain (W10 step 4a; game record 16750813 "Upon Regaining, consumes 1 stack of Agility Blessing to inflict Paralysis, Weaken,
+// Slow, and Taunt", one row per pool: 1001200 Life, 1001210 Shield; gate 184 on buff 320, then node 623 num 1): each Regain that finds an
+// Agility stack spends one. The held stacks are a cycle per spending Regain (T = 1 ÷ its rate), as True Flame Immolation's consumption cycle:
+// G = Agility gained per cycle, G_on the part gained on the Regain's own hit (a Regain lands on a hit of yours after that hit's gains: the tick
+// engine's order, src/tick-engine.js damage stage then the trigger bus; inferred), G_between the rest, spread over the cycle; s the stacks a Regain
+// spends.
+// - G ≤ s, the gains do not keep up: every stack is spent at the next Regain (one gained on its own hit at once, one gained between after half a
+//   cycle on average): held = G_between ÷ 2; the Regains that find a stack open the gate G ÷ s of the time.
+// - G > s: the stacks sit at max; each Regain takes s and the gains between Regains refill them: deficit s² ÷ (2 G_between) when they refill
+//   within the cycle (G_between ≥ s), else s − G_between ÷ 2; held = max − deficit, and every Regain finds a stack.
+// At G = s the drift is nil and the level is set by the opening: a Blessing gained only from the dummy starts at 0 (user decision 2026-11-02),
+// so the spent branch. Regains/s per pool: a Regain lands on the first hit event of yours (a use's hits land together, the tick engine's hit
+// record) at or after its Regain Interval: e ÷ ⌈interval × e⌉ for e hit events a second. Provisional (open question regain-agility-spend): the
+// event order on one hit, evenly spaced hit events, gains spread evenly between Regains, the 10 s duration not counted (a stack held across a
+// whole duration would lapse).
+const HIT_DRIVEN_GAIN = /on hit|Critical Strike|upon inflicting damage/i;
+export function regainAgilitySpend({ agility = null, spends = [], facts = null } = {}) {
+  const rows = (spends || []).filter((item) => item.buff === 320 && item.stacks > 0);
+  if (!rows.length) return null;
+  const maxStacks = agility?.maxStacks ?? 0;
+  if (!agility || !(maxStacks > 0) || !(agility.gainSources || []).some((source) => source.available)) return { active: false, rows, reason: "no Agility Blessing source in the build: the Regain finds no stack (gate 184 closed)" };
+  // Before the hit pass measures the rates (its first pass) nothing is settled: the stacks stay the Blessing model's.
+  if (!facts || facts.pending || !facts.regainPools) return { active: null, rows, reason: "rates not measured yet (held for this pass)" };
+  // A Regain lands on a hit event of yours (a use's hits land together) once its interval has run: with events at e a second, one every
+  // ⌈interval × e⌉ events (the interval itself when hits are far more frequent).
+  const events = Number(facts.hitEventsPerSecond) > 0 ? Number(facts.hitEventsPerSecond) : Number(facts.hitsPerSecond) || 0;
+  const regainRate = (pool) => { const rate = pool?.active ? Number(pool.ratePerSecond) || 0 : 0; return rate > 0 && events > 0 ? events / Math.max(1, Math.ceil(events / rate - 1e-9)) : 0; };
+  const spendRows = rows.map((item) => ({ ...item, regainsPerSecond: regainRate(facts.regainPools[item.pool]) }));
+  const regains = spendRows.reduce((sum, item) => sum + item.regainsPerSecond, 0);
+  if (!(regains > 0)) return { active: false, rows: spendRows, reason: "no Regain of a pool the row hears (the pool does not Regain, or no hit of yours)" };
+  const spend = spendRows.reduce((sum, item) => sum + item.regainsPerSecond * item.stacks, 0) / regains;
+  const gain = agilityGainRate(agility, facts);
+  if (gain.unmodeled.length && !(gain.perSecond >= regains * spend)) return { active: null, rows: spendRows, reason: `Agility gain rate not modeled (${gain.unmodeled.map((item) => `${item.source}: ${item.unmodeled}`).join("; ")})` };
+  const onHitRate = gain.modeled.filter((item) => HIT_DRIVEN_GAIN.test(item.text || "")).reduce((sum, item) => sum + item.rate, 0);
+  const G = gain.perSecond / regains;
+  // The hit-driven gains on the Regain's own hit event (gains per event; two pools Regaining on one event share its gains).
+  const onRegain = events > 0 ? Math.min(G, onHitRate / events * Math.min(events, regains) / regains) : 0;
+  const between = Math.max(0, G - onRegain);
+  const keepsUp = G > spend + 1e-12;
+  const deficit = !keepsUp ? null : between >= spend ? spend * spend / (2 * between) : spend - between / 2;
+  const held = round(keepsUp ? Math.max(0, maxStacks - deficit) : Math.min(maxStacks, between / 2));
+  const findShare = keepsUp ? 1 : Math.max(0, Math.min(1, G / spend));
+  const parts = gain.modeled.map((item) => `${item.source}: ${item.how}`).join("; ");
+  const reason = `${spendRows.map((item) => `${item.source} (game record ${item.recipeId}, ${item.pool === "life" ? "Life" : "Energy Shield"} Regain ${round(item.regainsPerSecond)}/s)`).join(", ")} spends ${round(spend)} Agility per Regain that finds one; gains ${round(gain.perSecond)}/s (${parts}): ${round(G)} per Regain, ${round(onRegain)} of them on the Regain's own hit. `
+    + (keepsUp ? `The gains keep up: the stacks stay at ${maxStacks} but for the Regain's take, refilled between Regains: ${held} held on average` : `The gains do not keep up: each stack is spent at the next Regain, ${held} held on average; ${round(findShare * 100)}% of the Regains find one`) + " (provisional: open question regain-agility-spend)";
+  return { active: true, rows: spendRows, regainsPerSecond: round(regains), spendPerRegain: round(spend), gainPerSecond: round(gain.perSecond), perRegain: round(G), onRegainHit: round(onRegain), between: round(between), keepsUp, held, findShare: round(findShare), maxStacks, reason };
+}
+
 // Q5 against a gain-rate reading: a lower bound that already keeps up settles the share at 1 even with unmodeled sources.
 function settle(gain, castsPerSecond, what) {
   const casts = castsPerSecond > 0 ? castsPerSecond : 0;
@@ -112,13 +160,16 @@ function settle(gain, castsPerSecond, what) {
  * @param {number} p.castsPerSecond     Main Skill casts per second (the hit pass's measured rate, else the early estimate)
  * @param {object|null} p.facts         measured rates (hitsPerSecond, critHitsPerSecond, reapsPerSecond, wiltSuccessesPerSecond)
  */
-export function resolveConsumption({ texts = [], agility = null, blurSources = [], blurActive = false, castsPerSecond = 0, facts = null } = {}) {
+export function resolveConsumption({ texts = [], agility = null, blurSources = [], blurActive = false, castsPerSecond = 0, facts = null, regainSpends = [] } = {}) {
   const has = (pattern) => texts.some((text) => pattern.test(text));
   const thunderclap = has(/^If you have Agility Blessing stacks when casting the Main Skill, consumes \d+ stack/i);
   const waiting = has(/^Consumes all Agility Blessing every \d+ ?s\. For each stack consumed/i);
   const stab = has(/^While Blur is active, loses Blur after casting a Main Skill/i);
-  const result = { measured: Boolean(facts) && !facts.pending, castsPerSecond: round(castsPerSecond || 0), agility: null, blur: null, waitingAttack: null, agilityHeld: null };
-  if (!thunderclap && !waiting && !stab) return result;
+  const result = { measured: Boolean(facts) && !facts.pending, castsPerSecond: round(castsPerSecond || 0), agility: null, blur: null, waitingAttack: null, agilityHeld: null, regainSpend: null };
+  // Node 623 on a Regain (W10 step 4a, regainAgilitySpend): its held stacks, the lower of it and a consumption core's when both spend Agility.
+  result.regainSpend = regainAgilitySpend({ agility, spends: regainSpends, facts });
+  const regainHeld = result.regainSpend?.active ? { stacks: result.regainSpend.held, reason: `Regains spend Agility (node 623): ${result.regainSpend.reason}`, regain: true } : null;
+  if (!thunderclap && !waiting && !stab) { result.agilityHeld = regainHeld; return result; }
   const maxStacks = agility?.maxStacks ?? 0;
   const cannotGain = agility && agility.gainSources?.some((source) => source.available) && !agility.stacks;
   if (thunderclap) {
@@ -150,5 +201,6 @@ export function resolveConsumption({ texts = [], agility = null, blurSources = [
     const gain = blurGainRate(blurSources, facts);
     result.blur = !blurActive ? { active: false, reason: gain.any ? "Blur is off (condition 'Blur')" : "no Blur source in the build" } : settle(gain, castsPerSecond, "Blur");
   }
+  if (regainHeld && (!result.agilityHeld || regainHeld.stacks < result.agilityHeld.stacks)) result.agilityHeld = regainHeld;
   return result;
 }

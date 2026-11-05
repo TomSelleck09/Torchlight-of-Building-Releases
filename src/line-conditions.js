@@ -1,5 +1,6 @@
 import { dummyTarget, dummyTargetWord, explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS } from "./dummy-target.js";
 import { ailmentStateNames } from "./enemy-ailments.js";
+import { BY_YOU, auraTagCount, empowerTagCount, enemyBuffSet, playerBuffSet, ownCombatHeld } from "./unit-buff-set.js";
 import { CONSUMED_COMBO_POINTS, COMBO_POINTS_PER_STARTER } from "./combo-points.js";
 import { regainsIn } from "./regain-model.js";
 import { WORLD_WITHIN_LINE, worldWithinChances } from "./world-within.js";
@@ -24,6 +25,35 @@ const round = (value) => Math.round(value * 10000) / 10000;
 // A "per N" line is a linear conversion in the game: nodes 114, 119 and 126 and the plain expressions (989867) divide with no floor. The panel proves node 114 (+2 per 5 Intelligence
 // at 549.92 reads +219.968; Sealed Mana Compensation in thirds). Only a line whose record says GetFloorInt takes whole steps (chunk 12, research/legendaries-chunk12-2026-11-01.md §6).
 const perSteps = (total, every) => Math.max(0, Number(total) || 0) / every;
+// The per-Armor readers take the combat Armor (attr 4001 in combat: the stat sheet + held buffs; src/combat-armor.js, wiring fix W6b),
+// else the stat sheet's pool (contexts without the planner's combat Armor).
+const combatArmorValue = (state) => { const own = playerBuffSet(state); return own?.staged("armor") ? Number(own.level("Armor")) || 0 : Number(state.combatArmor?.value ?? state.worldWithinInputs?.armor) || 0; };
+const armorLabel = (state) => { const own = playerBuffSet(state), sources = own?.staged("armor") ? own.entries(null, { stage: "armor" }).map((entry) => entry.source) : state.combatArmor ? state.combatArmor.sources.map((item) => item.source) : []; return sources.length ? `stat sheet + ${sources.join(", ")}` : "stat sheet"; };
+// Your own buffs (W9 step 2, src/unit-buff-set.js): the readers below query your unit buff set (`state.playerBuffs`) once its producer
+// stage is on it; a state without one, or TLI_BUFF_SET=off, reads the old fields. Blessings: the Blessing model's held / max stacks.
+const ownBlessingStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingStacks() : state.blessingStacks; };
+// The share of time a Blessing holds at least `stacks` (null: held at its stacks). Each gain is a layer on its own timer (blessing-layer-timers,
+// src/blessing-layers.js): a Blessing whose every gain is periodic holds each count a share of the time (its layers' steady pattern + owned
+// stacks); a Blessing with an event gain is held at its max, as before.
+const blessingShareAtLeast = (state, name, stacks) => {
+  const layers = state.blessingLayers?.[name];
+  if (layers?.reading !== "periodic") return null;
+  return Object.entries(layers.shares || {}).reduce((sum, [count, share]) => sum + (Number(count) + (layers.own || 0) >= stacks - 1e-9 ? share : 0), 0);
+};
+// A Blessing condition held for a share of the time: on at that factor, off at 0.
+const blessingShareResult = (share, onText, offText) => share >= 1 - 1e-9 ? on(onText) : share > 1e-9 ? on(`${onText} ${Math.round(share * 10000) / 100}% of the time (each stack its own timer: blessing-layer-timers)`, { factor: share, timeShare: true, provisional: true }) : off(offText);
+const ownBlessingMaxStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingMaxStacks() : state.blessingMaxStacks; };
+// The active Auras (the aura ledger's membership, Focus skills in Aura slots included), the Empower skills on the board, the Minions and
+// Spirit Magi out, Barrier, Blur and the combat block chance.
+// The Aura types the game counts: buffs tagged 5100305 (a Focus skill in an Aura slot is not one; W9 step 4, src/unit-buff-set.js putAuras).
+const ownAuraCount = (state) => auraTagCount(state) ?? state.auraCount;
+// The held Empower buffs the game counts (buff tag 5100311; W9 step 4, src/unit-buff-set.js empowerTagCount).
+const ownEmpowerCount = (state) => empowerTagCount(state) ?? state.empowerSkillCount;
+const ownLevel = (state, name, old) => { const own = playerBuffSet(state), value = own?.level(name); return value != null ? value : old; };
+const ownBlock = (state) => { const own = playerBuffSet(state); return own?.staged("block") ? { attack: own.level("Attack Block") || 0, spell: own.level("Spell Block") || 0 } : state.blockChance; };
+const ownBlur = (state) => { const own = playerBuffSet(state); if (!own?.staged("blur")) return state.blurHeld; const entry = own.entryOf("Blur", { stage: "blur" }); return entry && entry.share > 0 ? { rating: entry.value, effectPercent: entry.effectPercent } : null; };
+// The combat pass's held buffs (Aggression, Hasten, Profane, Fervor): `state.buffs` before; null before the combat pass ran.
+const ownCombatBuffs = (state) => ownCombatHeld(state) ?? state.buffs;
 // Sourced thresholds (reference data keyword tooltips "Low Life" / "Full Life"; game manual 1000010125): Low Life is current Life
 // under 35%. Low Life itself is set by src/low-resource-model.js (sealed Life below 35%).
 // Full Life (user-confirmed 2026-10-12): current unsealed, filled Life is at least 95% of Max Life. Sealed Life counts
@@ -111,7 +141,7 @@ const LINE_RULES = [
   // recipe 6853461: flat Spell crit rating p0 and +p1% additional damage on crit (attr 57191 mod 4, crit tag) × activated Tangles, one
   // write each). Malign Embrace's line is an added effect of Dormant Entanglement (game text 51425731 "Dormant Entanglement gains an
   // additional effect: …"), so it needs Dormant Entanglement. Count: state.activeTangles (attached to the dummy, or every Tangle on the
-  // Clockwork Core: provisional, open question youga-core-activated-tangles).
+  // Clockwork Core: SS14 client 2026-11-04, effect source 90 counts every Tangle whose attach target is set, the Core included).
   [/^(?:Dormant Entanglement gains an additional effect: )?(\+\d+(?:\.\d+)? Spell Critical Strike Rating) and (\+\d+(?:\.\d+)?% additional damage on Critical Strike) for each activated Tangle$/, (m) => ({ bodies: [m[1], m[2]], key: "activatedTangles", params: { dormant: true } })],
   [/^(.+?) for each activated Tangle$/, (m) => ({ body: m[1], key: "activatedTangles", params: {} })],
   // Kismet: Bouquet (kismet / pact audit 2026-10-21): "+4% additional Spirit Magi Damage for every Spirit Magus you have": one Magus
@@ -121,6 +151,9 @@ const LINE_RULES = [
   // (game keyword 101: "Ignite, Frostbite, Freeze, and Numbed").
   [new RegExp(`^Upon inflicting damage, \\+${N}% (additional )?(damage|[\\w ]+? Damage) for every type of Ailment the enemy has \\(multiplies\\)$`), (m) => ({ body: `+${m[1]}% ${m[2] || ""}${m[3]}`, key: "ailmentTypes", params: { multiplies: true } })],
   [new RegExp(`^Upon inflicting damage, \\+${N}% (damage|[\\w ]+? Damage) for each type of Elemental Ailment the enemy has$`), (m) => ({ body: `+${m[1]}% ${m[2]}`, key: "elementalAilmentTypes" })],
+  // The increased twin, no "(multiplies)" (476516: attr 5719 mod 3, one write per ailment state on the target; wiring audit gap 8,
+  // 2026-11-03): +X% damage × the ailment types on the dummy (the enemy-ailment count, your Minions' types at their uptime).
+  [new RegExp(`^Upon inflicting damage, \\+${N}% (damage|[\\w ]+? Damage) for every type of Ailment the enemy has$`), (m) => ({ body: `+${m[1]}% ${m[2]}`, key: "ailmentTypes", params: { multiplies: false } })],
   [/^(.+?) (?:to|against) enemies with Elemental Ailments$/, (m) => ({ body: m[1], key: "enemyElementalAilment" })],
   [/^(.+?) against Low Life enemies$/, (m) => ({ body: m[1], key: "enemyLowLife" })],
   // "Damage penetrates 40% Elemental Resistance of Frostbitten enemies" (gear-pact batch chunk 3): penetration while the
@@ -136,6 +169,10 @@ const LINE_RULES = [
   [new RegExp(`^\\+?${N}% (.+?) for each (Spell )?Projectile generated recently\\. Stacks up to (\\d+) times?$`, "i"), (m) => ({ body: `+${round(num(m[1]) * num(m[4]))}% ${m[2]}`, key: "projectilesGenerated", params: { spell: Boolean(m[3]), stacks: num(m[4]) } })],
   [new RegExp(`^Damage penetrates ${N}% (Elemental|Fire|Cold|Lightning|Erosion) Resistance of (${STATE_WORDS}) enemies$`, "i"), (m) => ({ body: `+${m[1].replace(/^\+/, "")}% ${m[2]} Resistance Penetration`, key: "enemyState", params: { word: m[3] } })],
   [new RegExp(`^(.+?) (?:against|to) (${STATE_WORDS}) enemies$`), (m) => ({ body: m[1], key: "enemyState", params: { word: m[2] } })],
+  // "+X% Trauma Duration when inflicting Trauma on Trauma enemies" (32285: attr 3601 on the Trauma tag, gated on the target's state 4000160
+  // Traumatized, whoever inflicted it; orchestrator decision 2026-11-03, wiring audit gap 4): your Trauma's duration while the dummy is
+  // Traumatized, by you or by your Minions at their uptime.
+  [new RegExp(`^(${N}% Trauma Duration) when inflicting Trauma on Trauma enemies$`, "i"), (m) => ({ body: m[1], key: "enemyState", params: { word: "Traumatized" } })],
   // "+13% additional Ailment Damage against Cursed enemies" (pact; game recipe 811029: attr 5719 additional on Ailment 5100001 against a Cursed
   // target 4000560; condition-unread batch 3). The plain "damage" wording is read by src/build-mechanics.js (handledElsewhere) first.
   // ("… for you and your Minions against Cursed enemies" stays with its own rule below, which keeps the Cursed wording in the body.)
@@ -181,7 +218,8 @@ const LINE_RULES = [
   // Legendary audit 2026-10-22 batch 1 (research/legendary-items-audit-2026-10-22.md §5): held-weapon families (Pantheon's Elegy:
   // Bladerunner's Dirge "… while wielding Claws / a Sword / an Axe / a Hammer / a Dagger"; Onslaughter's Dirge "… while you are
   // wielding a Two-Handed weapon"). A family is its one- and two-handed bases (src/weapon-damage-model.js types); either hand counts.
-  [/^(.+?) while (?:you are )?wielding (Claws|a Claw|a Sword|an Axe|a Hammer|a Dagger|a Two-Handed weapon)$/, (m) => ({ bodies: [m[1]], key: "wieldingFamily", params: { family: m[2].replace(/^(?:a|an) /, "").replace(/s$/, "") } })],
+  // Prophecy of Revelation's replacement talents print "a Two-Handed Weapon" (Onslaughter 6,1; W2 follow-up, 2026-11-03): the same family.
+  [/^(.+?) while (?:you are )?wielding (Claws|a Claw|a Sword|an Axe|a Hammer|a Dagger|a Two-Handed [Ww]eapon)$/, (m) => ({ bodies: [m[1]], key: "wieldingFamily", params: { family: m[2].replace(/^(?:a|an) /, "").replace(/s$/, "").replace(/Weapon$/, "weapon") } })],
   // Block thresholds (Silent Sentry Shield: "+100% Attack Damage when Attack Block Chance is greater than 60%"): the block model's
   // Attack / Spell Block Chance (src/block-model.js, capped at its maximum).
   [/^(.+?) when (Attack|Spell) Block Chance is greater than (\d+(?:\.\d+)?) ?%$/, (m) => ({ body: m[1], key: "blockChanceAbove", params: { kind: m[2].toLowerCase(), value: num(m[3]) } })],
@@ -279,6 +317,9 @@ const LINE_RULES = [
   [/^(.+?) per stack of (Tenacity|Focus|Agility) Blessing owned$/, (m) => ({ body: m[1], key: "blessingPerStack", params: { name: m[2] } })],
   // (Two-part bodies such as Hidden Mastery's "+15% Attack Speed and +15% additional Attack Damage" have their own rule below.)
   // "… when you have Spell Aggression" (game recipe 5600571: gate 184 on buff 3421; condition-unread batch 3) is the same condition.
+  // "+16% Attack Speed, Cast Speed, and Movement Speed when having Hasten" (Vorax legs; game record 30030214: three node-101 increased writes,
+  // attr 6001 / 6002 / 4, each on Hasten's state 4015365; 2026-11-05, Rosa build audit gap 6): one body per stat, same value, while the buff is held.
+  [new RegExp(`^(\\+?${N}%) ((?:[A-Z][\\w ]*?, )+(?:and )?[A-Z][\\w ]*?) (?:while|when) (?:having|you have) (Fervor|Attack Aggression|Spell Aggression|Hasten|Profane)$`), (m) => ({ bodies: m[3].split(/, (?:and )?/).map((stat) => `${m[1]} ${stat.trim()}`), key: "buffActive", params: { buff: m[4] } })],
   [/^(?!.* and +)(.+?) (?:while|when) (?:having|you have) (Fervor|Attack Aggression|Spell Aggression|Hasten|Profane)$/, (m) => ({ body: m[1], key: "buffActive", params: { buff: m[2] } })],
   // ---- self state, events, timed ----
   [new RegExp(`^\\+${N}% additional damage every [\\d.]+ ?s while standing still, up to \\+${N}% additional damage$`), (m) => ({ body: `+${m[2]}% additional damage`, key: "standingStill", params: { rampCap: true } })],
@@ -292,12 +333,14 @@ const LINE_RULES = [
   // Miniature Void Sea (legendary audit batch 8): "+12% additional Minion Damage for every Minion you have. Stacks up to 6 times":
   // one step per Minion the build keeps out (the same count), summed (provisional).
   [/^(.+?) for every Minion you have\. Stacks up to (\d+) times?$/, (m) => ({ body: m[1], key: "perMinion", params: { cap: num(m[2]) } })],
-  // Caged Fury (Aromatic belt blend, reference data Belt / Blending Rituals; belt blend audit 2026-10-21): "If you have moved 12 m or more in
-  // the last 1 s, …" and "If you have moved less than 12 m in the last 1 s, …" are the two sides of one distance threshold, read as the
-  // Movement group's moving and standing-still alternatives (best case by damage, listed in the assumptions; provisional: moving
-  // below 12 m/s also meets the "less than" side; open question belt-caged-fury-movement).
-  [/^If you have moved (\d+(?:\.\d+)?) ?m or more in the last (\d+(?:\.\d+)?) ?s, (.+)$/, (m) => ({ bodies: splitAnd(m[3]), key: "moving", params: { meters: num(m[1]), seconds: num(m[2]) } })],
-  [/^If you have moved less than (\d+(?:\.\d+)?) ?m in the last (\d+(?:\.\d+)?) ?s, (.+)$/, (m) => ({ bodies: splitAnd(m[3]), key: "standingStill", params: { meters: num(m[1]), seconds: num(m[2]) } })],
+  // Caged Fury (Aromatic belt blend 270393984, hyperlink 10149; research/caged-fury-audit-2026-11-05.md): a distance gate, not Stand Still.
+  // Record rows 1 / 2 gate on node 610 over the movement counter (data type 10000100, 1/100 m) in the last 1 s: row 1 (opt 6, at most 1200)
+  // +35% additional damage and Physique, row 2 (opt 4, at least 1200) +15% additional Attack Speed and Movement Speed. Standing still reads 0 m,
+  // so the "less than" half holds there; walking below 12 m per second keeps it too. Under Moving the two halves are the "Distance moved in the
+  // last 1 s" group's alternatives (src/planner.js; condition movedFast, best case by damage, listed in the assumptions). Whether ordinary
+  // movement reaches 12 m per second is open (belt-caged-fury-movement: the character's speed in m/s is not modeled).
+  [/^If you have moved (\d+(?:\.\d+)?) ?m or more in the last (\d+(?:\.\d+)?) ?s, (.+)$/, (m) => ({ bodies: splitAnd(m[3]), key: "movedAtLeast", params: { meters: num(m[1]), seconds: num(m[2]) } })],
+  [/^If you have moved less than (\d+(?:\.\d+)?) ?m in the last (\d+(?:\.\d+)?) ?s, (.+)$/, (m) => ({ bodies: splitAnd(m[3]), key: "movedUnder", params: { meters: num(m[1]), seconds: num(m[2]) } })],
   // Hare's Agility (Ethereal Prism core; game affix 1525925, core audit batch B2): on leaving Stand Still (trigger 1000100) one stack
   // of buff 20480 for 2 s, up to 5; on hit within 4 m (node 189 range 400) GetBuffStack(20480) × P1 additional damage (attr 5719
   // mod 4, one additional term). Stand Still and leaving it are the Movement group's two alternatives (core audit Q10,
@@ -441,7 +484,8 @@ const LINE_RULES = [
   // "stats" read as Strength + Dexterity + Intelligence (the three main attributes "All Stats" raises; provisional), the
   // stat-sheet totals after % and additional multipliers, linear (as perStat).
   [new RegExp(`^\\+${N}% (.+?) per (\\d+) stats$`), (m) => ({ body: `+${m[1]}% ${m[2]}`, key: "perAllStats", params: { per: num(m[1]), every: num(m[3]), template: m[2] } })],
-  [new RegExp(`^(.+?) when having at least (\\d+) (${STAT_WORDS})$`), (m) => ({ body: m[1], key: "statAtLeast", params: { stat: m[3].toLowerCase(), value: num(m[2]) } })],
+  // "while having at least 500 Intelligence" (Prophecy of Revelation's Magister 5,2 replacement; W2 follow-up, 2026-11-03): the same threshold.
+  [new RegExp(`^(.+?) (?:when|while) having at least (\\d+) (${STAT_WORDS})$`), (m) => ({ body: m[1], key: "statAtLeast", params: { stat: m[3].toLowerCase(), value: num(m[2]) } })],
   // Wield My Sword (Silent Avowal / Vorax Hands named affix, reference data tooltip; frost-terra audit 2026-10-13): "+1% additional damage
   // for you and your Minions for every +4% Attack or Spell Block Chance" (no cap stated). Same reading as the line below.
   // Wield My Sword's record 720877696 sums the two, GetAttr(4800) and GetAttr(4801), each ÷ p1 × p2, as Last Stand's 406445504 does (chunk 12): +39% at 79 + 77, not +19%.
@@ -486,7 +530,9 @@ const LINE_RULES = [
   // "equal", Str = Dex or Dex = Int or Int = Str): the stat sheet's totals.
   [/^(.+?) when any two of Strength, Dexterity,? and Intelligence are equal$/, (m) => ({ body: m[1], key: "anyTwoStatsEqual" })],
   // Dual Kismet: Three-Eyed Cat (chunk 13, game record 64638204): at least one buff tagged 5100305 (Auras), 5100306 (Focus) and 5100312 (the five Origins of Spirit Magus).
-  [/^(.+?) when simultaneously affected by Aura, Focus, and Origin of Spirit Magus$/, (m) => ({ body: m[1], key: "auraFocusOrigin" })],
+  // Game record 64638204 prints the same three gate-300 checks (buff tags 5100305 Aura, 5100312 Spirit Magi, 5100306 Focus) as "Aura, Spirit
+  // Magi, and Focus": both wordings are one condition (wiring fix W6b, 2026-11-03).
+  [/^(.+?) when simultaneously affected by (?:Aura, Focus, and Origin of Spirit Magus|Aura, Spirit Magi, and Focus)$/, (m) => ({ body: m[1], key: "auraFocusOrigin" })],
   // "+5% Attack and Cast Speed when dealing Double Damage recently, up to +4 stack(s)" (game recipe 35158: on dealing Double Damage (trigger
   // 1000030 with tag 5200010) a 4 s stack (node 306 mode 3, each its own timer), up to P2): stacks = min(N, Double Damage hits/s × 4 s).
   [new RegExp(`^\\+?${N}% (.+?) when dealing Double Damage recently, up to \\+?(\\d+) stack\\(s\\)$`), (m) => ({ body: `+${num(m[1])}% ${m[2]}`, key: "doubleDamageRecently", params: { stacks: num(m[3]), seconds: RECENTLY_SECONDS } })],
@@ -620,6 +666,7 @@ export function splitCondition(text) {
 // Exclusive groups a condition key belongs to (src/planner.js compares their alternatives).
 export const CONDITION_GROUPS = {
   standingStill: "movement", moving: "movement", hastenMoving: "movement", exitStandStillGain: "movement", exitStandStillStacks: "movement",
+  movedUnder: "movedDistance", movedAtLeast: "movedDistance",
   nearTarget: "distance", distant: "distance", noneNear: "distance", nearbyEnemiesAtLeast: "distance", enemiesWithin: "distance",
   lowLife: "life", notLowLife: "life", perLifeLost: "life", lifeLost: "life", fullLife: "life", notFullLife: "life", lifeOrShieldAtLeast: "life",
   fullMana: "mana", lowMana: "mana", notFullMana: "mana"
@@ -678,14 +725,31 @@ function resolveKey(condition, state) {
   const { key, params = {} } = condition;
   const value = condition.value;
   const ailments = new Set(state.enemyAilments || []);
+  // The dummy's unit buff set (src/unit-buff-set.js, W8 step 1): the Ignited / Traumatized states, the ailment groups and counts read it;
+  // null with TLI_BUFF_SET=off or a hand-made state, and the old reading stays. The per-type count reads every entry since W8 step 2 (step 1
+  // read stage "model" only, as `enemyAilmentTypeCount` did, so the combat pass's deemed Frozen counts now: identical figures on the fixtures).
+  const buffs = enemyBuffSet(state);
+  // W8 step 2: every ailment state (Wilted, Frostbitten, Frozen, Numbed, Shocked) reads the set as well; the crowd control view, the
+  // curses and the Numbed / Frostbite levels too. `has` answers "the dummy carries this ailment" from the set or the old list.
+  const has = (name) => buffs ? buffs.holds(name === "Freeze" ? "Frozen" : name) : name === "Frozen" || name === "Freeze" ? ailments.has("Frozen") || ailments.has("Freeze") : ailments.has(name);
+  // A group-state reader ("enemies with Elemental Ailments", "affected by Ailments"; target states 4000570 / 4000580) over the ailments
+  // on the dummy: held when one of yours is there, else at the share your Minions keep one of them (1 − Π(1 − uptime); wiring audit
+  // gap 2e, 2026-11-03; src/minion-ailment-types.js, provisional).
+  const groupShare = (names) => {
+    const held = names.filter((name) => ailments.has(name));
+    if (!held.length) return 0;
+    const shares = held.map((name) => state.enemyAilmentUptime?.[name]);
+    return shares.some((share) => share == null) ? 1 : 1 - shares.reduce((rest, share) => rest * (1 - Math.min(1, Math.max(0, Number(share) || 0))), 1);
+  };
+  const groupOn = (share, text) => on(share < 1 ? `${text}: your Minions keep it ${round(share * 100)}% of the time (src/minion-ailment-types.js; provisional)` : text, share < 1 ? { factor: share, timeShare: true, provisional: true } : {});
   switch (key) {
     // ---- support keys (unchanged readings; src/support-effects.js) ----
-    case "cursed": return state.cursed ? on("the dummy carries a Curse", { appliedValue: value }) : off("the dummy carries no Curse", { appliedValue: 0 });
-    case "numbed": return ailments.has("Numbed") ? on(`the build inflicts Numbed; ${NUMBED_MAX_STACKS} stacks assumed (best case, stack count not modeled: provisional)`, { appliedValue: value + (condition.perStack || 0) * NUMBED_MAX_STACKS, provisional: true }) : off("the build inflicts no Numbed", { appliedValue: 0 });
-    case "frozen": return ailments.has("Freeze") || ailments.has("Frozen") ? on("the dummy is Frozen", { appliedValue: value }) : off("the build does not Freeze the dummy (Freeze is not modeled)", { appliedValue: 0 });
-    case "anyAilment": return (state.enemyAilmentTypeCount || 0) > 0 ? on("an ailment on the dummy (enemy-ailment model)") : off("no ailment on the dummy");
+    case "cursed": return (buffs ? buffs.holds("Cursed") : state.cursed) ? on("the dummy carries a Curse", { appliedValue: value }) : off("the dummy carries no Curse", { appliedValue: 0 });
+    case "numbed": return has("Numbed") ? on(`the build inflicts Numbed; ${NUMBED_MAX_STACKS} stacks assumed (best case, stack count not modeled: provisional)`, { appliedValue: value + (condition.perStack || 0) * NUMBED_MAX_STACKS, provisional: true }) : off("the build inflicts no Numbed", { appliedValue: 0 });
+    case "frozen": return has("Frozen") ? on("the dummy is Frozen", { appliedValue: value }) : off("the build does not Freeze the dummy (Freeze is not modeled)", { appliedValue: 0 });
+    case "anyAilment": { const share = buffs ? buffs.share("Ailment") : groupShare([...ailments]); return (buffs ? buffs.count("Ailment") : state.enemyAilmentTypeCount || 0) > 0 && share > 0 ? groupOn(share, "an ailment on the dummy (enemy-ailment model)") : off("no ailment on the dummy"); }
     case "ailmentTypes": {
-      const count = state.enemyAilmentTypeCount || 0;
+      const count = buffs ? buffs.count("Ailment") : state.enemyAilmentTypeCount || 0;
       if (value === undefined && params.capCount) {
         const counted = Math.min(count, params.capCount);
         return count > 0 ? on(`${count} ailment type${count === 1 ? "" : "s"} on the dummy (enemy-ailment model), counted up to ${round(params.capCount)}: ${round(counted)} ("per Ailment" read as per ailment type: provisional)`, { factor: counted, provisional: true }) : off("no ailment on the dummy", { provisional: true });
@@ -697,7 +761,7 @@ function resolveKey(condition, state) {
     // Gear affix batch C (2026-10-22). Empowered Insight: the Empower Skills active on the skill board, their buffs read as up
     // (best case, own buffs pre-built; provisional).
     case "empowerSkills": {
-      const count = Number(state.empowerSkillCount) || 0;
+      const count = Number(ownEmpowerCount(state)) || 0;
       return count >= (condition.min ?? 1) ? on(`${count} Empower Skill${count === 1 ? "" : "s"} on the skill board, their buffs held (best case; provisional)`, { appliedValue: value, provisional: true }) : off(`${count} Empower Skill${count === 1 ? "" : "s"} on the skill board, fewer than ${condition.min}`, { appliedValue: 0 });
     }
     // Empowered Channeling: the dummy is channeled at continuously (own buffs pre-built), so the stacks sit at their cap.
@@ -728,6 +792,18 @@ function resolveKey(condition, state) {
       if (condition.triggeredOnly) return state.moving !== false ? on(`moving (movement group): at its +${value}% cap on triggered uses (provisional)`, { appliedValue: value, provisional: true }) : off("standing still (movement group): no movement during the trigger interval", { appliedValue: 0 });
       const cap = condition.cap || 1;
       return state.moving !== false ? on(`moving (movement group): ${cap} stacks, fully stacked (user rule), multiplied`, { appliedValue: round(((1 + value / 100) ** cap - 1) * 100) }) : off("standing still (movement group)", { appliedValue: 0 });
+    }
+    // Caged Fury's distance gate (record 270393984; see its LINE_RULES entry). movedFast: the "Distance moved in the last 1 s" group's
+    // alternative, possible only while moving.
+    case "movedUnder": {
+      const fast = state.moving !== false && state.requestedConditions?.movedFast === true;
+      const span = `${params.meters ?? 12} m in the last ${params.seconds ?? 1} s`;
+      return fast ? off(`moved ${span} or more (distance moved group: the other alternative); flip it in the condition settings`) : on(state.moving === false ? `standing still: 0 m moved, less than ${span}` : `moving below ${params.meters ?? 12} m per second (distance moved group: less than ${span}, best case by damage)`);
+    }
+    case "movedAtLeast": {
+      const span = `${params.meters ?? 12} m or more in the last ${params.seconds ?? 1} s`;
+      if (state.moving === false) return off(`standing still (movement group): not ${span}`);
+      return state.requestedConditions?.movedFast === true ? on(`moving ${span} (distance moved group; provisional: the character's speed in m/s is not modeled)`, { provisional: true }) : off(`moving below ${params.meters ?? 12} m per second (distance moved group: the damage half's alternative); flip it in the condition settings`);
     }
     case "nearTarget": {
       // Explicit radius (support clauses: "within 3 m"): holds by its number at the chosen distance (src/dummy-target.js).
@@ -768,10 +844,21 @@ function resolveKey(condition, state) {
       return off("the training dummy never loses Life (Q-H9: 0% lost; only a line that deems it at Low Life applies these)", { provisional: true });
     }
     case "enemyState": {
+      // Blinded / Paralyzed (target states 4000140 / 4000180 of the Blind and Paralysis buffs): the crowd control the planner holds on
+      // the dummy (src/combat-states.js, every holder: on-hit chances from the game recipes, kismets, the follower), at its sustained
+      // share (wiring audit gap 5, 2026-11-03; provisional).
+      const crowdControl = { Blinded: "Blinding", Paralyzed: "Paralysis" }[params.word];
+      if (crowdControl) {
+        const share = buffs ? buffs.crowdControlShare(crowdControl) : Number(state.enemyCrowdControlShares?.[crowdControl]) || 0;
+        if (!(share > 0)) return off(`the build does not make the dummy ${params.word}`);
+        return on(`the dummy is ${params.word} ${share >= 1 ? "(crowd control held)" : `${Math.round(share * 10000) / 100}% of the time (crowd control model)`} (provisional)`, share < 1 ? { factor: share, timeShare: true, provisional: true } : { provisional: true });
+      }
       const name = ailmentStateNames[params.word] || (params.word === "Shocked" ? "Shock" : params.word);
-      const present = name === "Frozen" ? ailments.has("Frozen") || ailments.has("Freeze") : ailments.has(name);
+      // Every ailment state from the unit buff set (W8 steps 1 and 2); the enemy-ailment list with TLI_BUFF_SET=off.
+      const fromSet = Boolean(buffs);
+      const present = has(name);
       // An ailment only your Minions keep on the dummy (src/minion-ailment-types.js; provisional) holds its uptime share.
-      const minionShare = state.enemyAilmentUptime?.[name];
+      const minionShare = fromSet ? (buffs.heldOnlyBy(name, "minion") ? buffs.share(name) : undefined) : state.enemyAilmentUptime?.[name];
       if (present && minionShare != null) return on(`the dummy is ${params.word}: inflicted by your Minions ${Math.round(minionShare * 10000) / 100}% of the time (src/minion-ailment-types.js; provisional)`, minionShare < 1 ? { factor: minionShare, timeShare: true, provisional: true } : { provisional: true });
       return present ? on(`the dummy is ${params.word} (enemy-ailment model)`) : off(`the build does not make the dummy ${params.word}`);
     }
@@ -786,7 +873,7 @@ function resolveKey(condition, state) {
     }
     case "nightFeather": return state.activeTangles > 0 ? on(`${state.activeTangles} active Tangle${state.activeTangles === 1 ? "" : "s"}: Night Feather Entanglement held (1 stack per active Tangle; src/tangle-model.js)`) : off("no active Tangle: no Night Feather Entanglement");
     case "spiritMagusCount": {
-      const count = (state.spiritMagusSummons || []).length;
+      const count = ownLevel(state, "Spirit Magi", (state.spiritMagusSummons || []).length);
       return count > 0 ? on(`${count} Spirit Magus summon${count === 1 ? "" : "s"} on the skill board (one Magus each)`, { factor: count }) : off("no Spirit Magus summon on the skill board");
     }
     case "dualWieldTypes": {
@@ -796,7 +883,7 @@ function resolveKey(condition, state) {
     case "shield": return state.weapon?.shield ? on("holding a Shield") : off("no Shield equipped");
     case "dualWielding": return state.weapon?.dualWielding ? on("dual wielding") : off("not dual wielding");
     case "hastenMoving": {
-      if (!(state.hasHasten || state.buffs?.hasHasten)) return off("no Hasten source");
+      if (!(state.hasHasten || ownCombatBuffs(state)?.hasHasten)) return off("no Hasten source");
       return state.moving !== false ? on(`Hasten and moving (movement group): ${params.stacks} stacks, fully stacked (user rule)`) : off("standing still (movement group)");
     }
     case "lowLife": return state.life === "low" ? on(`at Low Life (${state.lifeReason})`) : off(`not at Low Life (${state.lifeReason})`);
@@ -875,17 +962,21 @@ function resolveKey(condition, state) {
       return share > params.percent ? on(`${text} > ${params.percent}%`, { provisional: true }) : off(`${text}, not more than ${params.percent}%`, { provisional: true });
     }
     case "perArmor": {
-      const armor = Number(state.worldWithinInputs?.armor) || 0;
+      const armor = combatArmorValue(state);
       const raw = perSteps(armor, params.every);
       const steps = params.per ? Math.min(raw, params.cap / Math.abs(params.per)) : raw;
-      return steps > 0 ? on(`Armor ${round(armor)} (stat sheet) ÷ ${params.every} = ${round(raw)}${steps < raw ? `, capped at +${params.cap}%` : ""}`, { factor: steps }) : off(`Armor ${round(armor)}: none`);
+      return steps > 0 ? on(`Armor ${round(armor)} (${armorLabel(state)}) ÷ ${params.every} = ${round(raw)}${steps < raw ? `, capped at +${params.cap}%` : ""}`, { factor: steps }) : off(`Armor ${round(armor)}: none`);
     }
     case "armorAtLeast": {
-      const armor = Math.round(Number(state.worldWithinInputs?.armor) || 0);
-      return armor >= params.value ? on(`Armor ${armor} (stat sheet) ≥ ${params.value}`) : off(`Armor ${armor} (stat sheet) < ${params.value}`);
+      const armor = Math.round(combatArmorValue(state));
+      return armor >= params.value ? on(`Armor ${armor} (${armorLabel(state)}) ≥ ${params.value}`) : off(`Armor ${armor} (${armorLabel(state)}) < ${params.value}`);
     }
     case "ailmentOrCcTypes": {
-      const names = new Set([...(state.enemyAilments || []), ...(state.enemyCrowdControl || [])].map((name) => name === "Frozen" ? "Freeze" : name));
+      // Your inflictions only (trigger 1000160 is the holder's event; wiring audit W2 gap 6, 2026-11-03): the follower's and your Minions'
+      // ailments and crowd control are theirs (inferred: the follower is its own unit, its affixes hear its events).
+      const ownAilmentNames = buffs ? buffs.types("Ailment", { by: BY_YOU, stage: "model" }) : state.ownAilments || state.enemyAilments || [];
+      const ownCrowdControl = buffs ? buffs.crowdControlTypes({ by: BY_YOU }) : state.ownCrowdControl || state.enemyCrowdControl || [];
+      const names = new Set([...ownAilmentNames, ...ownCrowdControl].map((name) => name === "Frozen" ? "Freeze" : name));
       const count = names.size;
       return count > 0 ? on(`${count} Ailment / Crowd Control type${count === 1 ? "" : "s"} inflicted on the dummy within 4 s (game recipe 236213264: a 4 s buff per type inflicted; the build keeps applying them): ${[...names].join(", ")}; one factor per type`, { factor: null, power: count }) : off("no Ailment or Crowd Control Effect inflicted");
     }
@@ -936,7 +1027,7 @@ function resolveKey(condition, state) {
     }
     case "castChance": return on(`expected value: ${params.chance}% × +${params.value}% per cast, each line its own additional layer (independent rolls: provisional, Q12)`, { provisional: true });
     // Hidden Mastery: its "Gains Attack Aggression when casting an Attack Skill" clause sets the buff (src/combat-states.js).
-    case "attackAggression": return (state.buffs ? state.buffs.hasAttackAggression : state.castsAttack) ? on("Attack Aggression held (gained by casting an Attack Skill)") : off("no Attack Aggression (no active Attack skill)");
+    case "attackAggression": return (ownCombatBuffs(state) ? ownCombatBuffs(state).hasAttackAggression : state.castsAttack) ? on("Attack Aggression held (gained by casting an Attack Skill)") : off("no Attack Aggression (no active Attack skill)");
     case "hitsWithType": {
       const want = /^Elemental$/i.test(params.type) ? ["Fire", "Cold", "Lightning"] : [params.type];
       const hit = want.filter((type) => state.hitTypes?.has(type));
@@ -999,8 +1090,8 @@ function resolveKey(condition, state) {
       const why = `Dark Gate cast whenever ready (best case): a 4 s buff per ${round(gate.cooldownSeconds)} s cooldown (${gate.baseCooldownSeconds} s${gate.sources.length ? ` ÷ ${round(gate.baseCooldownSeconds / gate.cooldownSeconds)} from ${gate.sources.map((item) => item.source).join(", ")}` : ""}) → uptime ${round(gate.uptime * 100)}% (provisional)`;
       return on(why, { factor: gate.uptime < 1 ? gate.uptime : null, timeShare: gate.uptime < 1, provisional: true });
     }
-    case "minionAuraCount": return state.auraCount > 0 ? on(`${state.auraCount} active Aura type${state.auraCount === 1 ? "" : "s"} affecting the Minions (they stand inside the player's Auras: best case, provisional)`, { factor: state.auraCount, provisional: true }) : off("no active Aura");
-    case "auraCount": return state.auraCount > 0 ? on(`${state.auraCount} active Aura type${state.auraCount === 1 ? "" : "s"}${condition.wording && /your Minions/i.test(condition.wording) ? " (own Auras; your Minions stand inside them: best case, provisional)" : ""}`, { factor: state.auraCount, provisional: Boolean(condition.wording && /your Minions/i.test(condition.wording)) }) : off("no active Aura");
+    case "minionAuraCount": { const auraCount = ownAuraCount(state); return auraCount > 0 ? on(`${auraCount} active Aura type${auraCount === 1 ? "" : "s"} affecting the Minions (they stand inside the player's Auras: best case, provisional)`, { factor: auraCount, provisional: true }) : off("no active Aura"); }
+    case "auraCount": { const auraCount = ownAuraCount(state); return auraCount > 0 ? on(`${auraCount} active Aura type${auraCount === 1 ? "" : "s"}${condition.wording && /your Minions/i.test(condition.wording) ? " (own Auras; your Minions stand inside them: best case, provisional)" : ""}`, { factor: auraCount, provisional: Boolean(condition.wording && /your Minions/i.test(condition.wording)) }) : off("no active Aura"); }
     case "perStat": {
       const total = state.stats?.[params.stat] ?? 0;
       const steps = perSteps(total, params.every);
@@ -1057,11 +1148,13 @@ function resolveKey(condition, state) {
     }
     case "perBlockChance": {
       if (params.sum) {
-        const total = (state.blockChance?.attack || 0) + (state.blockChance?.spell || 0);
+        const blockChance = ownBlock(state);
+        const total = (blockChance?.attack || 0) + (blockChance?.spell || 0);
         const percent = Math.min(params.cap, total / params.every * params.per);
-        return percent > 0 ? on(`${round(state.blockChance?.attack || 0)}% Attack + ${round(state.blockChance?.spell || 0)}% Spell Block Chance = ${round(total)}% ÷ ${params.every} × ${params.per}% = +${round(percent)}% (${Number.isFinite(params.cap) ? `cap +${params.cap}%; ` : ""}game records 406445504, 720877696)`, { factor: percent / params.per }) : off("no Attack or Spell Block Chance");
+        return percent > 0 ? on(`${round(blockChance?.attack || 0)}% Attack + ${round(blockChance?.spell || 0)}% Spell Block Chance = ${round(total)}% ÷ ${params.every} × ${params.per}% = +${round(percent)}% (${Number.isFinite(params.cap) ? `cap +${params.cap}%; ` : ""}game records 406445504, 720877696)`, { factor: percent / params.per }) : off("no Attack or Spell Block Chance");
       }
-      const chance = params.kind === "attack" ? state.blockChance?.attack || 0 : Math.max(state.blockChance?.attack || 0, state.blockChance?.spell || 0);
+      const blockChance = ownBlock(state);
+      const chance = params.kind === "attack" ? blockChance?.attack || 0 : Math.max(blockChance?.attack || 0, blockChance?.spell || 0);
       const steps = perSteps(chance, params.every);
       const appliedTotal = Math.min(params.cap, steps * params.per);
       return appliedTotal > 0 ? on(`${round(chance)}% ${params.kind === "attack" ? "Attack Block Chance" : "block chance (the higher of Attack and Spell: provisional)"} → +${round(appliedTotal)}% (${Number.isFinite(params.cap) ? `cap +${params.cap}%` : "no cap stated"})`, { factor: appliedTotal / params.per, provisional: true }) : off(`${round(chance)}% block chance: none`);
@@ -1123,7 +1216,7 @@ function resolveKey(condition, state) {
       if (!weapon.dualWielding) return off("not dual wielding");
       return weapon.uniqueTypes > 1 ? on(`dual wielding different types (${(weapon.types || []).join(", ")})`) : off(`dual wielding two ${weapon.types?.[0] || "weapons"} (the same type)`);
     }
-    case "fixedFireResistanceFrostbitten": return ailments.has("Frostbite") ? on(`the dummy is Frostbitten (enemy-ailment model): its Fire Resistance is fixed at ${params.value}% (no reduction or Scorch changes it; penetration still applies: provisional)`, { provisional: true }) : off("the build does not make the dummy Frostbitten");
+    case "fixedFireResistanceFrostbitten": return has("Frostbite") ? on(`the dummy is Frostbitten (enemy-ailment model): its Fire Resistance is fixed at ${params.value}% (no reduction or Scorch changes it; penetration still applies: provisional)`, { provisional: true }) : off("the build does not make the dummy Frostbitten");
     case "worldWithin": {
       const summons = (state.spiritMagusSummons || []).map((summon) => String(summon.name).replace(/^Summon /, ""));
       if (!summons.length) return off("no Spirit Magus summon on the skill board");
@@ -1140,11 +1233,26 @@ function resolveKey(condition, state) {
       const reaches = !want || want.some((type) => dealt.has?.(type) || state.hitTypes?.has?.(type)) || state.minionsCrit;
       return reaches ? on(`applies to you (game record: the same attribute without the Minion tag)${state.minionsCrit ? " and to your Minions (the Minion model reads the line)" : ""}`) : off(`the build deals no ${typed} Damage and has no modeled Minion`);
     }
-    case "blessingActive": { const stacks = state.blessingStacks?.[params.name] || 0; return stacks > 0 ? on(`${params.name} Blessing held at ${stacks} stacks (Blessing model; own buffs pre-built)`) : off(`no ${params.name} Blessing stacks (no gain source holds on the dummy)`); }
-    case "blessingAtMax": { const stacks = state.blessingStacks?.[params.name] || 0; return stacks > 0 ? on(`${params.name} Blessing held at its max (${stacks} stacks; Blessing model, own buffs pre-built)`) : off(`no ${params.name} Blessing stacks (no gain source holds)`); }
-    case "blessingAtLeast": { const stacks = state.blessingStacks?.[params.name] || 0; return stacks >= params.stacks ? on(`${stacks} ${params.name} Blessing stacks ≥ ${params.stacks} (Blessing model)`) : off(`${stacks} ${params.name} Blessing stacks < ${params.stacks}`); }
-    case "anyBlessingAtLeast": { const best = Math.max(0, ...Object.values(state.blessingStacks || {})); return best >= params.stacks ? on(`a Blessing held at ${best} stacks ≥ ${params.stacks} (Blessing model)`) : off(`no Blessing reaches ${params.stacks} stacks (highest ${best})`); }
-    case "usedSkillTag": return (state.activeDamageTags || new Set()).has(params.tag) ? on(`an active damage skill has the ${params.tag} tag (used on the dummy)`) : off(`no active damage skill has the ${params.tag} tag`);
+    case "blessingActive": { const stacks = ownBlessingStacks(state)?.[params.name] || 0; return stacks > 0 ? on(`${params.name} Blessing held at ${stacks} stacks (Blessing model; own buffs pre-built)`) : off(`no ${params.name} Blessing stacks (no gain source holds on the dummy)`); }
+    case "blessingAtMax": {
+      const stacks = ownBlessingStacks(state)?.[params.name] || 0, layers = state.blessingLayers?.[params.name];
+      const share = stacks > 0 ? blessingShareAtLeast(state, params.name, (layers?.maxStacks ?? 0) + (layers?.own || 0)) : 0;
+      if (share !== null) return blessingShareResult(share, `${params.name} Blessing at its max`, stacks > 0 ? `${params.name} Blessing never reaches its max: its periodic gains leave at most ${layers?.peak ?? 0} of ${layers?.maxStacks ?? 0} layers live (each stack its own timer: blessing-layer-timers)` : `no ${params.name} Blessing stacks (no gain source holds)`);
+      return stacks > 0 ? on(`${params.name} Blessing held at its max (${stacks} stacks; Blessing model, own buffs pre-built)`) : off(`no ${params.name} Blessing stacks (no gain source holds)`);
+    }
+    case "blessingAtLeast": {
+      const stacks = ownBlessingStacks(state)?.[params.name] || 0, share = stacks > 0 ? blessingShareAtLeast(state, params.name, params.stacks) : null;
+      if (share !== null) return blessingShareResult(share, `${params.name} Blessing at least ${params.stacks} stacks`, `${params.name} Blessing never holds ${params.stacks} stacks (${Math.round(stacks * 10000) / 10000} on average; each stack its own timer: blessing-layer-timers)`);
+      return stacks >= params.stacks ? on(`${stacks} ${params.name} Blessing stacks ≥ ${params.stacks} (Blessing model)`) : off(`${stacks} ${params.name} Blessing stacks < ${params.stacks}`);
+    }
+    case "anyBlessingAtLeast": { const best = Math.max(0, ...Object.values(ownBlessingStacks(state) || {})); return best >= params.stacks ? on(`a Blessing held at ${best} stacks ≥ ${params.stacks} (Blessing model)`) : off(`no Blessing reaches ${params.stacks} stacks (highest ${best})`); }
+    // "if you have used a <tag> Skill recently" is trigger 1000074 (game records 437971, 556993): a use you cast yourself. The hit pass's
+    // tags of the skills with player uses (wiring audit W2 gap 5, 2026-11-03: an Activation Medium-triggered skill no longer holds it);
+    // before the pass, every active damage skill.
+    case "usedSkillTag": {
+      if (state.playerUseTags instanceof Set) return state.playerUseTags.has(params.tag) ? on(`you use a ${params.tag} skill yourself (trigger 1000074: a player use, not a triggered one)`) : off((state.activeDamageTags || new Set()).has(params.tag) ? `the ${params.tag} skill is only triggered (trigger 1000074 needs a use you cast yourself)` : `no active damage skill has the ${params.tag} tag`);
+      return (state.activeDamageTags || new Set()).has(params.tag) ? on(`an active damage skill has the ${params.tag} tag (used on the dummy)`) : off(`no active damage skill has the ${params.tag} tag`);
+    }
     case "unarmed": return state.weapon?.unarmed ? on("no weapon held (Unarmed)") : off("a weapon is held");
     case "offHandEmpty": return state.weapon?.offHandEmpty ? on("the off-hand slot is empty") : off("the off-hand slot holds an item");
     case "wieldingWandOrStaff": return (state.weapon?.types || []).some((type) => /Wand|Tin Staff/i.test(type)) ? on("a Wand or Tin Staff is held") : off("no Wand or Tin Staff held");
@@ -1156,17 +1264,17 @@ function resolveKey(condition, state) {
       return match ? on(`a ${params.family} is held (${match})`) : off(`no ${params.family} held${held.length ? ` (${held.join(", ")})` : ""}`);
     }
     case "blockChanceAbove": {
-      const chance = Number(state.blockChance?.[params.kind]) || 0;
+      const chance = Number(ownBlock(state)?.[params.kind]) || 0;
       const label = params.kind === "attack" ? "Attack" : "Spell";
       return chance > params.value ? on(`${label} Block Chance ${round(chance)}% > ${params.value}% (block model)`) : off(`${label} Block Chance ${round(chance)}% is not above ${params.value}% (block model)`);
     }
     case "blockedRecently": return state.blockRecentlyActive ? on("blocked recently: best-case assumption with Block chance (user decision 2026-10-12; condition 'Hit or blocked recently')", { provisional: true }) : off(state.hitRecently === false ? "'Hit or blocked recently' is switched off" : "no Block chance: the build cannot block");
-    case "numbedStacksAtLeast": return ailments.has("Numbed") && params.stacks <= NUMBED_MAX_STACKS ? on(`the build inflicts Numbed: ${NUMBED_MAX_STACKS} stacks assumed (best case, stack count not modeled: provisional)`, { provisional: true }) : off(ailments.has("Numbed") ? `more than ${NUMBED_MAX_STACKS} Numbed stacks needed` : "the build inflicts no Numbed");
+    case "numbedStacksAtLeast": return has("Numbed") && params.stacks <= NUMBED_MAX_STACKS ? on(`the build inflicts Numbed: ${NUMBED_MAX_STACKS} stacks assumed (best case, stack count not modeled: provisional)`, { provisional: true }) : off(ailments.has("Numbed") ? `more than ${NUMBED_MAX_STACKS} Numbed stacks needed` : "the build inflicts no Numbed");
     case "noRestorationRecently": return on("no Restoration Skill used on the dummy (best case; provisional)", { provisional: true });
     case "hitElite": return state.anyHit ? on("the build hits the dummy, an Elite (a Boss; src/dummy-target.js): every hit refreshes it") : off("the build deals no hits");
     case "noMainSkillRecently": return off("the Main Skill is used throughout the dummy run");
     case "perMinion": {
-      const out = Math.min(params.cap, Number(state.minionCount) || 0);
+      const out = Math.min(params.cap, Number(ownLevel(state, "Minions", state.minionCount)) || 0);
       return out > 0 ? on(`${out} Minion${out === 1 ? "" : "s"} out (modeled Minions at their max; up to ${params.cap}; provisional)`, { factor: out, provisional: true }) : off("no modeled Minion out");
     }
     case "perEvasion": {
@@ -1213,38 +1321,42 @@ function resolveKey(condition, state) {
       const steps = Math.min(params.cap / Math.max(1e-9, params.per), count);
       return steps > 0 ? on(`${count} non-Exclusive Support Skill${count === 1 ? "" : "s"} equipped on the skill board (the catalog's Exclusive supports left out): ${round(steps)} × ${params.per}%${steps < count ? ` (capped at ${params.cap}%)` : ""}`, { factor: steps }) : off("no non-Exclusive Support Skill equipped");
     }
-    case "barrierActive": return state.barrier ? on("Barrier held: Guard on a channeled skill keeps it up (user-confirmed 2026-10-10)") : off("no Barrier source (only Guard on a channeled skill is modeled)");
+    case "barrierActive": return (playerBuffSet(state)?.staged("barrier") ? playerBuffSet(state).holds("Barrier") : state.barrier) ? on("Barrier held: Guard on a channeled skill keeps it up (user-confirmed 2026-10-10)") : off("no Barrier source (only Guard on a channeled skill is modeled)");
     case "notWieldingWandOrStaff": return (state.weapon?.types || []).some((type) => /Wand|Tin Staff/i.test(type)) ? off("a Wand or Tin Staff is held (game record 146061584)") : on("no Wand or Tin Staff held (game record 146061584)");
     case "fullLife": return atFullLife(state) ? on("at Full Life: the dummy never attacks (best case)") : off(notFullLifeReason(state));
     case "notFullLife": return atFullLife(state) ? off("at Full Life: the dummy never attacks") : on(notFullLifeReason(state));
     case "notFullMana": return atFullMana(state) ? off(`at Full Mana (${state.manaReason})`) : on(notFullManaReason(state));
     case "blessingPerStack": {
-      const stacks = state.blessingStacks?.[params.name] || 0;
+      const stacks = ownBlessingStacks(state)?.[params.name] || 0;
       const counted = params.cap ? Math.min(stacks, params.cap) : stacks;
       return stacks > 0 ? on(`${stacks} ${params.name} Blessing stacks (Blessing model)${params.cap ? `, counted up to ${params.cap}: ${counted}` : ""}`, { factor: counted }) : off(`no ${params.name} Blessing stacks`);
     }
     // Providential Grace (provisional reading): the named Blessing's max stacks against every other Blessing's held stacks.
     case "blessingMaxNotLower": {
-      const max = state.blessingMaxStacks?.[params.name] ?? 0;
-      const others = Object.entries(state.blessingStacks || {}).filter(([name]) => name !== params.name);
+      const max = ownBlessingMaxStacks(state)?.[params.name] ?? 0;
+      const others = Object.entries(ownBlessingStacks(state) || {}).filter(([name]) => name !== params.name);
       const higher = others.filter(([, stacks]) => stacks > max);
       const list = (items) => items.map(([name, stacks]) => `${name} ${stacks}`).join(", ");
       return !higher.length ? on(`max ${params.name} Blessing stacks ${max} ≥ the other Blessings' held stacks (${list(others)}; "stacks of other Blessings" read as their held stacks: provisional)`, { provisional: true }) : off(`max ${params.name} Blessing stacks ${max} < ${list(higher)}`, { provisional: true });
     }
     case "enemyElementalAilment": {
-      const held = ELEMENTAL_AILMENTS.filter((name) => ailments.has(name));
-      return held.length ? on(`the dummy has ${held.join(", ")} (Elemental Ailments: Ignite, Frostbite, Freeze, Numbed; game keyword 101)`) : off("the build inflicts no Elemental Ailment (Ignite, Frostbite, Freeze, Numbed; game keyword 101)");
+      const elementalTypes = buffs ? new Set(buffs.types("ElementalAilment")) : null;
+      const held = ELEMENTAL_AILMENTS.filter((name) => elementalTypes ? elementalTypes.has(name) : ailments.has(name));
+      return held.length ? groupOn(buffs ? buffs.share("ElementalAilment") : groupShare(held), `the dummy has ${held.join(", ")} (Elemental Ailments: Ignite, Frostbite, Freeze, Numbed; game keyword 101)`) : off("the build inflicts no Elemental Ailment (Ignite, Frostbite, Freeze, Numbed; game keyword 101)");
     }
     case "elementalAilmentTypes": {
-      const held = [...new Set(ELEMENTAL_AILMENTS.filter((name) => ailments.has(name)).map((name) => name === "Frozen" ? "Freeze" : name))];
-      return held.length ? on(`${held.length} Elemental Ailment type${held.length === 1 ? "" : "s"} on the dummy (${held.join(", ")}; game keyword 101)`, { factor: held.length }) : off("no Elemental Ailment on the dummy");
+      const elementalTypes = buffs ? new Set(buffs.types("ElementalAilment")) : null;
+      const held = [...new Set(ELEMENTAL_AILMENTS.filter((name) => elementalTypes ? elementalTypes.has(name) : ailments.has(name)).map((name) => name === "Frozen" ? "Freeze" : name))];
+      // Each type yours at 1, one only your Minions keep at its uptime (src/minion-ailment-types.js; provisional).
+      const typeCount = held.reduce((sum, name) => sum + Math.min(1, buffs ? buffs.share(name) : Number(state.enemyAilmentUptime?.[name] ?? 1)), 0);
+      return held.length ? on(`${round(typeCount)} Elemental Ailment type${typeCount === 1 ? "" : "s"} on the dummy (${held.join(", ")}; game keyword 101)`, { factor: typeCount }) : off("no Elemental Ailment on the dummy");
     }
     case "nearbyEnemiesAtLeast": {
       if (params.count > 1) return off(`needs ${params.count} enemies Nearby: the training dummy is one enemy`, { notOnDummy: true });
       return state.nearTarget !== false ? on(`the dummy is Nearby (within ${KEYWORD_RADII_METERS.nearby} m; distance group: close, best case)`) : off(`${DISTANT_STANDING_METERS} m from the dummy (distance group: Distant): no enemy Nearby`);
     }
-    case "auraCountAtLeast": return (state.auraCount || 0) >= params.count ? on(`${state.auraCount} active Aura type${state.auraCount === 1 ? "" : "s"} ≥ ${params.count} (own Auras only${condition.wording && /your Minions/i.test(condition.wording) ? "; your Minions stand inside them: best case" : ""}: provisional)`, { provisional: true }) : off(`${state.auraCount || 0} active Aura types < ${params.count}`);
-    case "auraCountExactly": return (state.auraCount || 0) === params.count ? on(`exactly ${params.count} active Aura type${params.count === 1 ? "" : "s"} (own Auras only: provisional)`, { provisional: true }) : off(`${state.auraCount || 0} active Aura types, not ${params.count}`);
+    case "auraCountAtLeast": { const auraCount = ownAuraCount(state); return (auraCount || 0) >= params.count ? on(`${auraCount} active Aura type${auraCount === 1 ? "" : "s"} ≥ ${params.count} (own Auras only${condition.wording && /your Minions/i.test(condition.wording) ? "; your Minions stand inside them: best case" : ""}: provisional)`, { provisional: true }) : off(`${auraCount || 0} active Aura types < ${params.count}`); }
+    case "auraCountExactly": { const auraCount = ownAuraCount(state); return (auraCount || 0) === params.count ? on(`exactly ${params.count} active Aura type${params.count === 1 ? "" : "s"} (own Auras only: provisional)`, { provisional: true }) : off(`${auraCount || 0} active Aura types, not ${params.count}`); }
     case "spellBurstConsumedStacks": {
       const events = state.spellBurstEvents;
       if (!events) return { active: false, unmodeled: true, conditionText: "Not modeled: Spell Burst activations not measured yet (the planner's hit pass)" };
@@ -1259,16 +1371,17 @@ function resolveKey(condition, state) {
       return counted > 0 ? on(`Max Spell Burst ${stacks} (the "+N Max Spell Burst" lines the Spell Burst model reads; no base value counted: provisional), capped at +${params.cap}%`, { factor: counted, provisional: true }) : off("Max Spell Burst 0 (no \"+N Max Spell Burst\" line)");
     }
     case "minionCount": {
-      const out = Number(state.minionCount) || 0;
+      const out = Number(ownLevel(state, "Minions", state.minionCount)) || 0;
       return out >= params.min ? on(`${out} Minions out (modeled Minions at their max; provisional)`, { provisional: true }) : off(`${out} Minion${out === 1 ? "" : "s"} out (needs ${params.min})`);
     }
     case "buffActive": {
-      const held = { "Fervor": (state.buffs?.fervorRating || 0) > 0, "Attack Aggression": state.buffs?.hasAttackAggression, "Spell Aggression": state.buffs?.hasSpellAggression, "Hasten": state.buffs?.hasHasten, "Profane": state.buffs?.hasProfane }[params.buff];
+      const buffs = ownCombatBuffs(state);
+      const held = { "Fervor": (buffs?.fervorRating || 0) > 0, "Attack Aggression": buffs?.hasAttackAggression, "Spell Aggression": buffs?.hasSpellAggression, "Hasten": buffs?.hasHasten, "Profane": buffs?.hasProfane }[params.buff];
       return held ? on(`${params.buff} held (src/combat-states.js)`) : off(`no ${params.buff} source`);
     }
     // ---- Condition-unread batch 3 (2026-10-28) ----
     case "perResourceAtMaxBlessing": {
-      const stacks = state.blessingStacks?.[params.name] || 0;
+      const stacks = ownBlessingStacks(state)?.[params.name] || 0;
       if (!(stacks > 0)) return off(`no ${params.name} Blessing stacks, so never at max (Blessing model)`);
       const total = state.stats?.[params.stat] ?? 0;
       const label = params.stat === "maxMana" ? "Max Mana" : "Max Life";
@@ -1304,15 +1417,16 @@ function resolveKey(condition, state) {
       return stacks > 0 ? on(`${round(rate)} Mobility uses/s on the board (each at its cooldown) × ${params.seconds} s ("recently") = ${round(rate * params.seconds)}${rate * params.seconds > params.stacks ? `, capped at ${params.stacks}` : ""} stacks, one factor per stack`, { power: stacks }) : off("no enabled Mobility skill on the skill board");
     }
     case "numbedInflictedRecently": {
-      if (!ailments.has("Numbed")) return off("the build inflicts no Numbed");
+      if (!has("Numbed")) return off("the build inflicts no Numbed");
       const rate = Number.isFinite(state.lightningHitsPerSecond) ? state.lightningHitsPerSecond : null;
       if (rate == null) return off("Lightning hits per second are measured on the planner's hit pass (not measured in this context)");
       const stacks = Math.min(params.stacks, rate * params.seconds);
       return stacks > 0 ? on(`${round(rate)} Lightning hits/s × ${params.seconds} s ("recently") = ${round(rate * params.seconds)}${rate * params.seconds > params.stacks ? `, capped at ${params.stacks}` : ""} Numbed inflictions, one factor per stack (provisional: every Lightning hit reads as one)`, { power: stacks, provisional: true }) : off("no Lightning hit keeps inflicting Numbed");
     }
     case "blurRatingPoints": {
-      const rating = Math.max(0, Number(state.blurHeld?.rating) || 0);
-      const scale = 1 + (Number(state.blurHeld?.effectPercent) || 0) / 100;
+      const blurHeld = ownBlur(state);
+      const rating = Math.max(0, Number(blurHeld?.rating) || 0);
+      const scale = 1 + (Number(blurHeld?.effectPercent) || 0) / 100;
       if (params.held) return rating > 0 ? on("Blur is held") : off("Blur is not active");
       return rating > 0 ? on(`Blur held at Rating ${round(rating)}${scale !== 1 ? ` × ${round(scale)} Blur Effect` : ""}`, { factor: rating * scale }) : off("Blur is not active");
     }

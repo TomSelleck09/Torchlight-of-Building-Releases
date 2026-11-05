@@ -1119,8 +1119,8 @@ function resolveSkills(tree, others, idMap, report, state) {
 
 // Placement (src/slate-shape-ids.js): the logged cell is the shape's pivot and Direction its clockwise quarter turns
 // (missing: 0). Crafted slates read their ShapeId table entry, legendary slates the planner's drawing (Direction 2) and
-// Nether King slates the planner's drawing with no turn. A calibrated pivot gives one position; an uncalibrated one (O1,
-// Space Rift, Residence of Stars, Contamination) gives one per cell, and the board solver keeps such a slate only where a
+// Nether King slates the planner's drawing with no turn. A calibrated pivot gives one position; an uncalibrated one (Residence
+// of Stars, Contamination) gives one per cell, and the board solver keeps such a slate only where a
 // single position fits beside the others. Nothing is placed illegally: a slate that does not fit, or fits in several places,
 // is parked beside the board with the reason. Calibrated on the 2026-10-12 fixture and the 2026-10-19 boards (one legal
 // tiling each; research/slate-shape-import-2026-10-19.md).
@@ -1128,10 +1128,9 @@ function resolveSkills(tree, others, idMap, report, state) {
 // The crafter's art for a god's planner shape (src/app.js craftedSlateIcon / the crafter's shape buttons).
 const GOD_SLATE_CAPTURES = { hunting: "goddess-of-hunting", knowledge: "goddess-of-knowledge", machines: "god-of-machines", might: "god-of-might", war: "god-of-war" };
 const craftedSlateIconPath = (godKey, index) => `./src/assets/tli/slates/game-captures/${index ? `${godKey}-${["Z1", "L1", "O1", "T1"][index]}.png` : godKey === "deception" ? "goddess-of-deception-divinity.webp" : `${GOD_SLATE_CAPTURES[godKey]}.svg`}`;
-const CRAFTED_SHAPE_RULE = "Crafted Divinity Slate shape id 1051 is read as O1 from the game's base order (Z1, Z2, L1, L2, O1, T1; the other five ids are confirmed on logged boards)";
 const CRAFTED_DIRECTION_RULE = `A crafted Divinity Slate with no logged Direction is read as direction ${DEFAULT_GAME_DIRECTION}, the game's default turn (the dump never prints Direction 0; this reading fits both 2026-10-19 boards)`;
 const LEGENDARY_DIRECTION_RULE = `A legendary Divinity Slate with no logged Direction is read as direction ${DEFAULT_GAME_DIRECTION} (its planner drawing turned half way round), as for crafted slates; not yet seen on a multi-cell legendary slate`;
-const UNCALIBRATED_ANCHOR_RULE = "Slates whose anchor cell is not calibrated (crafted O1, Space Rift, Residence of Stars, Nether King's Contamination) are placed only where a single position fits beside the other slates, otherwise parked";
+const UNCALIBRATED_ANCHOR_RULE = "Slates whose anchor cell is not calibrated (Residence of Stars, Nether King's Contamination) are placed only where a single position fits beside the other slates, otherwise parked";
 const NETHER_DIRECTION_RULE = "A Nether King's Divinity slate with a logged Direction is read as that many clockwise quarter turns of the planner's drawing (never seen in a log)";
 const BANISHMENT_RULE = "The game's Nether King's Divinity: Banishment is imported as the planner's Offspring slate and parked beside the board (its board rules are unconfirmed)";
 const provisionalOnce = (report, text) => { if (!report.provisional.includes(text)) report.provisional.push(text); };
@@ -1183,7 +1182,6 @@ function craftedSlateRecord({ entry, item, id, baseName, idMap, record }) {
   const plannerShape = craftedSlateShape(shape, god, god);
   const turn = gameDirectionTurn(item.Direction);
   const crafted = { id, name: god, god, shape, rotation: 0, flipX: 1, flipY: 1, affixes: [...fixed, ...random].filter(Boolean), affixGroups: { fixed, random }, rarity: "magic", icon: craftedSlateIconPath(godKey, shapeInfo.plannerIndex) };
-  if (shapeInfo.provisionalId) record.provisional.push(CRAFTED_SHAPE_RULE);
   if (item.Direction == null || item.Direction === "") {
     record.messages.push(["notes", `${label}: no Direction logged; read as direction ${DEFAULT_GAME_DIRECTION}, the game's default turn`]);
     record.provisional.push(CRAFTED_DIRECTION_RULE);

@@ -98,7 +98,11 @@ export function calculateAim(setup, { enabled = true, uptimePercent, charges, ba
     }
     // Preparation: "If the skill is ready, triggers the skill once. If the skill is on
     // cooldown, triggers the skill once immediately after the cooldown ends."
-    const prepares = Number(text.match(/Prepares (?:the supported skill )?every ([\d.]+) ?s/i)?.[1]);
+    // The support's interval at its level (its progression column, as the other supports above: Lv1 9.9 s, Lv20 8 s). Its effects text carries
+    // the Lv1 heading "every 9.9 s (Lv1:99/10) (Lv20:8)", which the pattern alone read at every level (bug B3, 2026-11-04; research/selena-
+    // trauma-gap-2026-11-04.md §7). An Activation Medium's configured line keeps its rolled interval.
+    const printed = Number(text.match(/Prepares (?:the supported skill )?every ([\d.]+) ?s/i)?.[1]);
+    const prepares = support.name === "Preparation" && Number.isFinite(printed) ? leveledSupportValue("Preparation", /^Prepares the supported skill every/i, supportLevel, printed) : printed;
     if (Number.isFinite(prepares) && prepares > 0) trigger = { source: support.name, everySeconds: prepares, text: `${support.name.replace(/^Activation Medium: /, "")} every ${prepares} s` };
     // Activation Medium: Elite attempts to trigger while an Elite is within range; the
     // dummy is a Boss, and the player stands close (explicit radius at point blank, src/dummy-target.js).

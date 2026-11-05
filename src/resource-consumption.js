@@ -15,8 +15,9 @@ import { skillTimingSs13 } from "./data/skills/skill-timing-ss13.generated.js";
 //   Mana cost per use = (game stone cost + Σ flat Skill Cost) × (1 + Σ% Skill Cost) × Π(1 + additional %) × Π support Mana
 //   Multipliers (the game attribute buckets of attr 6221 "Skill cost": flat / increased / additional; a support's multiplier as one
 //   more factor; "Support Skill's Mana Multiplier is fixed at N%" and Off The Beaten Track replace each support's own value).
-//   "The skill cost is fixed at N" (node 336 set) replaces the result. The stone cost is the level-1 value of
-//   src/data/skills/skill-timing-ss13.generated.js (reference data lists the same single value; no per-level cost is sourced).
+//   "The skill cost is fixed at N" (node 336 set) replaces the result. The stone cost is its level map at the setup's effective
+//   level, linear between keys (src/data/skills/skill-timing-ss13.generated.js manaCostByLevel; full pass 2026-11-03 finding 15), the
+//   single cost where the map is flat (all but Resurrection Warcry).
 //   Triggered uses (Activation Mediums, item triggers, retriggers) and Spell Burst's automatic casts pay nothing: the game data
 //   does not say they pay (provisional). Empower / Warcry / curse / Aura casts and Sealed Mana are not consumption here.
 //   Life consumed = the cost share converted to Life ("Converts X% of Mana Cost to Life Cost", "Converts Spell / Sentry Skills'
@@ -58,11 +59,27 @@ export function skillCostLines(modifierTexts = []) {
   return lines;
 }
 
+/**
+ * A stone's Mana cost at a skill level: its level map (manaCostByLevel, [level, cost] pairs rising from 1 to 99) read linearly between
+ * keys at the effective level (item level + extra levels; encrypted-scripts full pass 2026-11-03 finding 15), else the single cost.
+ */
+export function stoneManaCostAtLevel(timing, level) {
+  const map = timing?.manaCostByLevel;
+  if (!Array.isArray(map) || !map.length) return Number(timing?.manaCost);
+  const at = Math.max(1, Number(level) || 1);
+  if (at <= map[0][0]) return map[0][1];
+  for (let index = 1; index < map.length; index += 1) {
+    const [low, lowCost] = map[index - 1], [high, highCost] = map[index];
+    if (at <= high) return lowCost + (highCost - lowCost) * (at - low) / (high - low);
+  }
+  return map[map.length - 1][1];
+}
+
 /** One setup's cost per player use: { mana, life, base, working }. */
 export function setupCost(setup, costLines = [], { fixedSupportMultiplierPercent = 100, currentLife = 0 } = {}) {
   const tags = new Set(setup?.tags || []);
   const applies = (line) => !line.tag || tags.has(line.tag);
-  const base = Number(skillTimingSs13[setup?.name]?.manaCost);
+  const base = stoneManaCostAtLevel(skillTimingSs13[setup?.name], setup?.effectiveLevel);
   const known = Number.isFinite(base);
   const supports = (setup?.supports || []).filter((support) => support.enabled !== false && !support.incompatible);
   const supportPercents = supports.map((support) => fixedSupportMultiplierPercent !== 100 ? fixedSupportMultiplierPercent : Number(support.manaCostMultiplierPercent) || 100);
@@ -100,7 +117,9 @@ export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey 
   for (const hit of skillHits) {
     if (!hit.modeled || !hit.setupKey) continue;
     hitKeys.add(hit.setupKey);
-    add(hit.setupKey, Number(hit.rate?.playerUsesPerSecond) || 0, "player uses");
+    // The player's presses only: Spell Burst's automatic casts pay nothing (the stated rule; wiring audit W2 gap 5, 2026-11-03: they rode
+    // in playerUsesPerSecond, so Mana consumed read ×1.325 on Ice Lances with +1 Max Spell Burst).
+    add(hit.setupKey, Number(hit.rate?.pressedUsesPerSecond ?? hit.rate?.playerUsesPerSecond) || 0, "player uses");
   }
   for (const dot of skillDots) if (dot.modeled && dot.setupKey && !hitKeys.has(dot.setupKey) && !triggeredKeys.has(dot.setupKey)) add(dot.setupKey, Number(dot.applicationsPerSecond) || 0, "DoT applications");
   return { measured: true, bySetup: uses };

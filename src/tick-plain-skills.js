@@ -42,12 +42,19 @@ export const timerField = (readings) => readings.castOvershoot && readings.castO
 // One use per planner interval: the use time, and a wait from the press when the interval is longer. With a live Cast Speed (src/tick-layers.js:
 // Aim, Spell Aggression, Periodic Burst, Agility Blessing) the use time is read at each press: base × the planner's static factor ÷ the speed now,
 // which at the steady amounts is the planner's own use time; a cooldown wait keeps the planner's period.
+// A Main Skill that keeps only a share of its action time to the other pressed skills (rate.rotation, src/press-schedule.js) is no cooldown:
+// its period is an action budget, use time ÷ share, run as one speed-scaled phase whose overshoot carries (CAST_OVERSHOOT_RULE), so the loop's
+// long-run use rate is the planner's and a speed gain moves it (2026-11-05; before, the period was a cooldown ready only on whole ticks:
+// Berserking Blade 0.1318 s → 4 ticks, 7.5 uses/s for 7.585). A real cooldown longer than the use time stays a cooldown beside it.
 function useTiming(hit, speedKey = null) {
   const { rate } = hit, period = 1 / rate.usesPerSecond, use = rate.effectiveUseTimeSeconds;
   const waits = use > 0 && period > use * (1 + 1e-9);
-  const seconds = waits ? use : period;
+  const ownInterval = Math.max(use || 0, rate.intervalSeconds || 0);
+  const budget = waits && rate.rotation && !(rate.rotation.pressEverySeconds > 0) && period > ownInterval * (1 + 1e-9);
+  const cooldownSeconds = budget ? (rate.intervalSeconds > use * (1 + 1e-9) ? rate.intervalSeconds : null) : waits ? period : null;
+  const seconds = budget ? period : waits ? use : period;
   const useSeconds = speedKey ? { baseSeconds: seconds * rate.speedFactor, speed: speedKey } : seconds;
-  return { useSeconds, ...(waits ? { cooldown: { baseSeconds: period } } : {}), ...firstUseField(rate) };
+  return { useSeconds, ...(cooldownSeconds ? { cooldown: { baseSeconds: cooldownSeconds } } : {}), ...firstUseField(rate) };
 }
 
 const componentOf = (hit, part) => hit.components[Number(String(part.key).split("#")[1])] ?? null;
@@ -148,9 +155,11 @@ export function plainDot(planner, dot) {
  * @param {Record<string, object>} staticPaths the static path of each hit (src/tick-ledger.js hitPath)
  * @param {object} [readings] castOvershoot: "carry" | "drop"; areaTicks: AREA_TICK_READINGS; demolisherOpening: "banked" | "empty"
  * @param {object} [ailmentProgram] src/tick-ailments.js: a skill DoT it holds lands through its dotEffect
+ * @param {Map} [layered] the general layers' path and events of each hit (src/tick-layers.js finishTarget)
+ * @param {object} [bus] the trigger bus (src/trigger-bus.js, W10 step 3b): a DoT-only skill's cast raises its use event (dotUseEffect); null on the layers
  * @returns {{ paths, actions, periodics, dots, layers, assumptions }}
  */
-export function compilePlainProgram(planner, hits, staticPaths, readings = {}, ailmentProgram = null, layered = new Map()) {
+export function compilePlainProgram(planner, hits, staticPaths, readings = {}, ailmentProgram = null, layered = new Map(), bus = null) {
   const paths = {}, actions = [], periodics = [], dots = [], layers = [], assumptions = [];
   const skillDots = (planner.skillDots || []).filter((dot) => plainDot(planner, dot));
   const dotFor = (setupKey) => skillDots.filter((dot) => dot.setupKey === setupKey);
@@ -197,8 +206,8 @@ export function compilePlainProgram(planner, hits, staticPaths, readings = {}, a
   // A skill that only applies a DoT (Frost Terra): its casts, at the planner's rate.
   for (const dot of skillDots) {
     if (placedDots.has(dot) || hits.some((hit) => hit.setupKey === dot.setupKey) || staticPaths[`hit:${dot.setupKey}`]) continue;
-    const effect = placeDot(dot);
-    actions.push({ key: `${dot.key}:use`, label: `${dot.name} casts`, actor: "player", useSeconds: 1 / dot.applicationsPerSecond, ...(Number.isFinite(dot.firstApplicationSeconds) ? { firstUseSeconds: dot.firstApplicationSeconds } : {}), ...timerField(readings), effects: [effect] });
+    const effect = placeDot(dot), use = bus?.dotUseEffect ? bus.dotUseEffect(dot) : null;
+    actions.push({ key: `${dot.key}:use`, label: `${dot.name} casts`, actor: "player", useSeconds: 1 / dot.applicationsPerSecond, ...(Number.isFinite(dot.firstApplicationSeconds) ? { firstUseSeconds: dot.firstApplicationSeconds } : {}), ...timerField(readings), effects: use ? [use, effect] : [effect] });
   }
   for (const dot of placedDots) assumptions.push({ id: `tick:plain:${dot.key}`, value: dot.durationSeconds, text: `${dot.name}: ${Math.round(dot.combat.steadyDps / dot.combat.uptime * 100) / 100} DPS while active, ${dot.durationSeconds} s from each application, first settling on the next tick.` });
   return { paths, actions, periodics, dots, layers, assumptions };

@@ -22,6 +22,12 @@ import { BATCH6_SUPPORT_RULES, batch6Status, resolveBatch6Clause, BATCH6_DURATIO
 import { summonMinionRows, summonSupportReading } from "./summon-support-minion.js";
 // Chunk 8 (2026-11-01): the clauses the census left unread, from their game records (src/support-chunk8.js).
 import { CHUNK8_SUPPORT_RULES, resolveChunk8Condition, chunk8OwnStatus } from "./support-chunk8.js";
+import { enemyBuffSet, ownCombatHeld, playerBuffSet } from "./unit-buff-set.js";
+// Your held buffs on your unit buff set (W9 step 2; the support state's `playerBuffs`), else the support state's flat fields (TLI_BUFF_SET=off).
+const heldOwn = (state) => ownCombatHeld(state);
+const ownAgilityStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.stacks("Agility", { stage: "blessing" }) : Number(state?.blessingStacks?.Agility) || 0; };
+const ownBlurRating = (state) => { const own = playerBuffSet(state); if (!own?.staged("blur")) return state?.blurActive ? Math.max(0, Number(state.blurRating) || 0) : 0; const entry = own.entryOf("Blur", { stage: "blur" }); return entry && entry.share > 0 ? Math.max(0, Number(entry.value) || 0) : 0; };
+const ownBlurActive = (state) => { const own = playerBuffSet(state); return own?.staged("blur") ? own.holds("Blur") : Boolean(state?.blurActive); };
 export { ASSUMED_MOVEMENT_METERS_PER_SECOND };
 
 /**
@@ -240,6 +246,12 @@ const CENSUS_SUPPORT_RULES = [
   { family: "censusBuff", pattern: new RegExp(`^${N}% additional Hit Damage for skills cast by Spell Burst during the next (\\d+) Spell Burst\\(s\\) activated after casting the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), bursts: num(m[2]), kind: "psychicSurge", census: true, recipe: 40376 }) },
   { family: "censusBuff", pattern: new RegExp(`^${N}% Elemental Damage while the supported skill lasts$`, "i"), build: (m) => ({ value: num(m[1]), kind: "empoweredElement", census: true, recipe: 446081152 }) },
   { family: "censusBuff", pattern: new RegExp(`^${N}% additional damage for ${N}\\s*s if there are Elites within the area$`, "i"), build: (m) => ({ value: num(m[1]), seconds: num(m[2]), kind: "gladiatorsRoar", census: true, recipe: 654286 }) },
+  // Howling Gale: Eye of the Gale (Noble; game record 239448224 on buff 10851, the Gale's field buff on its holder: attr 6001 / 6002 mod 4
+  // from field 2600273, attr 6005 Projectile Speed mod 3 from field 2600274): while you stand in the Gale, which follows you, +X% additional
+  // Attack and Cast Speed and +Y% Projectile Speed for you, so every skill and every Projectile Speed reader (Gale 114414, 101140017)
+  // takes them (wiring fix W6b, 2026-11-03). Held while Howling Gale channels on the board (best case; src/support-buff-effects.js).
+  { family: "censusBuff", pattern: new RegExp(`^(?:The supported skill's Gale follows the character instead of tracking enemies\\.? ?)?${N}% additional Attack and Cast Speed and ${N}% Projectile Speed when your character is within this skill's Gale$`, "i"), build: (m) => ({ value: num(m[1]), projectileSpeed: num(m[2]), kind: "eyeOfTheGale", census: true }) },
+  { family: "nonDamage", pattern: /^The supported skill's Gale follows the character instead of tracking enemies\.?$/i, build: () => ({}) },
   { family: "nonDamage", pattern: /^Reverse Knocks Back enemies Nearby by [\d.]+ m when casting the supported skill$|^The effective area of this effect is affected by Skill Area bonuses$/i, build: () => ({}) },
   // Thrive in Adversity (recipes 878319232 / 446292160: 3401 Effect increased on this skill's Empower state with / without an entity
   // within 20 m): Empower Effect (src/empower-effects.js kind "conditionalEffect").
@@ -546,9 +558,9 @@ export const SUPPORT_CLAUSE_RULES = [
   // holds (the user's always-moving rule), so every use is a Steep Strike (provisional).
   { family: "steepStrike", pattern: new RegExp(`^After moving ${N}\\s*m, the supported skill is guaranteed to launch a Steep Strike over the next ${N}\\s*s$`, "i"), build: (m) => ({ value: 0, kind: "guaranteedAfterMoving", meters: num(m[1]), seconds: num(m[2]) }) },
   // Thunder Slash: Blade Cluster (Magnificent; reference data): "Generates 2 additional Steep Strikes when the supported skill launches a
-  // Steep Strike". User-supplied answer (2026-10-15, provisional; replaces the 2026-10-14 "+2 max stored attempts" reading): each
-  // launched Steep Strike produces 2 additional Steep Strike hits on the same target, so the Steep Strike component deals × 3
-  // its hits per launch (src/skill-hit-model.js steepStrikeState clusterHits). Supports Thunder Slash only (game support filter).
+  // Steep Strike". SS14 client (2026-11-04, research/oq-r3-r4-rea-2026-11-04.md; replaces the user-supplied 2026-10-15 answer
+  // "× 3 hits per launch"): the three Steep Strikes are siblings with bHitBrother 0, so on one dummy only one lands unless the
+  // skill has Shotgun Effect (src/skill-hit-model.js steepStrikeState clusterHits). Supports Thunder Slash only (game support filter).
   { family: "steepStrike", pattern: new RegExp(`^Generates ${N} additional Steep Strikes when the supported skill launches a Steep Strike$`, "i"), build: (m) => ({ value: 0, attempts: num(m[1]), kind: "extraAttempts" }) },
   // Thunder Spike: Tremble (Noble; reference data tiers T2 58–65, T1 66–71, T0 72–83): a buff on Critical Strike for the supported
   // skill's Numbed. src/planner.js settles its uptime from the skill's crit hits per second (provisional).
@@ -911,7 +923,7 @@ function clauseStatus(clause, support, ctx) {
     case "critBuff": {
       // Thunder Spike: Tremble (2026-10-14): Numbed Effect while the crit buff is up, on Numbed the supported skill inflicts.
       if (engine !== "skill-hit") return s("Not modeled", "read for skill hits only (the crit hit rate drives the uptime)");
-      const numbed = (ctx.conditions?.enemyAilments || []).includes("Numbed");
+      const numbed = enemyBuffSet(ctx.conditions)?.holds("Numbed") ?? (ctx.conditions?.enemyAilments || []).includes("Numbed");
       if (!numbed) return s("Inactive", "the build inflicts no Numbed (enemy-ailment model), so there is no Numbed for the buff to raise");
       if (!types.includes("Lightning")) return s("Inactive", "the supported skill deals no Lightning hits, so it inflicts no Numbed here");
       return s("Provisional", `+${clause.value}% Numbed Effect on the Numbed the supported skill inflicts, at uptime min(1, crit hits per second × ${clause.seconds} s); the dummy keeps the stronger Numbed (src/planner.js)`, ["combat-states"]);
@@ -1030,11 +1042,15 @@ function clauseStatus(clause, support, ctx) {
       // src/skill-hit-model.js steepStrikeState (2026-10-14): own + supports + build-wide lines per Slash-Strike skill.
       if (!tags.has("Slash-Strike") && !ctx.profile?.steepStrike) return s("Inactive", "the supported skill is not a Slash-Strike skill (only Slash-Strike skills have a Steep Strike form)");
       if (engine !== "skill-hit") return s("Not modeled", "Steep Strike chance is read for skill hits only");
-      // Blade Cluster (user-supplied answer 2026-10-15, replaces the 2026-10-14 "+2 max stored attempts" reading): each launched
-      // Steep Strike → 1 + N Steep Strike hits on the same target.
+      // Blade Cluster (SS14 client 2026-11-04; was the user-supplied 2026-10-15 answer "1 + N hits"): one hit on one dummy unless
+      // the skill has Shotgun Effect (ctx.shotgunEffect).
       // Keen Edge (game affix 62898652, field 2600141): fewer Multistrikes per stored Steep Strike attempt (steepAttemptShare perRepeats).
       if (clause.kind === "attemptRepeats") return ctx.profile?.steepStrike?.multistrikeAttempts ? s("Provisional", `${clause.value} to the repeat attacks per stored Steep Strike attempt: 1 attempt per ${Math.max(1, (ctx.profile.steepStrike.multistrikeAttempts.perRepeats || 2) + clause.value)} Multistrikes (src/skill-hit-model.js steepAttemptShare; the attempt mechanism is a user-supplied reading, provisional)`, ["skill-hit"]) : s("Inactive", "the supported skill stores no Steep Strike attempts from Multistrikes");
-      if (clause.kind === "extraAttempts") return s("In calc",`user-supplied answer (2026-10-15, provisional): each launched Steep Strike generates ${clause.attempts} additional Steep Strikes on the same target, so the Steep Strike component deals × ${1 + clause.attempts} its hits per launch; the extra hits take "+X% additional Steep Strike Damage" and the skill's crit, spend no attempt, add no Multistrike, and count in the skill's hits/s (src/skill-hit-model.js steepStrikeState)`, ["skill-hit"]);
+      if (clause.kind === "extraAttempts") {
+        // Shotgun Effect from this setup's own supports (build lines "<Tag> Skills have the Shotgun Effect" are read by the hit model).
+        const grant = (ctx.setupClauseTexts?.() || []).find((text) => /(?:^|\. )the supported skill has (?:the )?Shotgun Effect/i.test(text));
+        return grant ? s("In calc", `game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md): the ${clause.attempts} generated Steep Strikes are siblings of the launched one; the skill has Shotgun Effect ("${grant}"), so all ${1 + clause.attempts} land at full damage (src/skill-hit-model.js steepStrikeState)`, ["skill-hit"]) : s("Not on dummy", `game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md; one link inferred): the ${clause.attempts} generated Steep Strikes are siblings of the launched one whose hit rule refuses a sibling's victim (bHitBrother 0), so on the one dummy only one of the three lands; they would all land with Shotgun Effect (label 3050340), which the skill does not have`, ["skill-hit"]);
+      }
       // Big Stride (user-supplied reading 2026-10-14; held window confirmed by a user-supplied answer 2026-10-15): every attack
       // in the window is a Steep Strike; window open while moving.
       if (clause.kind === "guaranteedAfterMoving") {
@@ -1141,12 +1157,17 @@ function resolveIceStormRamp(clause) {
 // (best case). Provisional (the l0 local read as the
 // Fervor Effect factor).
 function resolveFervorCrit(clause, conditions) {
-  const effect = Number(conditions?.fervorEffectPercent) || 0;
+  const effect = Number(heldOwn(conditions)?.fervorEffectPercent ?? conditions?.fervorEffectPercent) || 0;
   const appliedValue = round(clause.value * (1 + effect / 100));
   return { active: true, appliedValue, provisional: true, conditionText: `Fervor read as held (best case)${effect ? `; × (1 + ${round(effect)}% Fervor Effect)` : ""}: +${appliedValue}% additional damage on Critical Strike; the +${clause.knockback}% Knockback Chance has no DPS effect` };
 }
 
-function resolveCondition(clause, support, conditions) {
+function resolveCondition(clause, support, conditions, setupKey = null) {
+  // Willpower's stacks come from record 905178944: trigger 1000074, a use you make yourself (wiring fix W6b, 2026-11-03). A supported
+  // skill whose modeled uses are all triggered (Activation Medium, item triggers) gains none; measured by the hit pass
+  // (rate.usesBySource.manual), so before it, or for a skill with no modeled hit, the reading stays.
+  const manual = clause.condition === "standingStill" && clause.multiplies ? conditions?.manualUsesBySetup?.[setupKey] : undefined;
+  if (manual === 0) return { active: false, appliedValue: 0, conditionText: "the supported skill is never used by you (its modeled uses are all triggered): Willpower's stacks come from your own uses (game record 905178944, trigger 1000074)" };
   // Willpower-style "for every stack of buffs while standing still (multiplies)": the stack cap from the support's base text.
   const stackCap = clause.condition === "standingStill" && clause.multiplies
     ? Number(String(supportProgressionSs13[clause.grantedWillpower ? "Willpower" : support.name]?.baseEffect || "").match(/Stacks up to (\d+) time/i)?.[1]) || 1
@@ -1241,6 +1262,9 @@ function spellBurstBlock(full) {
   if (!(full.conditions?.maxSpellBurst >= 1)) return "the build has no Max Spell Burst (game manual: Spell Burst needs Max Spell Burst of at least 1)";
   return null;
 }
+// The dummy's Frostbite Rating: the unit buff set's level (W8 step 2; the combat pass's rating), else the state's field.
+export const dummyFrostbiteRating = (state) => { const level = enemyBuffSet(state)?.level("Frostbite"); return level != null ? Number(level) || 0 : Number(state?.frostbiteRating) || 0; };
+
 function resolveCensusCondition(clause, full, siblings, setupKey) {
   // Skill-mechanics census batch 4 (B2): settled in src/support-conditional-batch4.js.
   if (clause.batch4) return resolveBatch4Condition(clause, full, siblings, setupKey);
@@ -1253,9 +1277,9 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
   const on = (conditionText, extra = {}) => ({ active: true, conditionText, ...extra });
   const off = (conditionText) => ({ active: false, appliedValue: 0, conditionText });
   switch (clause.condition) {
-    case "hasten": return state.hasHasten ? on("Hasten held (src/combat-states.js)", { appliedValue: clause.value }) : off("no Hasten source");
+    case "hasten": return (heldOwn(state)?.hasHasten ?? state.hasHasten) ? on("Hasten held (src/combat-states.js)", { appliedValue: clause.value }) : off("no Hasten source");
     case "agilityBlessingStacks": {
-      const stacks = Number(state.blessingStacks?.Agility) || 0;
+      const stacks = ownAgilityStacks(state);
       const counted = Math.min(clause.cap ?? Infinity, stacks);
       return counted > 0 ? on(`${r(stacks)} Agility Blessing stacks (Blessing model), counted up to ${clause.cap}: ${clause.value}% × ${r(counted)}, one term (game recipe ${clause.recipe})`, { appliedValue: r(clause.value * counted) }) : off("no Agility Blessing stacks (Blessing model)");
     }
@@ -1269,15 +1293,15 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       if (!hits) return off("the supported skill deals no hits, so it inflicts no Enhanced Mark");
       return state.targetMarked === false ? off("Dummy always Marked is switched off") : on("the supported skill's hits keep the dummy Marked (its Enhanced Mark; best case, the 'Dummy always Marked' switch)", { appliedValue: clause.value });
     case "aggressionPerEnemy": {
-      if (!state.hasAggression) return off("no Attack or Spell Aggression source (src/combat-states.js)");
+      if (!(heldOwn(state) ? heldOwn(state).hasAttackAggression || heldOwn(state).hasSpellAggression : state.hasAggression)) return off("no Attack or Spell Aggression source (src/combat-states.js)");
       if (!explicitRadiusHolds(clause.meters, state.nearTarget)) return off(`the dummy is outside ${clause.meters} m`);
       const applied = Math.min(clause.cap, clause.value);
       return on(`Aggression held; 1 enemy (the training dummy) within ${clause.meters} m: ${clause.value}% × 1 (up to +${clause.cap}%)`, { appliedValue: r(applied) });
     }
     case "perBlurRating": {
-      const rating = state.blurActive ? Math.max(0, Number(state.blurRating) || 0) : 0;
+      const rating = ownBlurRating(state);
       const steps = Math.floor(rating / clause.every);
-      return steps > 0 ? on(`Blur held at Rating ${r(rating)} (src/blur-effects.js; Phantom Trace grants it while the skill deals Damage Over Time): ${steps} × ${clause.value}%`, { appliedValue: r(clause.value * steps) }) : off(state.blurActive ? `Blur Rating ${r(rating)} under ${clause.every}` : "Blur is not active (no Blur source, or the Blur condition is off)");
+      return steps > 0 ? on(`Blur held at Rating ${r(rating)} (src/blur-effects.js; Phantom Trace grants it while the skill deals Damage Over Time): ${steps} × ${clause.value}%`, { appliedValue: r(clause.value * steps) }) : off(ownBlurActive(state) ? `Blur Rating ${r(rating)} under ${clause.every}` : "Blur is not active (no Blur source, or the Blur condition is off)");
     }
     case "critBuffUptime": {
       if (full.engine !== "skill-hit") return off(full.engine === "scorching-beam" ? "read on skill hits only" : "the supported skill deals no hits, so it never crits");
@@ -1314,7 +1338,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     }
     case "frostbiteAbove": {
       if (!hits) return off("the supported skill deals no hits");
-      const rating = Math.max(0, Number(state.frostbiteRating) || 0);
+      const rating = Math.max(0, dummyFrostbiteRating(state));
       const applied = Math.min(clause.cap, Math.max(0, clause.value * (rating - clause.above)));
       return applied > 0 ? on(`the dummy's Frostbite Rating ${r(rating)} (src/combat-states.js) − ${clause.above} = ${r(rating - clause.above)} × ${clause.value}% = +${r(applied)}% Critical Strike Rating (up to +${clause.cap}%)`, { appliedValue: r(applied) }) : off(`the dummy's Frostbite Rating ${r(rating)} does not exceed ${clause.above}`);
     }
@@ -1329,7 +1353,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     }
     case "ablaze": {
       if (!hits) return off("the supported skill deals no hits, so it Ignites nothing");
-      if (!(state.enemyAilments || []).includes("Ignite")) return off("the dummy is not Ignited (enemy-ailment model)");
+      if (!(enemyBuffSet(state)?.holds("Ignite") ?? (state.enemyAilments || []).includes("Ignite"))) return off("the dummy is not Ignited (enemy-ailment model)");
       if (!types.includes("Fire")) return off("the supported skill deals no Fire Damage");
       const effect = siblingMatch(siblings, new RegExp(`^${N}% additional Ablaze Effect for each enemy within ${N} m Ignited by the supported skill, up to ${N}%$`, "i"));
       const perEnemy = effect ? num(effect[1]) : 0, meters = effect ? num(effect[2]) : 10, cap = effect ? num(effect[3]) : 0;
@@ -1353,7 +1377,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       return full.skillName === "Homing Frost Bolt" ? on(`the skill holds its 6 unfired Frost Bolts (best case, as its own "+4% per unfired Frost Bolt" line; src/skill-hit-profiles.js), at least ${clause.bolts} (game affix ${clause.recipe})`, { appliedValue: clause.value }) : off("the supported skill fires no Frost Bolts");
     case "frozenTarget": {
       if (!hits) return off("the supported skill deals no hits");
-      const rating = Number(state.frostbiteRating) || 0;
+      const rating = dummyFrostbiteRating(state);
       return rating >= 100 ? on(`the dummy is Frozen (Frostbite Rating ${r(rating)} ≥ 100, user-confirmed 2026-10-18): +${clause.value} Critical Strike Rating (game affix ${clause.recipe})`, { appliedValue: clause.value }) : off(`the dummy is not Frozen (Frostbite Rating ${r(rating)} < 100)`);
     }
     case "terraCentre":
@@ -1376,12 +1400,12 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     // ---- Condition-unread batch 3 (2026-10-28) ----
     case "crowdControlAtLeast": {
       if (!hits && full.engine !== "skill-dot") return off("the supported skill deals no hits and no damage over time");
-      const types = state.enemyCrowdControl || [];
+      const types = enemyBuffSet(state)?.crowdControlTypes() ?? state.enemyCrowdControl ?? [];
       return types.length >= clause.count ? on(`${types.length} crowd control type${types.length === 1 ? "" : "s"} on the dummy (${types.join(", ")}; src/combat-states.js) ≥ ${clause.count} (game recipe ${clause.recipe}, gate 300 ≥)`, { appliedValue: clause.value }) : off(`${types.length} crowd control type${types.length === 1 ? "" : "s"} on the dummy${types.length ? ` (${types.join(", ")})` : ""}, fewer than ${clause.count}`);
     }
     case "traumatizedNearby": {
       if (full.engine !== "skill-hit") return off("Attack Speed of the supported skill: read on skill hits only");
-      if (!(state.enemyAilments || []).includes("Trauma")) return off("the dummy is not Traumatized (enemy-ailment model)");
+      if (!(enemyBuffSet(state)?.holds("Trauma") ?? (state.enemyAilments || []).includes("Trauma"))) return off("the dummy is not Traumatized (enemy-ailment model)");
       if (!explicitRadiusHolds(clause.meters, state.nearTarget)) return off(`the dummy is outside ${clause.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
       const applied = Math.min(clause.cap, clause.value);
       return on(`1 Traumatized enemy (the training dummy) within ${clause.meters} m: +${clause.value}% × 1 (up to +${clause.cap}%; game recipe ${clause.recipe})`, { appliedValue: r(applied) });
@@ -1415,7 +1439,8 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     case "minionEmpowerBuff": return on(`while the Minion's Empower Skill buff lasts: joins that buff (src/minion-damage-model.js; game recipe ${clause.recipe}; buff 11160 read as the Empower Skill's own: provisional)`, { appliedValue: 0, minionScale: "empowerBuff", provisional: true });
     case "selfDestructCentre": return on(`Self-Destruct Protocol explosions with the dummy at the centre (best case; src/minion-damage-model.js; game recipe ${clause.recipe}, attr 5901)`, { appliedValue: 0, minionScale: "selfDestruct", provisional: true });
     case "minionCommand": {
-      const points = Math.max(0, Number(state.commandPoints) || 0);
+      // Command, a level on your unit buff set (W9 step 2), else the support state's field.
+      const points = Math.max(0, Number(playerBuffSet(state)?.level("Command") ?? state.commandPoints) || 0);
       if (!points) return off(state.commandReason || "no Command: no \"+N Command per second\" source, or full Command is switched off (src/minion-cores.js commandState)");
       const counted = clause.stacks != null ? Math.min(points, clause.stacks) : points;
       const held = Math.min(clause.cap ?? Infinity, clause.value * counted);
@@ -1433,7 +1458,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       return on(`the summoner's Command ${r(points)} (src/minion-cores.js commandState: full Command, switch "fullCommand")${clause.stacks != null ? `, counted up to ${clause.stacks}` : ""}: ${clause.value}% × ${r(counted)}${clause.cap != null ? ` (up to +${clause.cap}%)` : ""} = +${r(held)}%${gate} (game recipe ${clause.recipe}: on each cast, the Minions' next loop action; read as held: provisional)`, { appliedValue: r(applied), provisional: true });
     }
     case "minionFrozenTarget": {
-      const rating = Number(state.frostbiteRating) || 0;
+      const rating = dummyFrostbiteRating(state);
       return rating >= 100 ? on(`the dummy is Frozen (Frostbite Rating ${r(rating)} ≥ 100, user-confirmed 2026-10-18; game recipe ${clause.recipe})`, { appliedValue: clause.value }) : off(`the dummy is not Frozen (Frostbite Rating ${r(rating)} < 100)`);
     }
     case "summonerHits": {
@@ -1464,6 +1489,7 @@ function censusStatus(clause, full) {
   if (clause.family === "censusBuff") {
     if (clause.kind === "psychicSurge") return full.tags.has("Mobility") ? s("Provisional", "the Spell Burst casts of the build's other skills take it on the share of activations that follow a cast of this Mobility Skill (src/support-buff-effects.js)", ["planner"]) : s("Inactive", "supports Mobility Skills only");
     if (clause.kind === "empoweredElement") return full.tags.has("Empower") ? s("Provisional", "build-wide +Elemental Damage while the Empower Skill lasts, its buff held (best case, own buffs pre-built; src/support-buff-effects.js)", ["planner"]) : s("Inactive", "the supported skill is not an Empower Skill");
+    if (clause.kind === "eyeOfTheGale") return full.channeled || full.tags.has("Channeled") ? s("Provisional", "while you stand in the Gale (it follows you; held while the skill channels: best case): build-wide additional Attack and Cast Speed and Projectile Speed (game record 239448224; src/support-buff-effects.js)", ["planner"]) : s("Inactive", "the supported skill is not channeled, so it has no Gale");
     if (clause.kind === "gladiatorsRoar") return full.tags.has("Warcry") ? s("Provisional", "build-wide additional damage after casting this Warcry with the dummy (an Elite) inside its area: uptime min(1, duration ÷ the Warcry's cooldown) (src/support-buff-effects.js)", ["planner"]) : s("Inactive", "the supported skill is not a Warcry");
   }
   if (clause.family === "empower") {
@@ -1615,7 +1641,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
       // Census batch 6: Mind Control: Enthrall's links to the build's Minions (src/minion-sentry-batch6.js).
       else if (clause.batch6 && clause.family === "conditionalAdditional") Object.assign(clause, resolveBatch6Clause(clause, full));
       else if (clause.family === "conditionalAdditional" && clause.condition === "iceStormRamp") Object.assign(clause, resolveIceStormRamp(clause));
-      else if (clause.family === "conditionalAdditional") Object.assign(clause, resolveCondition(clause, support, full.conditions));
+      else if (clause.family === "conditionalAdditional") Object.assign(clause, resolveCondition(clause, support, full.conditions, effectsSetupKey));
       if (clause.family === "critOnlyAdditional" && clause.fervor) Object.assign(clause, resolveFervorCrit(clause, full.conditions));
       // Empowered Channeling (gear affix batch C): a skill that does not channel takes nothing.
       if (clause.family === "conditionalAdditional" && clause.condition === "channelSeconds" && !full.channeled && !full.tags.has("Channeled")) Object.assign(clause, { active: false, appliedValue: 0, conditionText: "the supported skill is not channeled" });
@@ -1624,7 +1650,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
       // Attack Focus (gear affix batch C, provisional): the held Fervor Rating, the build's own (combat state) or else the Max
       // Fervor Rating (100) the support's Fervor Rating on hit builds while the skill keeps hitting the dummy.
       if (clause.family === "fervorScaled") {
-        const own = Number(full.conditions?.fervorRating) || 0;
+        const own = Number(heldOwn(full.conditions)?.fervorRating ?? full.conditions?.fervorRating) || 0;
         clause.rating = own > 0 ? own : FERVOR_MAX_RATING;
         clause.ratingSource = own > 0 ? `the build's Fervor Rating ${own}` : `the Max Fervor Rating ${FERVOR_MAX_RATING}, built by the support's Fervor Rating on hit`;
         clause.steps = clause.every ? Math.floor(clause.rating / clause.every) : 0;
@@ -1640,6 +1666,11 @@ export function resolveSupportEffects(setup, ctx = {}) {
         clause.appliedValue = round(clause.value * (clause.stacks ?? 0));
       }
       Object.assign(clause, clauseStatus(clause, support, full));
+      // Crowd control the clause's stone affix holds on the dummy (wiring audit W6a item 1, 2026-11-03; src/combat-states.js holdRows,
+      // passed back through supportConditions): In calc where a crowd control reader counts it (or its Paralysis adds damage taken),
+      // No DPS effect where nothing reads it, Inactive where its event never fires.
+      const ccStatus = clause.game?.id ? (full.conditions?.supportCrowdControl || []).find((item) => item.setupKey === effectsSetupKey && item.gameId === clause.game.id) : null;
+      if (ccStatus) Object.assign(clause, { status: ccStatus.status, reason: ccStatus.reason, consumers: ccStatus.status === "In calc" ? ["crowd-control"] : [], crowdControl: ccStatus.types });
       clause.damage = clause.family !== "other" ? !NON_DAMAGE_FAMILIES.has(clause.family) : damageWords.test(clause.text);
       const entry = { support: support.name, source, text: clause.text, origin: clause.origin, status: clause.status, level: clause.level, tier: clause.tier, stars: clause.stars };
       switch (clause.family) {
@@ -1673,7 +1704,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
         case "censusSpeed": if (clause.active && clause.appliedValue && ["In calc", "Provisional"].includes(clause.status)) effects.speed.push({ ...entry, text: `${clause.text} — ${clause.conditionText}`, value: clause.appliedValue, additional: true, kind: "attack" }); break;
         // Census item #2: Frostbloom's Frostbite-scaled Critical Strike Rating; the build-wide buffs (src/support-buff-effects.js).
         case "censusCrit": if (clause.active && clause.appliedValue) effects.crit.push({ ...entry, text: `${clause.text} — ${clause.conditionText}`, value: clause.appliedValue, kind: clause.critKind || "ratingPercent", census: true }); break;
-        case "censusBuff": effects.censusBuff.push({ ...entry, value: clause.value, kind: clause.kind, seconds: clause.seconds ?? null, bursts: clause.bursts ?? null }); break;
+        case "censusBuff": effects.censusBuff.push({ ...entry, value: clause.value, kind: clause.kind, seconds: clause.seconds ?? null, bursts: clause.bursts ?? null, projectileSpeed: clause.projectileSpeed ?? null }); break;
         case "projectileQuantity": effects.quantity.push({ ...entry, value: clause.value, kind: "projectiles" }); break;
         case "multistrike": effects.multistrike.push({ ...entry, value: clause.value, kind: clause.kind }); break;
         case "steepStrike": effects.steepStrike.push({ ...entry, value: clause.value, kind: clause.kind, ...(clause.meters != null ? { meters: clause.meters } : {}), ...(clause.seconds != null ? { seconds: clause.seconds } : {}), ...(clause.attempts != null ? { attempts: clause.attempts } : {}) }); break;

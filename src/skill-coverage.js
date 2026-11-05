@@ -1,3 +1,4 @@
+import { enemyBuffSet } from "./unit-buff-set.js";
 import { auraScopeCoverage } from "./aura-damage.js";
 import { supportClauseSummary, resolveSupportEffects } from "./support-effects.js";
 import { aegisOfFireState, AEGIS_OF_FIRE } from "./aegis-of-fire.js";
@@ -277,9 +278,19 @@ function buffReachesSomething(planner, entry) {
     if (kind === "minion" || kind === "growth" || line.minion) return minions.length > 0;
     if (kind === "speed" || kind === "lucky") return anyHit;
     if (kind === "mark") return Boolean(planner?.mark?.active);
-    if (kind === "numbed") return (planner?.mechanics?.enemyAilments?.types || []).some((type) => type.name === "Numbed");
+    // The dummy's unit buff set (W8 step 2): the enemy-ailment model's types, the same names as its list.
+    if (kind === "numbed") return (enemyBuffSet(planner?.mechanics?.enemyAilments)?.types() ?? (planner?.mechanics?.enemyAilments?.types || []).map((type) => type.name)).includes("Numbed");
     return false;
   });
+}
+
+// Why a buff skill's buff (Empower Euphoria, Warcry buff) does nothing on the dummy, or null when it reaches something (the badge's rule
+// below: Inactive / Not modeled, or no ledger reads it). Read by the press rotation (src/press-schedule.js): such a skill is not pressed.
+export function idleBuffReason(planner, skillName) {
+  const entry = (planner?.empowerEffects?.entries || []).find((item) => (item.kind === "euphoria" || item.kind === "warcry") && item.skill === skillName && item.lines && !item.item) || null;
+  if (!entry) return null;
+  if (entry.status === "Inactive" || entry.status === "Not modeled" || !entry.active) return entry.text || entry.status || "inactive";
+  return buffReachesSomething(planner, entry) || matchingContributions(planner, skillName).length > 0 ? null : `nothing in this build reads it`;
 }
 
 // The skill-hit result of a modeled hit source that never fires on the dummy (its inactive reason, or 0 uses and 0 DPS), or null.
@@ -354,6 +365,10 @@ function classifySkill(planner, skillName, setup) {
   // A modeled hit source the engine found unable to fire on the dummy (Ice Focus without Frostbite, a weapon restriction,
   // a Focus skill whose trigger never happens): the skill-hit result decides, not the profile (gear-pact batch G14).
   const idleHit = idleSkillHit(planner, skillName);
+  // A Focus skill's own buff (src/focus-buffs.js, W6c 2026-11-03) holds while the skill is on the board, whether its hits fire or not
+  // (Ice Focus without Frostbite still gives its additional Cold Damage).
+  const focusBuffLines = (planner?.modifierTexts || []).filter((line) => line.focusBuff === skillName && line.origin === "derived");
+  if (idleHit && focusBuffLines.length) return result("In calc", `Focus buff: ${[...new Set(focusBuffLines.map((line) => line.text))].join(", ")}; its own hits: ${idleHit.inactiveReason || "they never fire on the dummy in this build (0 uses per second)"}`);
   if (idleHit) return result("Inactive", idleHit.inactiveReason || "it never fires on the dummy in this build (0 uses per second)");
   if (damageSource) {
     const level = matchingContributions(planner, skillName).find((entry) => /level/.test(entry.source));
@@ -589,6 +604,8 @@ function aegisClauseStatus(planner, supportName, clause) {
   if (!aegis.onBoard) return result("Inactive", aegis.reason || "Aegis of Fire is not active");
   const where = "Aegis of Fire is defence only (src/aegis-of-fire.js: Effective HP, no damage figure)";
   if (clause.family === "trigger" && aegis.recast?.includes(supportName.replace(/^Activation Medium: /, ""))) return result("Counted in stats", `sets Aegis of Fire's recast: ${aegis.summary}; ${where}`);
+  // Its Armor also reaches the build's per-Armor lines while Aegis of Fire is up (src/combat-armor.js; wiring fix W6b).
+  if (supportName === "Iron Fortification" && aegis.armor && aegis.active && planner?.lineEffects?.state?.armorReaderLive && !/Armor Effective Rate/i.test(clause.text)) return result("In calc", `+${aegis.armor.armor} Armor while Aegis of Fire lasts (${aegis.armor.source}), read by the build's per-Armor lines (combat Armor, src/combat-armor.js) and in Effective HP`);
   if (supportName === "Iron Fortification" && aegis.armor) return result("Counted in stats", /Armor Effective Rate/i.test(clause.text) ? `+${aegis.armor.nonPhysicalArmorRatePercent}% Armor Effective Rate against non-Physical Damage in Effective HP while Aegis of Fire lasts; ${where}` : `+${aegis.armor.armor} Armor in Effective HP while Aegis of Fire lasts (${aegis.armor.source}); ${where}`);
   if (clause.family === "duration" || /additional Duration/i.test(clause.text)) return result("Counted in stats", `Aegis of Fire's duration: ${aegis.summary}; ${where}`);
   return result("No DPS effect", `${where}; this line is not read by the Effective HP model`);

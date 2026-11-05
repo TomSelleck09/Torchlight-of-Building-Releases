@@ -6,6 +6,9 @@ import { TARTARUS_SKILL_TIERS, normalizeTartarusAffixes, tartarusAffixById, tart
 import { REAP_TICK_SECONDS } from "./reaping-model.js";
 import { ailmentDefinitions } from "./ailment-model.js";
 import { followerPathMode, followerRecipe, followerRecipeMatch, followerRecipeNumber } from "./recipe-follower-layers.js";
+import { enemyBuffSet, ownCombatHeld } from "./unit-buff-set.js";
+// Your held buffs (Fervor, Hasten, Profane, Aggression) from your unit buff set (W9 step 2), else the combat pass's `buffs` (TLI_BUFF_SET=off).
+const heldBuffs = (state) => ownCombatHeld(state) ?? state?.buffs;
 
 // Followers (2026-10-15). A build has one follower: `state.followers = { followerId, rarity, skills }` (src/planner-state.js).
 // Data: src/data/followers/*.generated.js (scripts/import-refdata-followers.mjs, reference data + patch notes).
@@ -724,8 +727,25 @@ export const FOLLOWER_BUFFS = [
   {
     id: "followerThunderSlash", skill: "Origin Tartarus: Thunder Slash", label: "Thunder Slash: Steep Strike Damage", target: "self", needsNear: true, engine: "steep",
     pattern: /^\+?(\d+(?:\.\d+)?)% additional Steep Strike Damage \(multiplies\) for the Follower and nearby allies for each Steep Strike cast recently\. Stacks up to (\d+) time\(s\)$/i,
-    derive: (match) => { const value = round(((1 + Number(match[1]) / 100) ** Number(match[2]) - 1) * 100); return { text: `+${value}% additional Steep Strike Damage`, origin: "buff", summary: `${match[2]} stacks × ${round(Number(match[1]))}% (multiplies): +${value}% additional Steep Strike Damage` }; },
-    reason: "best case: the stacks stay at max while the follower keeps casting Steep Strikes next to you, from t = 0 in the 5 s / 20 s windows; only Steep Strike hits take it (patch notes: \"Slash Damage\")"
+    // Game code (research/oq-rosa-client-2026-11-05.md §3, 2026-11-05): record 14163733 is two node-306 carriers (mode 3, 4 s, count 8) on
+    // trigger 1000069 with the Steep Strike form tag, raised on the follower's own casts only: each of its Steep Strike casts adds a layer with
+    // its own 4 s, at the count the least-remaining one is renewed; your own Steep Strikes add nothing. Both follower stones start at 0%
+    // Steep Strike chance (field 2011002 default 0), so a skill launches Steep Strikes only with its own "+X% Steep Strike Chance" affixes
+    // (steepShareOf; the attempt goes to that skill: one link inferred). Layers held = min(8, N), N the Steep Strike casts in the last 4 s,
+    // Poisson with mean 4 s × Σ casts/s × that skill's share; the multiplying factor is taken as an expectation, E[(1 + v)^min(8, N)].
+    derive: (match, ctx) => {
+      const v = Number(match[1]) / 100, cap = Number(match[2]);
+      const strikers = [...(ctx?.cadence?.values() || [])].filter((entry) => steepRateOf(entry) > 0);
+      const rate = strikers.reduce((sum, entry) => sum + steepRateOf(entry), 0);
+      if (!(rate > 0)) return { inactive: "the follower launches no Steep Strike (both Mammoth stones start at 0% Steep Strike chance: it needs a \"+X% Steep Strike Chance\" affix such as Raging Slash on one of its Slash-Strike skills); your own Steep Strikes do not count" };
+      const mean = FOLLOWER_RECENT_SECONDS * rate;
+      let expected = 0, p = Math.exp(-mean), below = 0;
+      for (let k = 0; k < cap; k += 1) { expected += p * (1 + v) ** k; below += p; p *= mean / (k + 1); }
+      expected += (1 - below) * (1 + v) ** cap;
+      const value = round((expected - 1) * 100);
+      return { text: `+${value}% additional Steep Strike Damage`, origin: "buff", summary: `the follower's own Steep Strike casts (${strikers.map((entry) => `${entry.skill.shortName || entry.name} ${round(steepRateOf(entry))}/s`).join(", ")}): ${round(mean)} layers on average in ${FOLLOWER_RECENT_SECONDS} s (each its own timer, up to ${cap}), E[(1 + ${round(Number(match[1]))}%)^layers] = +${value}% additional Steep Strike Damage (game record 14163733; provisional: the follower's cadence)` };
+    },
+    reason: "game code: only the follower's own Steep Strike casts add layers (4 s each, up to 8); expected factor over the follower's Steep Strike rate; only Steep Strike hits take it (patch notes: \"Slash Damage\"); the 5 s / 20 s windows read the steady expectation (provisional)"
   },
   {
     // Stone 90049's own affix 3578901 (chunk 14): on hit, a 4 s buff (node 306, mode 3, count 1) of attr 57201 mod 4 on the Spell tag: an enemy Spell Damage
@@ -923,7 +943,7 @@ export const FOLLOWER_BUFFS = [
     id: "followerBerserkingBlade", skill: "Origin Tartarus: Berserking Blade", label: "Berserking Blade: Physical Damage taken", target: "enemy", needsNear: false, engine: "physical",
     pattern: /^\+(\d+(?:\.\d+)?)% additional Physical Damage taken by the target for (\d+(?:\.\d+)?) ?s when this skill hits an enemy with Trauma$/i,
     derive: (match, ctx) => {
-      if (!(ctx?.state?.enemyAilments || []).includes("Trauma")) return { inactive: "the dummy carries no Trauma" };
+      if (!(enemyBuffSet(ctx?.state)?.holds("Trauma") ?? (ctx?.state?.enemyAilments || []).includes("Trauma"))) return { inactive: "the dummy carries no Trauma" };
       // A Trauma only your Minions keep (src/minion-ailment-types.js; provisional) holds its uptime share: × that share.
       const share = minionAilmentShare(ctx, "Trauma");
       const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[2]), entry) * share, value = round(Number(match[1]) * uptime);
@@ -1106,7 +1126,7 @@ const AFFIX_MARKERS = [
       const entry = paralysisCadence(match, ctx);
       if (!entry) return { status: "Inactive", reason: match[1] ? "the follower never casts it" : NO_DAMAGE };
       const uptime = Math.min(1, FOLLOWER_PARALYSIS_SECONDS * entry.castsPerSecond);
-      const held = Boolean(ctx?.state?.enemyDebuffs?.paralysis);
+      const held = enemyBuffSet(ctx?.state)?.holds("Paralysis", { stage: "debuff" }) ?? Boolean(ctx?.state?.enemyDebuffs?.paralysis);
       return { status: "In calc", reason: `Paralysis on the dummy each ${match[1] ? "cast" : "hit"} (${match[1] ? `the dummy within ${match[1]} m of the follower, which stays by you: best case` : "the follower's skill hits the dummy each cast"}): +${FOLLOWER_PARALYSIS_VALUE}% damage taken, 1 stack, ${FOLLOWER_PARALYSIS_SECONDS} s base duration (keyword 704, manual rule 1002020420), ${cadenceText(entry)}: ${round(uptime * 100)}% uptime (src/combat-states.js; provisional)${held ? "; your build already holds Paralysis on the dummy, so it adds nothing (one Paralysis whoever inflicts it)" : ""}` };
     }
   },
@@ -1165,17 +1185,17 @@ const AFFIX_MARKERS = [
   {
     pattern: /^Inflicts Cold Infiltration when this skill deals damage to enemies with (\d+) or more Frostbite Rating$/i,
     texts: (match, ctx) => dealsDamage(ctx) ? ["Inflicts Cold Infiltration when dealing damage to Frostbitten enemies"] : [],
-    read: (match, ctx) => !dealsDamage(ctx) ? { status: "Inactive", reason: NO_DAMAGE } : (ctx?.state?.enemyAilments || []).includes("Frostbite") ? { status: "In calc", reason: "the dummy is Frostbitten: Cold Infiltration held while the follower hits it, +13% additional Cold Damage taken (src/combat-states.js)" } : { status: "Inactive", reason: "the dummy carries no Frostbite" }
+    read: (match, ctx) => !dealsDamage(ctx) ? { status: "Inactive", reason: NO_DAMAGE } : onDummy(ctx, "Frostbite") ? { status: "In calc", reason: "the dummy is Frostbitten: Cold Infiltration held while the follower hits it, +13% additional Cold Damage taken (src/combat-states.js)" } : { status: "Inactive", reason: "the dummy carries no Frostbite" }
   },
   {
     pattern: /^\+(\d+(?:\.\d+)?)% Numbed Effect for you when this skill deals damage\. Lasts (\d+(?:\.\d+)?) ?s$/i,
     texts: (match, ctx) => dealsDamage(ctx) ? [`+${round(Number(match[1]) * uptimeFor(Number(match[2]), ctx))}% Numbed Effect`] : [],
-    read: (match, ctx) => !dealsDamage(ctx) ? { status: "Inactive", reason: NO_DAMAGE } : !(ctx?.state?.enemyAilments || []).includes("Numbed") ? { status: "Inactive", reason: "the dummy is not Numbed" } : { status: "In calc", reason: `+${match[1]}% Numbed Effect for ${match[2]} s per hit, ${cadenceText(cadenceOf(ctx))}: ${round(uptimeFor(Number(match[2]), ctx) * 100)}% uptime, time-averaged (src/combat-states.js)` }
+    read: (match, ctx) => !dealsDamage(ctx) ? { status: "Inactive", reason: NO_DAMAGE } : !onDummy(ctx, "Numbed") ? { status: "Inactive", reason: "the dummy is not Numbed" } : { status: "In calc", reason: `+${match[1]}% Numbed Effect for ${match[2]} s per hit, ${cadenceText(cadenceOf(ctx))}: ${round(uptimeFor(Number(match[2]), ctx) * 100)}% uptime, time-averaged (src/combat-states.js)` }
   },
   {
     pattern: /^\+(\d+(?:\.\d+)?)% Fervor Effect for nearby allies for (\d+(?:\.\d+)?) ?s when casting the supported skill$/i,
     texts: (match, ctx) => cadenceOf(ctx)?.castsPerSecond > 0 ? [`+${round(Number(match[1]) * uptimeFor(Number(match[2]), ctx))}% Fervor effect`] : [],
-    read: (match, ctx) => !(cadenceOf(ctx)?.castsPerSecond > 0) ? { status: "Inactive", reason: "the follower never casts it" } : !(ctx?.state?.buffs?.fervorRating > 0) ? { status: "Inactive", reason: "the build has no Fervor" } : { status: "In calc", reason: `+${match[1]}% Fervor Effect for ${match[2]} s per cast, ${cadenceText(cadenceOf(ctx))}: ${round(uptimeFor(Number(match[2]), ctx) * 100)}% uptime, time-averaged (src/combat-states.js)` }
+    read: (match, ctx) => !(cadenceOf(ctx)?.castsPerSecond > 0) ? { status: "Inactive", reason: "the follower never casts it" } : !(heldBuffs(ctx?.state)?.fervorRating > 0) ? { status: "Inactive", reason: "the build has no Fervor" } : { status: "In calc", reason: `+${match[1]}% Fervor Effect for ${match[2]} s per cast, ${cadenceText(cadenceOf(ctx))}: ${round(uptimeFor(Number(match[2]), ctx) * 100)}% uptime, time-averaged (src/combat-states.js)` }
   },
   {
     pattern: /^(?:This unit and allies|The Follower and nearby allies) gain Hasten for (\d+(?:\.\d+)?) ?s when (?:this skill is used|casting this skill)$/i,
@@ -1197,7 +1217,7 @@ const AFFIX_MARKERS = [
       if (!dealsDamage(ctx)) return { status: "Inactive", reason: NO_DAMAGE };
       const uptime = hitUptime(Number(match[2]), ctx);
       if (uptime < 1) return { status: "Not modeled", reason: `+${match[1]} Max Frostbite Rating for ${match[2]} s per hit, ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime; a part-time rating is not modeled (the rating reader takes whole points)` };
-      return hasState(ctx?.state?.enemyAilments, "Frostbite") ? { status: "In calc", reason: `held: ${cadenceText(cadenceOf(ctx))}; read as "+${match[1]} Max Frostbite Rating" for your Frostbite on the dummy (src/combat-states.js; provisional)` } : { status: "Inactive", reason: "the dummy carries no Frostbite" };
+      return onDummy(ctx, "Frostbite") ? { status: "In calc", reason: `held: ${cadenceText(cadenceOf(ctx))}; read as "+${match[1]} Max Frostbite Rating" for your Frostbite on the dummy (src/combat-states.js; provisional)` } : { status: "Inactive", reason: "the dummy carries no Frostbite" };
     }
   },
   {
@@ -1208,7 +1228,7 @@ const AFFIX_MARKERS = [
     read: (match, ctx) => {
       const rate = steepRateOf(cadenceOf(ctx));
       if (!(rate > 0)) return { status: "Inactive", reason: "the skill launches no Steep Strike (no Steep Strike chance on it or its support affixes)" };
-      if (!hasState(ctx?.state?.enemyAilments, "Numbed")) return { status: "Inactive", reason: "the dummy is not Numbed" };
+      if (!onDummy(ctx, "Numbed")) return { status: "Inactive", reason: "the dummy is not Numbed" };
       const uptime = Math.min(1, Number(match[2]) * rate);
       return { status: "In calc", reason: `+${match[1]}% Numbed Effect for ${match[2]} s per follower Steep Strike (${round(rate)}/s): ${round(uptime * 100)}% uptime, time-averaged (src/combat-states.js; provisional)` };
     }
@@ -1286,7 +1306,10 @@ const steepRateOf = (entry) => entry && OWN_DAMAGE[entry.name] ? (entry.castsPer
 const hitUptime = (seconds, ctx) => dealsDamage(ctx) ? uptimeFor(seconds, ctx) : 0;
 const hasState = (list, name) => (list instanceof Set ? [...list] : list || []).includes(name);
 // The share of the time an ailment only your Minions keep on the dummy holds (src/minion-ailment-types.js; 1 for every other source).
-const minionAilmentShare = (ctx, name) => Number(ctx?.state?.enemyAilmentUptime?.[name] ?? 1);
+// Every ailment from the dummy's unit buff set (src/unit-buff-set.js, W8 steps 1 and 2): 1 when yours or the follower's, else your Minions' share.
+// `onDummy`: whether the dummy carries an ailment (the set, or the enemy-ailment list with TLI_BUFF_SET=off).
+const onDummy = (ctx, name) => enemyBuffSet(ctx?.state)?.holds(name) ?? (ctx?.state?.enemyAilments || []).includes(name);
+const minionAilmentShare = (ctx, name) => { const buffs = enemyBuffSet(ctx?.state); return buffs ? (buffs.holds(name) ? buffs.share(name) : 1) : Number(ctx?.state?.enemyAilmentUptime?.[name] ?? 1); };
 export const FOLLOWER_KEYWORD_VALUES = Object.freeze({ hasten: 8, profane: 7, attackAggression: 5, spellAggression: 7, infiltration: 13, frail: 15, barbarianIntimidation: { percent: 15, seconds: 5, buff: 11900 } });
 const DUMMY_ARMOUR_DR = 0.5; // src/target-hit-mitigation.js level85DummyDefenses.armourPercent (Physical; non-Physical 60% of it)
 const armourDr = (scale) => scale > 0 ? scale / (0.9 * scale + 1 / DUMMY_ARMOUR_DR - 0.9) : 0;
@@ -1298,7 +1321,7 @@ function armourShredReading(match, ctx) {
   if (!dealsDamage(ctx)) return { inactive: NO_DAMAGE };
   let uptime = 0, when = "";
   if (match[4]) {
-    const held = match[4] === "Trauma" ? hasState(ctx?.state?.enemyAilments, "Trauma") : hasState(ctx?.state?.enemyCrowdControl, "Paralysis");
+    const held = match[4] === "Trauma" ? enemyBuffSet(ctx?.state)?.holds("Trauma") ?? hasState(ctx?.state?.enemyAilments, "Trauma") : enemyBuffSet(ctx?.state)?.crowdControlTypes().includes("Paralysis") ?? hasState(ctx?.state?.enemyCrowdControl, "Paralysis");
     if (!held) return { inactive: `the dummy carries no ${match[4]}` };
     // A Trauma only your Minions keep (src/minion-ailment-types.js; provisional): × its uptime share (both on together).
     const share = match[4] === "Trauma" ? minionAilmentShare(ctx, "Trauma") : 1;
@@ -1373,14 +1396,22 @@ export const AFFIX_EFFECTS = [
     reason: "best case: the follower's skill keeps hitting the dummy; the shred is applied as an equal Resistance Penetration (the reading of your own resistance shreds; provisional)" },
   // Record 1033360284 (chunk 14): on this skill's damage, behind a 2 s gate, if the dummy holds at least 10 Affliction (node 309 on the event's other unit), it
   // takes those 10 away and puts a P4 s buff on the dummy: attr 58131 mod 4, additional DoT taken. The gate is read as met on a build with damage over
-  // time; the clear is not taken off the rating (provisional, follower-affix-pain-amplification).
+  // time. The rating is one resource on the dummy (SS14 client, research/oq-r1-r2-rea-2026-11-04.md R1.9, proven): the clear comes off your rating,
+  // at the skill's first damage of each 2 s gate while the rating is at least 10 (`afflictionClear`, read by src/affliction-rating.js, the tick
+  // engine and the recount).
   { id: "followerAffixPainAmplification", label: "Pain Amplification: Damage Over Time taken", target: "enemy", needsNear: false, engine: "dot",
     pattern: /^Clears (\d+(?:\.\d+)?) Affliction when this skill deals damage\. Interval: (\d+(?:\.\d+)?) ?s\. \+(\d+(?:\.\d+)?)% additional Damage Over Time taken by the target for (\d+(?:\.\d+)?) ?s$/i,
     derive: (match, ctx) => {
       if (!dealsDamage(ctx)) return { inactive: NO_DAMAGE };
       const uptime = hitUptime(Number(match[4]), ctx), value = round(Number(match[3]) * uptime);
       // Written as your additional Damage Over Time, the factor the DoT ledgers read for a follower buff (Euphoria): the same multiplier on your DoT and Reaps.
-      return { text: `+${value}% additional Damage Over Time`, origin: "buff", summary: `+${match[3]}% additional Damage Over Time taken for ${match[4]} s (game record 1033360284, needs ${match[1]} Affliction on the dummy), ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime` };
+      const entry = cadenceOf(ctx);
+      // Its damage events: every tick while an area it holds deals damage per second (a Terra's or Black Hole's area outlasting the cast period),
+      // else one per cast.
+      const area = String(OWN_DAMAGE[ctx.skill.name]?.text || "").match(/per second for its (\d+(?:\.\d+)?) s/);
+      const held = area && Number(area[1]) >= entry.periodSeconds - 1e-9;
+      const afflictionClear = { amount: Number(match[1]), gateSeconds: Number(match[2]), minRating: Number(match[1]), eventSeconds: held ? 1 / 30 : 1 / entry.castsPerSecond, firstSeconds: Math.max(0, entry.firstUseSeconds ?? 0), skill: ctx.skill.name };
+      return { afflictionClear, text: `+${value}% additional Damage Over Time`, origin: "buff", summary: `+${match[3]}% additional Damage Over Time taken for ${match[4]} s (game record 1033360284, needs ${match[1]} Affliction on the dummy), ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime; the ${match[1]} Affliction it clears every ${match[2]} s comes off your rating` };
     },
     reason: "best case: the dummy holds 10 Affliction whenever the skill lands; your damage over time takes the debuff, hits do not" },
   { id: "followerAffixDeepCorrosion", label: "Deep Corrosion: Erosion Resistance", target: "enemy", needsNear: false, engine: "penetration",
@@ -1405,7 +1436,7 @@ export const AFFIX_EFFECTS = [
   { id: "followerAffixAilmentCatalysis", label: "Ailment Catalysis: damage taken per Ailment type", target: "enemy", needsNear: false, engine: "all",
     pattern: /^Enemies within (\d+(?:\.\d+)?) ?m take \+(\d+(?:\.\d+)?)% additional damage \(multiplies\) for each type of Ailment affecting them$/i,
     derive: (match, ctx) => {
-      const types = [...new Set(ctx?.state?.enemyAilments || [])];
+      const types = [...new Set(enemyBuffSet(ctx?.state)?.types() ?? ctx?.state?.enemyAilments ?? [])];
       if (!(cadenceOf(ctx)?.castsPerSecond > 0)) return { inactive: "the follower never casts it" };
       if (!types.length) return { inactive: "no Ailment on the dummy" };
       const value = round(((1 + Number(match[2]) / 100) ** types.length - 1) * 100);
@@ -1416,7 +1447,7 @@ export const AFFIX_EFFECTS = [
     pattern: /^\+(\d+(?:\.\d+)?)% Infiltration Effect taken for the target for (\d+(?:\.\d+)?) ?s when this skill hits an enemy$/i,
     derive: (match, ctx) => {
       if (!dealsDamage(ctx)) return { inactive: NO_DAMAGE };
-      const types = [...(ctx?.state?.enemyDebuffs?.infiltration || [])];
+      const types = enemyBuffSet(ctx?.state)?.types({ tag: 5200086 }, { stage: "debuff" }) ?? [...(ctx?.state?.enemyDebuffs?.infiltration || [])];
       if (!types.length) return { inactive: "no Infiltration on the dummy" };
       const uptime = hitUptime(Number(match[2]), ctx), base = FOLLOWER_KEYWORD_VALUES.infiltration;
       const value = round(((1 + base * (1 + Number(match[1]) * uptime / 100) / 100) / (1 + base / 100) - 1) * 100);
@@ -1453,7 +1484,7 @@ export const AFFIX_EFFECTS = [
     derive: (match, ctx) => {
       const uptime = uptimeFor(Number(match[1]), ctx);
       if (!(uptime > 0)) return { inactive: "the follower never casts it" };
-      if (ctx?.state?.buffs?.hasHasten) return { inactive: "you already hold Hasten all the time (one Hasten whoever grants it)" };
+      if (heldBuffs(ctx?.state)?.hasHasten) return { inactive: "you already hold Hasten all the time (one Hasten whoever grants it)" };
       const [attack, cast] = timedBody(FOLLOWER_KEYWORD_VALUES.hasten, uptime, [(v) => `+${v}% additional Attack Speed`, (v) => `+${v}% additional Cast Speed`]);
       return { text: attack, texts: [{ text: cast, origin: "buff" }], origin: "buff", summary: `Hasten (+${FOLLOWER_KEYWORD_VALUES.hasten}% additional Attack and Cast Speed, keyword 10000106) for ${match[1]} s per cast, ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime, time-averaged (your Hasten Effect lines are not folded in: provisional)` };
     },
@@ -1463,7 +1494,7 @@ export const AFFIX_EFFECTS = [
     derive: (match, ctx) => {
       const uptime = uptimeFor(Number(match[1]), ctx);
       if (!(uptime > 0)) return { inactive: "the follower never casts it" };
-      if (ctx?.state?.buffs?.hasProfane) return { inactive: "you already hold Profane all the time (read by src/combat-states.js; one Profane whoever grants it)" };
+      if (heldBuffs(ctx?.state)?.hasProfane) return { inactive: "you already hold Profane all the time (read by src/combat-states.js; one Profane whoever grants it)" };
       const effect = potentProfanePercent(ctx);
       const [damage, duration] = timedBody(FOLLOWER_KEYWORD_VALUES.profane * (1 + effect / 100), uptime, [(v) => `+${v}% additional Erosion Damage`, (v) => `+${v}% additional Wilt Duration`]);
       return { text: damage, texts: [{ text: duration, origin: "buff" }], origin: "buff", summary: `Profane (+${FOLLOWER_KEYWORD_VALUES.profane}% additional Erosion Damage and Wilt Duration, game buff 3492)${effect ? ` × (1 + ${round(effect)}% Potent Profane)` : ""} for ${match[1]} s per cast, ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime, time-averaged` };
@@ -1474,7 +1505,7 @@ export const AFFIX_EFFECTS = [
     derive: (match, ctx) => {
       if (!dealsDamage(ctx)) return { inactive: NO_DAMAGE };
       const effect = potentProfanePercent(ctx);
-      if (!ctx?.state?.buffs?.hasProfane) return evilMightHeld(ctx) ? { text: null, origin: "buff", summary: `+${round(effect)}% Profane Effect (time-averaged) on the follower's Evil Might Profane (read there)` } : { inactive: "you hold no Profane (no \"Has Profane\" line, Wilt-gained Profane or follower Evil Might)" };
+      if (!heldBuffs(ctx?.state)?.hasProfane) return evilMightHeld(ctx) ? { text: null, origin: "buff", summary: `+${round(effect)}% Profane Effect (time-averaged) on the follower's Evil Might Profane (read there)` } : { inactive: "you hold no Profane (no \"Has Profane\" line, Wilt-gained Profane or follower Evil Might)" };
       const base = FOLLOWER_KEYWORD_VALUES.profane, value = round(((1 + base * (1 + effect / 100) / 100) / (1 + base / 100) - 1) * 100);
       return { text: `+${value}% additional Erosion Damage`, texts: [{ text: `+${value}% additional Wilt Duration`, origin: "buff" }], origin: "buff", summary: `your Profane (${base}%) × (1 + ${round(effect)}% Profane Effect time-averaged: +${match[1]}% for ${match[2]} s after each damage tick) over its ${base}% = +${value}% additional Erosion Damage and Wilt Duration` };
     },
@@ -1484,7 +1515,7 @@ export const AFFIX_EFFECTS = [
     derive: (match, ctx) => {
       const entry = cadenceOf(ctx);
       if (!(entry?.castsPerSecond > 0)) return { inactive: "the follower never casts it" };
-      if (ctx?.state?.buffs?.hasSpellAggression) return { inactive: "you already hold Spell Aggression all the time" };
+      if (heldBuffs(ctx?.state)?.hasSpellAggression) return { inactive: "you already hold Spell Aggression all the time" };
       const casts = Number(match[2]) * entry.castsPerSecond, uptime = 1 - (1 - Number(match[1]) / 100) ** casts;
       const [damage, speed] = timedBody(FOLLOWER_KEYWORD_VALUES.spellAggression, uptime, [(v) => `+${v}% additional Spell Damage`, (v) => `+${v}% additional Cast Speed`]);
       return { text: damage, texts: [{ text: speed, origin: "buff" }], origin: "buff", summary: `Spell Aggression (+${FOLLOWER_KEYWORD_VALUES.spellAggression}% additional Spell Damage and Cast Speed, keyword 10000101) for ${match[2]} s at a ${match[1]}% chance per cast: ${round(casts)} casts per ${match[2]} s (${cadenceText(entry)}) → 1 − ${round(1 - Number(match[1]) / 100)}^${round(casts)} = ${round(uptime * 100)}% uptime, time-averaged` };
@@ -1495,7 +1526,7 @@ export const AFFIX_EFFECTS = [
     derive: (match, ctx) => {
       const entry = cadenceOf(ctx), rate = steepRateOf(entry) / Number(match[2]);
       if (!(rate > 0)) return { inactive: "the skill launches no Steep Strike (no Steep Strike chance on it or its support affixes)" };
-      if (ctx?.state?.buffs?.hasAttackAggression) return { inactive: "you already hold Attack Aggression all the time" };
+      if (heldBuffs(ctx?.state)?.hasAttackAggression) return { inactive: "you already hold Attack Aggression all the time" };
       const uptime = Math.min(1, Number(match[1]) * rate);
       const [damage, speed] = timedBody(FOLLOWER_KEYWORD_VALUES.attackAggression, uptime, [(v) => `+${v}% additional Attack Damage`, (v) => `+${v}% additional Attack Speed`]);
       return { text: damage, texts: [{ text: speed, origin: "buff" }], origin: "buff", summary: `Attack Aggression (+${FOLLOWER_KEYWORD_VALUES.attackAggression}% additional Attack Damage and Speed, keyword 10000100) for ${match[1]} s per ${match[2]} Steep Strikes: ${round(steepShareOf(entry.skill) * 100)}% of ${round(entry.castsPerSecond)} casts/s launch one → ${round(uptime * 100)}% uptime, time-averaged` };
@@ -1775,6 +1806,34 @@ function risingHeatReading(selection, reap, reapingRecoverySpeedPercent) {
 
 // ---- Blur ------------------------------------------------------------------------------------------------------------
 /** Blur sources for you from the follower's skills (src/blur-sources.js entry shape). */
+// The follower's Blessing gain lines (Overload 1033360297 Focus, Tenacious Warcry 1033360296 Tenacity: "This unit and allies gain N
+// stack(s) of <Blessing> Blessing when casting this skill") for the early Blessing pass (wiring fix W6b, 2026-11-03): they depend only
+// on the follower's cadence and their best-case switch, so the per-type stacks the named-Blessing readers take (src/line-conditions.js
+// blessingStacks, read from the early pass) count them, not only the final pass's "any Blessing" total.
+export function followerBlessingLines(selection, requestedConditions = {}) {
+  if (!selection) return [];
+  return resolveFollowerEffects(selection, { requestedConditions }).blessingLines;
+}
+
+// Fortify Line (773000044 / 775000044): "+N Armor for this unit and nearby allies for T s when this skill is used". The Armor reaches
+// your per-Armor readers (src/combat-armor.js; wiring fix W6b) at its uptime min(1, T × the skill's casts/s), time-averaged
+// (provisional, combat-armor-buffs); best-case switch followerAffixFortifyLine (you stand by the follower).
+export const FORTIFY_LINE = /^\+(\d+(?:\.\d+)?) Armor for this unit and nearby allies for (\d+(?:\.\d+)?) ?s when this skill is used$/i;
+export function followerArmorBuffs(selection, requestedConditions = {}) {
+  if (!selection || requestedConditions?.followerAffixFortifyLine === false) return [];
+  const cadence = followerCadence(selection);
+  const out = [];
+  for (const line of followerLines(selection)) {
+    if (line.kind !== "affix") continue;
+    const match = clean(line.text).match(FORTIFY_LINE);
+    const entry = match ? cadence.get(line.skill?.name) : null;
+    if (!(entry?.castsPerSecond > 0)) continue;
+    const seconds = Number(match[2]);
+    out.push({ source: line.source, armor: Number(match[1]), seconds, uptime: Math.min(1, seconds * entry.castsPerSecond) });
+  }
+  return out;
+}
+
 export function followerBlurSources(selection) {
   if (!selection) return [];
   return selection.skills.flatMap(({ skill }) => skill.lines.filter((text) => /^Grants you Blur when the Shadows of this skill hit$/i.test(clean(text))).map((text) => ({ source: `${selection.follower.displayName}: ${skill.shortName} (follower)`, text, trigger: "Follower skill hit", available: true, reason: "the follower's Thunder Spike Shadows hit the dummy: Blur assumed up while the Blur condition is on" })));
@@ -1827,6 +1886,7 @@ function applyAffixEffect(result, reading, base, { selection, near, on }) {
   for (const item of texts) result.derived.push({ text: item.text, source: `${base.source}: ${effect.label}`, origin: item.origin, multiplier: 1, derivedFrom: base.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) } });
   for (const item of derived.armour || []) result.armourShreds.push({ ...item, source: base.source });
   for (const item of derived.blessingLines || []) result.blessingLines.push(item);
+  if (derived.afflictionClear) result.afflictionClears.push({ ...derived.afflictionClear, source: `${base.source}: ${effect.label}` });
 }
 
 const buffFor = (line, follower) => FOLLOWER_BUFFS.find((item) => (line.skill ? item.skill === line.skill.name : item.trait && item.trait === follower?.id) && item.pattern.test(clean(line.text)));
@@ -1841,7 +1901,7 @@ const ruleFor = (line, follower) => FOLLOWER_LINE_RULES.find((item) => item.reas
 export function resolveFollowerEffects(selection, state = {}) {
   // `recipe`: the follower numbers read from game recipes (research §16): the mode, and per reading the text's and the recipe's number
   // (under `unread`, which the badge walker skips: diagnostics, not contributions).
-  const result = { selection, lines: [], derived: [], timedEffects: [], buffs: [], cadence: [], armourShreds: [], blessingLines: [], recipe: { mode: followerPathMode(), unread: { readings: [] } } };
+  const result = { selection, lines: [], derived: [], timedEffects: [], buffs: [], cadence: [], armourShreds: [], blessingLines: [], afflictionClears: [], recipe: { mode: followerPathMode(), unread: { readings: [] } } };
   if (!selection) return result;
   const conditionOn = (id) => state[id] !== false && state.requestedConditions?.[id] !== false;
   const near = state.nearTarget !== false;
@@ -1857,6 +1917,11 @@ export function resolveFollowerEffects(selection, state = {}) {
       const reading = readAffixLine(line, { selection, cadence, state, reaps: reapList });
       const base = { text: line.text, source: line.source, skill: line.skill.name, affix: line.affix.id };
       if (reading.effect) { applyAffixEffect(result, reading, base, { selection, near, on: conditionOn(reading.effect.id) }); continue; }
+      if (!reading.buff && FORTIFY_LINE.test(text) && state.armorReaderLive) {
+        const buff = followerArmorBuffs(selection, state.requestedConditions || {}).find((item) => item.source === line.source);
+        result.lines.push({ ...base, status: buff ? "In calc" : "Inactive", reason: buff ? `+${buff.armor} Armor for ${buff.seconds} s per cast, ${round(buff.uptime * 100)}% uptime: time-averaged into the combat Armor the build's per-Armor lines read (src/combat-armor.js; provisional, combat-armor-buffs)` : "the follower never casts it, or its best-case switch is off" });
+        continue;
+      }
       if (!reading.buff) { result.lines.push({ ...base, status: reading.status, reason: reading.reason, ...(affixMarkerTexts(line, { selection, cadence }).length ? { markerTexts: affixMarkerTexts(line, { selection, cadence }) } : {}) }); continue; }
       const { buff } = reading;
       const derived = affixBuffReading(buff, reading.match, reading.ctx);
