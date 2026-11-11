@@ -74,7 +74,7 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { refdataSkillCatalogSs13, refdataSupportCatalogSs13 } from "./data/catalogs/refdata-ss13.js";
 import { supportCanSupportProjectile } from "./carino-special-ammo.js";
-import { ASSUMED_MOVEMENT_METERS_PER_SECOND } from "./dummy-target.js";
+import { BASE_PLAYER_MOVE_SPEED } from "./dummy-target.js";
 
 export const RANGER = "carino-ranger-of-glory";
 export const LETHAL = "carino-lethal-flash";
@@ -299,7 +299,7 @@ export function heatUpCycle({ magazine, castsPerSecond, phaseSeconds, reloadSeco
  * @param {object} p.inputs { projectileSetups: [{ setupKey, name }], attackSpeedIncreasedPercent, castSpeedIncreasedPercent,
  *   projectileSpeedPercent, skillEffectDurationPercent, installedSupportNames, activeNobleSupports, hasReaping, hitRecently }
  */
-export function carinoState({ heroId = "", hero = {}, modifierTexts = [], requestedConditions = {}, moving = true, facts = null, inputs = {} } = {}) {
+export function carinoState({ heroId = "", hero = {}, modifierTexts = [], requestedConditions = {}, moving = true, facts = null, inputs = {}, moveSpeed = BASE_PLAYER_MOVE_SPEED } = {}) {
   if (!CARINO_HEROES.has(heroId)) return null;
   const lines = linesOf(modifierTexts, heroId);
   const projectileSetups = inputs.projectileSetups || [];
@@ -467,7 +467,7 @@ export function carinoState({ heroId = "", hero = {}, modifierTexts = [], reques
       if (!rule) return [];
       const match = clean.match(rule.pattern);
       let active = false, every = null, why = "";
-      if (rule.kind === "movement") { every = Number(match[1]) / ASSUMED_MOVEMENT_METERS_PER_SECOND; active = moving !== false && every <= limit + EPS; why = moving === false ? "standing still (Movement group)" : `every ${round(every)} s at the assumed ${ASSUMED_MOVEMENT_METERS_PER_SECOND} m/s (the planner's movement placeholder, unsourced)`; }
+      if (rule.kind === "movement") { every = moveSpeed.metersPerSecond > 0 ? Number(match[1]) / moveSpeed.metersPerSecond : Infinity; active = moving !== false && every <= limit + EPS; why = moving === false ? "standing still (Movement group)" : `every ${round(every)} s moving at ${moveSpeed.text}`; }
       else if (rule.kind === "reaping") { every = Number(match[2]); active = Boolean(inputs.hasReaping) && every <= limit + EPS; why = inputs.hasReaping ? `when Reaping, every ${every} s at most` : "the build has no Reaping source"; }
       else if (rule.kind === "hitRecently") { every = Number(match[2]); active = Boolean(inputs.hitRecently) && every <= limit + EPS; why = inputs.hitRecently ? `every ${every} s while hit recently (best case)` : "the Hit or blocked recently switch is off"; }
       else if (rule.kind === "notHitRecently") { active = !inputs.hitRecently; why = inputs.hitRecently ? "the build is assumed hit recently (the Hit or blocked recently switch)" : "not hit recently (the dummy never attacks)"; every = 0; }

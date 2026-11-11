@@ -14,7 +14,10 @@
 // Only Aura names are claimed: "Blur / Torment / Ill Omen / Affliction / Origin of X gains an additional effect" lines belong to
 // their own readers (src/blur-effects.js, src/ill-omen.js, ...).
 // The Aura's effective castSpeedPercent joins the cast-rate ledger (src/planner.js) and the stat sheet (src/character-stats.js);
-// attackSpeedPercent reaches the stat sheet only (the weapon Attack Speed model does not read it yet).
+// attackSpeedPercent joins the stat sheet and, since 2026-11-09, the weapon Attack Speed model (`auraAttackSpeedLines`, src/planner.js):
+// the 25 T build's town panel (tests/fixtures/panel-25t-claim-2026-11-09.json) reads Attack Speed Bonus 310% = 3 + 77.86 + 120 × 2.0725
+// − 20, which needs Precise: Swiftness's added +120% at its Aura Effect on the attack row (research/build-25t-claim-audit-2026-11-09.md
+// gap 1).
 import { normalizePercentageText } from "./percentage-text.js";
 import { auraScalingSs13 } from "./data/skills/aura-scaling-ss13.js";
 import { bodyReaders } from "./line-effects.js";
@@ -148,6 +151,18 @@ export function auraCastSpeedLines(auraEntries = []) {
     const value = entry.effectiveEffects.castSpeedPercent;
     return { source: `Aura: ${entry.name} (${entry.gainedEffects.sources.map((item) => item.source).join(", ")})`, text: `+${value}% Cast Speed (${entry.gainedEffects.castSpeedPercent}% × (1 + ${entry.auraEffectPercent}% Aura Effect)${entry.additionalAuraEffectFactor !== 1 ? ` × ${entry.additionalAuraEffectFactor}` : ""}; added Aura effect scaled like the Aura's own values, provisional)`, value, additional: false };
   });
+}
+
+/**
+ * Attack Speed lines for the weapon Attack Speed model (src/weapon-damage-model.js reads "+X% Attack Speed" as increased) from the
+ * active Aura entries' scaled added effects: the same value the stat sheet shows (Pantheon's Elegy on Precise: Swiftness).
+ */
+export function auraAttackSpeedLines(auraEntries = []) {
+  return auraEntries.filter((entry) => entry.gainedEffects?.attackSpeedPercent && Number(entry.effectiveEffects?.attackSpeedPercent) > 0).map((entry) => ({
+    text: `+${round(entry.effectiveEffects.attackSpeedPercent)}% Attack Speed`,
+    source: `Aura: ${entry.name} (${entry.gainedEffects.sources.map((item) => item.source).join(", ")}; added effect × Aura Effect, provisional scale)`,
+    origin: "derived", multiplier: 1, aura: entry.name
+  }));
 }
 
 /** Stat-sheet lines (Cast Speed and Attack Speed) from the active Aura entries' scaled added effects. */

@@ -3,6 +3,7 @@ import { finisherAmplificationPercent, CONSUMED_COMBO_POINTS, COMBO_POINTS_PER_S
 import { weaponRestriction } from "./weapon-damage-model.js";
 import { skillProgressionSs13 } from "./data/skills/skill-progression-ss13.generated.js";
 import { shotgunProfileNote } from "./shotgun-effect.js";
+import { PLAYER_BASE_MOVE_METERS_PER_SECOND } from "./dummy-target.js";
 
 // Attack batch, first slice (2026-10-11): the six "Weapon Attack Damage" skills deferred from batches 1 and 3 of
 // research/skill-inventory-2026-10-11.md (plus the two Precise Focus variants), modeled through the skill-hit engine
@@ -19,10 +20,12 @@ const restriction = (text) => weaponRestriction(text);
 const ownSpeed = { additionalPercent: 100, source: "Skill text: +100% additional Attack Speed for this skill" };
 const DEMOLISHER = { everySeconds: 3, source: "Reference data: the skill gains Demolisher Charge once every 3 s" };
 const SHOTGUN_NOTE = (count, factor, reach = "all") => shotgunProfileNote(count, factor, reach);
-// Thunder Focus charges 5 Focus Pts per 2 m moved; standing still on the dummy it never triggers. The user's best-case
-// policy (meters moved recently) needs a movement rate, which no game figure fixes here: 6 m/s is an unsourced placeholder
-// (flagged in the profile note and as a planner warning).
-export const THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND = 6;
+// Thunder Focus charges 5 Focus Pts per 2 m moved; standing still on the dummy it never triggers. The user's best-case policy
+// (meters moved recently) moves at the player's movement speed (user decision 2026-11-10; src/dummy-target.js playerMoveSpeed): the
+// profile holds the 6.5 m/s base, and src/skill-hit-model.js movementFocusProfile rescales its Focus Pts and uses to the build's speed
+// (`focus.pointsPerMeter`). It replaces the unsourced 6 m/s placeholder of 2026-10-12.
+export const THUNDER_FOCUS_POINTS_PER_METER = 5 / 2;
+export const thunderFocusUseNote = (metersPerSecond, speedText) => `Reference data: 5 Focus Pts per 2 m moved, 100 Pts per Thunderstrike when a non-Mobility Attack Skill is used; moving at ${speedText} gives ${Math.round(metersPerSecond * THUNDER_FOCUS_POINTS_PER_METER / 100 * 10000) / 10000} Thunderstrikes/s; standing still it never triggers`;
 
 const ASH_DEMOLISHER = { additionalPercent: 215, text: "+215% additional Hit Damage when the skill consumes Demolisher Charge (Hammer of Ash Lv16 run 2026-10-12: floating hit ~610 = 193.6 × 3.15)" };
 // Steep Strike (Slash-Strike skills) and the Whirlwind Lv16 reference run (research/attack-weapon-tests-2026-10-12.md).
@@ -66,7 +69,7 @@ const DEFINITIONS = [
     projectileSpeedShare: { percent: 25, capPercent: 200, text: "25% of bonuses to Projectile Speed for this skill (up to 200%) also apply to this skill's additional damage" },
     weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to guns and cannons") },
     components: [
-      { key: "waves", label: "Barrage waves", groupId: 441, perUse: { perTick: 1, countAtStacks: (stacks) => 1 + stacks, falloff: { count: 6, factor: 0.7, reach: "all" } }, ...provisional(`Reference data: 1 base wave + 1 per channeled stack at the end of channeling (6 at 5 stacks), each wave 1 Projectile + \"Projectile Quantity of this skill +5\" read as 6 projectiles per wave on the single target; ${SHOTGUN_NOTE(6, 0.7, "all")} (game data: the barrage is fallen projectiles that all aim at the enemy, aimEmemyPercent 100)`) }
+      { key: "waves", label: "Barrage waves", groupId: 441, perUse: { perTick: 1, countAtStacks: (stacks) => 1 + stacks, falloff: { count: 6, factor: 0.3, reach: "all" } }, ...provisional(`Reference data: 1 base wave + 1 per channeled stack at the end of channeling (6 at 5 stacks), each wave 1 Projectile + \"Projectile Quantity of this skill +5\" read as 6 projectiles per wave on the single target; ${SHOTGUN_NOTE(6, 0.3, "all")} (game data: the barrage is fallen projectiles that all aim at the enemy, aimEmemyPercent 100)`) }
     ],
     notes: ["Inexhaustible Barrage: \"25% of bonuses to Projectile Speed for this skill (up to 200%) also apply to this skill's additional damage\": read with the Projectile Speed pool (src/skill-hit-model.js projectileSpeedState), provisional, open question support-projectile-speed-share. The game description (group 441) is a dev note (\"fixed 3 waves for now\"); the reference data's 1 + stacks is used. Crossbows are neither guns nor cannons in the reference data's wording and are left out of the restriction."] },
   // Focus skills (role aura): the Focus buff itself (additional Physical / Lightning Damage, Trauma chance, Base Trauma) is read
@@ -80,12 +83,12 @@ const DEFINITIONS = [
     components: [{ key: "strike", label: "Acute Strike", groupId: 601 + index, perUse: 1, ...provisional("one Acute Strike on the dummy per trigger (reference data: on up to 4 enemies within 5 m of the target hit); the Spikes are read as this one hit") }],
     notes: [`${name}: the game row's +0x08 is 525% at Lv.20 (389% at Lv.1) and is used as the Weapon Attack Damage %; the reference data's damage line reads 479% (355%) while its \"effectiveness of added damage\" reads 525% — the 0.912 ratio is unexplained (open). Triggers need the build's Melee hits; standing still with a non-Melee main skill they never fire.`] })),
   ...["Thunder Focus", "Precise: Thunder Focus"].map((name, index) => ({ name, delivery: "focus-strike",
-    focus: { pointsPerSecond: THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND * 5 / 2, pointsPerUse: 100 },
-    useModel: { kind: "rate", usesPerSecond: THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND * 5 / 2 / 100, firstUseSeconds: 100 / (THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND * 5 / 2), readyWhenPrebuilt: true, note: `Reference data: 5 Focus Pts per 2 m moved, 100 Pts per Thunderstrike when a non-Mobility Attack Skill is used; movement at an assumed ${THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND} m/s (unsourced placeholder) gives ${THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND * 5 / 2 / 100} Thunderstrikes/s; standing still it never triggers` },
+    focus: { pointsPerSecond: PLAYER_BASE_MOVE_METERS_PER_SECOND * THUNDER_FOCUS_POINTS_PER_METER, pointsPerUse: 100, pointsPerMeter: THUNDER_FOCUS_POINTS_PER_METER },
+    useModel: { kind: "rate", usesPerSecond: PLAYER_BASE_MOVE_METERS_PER_SECOND * THUNDER_FOCUS_POINTS_PER_METER / 100, firstUseSeconds: 100 / (PLAYER_BASE_MOVE_METERS_PER_SECOND * THUNDER_FOCUS_POINTS_PER_METER), readyWhenPrebuilt: true, note: thunderFocusUseNote(PLAYER_BASE_MOVE_METERS_PER_SECOND, `the ${PLAYER_BASE_MOVE_METERS_PER_SECOND} m/s base speed`) },
     weaponScaling: { baseTypes: ["Physical"], restriction: null },
     conversion: [{ from: "Physical", to: "Lightning", percent: 100, source: "Reference data: Converts 100% of the skill's Physical Damage to Lightning Damage" }],
     components: [{ key: "thunderstrike", label: "Thunderstrike", groupId: 621 + index, perUse: 1, ...provisional("one Thunderstrike on the dummy per trigger (reference data: a fan-shaped area in front for Melee triggers, a square for Ranged)") }],
-    notes: [`${name}: the trigger rate rests on an unsourced movement speed placeholder (${THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND} m/s); the Physical weapon damage is dealt as Lightning (provisional conversion rule). The game description (group 621) is an older Shock-triggered design and is not used.`] })),
+    notes: [`${name}: the trigger rate follows the player's movement speed (${PLAYER_BASE_MOVE_METERS_PER_SECOND} m/s base × the build's Movement Speed; the base is inferred, open question player-base-move-speed); the Physical weapon damage is dealt as Lightning (provisional conversion rule). The game description (group 621) is an older Shock-triggered design and is not used.`] })),
 
   // --- Attack batch, second slice (2026-10-12): the remaining Weapon Attack Damage skills (18 melee, 14 ranged) ---
   // Each is one use per attack interval (Split use time, attack-speed scaled; reference data's 1 s where no Split file is linked)
@@ -100,16 +103,21 @@ const DEFINITIONS = [
   // Attack Speed): the panel's Main-Hand Attack Speed 1.50/s and Attack DPS 298 = 193.6 × 1.5 × 1.025 show one attack per
   // weapon interval, not the 0.2 s the Split file / reference data publish (which would be 7.5/s); the floating hit ~610 = 130 × 304% ×
   // 0.49 × 3.15 is the Demolisher Pummel; the 20 s recount 611 (run 2: 518 over 25 s with an idle last 5 s ≈ 647 over the 20 s
-  // hit) needs about 1.7 Pummel-equivalents per attack: Pummel + one Explosion on the same enemy at the 70% Shotgun falloff
-  // (reference data: "the pummel and explosion can hit the same enemy; Shotgun falloff 70%") gives 649; the 3 projectile explosions with
-  // falloff would give 1,400 and the Pummel alone 447.
+  // hit) needs about 2.2 hit-equivalents per attack with the Demolisher Pummel's 1.48. Pummel + one Explosion on the same enemy
+  // (reference data: "the pummel and explosion can hit the same enemy; Shotgun falloff 70%"): by the client's repeat multiplier (user
+  // decision 2026-11-05) the 70% is the share lost, so the Explosion keeps 30%: 529 (−13.4% against run 1's 611, −18.2% against
+  // run 2's ≈647); the 2026-10-12 reading (Explosion keeps 70%) gave 648 (+6.1%, +0.1%), the Pummel alone 440. Kept, not the
+  // client's structure (open question shotgun-brother-group-none, 2026-11-08): Split 758458 has no Explosion in a plain attack (the
+  // Pummel, rule in brother group −1 with no table, 100%, and the Ember Projectiles, row 12, group 2 with bHitBrother 0: at most one
+  // per target, 100%); the Explosions (row 11) come only from an attack that consumes a Demolisher Charge, where the Pummel and up to
+  // 4 bullet-hit Explosions (1 + 3 repeats) all share brother group 1, table 30: the first 100%, each later one 30%.
   { name: "Hammer of Ash", delivery: "attack-melee", demolisher: DEMOLISHER, useRefdataTiming: true,
     timingFallback: { useTime: 1, speedType: "attack-speed", cooldown: 0, cdTimes: 0, source: "observed: one attack per weapon interval (Hammer of Ash Lv16 run 2026-10-12: panel 1.50/s, 298 DPS = 193.6 × 1.5 × 1.025); the Split 758458 / reference data 0.2 s is not the attack interval" },
     weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to swords, axes, hammers, cudgels, tin staffs, and unarmed") },
     conversion: convert("Fire"),
     components: [
       { key: "pummel", label: "Pummel", groupId: 11, perUse: 1, demolisher: ASH_DEMOLISHER, ...text("one Pummel per attack (game description: a circular area slam, radius 200); the Lv16 run's floating ~610 hit is the Demolisher Pummel (193.6 × 3.15)") },
-      { key: "explosion", label: "Explosion", groupId: 12, perUse: 0.7, basis: "observed", note: "Reference data: the pummel and the explosion can hit the same enemy with a 70% Shotgun falloff: one Explosion per attack at ×0.7 as the second hit on the dummy (group 12 is the projectile-hit row; the reference data's Explosion line has no further game group). The Lv16 run (611 / ≈647 over 20 s) fits Pummel + 0.7 Explosion (649) and rules out the 3 projectile explosions (1,400) and the Pummel alone (447); whether Demolisher also boosts the Explosion is open (it would give 759)." }
+      { key: "explosion", label: "Explosion", groupId: 12, perUse: 0.3, basis: "observed", note: "Reference data: the pummel and the explosion can hit the same enemy with a 70% Shotgun falloff, the share lost by the client's repeat multiplier (user decision 2026-11-05): one Explosion per attack at ×0.3 as the second hit on the dummy (group 12 is the projectile-hit row; the reference data's Explosion line has no further game group). The Lv16 run (611 / ≈647 over 20 s) reads Pummel + 0.3 Explosion = 529 (−13.4% / −18.2%; the 2026-10-12 ×0.7 gave 648, +6.1% / +0.1%) against the Pummel alone 440; whether Demolisher also boosts the Explosion is open. Open question shotgun-brother-group-none: by Split 758458 the Explosions (row 11) come only from an attack that consumes a Demolisher Charge, sharing brother group 1 (table 30) with its Pummel (690 with 4 landing and the +215%, 519 without), and a plain attack's Pummel rule is in group −1." }
     ],
     notes: [CONVERSION_NOTE("Hammer of Ash", "Fire"), "Hammer of Ash: the game description (group 11) reads 50% Physical→Fire; the reference data's 100% is used (the run's 194 per Pummel = 130 × 304% × 0.7 × 0.7 confirms Fire mitigation). The 3 Ember Projectiles fly outward from the slam and are not counted on a single dummy (observed)."] },
   { name: "Focused Slash", delivery: "attack-melee", fervorBonus: { every: 1, percent: 0.4 }, weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to swords, axes, and hammers") },
@@ -136,13 +144,14 @@ const DEFINITIONS = [
     conversion: convert("Cold"),
     components: [
       ...slashStrike(411, 412),
-      { key: "explosion", label: "Explosion", groupId: 413, perUse: 0.2 * 0.7, steep: { role: "steep", perSteep: 0.7 }, ...provisional("Reference data: the Explosion is part of the Steep Strike and can hit the same enemy as it with a 70% Shotgun falloff: one Explosion per Steep Strike (0.2 per use) at ×0.7 as the second hit of the pair") }
+      { key: "explosion", label: "Explosion", groupId: 413, perUse: 0.2, steep: { role: "steep", perSteep: 1 }, ...provisional("Reference data: the Explosion is part of the Steep Strike and can hit the same enemy as it. Client (2026-11-08; SS14 0x1423e3d40, research/oq-shadows-seal-client-2026-11-05.md §1): the repeat multiplier counts only earlier hits of siblings in the Explosion's own brother group; the Steep Strike's rule (Split 177593) is in brother group −1 and is never counted, and the Explosion's rule (group 1, table 30) has no sibling with one Explosion per Steep Strike, so the Explosion deals 100% (0.2 per use; ×0.3 before, the text's 70% falloff read as the pair's)") }
     ],
     notes: [CONVERSION_NOTE("Icy Blade", "Cold"), "Icy Blade: the extra Steep Strike attempts on Frozen enemies / on inflicting Freeze need Freeze (100 or more Frostbite Rating), which the dummy does not carry here, so they are not applied."] },
   { name: "Frost Spike", delivery: "attack-melee", weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to One-Handed Swords, Claws and Daggers.") },
     conversion: convert("Cold"),
+    frostbiteRatingAdditional: { atLeast: 30, percent: 10, text: "+10% additional damage when this skill hits an enemy with at least 30 Frostbite Rating", source: "Frost Spike (game record 559611328: trigger 1000031 on this skill, attr 5719 mod 4 = p1 while the target's rating l0 >= p0, gate node 300)" },
     components: [{ key: "thrust", label: "Thrust", groupId: 401, perUse: 1, ...text("one Thrust per use; the Icy Blade projectiles (group 402) launch backwards from the hit enemy's position and cannot hit the same unit (game description), so they miss a single dummy") }],
-    notes: [CONVERSION_NOTE("Frost Spike", "Cold"), "Frost Spike: a Shadow Strike skill — Shadow Quantity is 0 by default (game manual 1001010820); gear / support Shadow Quantity repeats the Thrust per Shadow (src/skill-hit-model.js shadowState). The Frostbite Rating lines (+10% additional damage at 30, +1 Projectile at 60) are not applied (no Frostbite Rating on the dummy is modeled); \"+8% additional damage for every +1 Projectile Quantity\" is 0 at the base quantity (the skill's quantity ignores bonuses)."] },
+    notes: [CONVERSION_NOTE("Frost Spike", "Cold"), "Frost Spike: a Shadow Strike skill — Shadow Quantity is 0 by default (game manual 1001010820); gear / support Shadow Quantity repeats the Thrust per Shadow (src/skill-hit-model.js shadowState). \"+10% additional damage when this skill hits an enemy with at least 30 Frostbite Rating\" is read against the dummy's Frostbite Rating (record 559611328); the +1 Projectile Quantity at 60 is not read (open question frost-spike-projectile-quantity-damage); \"+8% additional damage for every +1 Projectile Quantity\" is 0 at the base quantity (the skill's quantity ignores bonuses)."] },
   { name: "Wilt Spike", delivery: "attack-melee", ownShadowQuantity: { value: 1, text: "Shadow Quantity +1 when buff reaches max stacks; the 5 stacks are held (1 per hit, 4 s; own buffs pre-built)" }, weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to One-Handed Swords, Claws and Daggers.") },
     conversion: convert("Erosion"),
     components: [{ key: "thrust", label: "Thrust", groupId: 391, perUse: 1, extraAdditional: [{ source: "Wilt Spike: buff stacks", text: "+3% additional Erosion Damage (multiplies) per buff stack, 5 stacks held (1 per hit, 4 s; own buffs pre-built): 1.03^5 = +15.93%", value: (Math.pow(1.03, 5) - 1) * 100 }], ...text("one Thrust per use") }],
@@ -202,9 +211,19 @@ const DEFINITIONS = [
     components: [
       { key: "starter1", label: "Combo Starter 1", groupId: 980, perUse: 1, ...text("one Starter 1 hit per cycle (reference data: it can only hit 1 enemy)") },
       { key: "starter2", label: "Combo Starter 2", groupId: 981, perUse: 1, ...text("one Starter 2 hit per cycle") },
-      { key: "finisher", label: "Combo Finisher (Clones)", groupId: 982, perUse: { perTick: 1, falloff: { count: 3, factor: 0.7, reach: "all" } }, comboPerPoint: "clones", extraAdditional: [FINISHER_AMPLIFICATION("Spectral Slash")], ...provisional(`Reference data: the Finisher generates 1 additional Clone per Combo Point consumed (up to 4) with a 70% Shotgun falloff between Clones; 1 base Clone + 2 Combo Points from the two Starters = 3 Clones (the base Clone count is read, not published; 1 Combo Point per Starter is observed on Crescent Slash 2026-10-12 and reused here, provisional); ${SHOTGUN_NOTE(3, 0.7, "all")} (Clones, not a projectile fan)`) }
+      { key: "finisher", label: "Combo Finisher (Clones)", groupId: 982, perUse: { perTick: 1, falloff: { count: 3, factor: 0.3, reach: "all", lead: 1 } }, comboPerPoint: "clones", extraAdditional: [FINISHER_AMPLIFICATION("Spectral Slash")], ...provisional(`Reference data: the Finisher generates 1 additional Clone per Combo Point consumed (up to 4) with "The falloff coefficient of the Clones' Shotgun Effect is 70%" (the share lost: the Clone hit rule's table 30, Split 626480, is the share kept); 1 base Clone + 2 Combo Points from the two Starters = 3 Clones (the base Clone count is read, not published; 1 Combo Point per Starter is observed on Crescent Slash 2026-10-12 and reused here, provisional); ${SHOTGUN_NOTE(3, 0.3, "all")} (Clones, not a projectile fan). The Finisher is the caster's slash plus its Clones (Split 626480, research/spectral-slash-clones-2026-11-09.md): the slash (first hit rule: brother group −1, no table, damage 982, before the Clone entity) hits once at 100% outside the Clones' group, then 1 + min(points, 4) + min(Legion, 5) Clones in group 1 (table 30); the base Clone is the skill variable's base value (one link inferred, backed by the Crescent Slash run)`) }
     ],
-    notes: ["Spectral Slash: group 983 (101% at Lv.20, chain-linked only) is not described and not modeled; Mark spreading needs other enemies; \"-12% additional damage when this skill is triggered\" does not apply to a self-cast skill."] },
+    // Spectral Slash: Mark (config_char_buff 11340, "Mark: Additionally increases the damage taken from this skill"; 2026-11-09): Starter 1's
+    // Split 482940 adds it on hit (5 s, one stack; its second add is the on-defeat spread), Starter 2's Split 567510 spreads it to other
+    // enemies, and each Finisher (Split 626480) adds the counter buff 11341 to the Marked victims after its last Clone, whose affix 4150517
+    // removes the Mark once the counter reaches field 2012108 (Combo Finisher charges): "Removes Mark from enemies after this skill ends".
+    // Its affix 817163584 is attribute 5720 mod 4 (additional damage taken, its own factor) = 30 × GetEffectScale on the attacker tag
+    // 5000002 (this skill: the skill that applied it). The record carries tag 5100310 only (no Mark tag 5100207, no Marked state
+    // 4010010), and no writer of Effect (attr 3401) on 5100310 exists, so it is +30% flat, Mark Effect does not scale it, and the
+    // generic Mark's readers never see it. On one dummy: Starter 1's own hit lands before its Mark, Starter 2 and every Finisher's slash
+    // and Clones take it (src/skill-hit-model.js ownMark), and the skill's own ailments take it while the Mark is on the dummy.
+    ownMark: { buff: 11340, name: "Spectral Slash: Mark", percent: 30, appliedBy: "starter1", markedKeys: ["starter2", "finisher"], record: 817163584 },
+    notes: ["Spectral Slash: group 983 is Spectral Slash: Detonation's Explosion when a Clone defeats an enemy (field 2600591 chance; research/spectral-slash-clones-2026-11-09.md): not on the dummy; Mark spreading needs other enemies; \"-12% additional damage when this skill is triggered\" does not apply to a self-cast skill."] },
   // Ranged
   { name: "Ice Shot", delivery: "attack-ranged", weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to Bows, Crossbows, Firearms and Cannons") },
     conversion: convert("Cold"),
@@ -220,7 +239,7 @@ const DEFINITIONS = [
     conversion: convert("Fire"),
     components: [
       { key: "marked", label: "Marked Arrow", groupId: 111, perUse: 1, ...text("Reference data: 1 Marked Arrow (not affected by Projectile Quantity); game group 111 is flat 35% at every level (value link flagged low)") },
-      { key: "explosive", label: "Explosive Arrows", groupId: 112, perUse: { perTick: 1, falloff: { count: 5, factor: 0.7, reach: "all" } }, ...provisional(`Reference data: 1 + 4 Explosive Arrows that can hit the same enemy; ${SHOTGUN_NOTE(5, 0.7, "all")} (game data: the arrows fall on an area and all aim at the enemy, aimEmemyPercent 100)`) }
+      { key: "explosive", label: "Explosive Arrows", groupId: 112, perUse: { perTick: 1, falloff: { count: 5, factor: 0.3, reach: "all" } }, ...provisional(`Reference data: 1 + 4 Explosive Arrows that can hit the same enemy; ${SHOTGUN_NOTE(5, 0.3, "all")} (game data: the arrows fall on an area and all aim at the enemy, aimEmemyPercent 100)`) }
     ],
     notes: [CONVERSION_NOTE("Marked Rain of Arrows", "Fire"), "Marked Rain of Arrows: the Mark's bonus (game description: +60% damage against Marked enemies) is not in the reference data's text and is not applied."] },
   { name: "Rocket Jump", delivery: "attack-ranged", timingFallback: ONE_SECOND("Rocket Jump"), weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to cannons") },
@@ -258,7 +277,7 @@ const DEFINITIONS = [
     components: [{ key: "throw", label: "Corrosive Throw", groupId: 341, perUse: 1.2, ...provisional("Reference data: 1 + 2 projectiles that cannot hit the same enemy, so one hits the dummy; the skill's +20% Multistrike chance is read as a 20% chance of one repeated throw (provisional reading of Multistrike); the Multistrike projectile stacks only add projectiles, which cannot hit the same enemy") }],
     notes: [CONVERSION_NOTE("Corrosive Throw", "Erosion")] },
   { name: "Rain of Arrows", delivery: "attack-ranged", timingFallback: ONE_SECOND("Rain of Arrows"), projectileSpeedShare: { percent: 25, capPercent: 200, text: "25% of bonuses to Projectile Speed for this skill (up to 200%) also apply to this skill's additional damage" }, weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to bows and crossbows") },
-    components: [{ key: "arrows", label: "Arrows", groupId: 311, perUse: { perTick: 1, falloff: { count: 15, factor: 0.7, reach: "half" } }, ...provisional(`Reference data: 1 + 14 projectiles that can hit the same enemy; ${SHOTGUN_NOTE(15, 0.7, "half")} (the Rain of Arrows: Tracking support makes the arrows "guaranteed to aim at enemies", so without it only part of them do; the fallen-projectile default aim share is 50%; the skill's own Split is not decoded)`) }],
+    components: [{ key: "arrows", label: "Arrows", groupId: 311, perUse: { perTick: 1, falloff: { count: 15, factor: 0.3, reach: "half" } }, ...provisional(`Reference data: 1 + 14 projectiles that can hit the same enemy; ${SHOTGUN_NOTE(15, 0.3, "half")} (the Rain of Arrows: Tracking support makes the arrows "guaranteed to aim at enemies", so without it only part of them do; the fallen-projectile default aim share is 50%; the skill's own Split is not decoded)`) }],
     notes: ["Rain of Arrows: \"25% of bonuses to Projectile Speed for this skill (up to 200%) also apply to this skill's additional damage\": read with the Gale conversions' Projectile Speed pool (src/skill-hit-model.js projectileSpeedState), the bonus counted up to 200%; provisional, open question support-projectile-speed-share."] },
   { name: "Focused Shot", delivery: "attack-ranged", fervorBonus: { every: 10, percent: 4, distant: true }, weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to Ranged weapons") },
     components: [{ key: "shot", label: "Focused Shot", groupId: 511, perUse: 1, ...text("one projectile per shot") }],
@@ -278,13 +297,20 @@ const DEFINITIONS = [
   // Spiral Strike (Split 456215, one of the 11 files whose header the decoder rejects; read by hand: doSpeed 1 s, extraSpeed
   // 0.25 s, onceFixedTime 0.667 s, the usually-1.0 double 0.8; component strings "fire_bumpattack_damage", "AttackSpeed",
   // "scaleTime"). reference data / skill_des: "Deals 87% Weapon Attack Damage multiple times. The caster's Attack Speed makes the skill
-  // deal damage more times." Reading: the dash is a fixed 0.667 s bump attack (Searing Crush's charge uses onceFixedTime the same
-  // way) dealing a hit every 0.25 s with the interval attack-speed scaled, so hits per use = 0.667 ÷ (0.25 ÷ attack-speed factor)
-  // = 2.67 × factor (4 at 1.5 attacks/s). No in-game count exists yet: provisional.
+  // deal damage more times." Count (2026-11-05, read from the Split's own data; replaces the reading "a 0.667 s dash hitting every
+  // 0.25 ÷ attack-speed factor s", 2.67 × factor hits per use, which counted Attack Speed twice beside the attack-speed-scaled use
+  // time): the bump attack's damage-timing component (struct 254911) sets damageCntOnHit by a blueprint expression (calculator
+  // 395925) and damageInterval 0.05 s. Decoded: AttackSpeed = <the skill's attack speed, operand option 1> + 2; First = 12 ÷
+  // AttackSpeed; Result = 6 − First. Opcodes from the 384 expressions of the SS14 Splits: 0 +, 1 −, 2 ×, 3 ÷, 4 min (Homing Frost
+  // Bolt 505568: speed_multi = casts per second ÷ 1.53 = 1 ÷ its 0.65 s, speed_inc = multi − 1; skill-area radius √((area + 100) ×
+  // 100) − 100). The hit rule (104998: hitTimeLimit 1 s) lets the dash bump the dummy once per use, so one use deals
+  // floor(6 − 12 ÷ (factor + 2)) hits: 2 at 1 attack/s, 3 at 2, 5 at 10, never 6. With the 1 s base use time the operand is the
+  // speed factor (an attack-speed measure in either reading of option 1: anime scale or attacks per second). The whole-number
+  // cast of the result and the source of option 1 are inferred (open question spiral-strike-damage-count).
   { name: "Spiral Strike", delivery: "attack-melee", timingFallback: { useTime: 1, speedType: "attack-speed", cooldown: 0, cdTimes: 0, source: "Split 456215 doSpeed 1 s, attack-speed scaled (header read by hand; the decoder rejects this file's header)" },
     weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to One-Handed Swords, Claws and Daggers.") },
     conversion: convert("Erosion"),
-    components: [{ key: "dash", label: "Spiral Strike hits", groupId: 740, perUse: { perTick: 1, intervalSeconds: 0.25, attackSpeedScaled: true, durationSeconds: 2 / 3 }, ...provisional("Split 456215: a 0.667 s bump-attack dash (onceFixedTime) hitting every 0.25 s (extraSpeed) with the interval attack-speed scaled (reference data: Attack Speed makes it deal damage more times), so 2.67 × attack-speed factor hits per use on a dummy that stays in the dash path") }],
+    components: [{ key: "dash", label: "Spiral Strike hits", groupId: 740, perUse: { speedCount: { offset: 2, numerator: 12, max: 6, source: "Split 456215 damageCntOnHit expression: 6 − 12 ÷ (Attack Speed + 2), whole hits, 0.05 s apart" } }, ...provisional("Split 456215: one bump per use (hit rule 104998, hitTimeLimit 1 s) dealing floor(6 − 12 ÷ (attack-speed factor + 2)) hits 0.05 s apart (the damage-timing expression; the whole-number cast inferred)") }],
     notes: [CONVERSION_NOTE("Spiral Strike", "Erosion"), "Spiral Strike: a Mobility attack with no cooldown (Split 456215 cd 0), assumed usable back to back at its attack rate with the dummy on the dash path (best case). \"+20% chance to Wilt\" reaches the ailment model through the skill text; the Movement Speed → Attack Speed line is not read (no Movement Speed total)."] },
   // Swift Shadow Raid: game row 720 (154% → 271%, a 20-level value match; the row's description is a stale bouncing-projectile
   // note) and no skill stone / Split file. reference data publishes a 0.25 s cast; the Hammer of Ash Lv16 run 2026-10-12 showed a
@@ -311,9 +337,9 @@ const DEFINITIONS = [
     notes: ["Ghost Blade Einherjar: Split 623651 fires row 860 (the blade, 69% → 93%) and row 861 (the Explosion, 137% → 185%). The Physical weapon damage is dealt as Erosion (provisional conversion rule). Build-wide Multistrike lines are not read; the skill's own +100% Multistrike chance is taken as one repeat per attack."] },
   { name: "Arrow Einherjar", delivery: "attack-sentry", useModel: SENTRY(), sentry: { weaponAttackSpeed: true, note: "Attack Sentry: base Cast Frequency = 100% of the weapon's average Attack Speed, scaled by Cast Frequency lines (manual rule 1001011724), not by the build's Attack Speed" },
     weaponScaling: { baseTypes: ["Physical"], restriction: null },
-    components: [{ key: "arrows", label: "Arrow Einherjar", groupId: 870, perUse: { perTick: 1, intervalSeconds: ({ weaponAttacksPerSecond }) => weaponAttacksPerSecond > 0 ? 0.9 / weaponAttacksPerSecond : Infinity, castFrequencyScaled: true, falloff: { count: 3, factor: 0.7, reach: "fan" } },
+    components: [{ key: "arrows", label: "Arrow Einherjar", groupId: 870, perUse: { perTick: 1, intervalSeconds: ({ weaponAttacksPerSecond }) => weaponAttacksPerSecond > 0 ? 0.9 / weaponAttacksPerSecond : Infinity, castFrequencyScaled: true, falloff: { count: 3, factor: 0.3, reach: "fan" } },
       extraAdditional: [{ source: "Arrow Einherjar: Sentry buff stacks", text: `+8% additional Sentry Damage (multiplies) per stack, 1 stack every 1 s up to 5, averaged over the 8 s Sentry: (1 + 1.08 + 1.08² + 1.08³ + 1.08⁴ + 3 × 1.08⁵) ÷ 8 = ×${Math.round((1 + ARROW_STACK_AVERAGE_PERCENT / 100) * 10000) / 10000} (provisional: the stacks start at 0 on placement and the hits are spread evenly over the Sentry's life)`, value: ARROW_STACK_AVERAGE_PERCENT }],
-      ...provisional(`Reference data: 3 projectiles per attack that can hit the same enemy; ${SHOTGUN_NOTE(3, 0.7, "fan")} (no spread data decoded for the Sentry: the fan reading of Chromatic Shot is reused); attack interval = 1 ÷ weapon attacks per second × 0.9 ("-10% interval for every 1 Sentry placed by this skill", one Sentry), scaled by Cast Frequency`) }],
+      ...provisional(`Reference data: 3 projectiles per attack that can hit the same enemy; ${SHOTGUN_NOTE(3, 0.3, "fan")} (Split 661940: bHitBrother 1 in brother group 1, table 30); attack interval = 1 ÷ weapon attacks per second × 0.9 ("-10% interval for every 1 Sentry placed by this skill", one Sentry), scaled by Cast Frequency`) }],
     notes: ["Arrow Einherjar: the game row 861 (137% → 185% Weapon Attack Damage) matches the reference data at Lv.20. Its hits are Physical (no conversion in the reference data)."] }
 ];
 
@@ -323,7 +349,7 @@ function SENTRY(durationSeconds = 8) { return { kind: "terra", label: "sentry", 
 
 function ONE_SECOND(name) { return { useTime: 1, speedType: "attack-speed", cooldown: 0, cdTimes: 0, source: `Reference data cast speed 1 s, attack-speed scaled (no Split skill file is linked for ${name})` }; }
 function convert(to) { return [{ from: "Physical", to, percent: 100, source: `Reference data: Converts 100% of the skill's Physical Damage to ${to} Damage` }]; }
-function CONVERSION_NOTE(name, to) { return `${name}: the Physical weapon damage is dealt as ${to} (both Physical and ${to} modifiers apply: provisional conversion rule).`; }
+function CONVERSION_NOTE(name, to) { return `${name}: the Physical weapon damage, added Physical included, is dealt as ${to} (both Physical and ${to} modifiers apply: provisional conversion rule; added flat damage joins its type before the conversion pass, game code 0x141fc3a80).`; }
 // "+30% Combo Finisher Amplification for this skill" (reference data): the Finisher's Hit Damage is additionally increased by consumed
 // Combo Points × Amplification (game manual 1001013024; src/combo-points.js). Before 2026-10-12 it was read as +30% flat.
 // Crescent Slash's 1 point per Starter / 2 consumed is observed (2026-10-12); the other Combo skills reuse it (provisional).

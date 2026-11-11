@@ -3,6 +3,7 @@ import { nativePactspiritNodeEffect } from "./pactspirit-levels.js";
 import { combineStatuses, coverageContext, refineCoverage } from "./line-coverage.js";
 import { activeKismetSlotKeys, dualKismetCopies, GREAT_LIBRARY, isDualKismet, kismetAffixParts, kismetSlotTexts, microFateEffectScale, parseKismetEffect } from "./kismet-effects.js";
 import { parseBlockModifier } from "./block-model.js";
+import { NO_ENERGY_SHIELD_COMPENSATION } from "./sealed-mana-compensation.js";
 
 const STAR_TRAIL = /^\+?[\d.]+% for the effects of Micro Fates in the same Pact Branch$/i;
 const DUAL_HEADER = /^Activates the following effects when there are \d+ of this Kismet/i;
@@ -25,6 +26,10 @@ export function kismetAffixCoverage(affix, { key = null, planner = coverageConte
   // Great Library reads as "+X% additional damage" (src/kismet-effects.js GREAT_LIBRARY; provisional count); a joined stat line
   // (Hot Ice) reads as its two halves (kismetAffixParts).
   if (GREAT_LIBRARY.test(text)) return "In calc";
+  // Dual Kismet: Hatch Out (game affix 916287744; src/sealed-mana-compensation.js): its Sealed Mana Compensation and Aura levels wait on
+  // "no Energy Shield" (gate 217 Not); the planner's gate settles the line.
+  const hatch = NO_ENERGY_SHIELD_COMPENSATION.test(text) ? planner?.aura?.pageSealedManaCompensation?.gated?.filter((entry) => normalizePercentageText(String(entry.text ?? "")).replace(/\s+/g, " ").trim() === text) : null;
+  if (hatch?.length) return hatch.some((entry) => entry.active) ? "In calc" : "Inactive";
   const parts = kismetAffixParts(text);
   if (parts.length > 1) return combineStatuses(parts.map((part) => kismetAffixCoverage(part, { key, planner })));
   if (STAR_TRAIL.test(text) && planner?.state?.pacts) return starTrailCoverage(key, planner);

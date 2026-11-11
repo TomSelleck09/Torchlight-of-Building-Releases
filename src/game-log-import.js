@@ -21,6 +21,7 @@ import { beltBlendsSs13 } from "./data/gear/belt-blends-ss13.generated.js";
 import { towerSequencesSs13 } from "./data/gear/tower-sequences-ss13.generated.js";
 import { towerSequenceSs13Texts } from "./data/changed-item-ids.js";
 import { voraxCraftingSs13 } from "./data/gear/vorax-crafting-ss13.generated.js";
+import { voraxLegendaryAffixPool } from "./vorax-legendary-pool.js";
 import { selenaScorchingBeamGearSs13 } from "./data/gear/selena-scorching-beam-ss13.js";
 import { folkloreRingOptions } from "./legendary-ring-options.js";
 import { placeholderPool, placeholderOption } from "./legendary-placeholder-pools.js";
@@ -644,6 +645,21 @@ function resolveRare(item, baseName, baseType, label, idMap, report, unresolved,
 const clampLevel = (value) => Math.max(1, Math.min(100, Math.round(Number(value) || 1)));
 const energyOf = (item) => Math.max(0, Math.min(1000, Math.round(Number(item.cost) || 0)));
 
+// A Vorax limb's grafted Legendary line logged by the legendary's own row id (src/data/gear/legendary-affix-ids-ss14.generated.js,
+// legendaryRolledRowIdsSs14): the donor family of that line, or of that roll of a rolled / placeholder slot (src/vorax-legendary-pool.js).
+// Normal rows only: a Vorax item cannot be corroded.
+function voraxDonorLineById(baseName, affix) {
+  const hit = legendaryAffixIdsSs14[affix?.Id] ?? legendaryRolledRowIdsSs14[affix?.Id];
+  if (!hit || (hit[2] !== "normal" && hit[2] !== "pool")) return null;
+  const name = legendaryGearSs13.find((entry) => entry.id === hit[0])?.name;
+  const index = hit[3]?.[0];
+  const families = voraxLegendaryAffixPool(baseName).filter((family) => family.donor === name && family.slotIndex === index);
+  if (hit[2] === "normal") return families.find((family) => !family.roll) || null;
+  // A pool roll: its own family, or the donor's catalog line when that line is this roll (a rolled slot's first roll).
+  const option = placeholderOption(hit[0], index, hit[4]);
+  return families.find((family) => family.roll === hit[4]) || (option ? families.find((family) => !family.roll && affixSignature(family.tiers[0].template) === affixSignature(option.template)) : null) || null;
+}
+
 function resolveVorax(item, baseName, label, idMap, report, unresolved) {
   const base = voraxCraftingSs13.bases.find((entry) => entry.name === baseName);
   if (!base) return null;
@@ -670,12 +686,16 @@ function resolveVorax(item, baseName, label, idMap, report, unresolved) {
     const order = entries(slots).map((entry) => entry.affixId);
     affixes.sort((a, b) => (order.indexOf(a.Id) + 1 || 99) - (order.indexOf(b.Id) + 1 || 99));
     for (const affix of affixes) {
-      const template = text(affix);
+      // A grafted Legendary line by its game row (the legendary's own config_modifier row, a rolled slot's other rolls included):
+      // its donor family, whatever the id map's text says (pool rolls have none there).
+      const grafted = voraxDonorLineById(baseName, affix);
+      const template = grafted?.tiers[0].template ?? text(affix);
       if (!template) { unresolved(group, affix, "no text for this id"); continue; }
       const signature = affixSignature(template);
-      const candidates = [];
-      for (const family of voraxCraftingSs13.affixes[baseName]?.[group] || []) for (const tier of family.tiers) if (affixSignature(tier.template) === signature) candidates.push({ id: family.id, tier: tier.tier, template: tier.template, legendary: false });
-      if (!candidates.length) for (const donor of voraxCraftingSs13.legendaryDonors[baseName] || []) donor.modifiers.forEach((modifier, index) => { if (affixSignature(modifier) === signature) candidates.push({ id: `${donor.id}-mod-${index}`, tier: "L", template: modifier, legendary: true }); });
+      const candidates = grafted ? [{ id: grafted.id, tier: "L", template, legendary: true }] : [];
+      if (!candidates.length) for (const family of voraxCraftingSs13.affixes[baseName]?.[group] || []) for (const tier of family.tiers) if (affixSignature(tier.template) === signature) candidates.push({ id: family.id, tier: tier.tier, template: tier.template, legendary: false });
+      // Donor lines by text: the catalog lines first (as before), then the other rolls of rolled / placeholder slots.
+      for (const rolls of [false, true]) if (!candidates.length) for (const family of voraxLegendaryAffixPool(baseName)) if (Boolean(family.roll) === rolls) for (const tier of family.tiers) if (affixSignature(tier.template) === signature) candidates.push({ id: family.id, tier: "L", template: tier.template, legendary: true });
       // A family whose SS14 ranges differ from the id map's SS13 text ("+(23–26) to Max Frostbite Rating" → "+(53–57) …"; gear affix
       // audit 2026-10-22): one family of the base with the same wording, numbers aside; its tier whose ranges hold the logged values.
       if (!candidates.length) {

@@ -1,3 +1,4 @@
+import { DEFAULT_SHOTGUN_KEPT, keptShareFromCoefficient } from "./shotgun-effect.js";
 import { supportProgressionSs13 } from "./data/skills/support-progression-ss13.generated.js";
 import { dummyTarget, explicitRadiusHolds, DISTANT_STANDING_METERS } from "./dummy-target.js";
 import { residualNonDamageStatus } from "./line-families.js";
@@ -6,10 +7,11 @@ import { allSkillEffectsSs13 } from "./data/skills/all-skill-effects-ss13.genera
 import { specialSupportTierData, progressionSupportTierData, progressionSupportText, specialSupportStarBonus, isActivationMedium } from "./data/skills/special-support-tiers-ss13.js";
 import { EMPOWER_MODELED_SKILLS, EMPOWER_BUFF_SKILLS } from "./empower-effects.js";
 import { WARCRY_BUFF_NAMES } from "./empower-buffs.js";
+import { readsFocusBuffRecord } from "./focus-buffs.js";
 import { supportDataMode, supportGameLine, supportLineAffix } from "./game-skill-data.js";
-// Movement rate for per-metre support lines (Hunting Tempo, 2026-10-15 patch update): src/dummy-target.js, the same 6 m/s
-// placeholder as the Thunder Focus profile (no game figure fixes it).
-import { ASSUMED_MOVEMENT_METERS_PER_SECOND } from "./dummy-target.js";
+// Movement rate for per-metre support lines (Hunting Tempo, 2026-10-15 patch update): the player's movement speed, src/dummy-target.js
+// playerMoveSpeed (6.5 m/s base × the build's Movement Speed; user decision 2026-11-10), passed in the support state as `playerMoveSpeed`.
+import { BASE_PLAYER_MOVE_SPEED } from "./dummy-target.js";
 import { amEventInterval, AM_EVENT_LABELS } from "./activation-medium-events.js";
 import { consumedStacks } from "./resource-consumption.js";
 // Skill-mechanics census batch 4 (B2, 2026-10-28): Magnificent / Noble conditional additional damage (src/support-conditional-batch4.js).
@@ -19,7 +21,7 @@ import { BATCH5_RULES, resolveBatch5Clause, batch5Status, BATCH5_DURATION_SKILLS
 // Census batch 6 (Minion, Spirit Magus, module and Sentry mechanics; src/minion-sentry-batch6.js).
 import { BATCH6_SUPPORT_RULES, batch6Status, resolveBatch6Clause, BATCH6_DURATION_SKILLS } from "./minion-sentry-batch6.js";
 // Supports on a summon read on its Minion skills (2026-10-28; src/summon-support-minion.js).
-import { summonMinionRows, summonSupportReading } from "./summon-support-minion.js";
+import { SUMMON_ACTIVATION_MEDIUM_REASON, summonMinionRows, summonSupportReading } from "./summon-support-minion.js";
 // Chunk 8 (2026-11-01): the clauses the census left unread, from their game records (src/support-chunk8.js).
 import { CHUNK8_SUPPORT_RULES, resolveChunk8Condition, chunk8OwnStatus } from "./support-chunk8.js";
 import { enemyBuffSet, ownCombatHeld, playerBuffSet } from "./unit-buff-set.js";
@@ -28,7 +30,7 @@ const heldOwn = (state) => ownCombatHeld(state);
 const ownAgilityStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.stacks("Agility", { stage: "blessing" }) : Number(state?.blessingStacks?.Agility) || 0; };
 const ownBlurRating = (state) => { const own = playerBuffSet(state); if (!own?.staged("blur")) return state?.blurActive ? Math.max(0, Number(state.blurRating) || 0) : 0; const entry = own.entryOf("Blur", { stage: "blur" }); return entry && entry.share > 0 ? Math.max(0, Number(entry.value) || 0) : 0; };
 const ownBlurActive = (state) => { const own = playerBuffSet(state); return own?.staged("blur") ? own.holds("Blur") : Boolean(state?.blurActive); };
-export { ASSUMED_MOVEMENT_METERS_PER_SECOND };
+export { BASE_PLAYER_MOVE_SPEED };
 
 /**
  * Elemental Impact (2026-10-15 patch update): "+X% additional Elemental Damage for the supported skill if it has dealt all types
@@ -45,7 +47,7 @@ export function allElementalState(dealtTypes = []) {
  * Hunting Tempo (2026-10-15 patch update): "+X% additional damage … to the next N supported skill(s) for every 6 m moved". Share
  * of the skill's uses that carry the buff: min(1, (movement m/s ÷ metres) × N ÷ uses per second).
  */
-export function movementChargeShare({ uses, meters, usesPerSecond, metersPerSecond = ASSUMED_MOVEMENT_METERS_PER_SECOND }) {
+export function movementChargeShare({ uses, meters, usesPerSecond, metersPerSecond = BASE_PLAYER_MOVE_SPEED.metersPerSecond }) {
   if (!(usesPerSecond > 0) || !(meters > 0)) return 0;
   return Math.min(1, (metersPerSecond / meters) * uses / usesPerSecond);
 }
@@ -410,6 +412,16 @@ export const SUPPORT_CLAUSE_RULES = [
   ...BATCH5_RULES,
   ...BATCH6_SUPPORT_RULES,
   ...AM_EVENT_RULES,
+  // The Spirit Magus supports' own Origin effect (15 T Spacetime Illusion audit G1, 2026-11-10; records 134160 / 641987392: attr 3401 mod 3
+  // on [this skill, Origin 5100312]): read by src/origin-of-spirit-magus.js summonOriginEffect on the summon's own Origin.
+  { family: "originEffect", pattern: new RegExp(`^${N}% Origin of Spirit Magus effect for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]) }) },
+  { family: "originEffect", pattern: new RegExp(`^When having at least (\\d+) type\\(s\\) of Spirit Magus at the same time, Origin of Spirit Magus provided by the supported skill ${N}% Effect$`, "i"), build: (m) => ({ value: num(m[2]), minTypes: num(m[1]) }) },
+  // Ice Lances: Rebound and Bounce (15 T audit G2, 2026-11-10; src/ice-lances-rebound.js): the lance returns to the dummy floor(Jumps ÷ 2)
+  // times (client), each return at 20% (provisional) × Bounce's per-Jump factor at its Jump count.
+  { family: "rebound", pattern: /^The supported skill's Projectiles can Jump off the ground$/i, build: () => ({ kind: "ground" }) },
+  { family: "rebound", pattern: /^After Jumping off the ground, they can Jump toward enemies they have hit before$/i, build: () => ({ kind: "back" }) },
+  { family: "rebound", pattern: /^The Shotgun Effect takes effect when dealing damage to the same enemy more than once$/i, build: () => ({ kind: "shotgun" }) },
+  { family: "perJump", pattern: new RegExp(`^\\+?${N}% additional Hit Damage \\(multiplies\\) for the supported skill for every Jump$`, "i"), build: (m) => ({ value: num(m[1]) }) },
   // Conditional additional damage resolved from planner state (chunk 2; research/support-batch-2026-10-12.md §5.7).
   { family: "conditionalAdditional", pattern: new RegExp(`^The supported skill deals ${N}% additional damage to Cursed enemies$`, "i"), build: (m) => ({ value: num(m[1]), condition: "cursed" }) },
   { family: "conditionalAdditional", pattern: new RegExp(`^The supported skill deals ${N}% additional damage to Numbed enemies\\. For every stack of Numbed the enemy has, the supported skill deals ${N}% additional damage$`, "i"), build: (m) => ({ value: num(m[1]), perStack: num(m[2]), condition: "numbed" }) },
@@ -579,6 +591,9 @@ export const SUPPORT_CLAUSE_RULES = [
   { family: "spellBurst", pattern: new RegExp(`^${N}% (additional )?Spell Burst Charge Speed(?: for the supported skills?)?$`, "i"), build: (m) => ({ value: num(m[1]), kind: m[2] ? "chargeAdditional" : "chargeIncreased" }) },
   { family: "combo", pattern: new RegExp(`^${N}% Combo Finisher Amplification for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "amplification" }) },
   { family: "combo", pattern: new RegExp(`^${N} Combo Points gained from Combo Starters for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "points" }) },
+  // Focus Buff (game affix 163793: attr 3401 mod 3, Focus Buff Effect, on [Focus buff 5100306, this skill]): increased Focus Buff Effect on
+  // the supported Focus skill's own buff, read by src/build-mechanics.js collectFocusBuffs with the build's "+X% Focus Buff Effect" (2026-11-08).
+  { family: "focusBuffEffect", pattern: new RegExp(`^${N}% buff effect for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]) }) },
   // Gear affix batch B (2026-10-22): Haunt's Shadow Quantity (game field 2012000) and Carpet Bombardment's per-wave damage (field
   // 2501029), read by src/skill-hit-model.js shadowState / barrageWaveState with the gear lines of the same stat.
   { family: "shadow", pattern: new RegExp(`^${N} (?:to )?Shadow Quantity for (?:the supported skill|this skill)$`, "i"), build: (m) => ({ value: num(m[1]), kind: "quantity" }) },
@@ -621,8 +636,9 @@ export const SUPPORT_CLAUSE_RULES = [
   // the supported skill for at least N s": an enemy debuff on the dummy while the supported curse has been on it for N s
   // (src/planner.js; 2026-10-18, it read No DPS effect before).
   { family: "curseTaken", pattern: new RegExp(`^Enemies take ${N}% additional damage if affected by curses inflicted by the supported skill for at least ${N}\\s*s$`, "i"), build: (m) => ({ value: num(m[1]), delaySeconds: num(m[2]) }) },
-  // Kill-driven lines (Feud's "+5% ... for every enemy defeated by the supported skill"): the dummy is never defeated.
-  { family: "notOnDummy", pattern: /for every enemy defeated|on kill|when (?:the supported skill )?defeats? an enemy/i, build: () => ({}) },
+  // Kill-driven lines (Feud's "+5% ... for every enemy defeated by the supported skill"; Spectral Slash: Detonation's Explosion "when the
+  // supported skill's Clones defeat an enemy", damage row 983 in Split 626480's kill branch): the dummy is never defeated.
+  { family: "notOnDummy", pattern: /for every enemy defeated|on kill|when (?:the supported skill(?:'s Clones)? )?defeats? an enemy/i, build: () => ({}) },
   // Blind (user decision 2026-10-25): Blind only lowers the enemy's accuracy and the dummy never attacks. Refractions (user decision
   // 2026-10-25): a refracted beam never hits the same enemy, so on the one training dummy extra refractions deal nothing.
   { family: "blind", pattern: /^\+?[\d.]+% chance to Blind the target when the supported skill hits$|^[+-]?[\d.]+% Blinding Duration caused by the supported skill$|^[+-]?[\d.]+% Blind(?:ing)? Effect (?:caused by|for) the supported skill$/i, build: () => ({}) },
@@ -752,6 +768,20 @@ function periodicBuffStatus(tags, ctx, s) {
   return s("Provisional", "+Attack and Cast Speed for every skill at uptime buff duration ÷ max(6 s, the Mobility Skill's cooldown), the Mobility Skill used whenever its cooldown allows (user rule 2026-10-14; src/periodic-burst.js)", ["cast-rate", "skill-hit"]);
 }
 
+// G1: In calc on a Spirit Magus summon (its Origin of Thunder / Fire reach your damage; Frost / Rock / Erosion are defensive); Friend of
+// Spirit Magi's part Inactive while fewer Magus types are out than its gate asks (the board's Magus summons, planner.lineEffects.state).
+function originEffectStatus(clause, ctx, s) {
+  const magus = String(ctx.skillName ?? "").match(/^Summon (\w+) Magus$/)?.[1];
+  if (!magus) return s("Inactive", "the supported skill is not a Spirit Magus summon");
+  const summons = ctx.conditions?.spiritMagusSummons;
+  if (clause.minTypes && Array.isArray(summons)) {
+    const types = new Set(summons.map((item) => item.name)).size;
+    if (types < clause.minTypes) return s("Inactive", `needs at least ${clause.minTypes} Spirit Magus types out at once (${types} on the board)`);
+  }
+  if (!["Thunder", "Fire"].includes(magus)) return s("No DPS effect", `Origin of ${magus} is defensive (src/origin-of-spirit-magus.js)`);
+  return s("In calc", `increased Origin effect of Origin of ${magus} (attr 3401 mod 3 on [this skill, Origin]), summed with the build's Origin effect lines (src/origin-of-spirit-magus.js summonOriginEffect)${clause.minTypes ? `; while at least ${clause.minTypes} Spirit Magus types are out (the town panel has none)` : ""}`, ["origin"]);
+}
+
 function clauseStatus(clause, support, ctx) {
   const engine = ctx.engine;
   const name = support.name;
@@ -763,6 +793,15 @@ function clauseStatus(clause, support, ctx) {
   const s = (status, reason, consumers = []) => ({ status, reason, consumers });
   // Chunk 8: the families with a reader of their own (src/support-chunk8.js).
   if (clause.chunk8Own) return chunk8OwnStatus(clause, ctx);
+  // The Spirit Magus supports' Origin effect (G1, 2026-11-10): the summon's own Origin buff on you, whatever the Magus's damage engine.
+  if (clause.family === "originEffect") return originEffectStatus(clause, ctx, s);
+  // Ice Lances: Rebound / Bounce (G2): the lance's returns to the dummy (src/ice-lances-rebound.js), on Ice Lances' own hits.
+  if (clause.family === "rebound" || clause.family === "perJump") {
+    const rebound = ctx.skillName === "Ice Lances" && (!ctx.setupSupportNames || ctx.setupSupportNames.has("Ice Lances: Rebound (Magnificent)"));
+    if (!rebound) return clause.family === "perJump" ? s("Not on dummy", "a Jump goes to another enemy (game manual: Jumps); the dummy is the only enemy (without Ice Lances: Rebound the lance does not come back)") : s("Inactive", "the supported skill is not Ice Lances");
+    if (clause.family === "perJump") return s("Provisional", `×(1 + ${clause.value}%) per Jump on each hit, at the lance's Jump count when it hits (0, 2, 4 … with Rebound: inferred; record 103560002, attr 5722)`, ["skill-hit"]);
+    return s("Provisional", clause.kind === "shotgun" ? "each return to the dummy keeps 20% (Split 225028's hit rule table [(1, 20)]; provisional, open question ice-lances-rebound-repeat-share)" : "the lance returns to the dummy: 1 + floor(Jumps ÷ 2) hits per lance (labels 3001065 / 3001069, the client's jump step; each return keeps 20%: provisional)", ["skill-hit"]);
+  }
   // Census item #2 build-wide buffs and Thrive in Adversity's Empower Effect: read whatever engine the supported skill has.
   if (clause.census && (clause.family === "censusBuff" || clause.family === "empower")) return censusStatus(clause, ctx);
   // Empower skills whose buff the planner models without a damage engine of their own (src/empower-effects.js: Bull's Rage's
@@ -770,6 +809,7 @@ function clauseStatus(clause, support, ctx) {
   if (!engine && EMPOWER_BUFF_SKILLS.has(ctx.skillName)) {
     const buff = EMPOWER_BUFF_SKILLS.get(ctx.skillName);
     if (clause.family === "empower") return s("Provisional", `Empower Effect of ${buff} (src/empower-effects.js)${clause.kind === "perCast" ? `; ${clause.cap} stacks with own buffs built before engaging, 1 on a cold start` : ""}`, ["empower"]);
+    if (clause.family === "trigger" && clause.esZero) return s("Provisional", `triggered whenever ready, every max(${clause.interval} s, effective cooldown): Max Energy Shield 0 keeps Energy Shield under the threshold (game affix 331003744; 0 of 0 read as below, inferred); the cadence of ${buff}`, ["empower"]);
     if (clause.family === "trigger" && clause.kind === "maxMultistrike") return s("Provisional", `triggered at the build's Max Multistrike Count events, at most once per ${clause.interval} s, capped by the skill's cooldown: uses per second = 1 / max(trigger interval, effective cooldown) (rule user-confirmed 2026-10-12 for Activation Medium: Boss); sets the uptime of ${buff}`, ["empower"]);
     if (clause.family === "cooldown") return s("Provisional", `shortens the cooldown that caps the use rate, and so raises the uptime of ${buff}`, ["empower"]);
     if (clause.family === "duration") return s("Provisional", `lengthens ${buff}, raising its uptime`, ["empower"]);
@@ -783,6 +823,8 @@ function clauseStatus(clause, support, ctx) {
   }
   // A curse support's enemy debuff (Deepened Curse): the planner adds it while the supported curse is on the dummy (src/planner.js).
   if (clause.family === "curseTaken") return !tags.size || tags.has("Curse") ? s("Provisional", `+${clause.value}% additional damage taken by the dummy once the supported curse has been on it for ${clause.delaySeconds} s (skill hits; the 5 s / 20 s windows start it at ${clause.delaySeconds} s)`, ["planner"]) : s("Inactive", "the supported skill is not a Curse");
+  // Focus Buff on a Focus skill: its own buff's effect (src/build-mechanics.js collectFocusBuffs; game affix 163793).
+  if (clause.family === "focusBuffEffect") return tags.has("Focus") && readsFocusBuffRecord(ctx.skillName) ? s("In calc", "increased Focus Buff Effect on this skill's own Focus buff (game affix 163793: attr 3401 on [5100306, this skill]), summed with the build's Focus Buff Effect; the buff's scaled lines take it, its base ailment does not (src/focus-buffs.js)", ["focus-buff"]) : s("Inactive", "the supported skill has no Focus buff record read here");
   // Sealed Mana Compensation on an Aura (Restrain, Precise Restrain, Seal Conversion; gear affix batch C): the Aura reservation reads
   // it (src/aura-effects.js auraSupportSealedManaCompensation, src/engine.js), whatever the damage engine.
   if (clause.family === "sealedManaCompensation") return tags.has("Aura") || ctx.role === "aura" ? s("In calc", "the Aura's Sealed Mana: Σ local compensation and Π additional compensation (src/aura-effects.js auraSupportSealedManaCompensation; the progression table at the support's level)", ["aura"]) : s("No DPS effect", "the supported skill reserves no Mana");
@@ -798,6 +840,9 @@ function clauseStatus(clause, support, ctx) {
   if (clause.batch5 && clause.family === "hitCount") return batch5Status(clause, ctx);
   // Census batch 6: Minion, Spirit Magus, module and Sentry clauses (src/minion-sentry-batch6.js).
   if (clause.batch6) return batch6Status(clause, ctx);
+  // Activation Medium: Energy Shield at Max Energy Shield 0 (src/support-effects.js resolveSupportEffects): a skill with no damage engine of
+  // its own (a curse held on the dummy, a Defensive skill) keeps the effect the planner already holds; the trigger only sets when it is cast.
+  if (clause.family === "trigger" && clause.esZero && !["scorching-beam", "skill-hit", "skill-dot", "minion"].includes(engine)) return s("No DPS effect", `triggered whenever ready, every max(${clause.interval} s, effective cooldown) (Max Energy Shield 0 keeps Energy Shield under the threshold; game affix 331003744): the skill's effect is held as before (a curse stays on the dummy)`);
   if (!["scorching-beam", "skill-hit", "skill-dot", "minion"].includes(engine)) return s("Not modeled", "the setup's own damage has no engine that reads support clauses");
   // Residual (C) wordings with no dummy-damage effect (src/line-families.js; residual batch 2026-10-12 §6).
   const residual = residualNonDamageStatus(clause.text);
@@ -861,7 +906,7 @@ function clauseStatus(clause, support, ctx) {
       const knockback = `+${clause.knockback}% Knockback Chance: No DPS effect`;
       if (clause.active == null) return s("Provisional", `condition not resolved (no planner state); ${knockback}`, ["skill-hit"]);
       if (!clause.active) return s("Inactive", `standing still (movement group): no metres moved, so no use is buffed; flip to Moving in the condition settings. ${knockback}`);
-      return s("In calc", `moving (movement group) at the assumed ${ASSUMED_MOVEMENT_METERS_PER_SECOND} m/s (the planner's movement placeholder, unsourced): buffed share of uses = min(1, (${ASSUMED_MOVEMENT_METERS_PER_SECOND} ÷ ${clause.meters} m) × ${clause.uses} ÷ uses per second), × +${clause.value}% additional damage. ${knockback}`, ["skill-hit"]);
+      return s("In calc", `moving (movement group) at ${(clause.moveSpeed || BASE_PLAYER_MOVE_SPEED).text}: buffed share of uses = min(1, (${Math.round((clause.moveSpeed || BASE_PLAYER_MOVE_SPEED).metersPerSecond * 1000) / 1000} m/s ÷ ${clause.meters} m) × ${clause.uses} ÷ uses per second), × +${clause.value}% additional damage. ${knockback}`, ["skill-hit"]);
     }
     case "conditionDetail":
       return s("No DPS effect", "describes the buff the damage line counts");
@@ -1030,7 +1075,7 @@ function clauseStatus(clause, support, ctx) {
       // A skill's own projectile rule (src/skill-hit-profiles.js projectileVolley / additionalPerProjectileQuantityPercent).
       if (ctx.profile?.projectileVolley) return s("In calc", ctx.profile.projectileVolley.status, ["skill-hit"]);
       if (ctx.profile?.additionalPerProjectileQuantityPercent) return s("In calc", `+${ctx.profile.additionalPerProjectileQuantityPercent}% additional damage for every +1 Projectile Quantity of the skill (skill text); the extra projectiles themselves need other enemies`, ["skill-hit"]);
-      return ctx.shotgun ? s("Provisional", `the skill text says its projectiles can hit the same enemy: the volley is a fan, of which ceil(n / 2) reach the dummy standing close (Chromatic Shot runs 2026-10-12; one at range), each after the first at ×${ctx.shotgun} (linear Shotgun falloff; coefficient from the skill text, else 70%)`, ["skill-hit"]) : s("No DPS effect", "the skill text does not say its projectiles can hit the same enemy, so one reaches the dummy (Ice Lances run 2026-10-12: Multiple Projectiles moved only by its additional damage)");
+      return ctx.shotgun ? s("Provisional", `the skill text says its projectiles can hit the same enemy: the volley is a fan that lands every projectile standing close (one at range), each after the first keeping ×${ctx.shotgun} (linear Shotgun falloff: the hit rule's table, else 100% − the skill text's coefficient, else 30%; client repeat multiplier, user decision 2026-11-05)`, ["skill-hit"]) : s("No DPS effect", "the skill text does not say its projectiles can hit the same enemy, so one reaches the dummy (Ice Lances run 2026-10-12: Multiple Projectiles moved only by its additional damage)");
     case "multistrike":
       if (engine !== "skill-hit" || !ctx.speedType) return s("Not modeled", "Multistrike is read for skill hits only");
       if (ctx.speedType !== "attack-speed") return s("Inactive", "Multistrike needs an Attack Skill (reference data glossary)");
@@ -1070,7 +1115,7 @@ function clauseStatus(clause, support, ctx) {
     case "shadow":
       if (!tags.has("Shadow Strike")) return s("Inactive", "the supported skill is not a Shadow Strike skill (only Shadow Strike skills summon Shadows: game manual 1001010820)");
       if (engine !== "skill-hit") return s("Not modeled", "Shadows are read for skill hits only");
-      return s("Provisional", "each Shadow repeats the skill's attack on the dummy; on one target each Shadow after the first takes the 70% Shotgun falloff (game manual 1001010820 / 1001010821; reference data Phantom), as the Shadows' own hits (src/skill-hit-model.js shadowState; provisional)", ["skill-hit"]);
+      return s("Provisional", "each Shadow repeats the skill's attack on the dummy; on one target each Shadow after the first keeps 30% (the Shadow hit rule's table [(1, 30)]; the manual's −70% and Phantom's 70% coefficient are the share lost; research/oq-shadows-seal-client-2026-11-05.md), as the Shadows' own hits (src/skill-hit-model.js shadowState; provisional)", ["skill-hit"]);
     case "barrage":
       if (!tags.has("Barrage")) return s("Inactive", "the supported skill is not a Barrage skill");
       if (engine !== "skill-hit") return s("Not modeled", "Barrage waves are read for skill hits only");
@@ -1085,7 +1130,7 @@ function clauseStatus(clause, support, ctx) {
       if (ctx.conditions && !ctx.conditions.dualWielding) return s("Inactive", "not Dual Wielding (the effect needs two one-handed weapons)");
       return s("Provisional", clause.kind === "speed" ? "every other cast (the 1st) takes the speed: the use interval averages the two casts' (src/skill-hit-model.js; provisional)" : "every other cast (the 2nd) takes the additional damage: half the casts, so +half the value on average; the Skill Area has no effect on one dummy (provisional)", ["skill-hit"]);
     case "combo":
-      if (clause.kind === "points") return engine === "skill-hit" && ctx.combo ? s("Provisional", "added to the 1 Combo Point per Starter observed on Crescent Slash (game field 2012116, shared with the gear line): the Finisher consumes 2 Starters × points, up to 4, which sets its Amplification and its hit / Clone count (src/combo-points.js comboPointState; provisional)", ["skill-hit"]) : s(engine === "skill-hit" ? "Inactive" : "Not modeled", engine === "skill-hit" ? "the supported skill has no modeled Combo cycle" : "Combo Points are read for skill hits only");
+      if (clause.kind === "points") return engine === "skill-hit" && ctx.combo ? s("Provisional", "added to the 1 Combo Point per Starter observed on Crescent Slash (game field 2012116, shared with the gear line): the Finisher consumes 2 Starters × points (no cap: Max Combo Points field 2012115 is 99999), which sets its Amplification and its hit / Clone count (up to 4 extra) (src/combo-points.js comboPointState; provisional)", ["skill-hit"]) : s(engine === "skill-hit" ? "Inactive" : "Not modeled", engine === "skill-hit" ? "the supported skill has no modeled Combo cycle" : "Combo Points are read for skill hits only");
       return engine === "skill-hit" && ctx.combo ? s("Provisional", "adds to the skill's own Combo Finisher Amplification: its Finisher Hit Damage is additionally increased by consumed Combo Points × Amplification (game manual 1001013024; 2 consumed points read, provisional)", ["skill-hit"]) : s("No DPS effect", "the skill has no Combo Finisher");
     case "paralysis":
       if (clause.fissure) {
@@ -1104,7 +1149,7 @@ function clauseStatus(clause, support, ctx) {
       return engine === "skill-dot" && ctx.isMain ? s("Provisional", "additional Reaping Recovery Speed per added Beam on the max-stack Reap", ["reaping"]) : s("Not modeled", "read for the main skill's built-in max-stack Reap only");
     case "beams":
       // Scorching Beam (src/scorching-beam-base-hit.js scorchingBeamShotgunFactor; Scattershot Beam run 2026-10-12).
-      if (beam) return s("Provisional", "every Beam hits the dummy, beam ticks and explosions, after the first at the skill's 70% Shotgun falloff (linear reading)", ["scorching-beam"]);
+      if (beam) return s("Provisional", "every Beam hits the dummy, beam ticks and explosions, after the first keeping 30% (the skill's 70% Shotgun falloff is the share lost; client repeat multiplier, user decision 2026-11-05)", ["scorching-beam"]);
       return s("No DPS effect", "extra Beams do not hit one dummy more than once (they count for Rapid Completion)");
     case "tags":
       return engine === "skill-hit" ? s("In calc", `the skill's line scopes ${clause.kind === "add" ? "gain" : "lose"} the ${clause.tag} tag`, ["skill-hit"]) : s("Not modeled", "tag changes are read for skill hits only");
@@ -1235,6 +1280,7 @@ function amEventStatus(clause, ctx) {
     return s("Provisional", `${what}: an event source for the build's ${clause.event === "instruction" ? "Activation Medium: Instruction" : clause.event === "resonance" ? "Activation Medium: Resonance" : "Activation Medium: Track"} skills (src/activation-medium-events.js; provisional)`, ["planner"]);
   }
   // kind "amEvent": the supported skill is triggered by the event.
+  if (engine === "minion") return s("Not modeled", SUMMON_ACTIVATION_MEDIUM_REASON);
   const notHit = engine !== "skill-hit";
   if (notHit && !(engine === "skill-dot" && !ctx.channeled && clause.event !== "burstFull")) return s("Not modeled", "event triggers are modeled for skill hits and non-channeled skill DoTs only");
   if (!notHit && (ctx.channeled || ctx.rateModel || ctx.combo)) return s("Not modeled", "triggering a channeled, rate-driven or Combo skill is not modeled");
@@ -1536,19 +1582,23 @@ function multiLineColumnValue(supportName, baseText, level) {
 const hitTypedApplies = (typed, types, tags) => TYPES.includes(typed) ? types.includes(typed) : typed === "Elemental" ? types.some((type) => ELEMENTAL.includes(type)) : typed === "Hit" || typed === "Spell" || tags.has(typed);
 const dotTypedApplies = (typed, damageType) => typed === damageType || (typed === "Elemental" && ELEMENTAL.includes(damageType));
 
-// Shotgun Effect falloff coefficient of a skill: its reference data text's coefficient ("Shotgun Effect falloff coefficient is 64%",
-// "70% Shotgun falloff"), else 70%; null without a Shotgun Effect. The coefficient is what each repeat hit deals, and the
-// falloff is linear: 1 + c × (hits − 1) (src/shotgun-effect.js). Sources: the in-game tooltip (Chromatic Shot, user
-// 2026-10-12: "falloff coefficient is 70%"), the game hit rule's one flat repeatDmgDecPercent row (100 − c), and the
-// Chromatic Shot runs (1 + 0.7 and 1 + 0.7 × 2). The "×0.3" reading of "usually a 70% reduction" is ruled out.
-// The skills whose text gives no coefficient and whose hit rule does (repeatDmgDecPercent, chunk 7): 36 → 64%.
-const SPLIT_SHOTGUN_COEFFICIENT = { "Blazing Bullet": 0.64 };
+// Shotgun share kept by each repeat hit of a skill (src/shotgun-effect.js; client repeat multiplier, user decision 2026-11-05):
+// the hit rule's table value where scripts/audit-skills.mjs checks it (SPLIT_SHOTGUN_KEPT), else 100 − the skill text's "Shotgun
+// Effect falloff coefficient is X%" (the share lost: Chromatic Shot SS14 tooltip 80% ↔ table 20, Split Shot 77% ↔ 23), else 30%
+// (DEFAULT_SHOTGUN_KEPT); null without a Shotgun Effect. The falloff is linear: 1 + k × (hits − 1). Before 2026-11-05 the
+// text's X was read as the share kept. A rule in brother group −1 (bCalcPercentOnSameEntity 0) counts no earlier hit, so its table
+// never applies and every hit keeps 100% (client 0x1423e3d40, 2026-11-08): Icebound Beam's blade rule (Split 127219, table 35) and
+// Blazing Bullet's projectile rule (Split 891259, table 36; its explosion rules are groups 1 and 2) read 1. Ice Lances (Split 225028:
+// brother group −1, table [(1, 20)], bCalcPercentOnSameEntity 1, hitCountLimit 1) reads 1 too: no sibling is counted and a lance hits once,
+// so its own count is 0 at its one hit (was 0.36, a stale keyword default; its extra projectiles do not reach the dummy anyway, the
+// 2026-10-12 run).
+const SPLIT_SHOTGUN_KEPT = { "Blazing Bullet": 1, "Chromatic Shot": 0.2, "Whirlwind Blade": 0.25, "Icebound Beam": 1, "Rain of Arrows": 0.3, "Marked Rain of Arrows": 0.3, "Ice Lances": 1 };
 export function shotgunFalloff(skillName) {
-  if (SPLIT_SHOTGUN_COEFFICIENT[skillName]) return SPLIT_SHOTGUN_COEFFICIENT[skillName];
+  if (SPLIT_SHOTGUN_KEPT[skillName] != null) return SPLIT_SHOTGUN_KEPT[skillName];
   const text = (allSkillEffectsSs13[skillName] || []).join("\n");
   if (!/Shotgun/i.test(text)) return null;
   const match = text.match(/Shotgun Effect falloff coefficient is (\d+(?:\.\d+)?)%/i) || text.match(/(\d+(?:\.\d+)?)% Shotgun/i) || text.match(/Shotgun (?:Effect )?falloff[^.%]*?(\d+(?:\.\d+)?)%/i);
-  return match ? Number(match[1]) / 100 : 0.7;
+  return match ? keptShareFromCoefficient(match[1]) : DEFAULT_SHOTGUN_KEPT;
 }
 
 // Falloff for extra projectiles from Projectile Quantity on the single dummy, or null when they cannot reach it. Ice Lances
@@ -1556,8 +1606,8 @@ export function shotgunFalloff(skillName) {
 // floating number per cast and the recount moved ×1.15 (the support's additional damage only), confirming reference data's "cannot
 // hit the same enemy". Extra projectiles count only when the skill's own text says its projectiles (or arrows) "can hit
 // the same enemy" (Chromatic Shot, Rain of Arrows, …) and the skill takes Projectile Quantity bonuses; every other skill,
-// Shotgun Effect or not, keeps one projectile on one target. How many of the volley land (a fan: ceil(n / 2) standing close)
-// and the linear total are src/shotgun-effect.js's.
+// Shotgun Effect or not, keeps one projectile on one target. How many of the volley land (a fan: all standing close, one at
+// range) and the linear total are src/shotgun-effect.js's.
 export function projectileQuantityFalloff(skillName) {
   const lines = allSkillEffectsSs13[skillName] || [];
   const text = lines.join("\n");
@@ -1565,7 +1615,7 @@ export function projectileQuantityFalloff(skillName) {
   // not affected" names its Marked Arrow, while its Explosive Arrows take the bonus and can hit the same enemy.
   if (/(?:Projectiles (?:fired|shot) by (?:this|the) skill are|Projectile Quantity of this skill is) not affected by Projectile Quantity bonuses/i.test(text)) return null;
   if (!lines.some((line) => /\b(?:Projectiles?|Arrows?)\b[^.\n]*\bcan hit the same enemy/i.test(line))) return null;
-  return shotgunFalloff(skillName) ?? 0.7;
+  return shotgunFalloff(skillName) ?? DEFAULT_SHOTGUN_KEPT;
 }
 
 /**
@@ -1627,6 +1677,13 @@ export function resolveSupportEffects(setup, ctx = {}) {
       // "The supported skill can activate Spell Burst" (condition-unread batch 3) lifts the Spell Burst block for the clauses after it.
       if (parsed.family === "spellBurst" && parsed.canActivate) full.spellBurstCanActivate = true;
       const clause = { support: support.name, source, text: raw.text, baseText: raw.baseText, origin: raw.origin, level: raw.level ?? null, tier: raw.tier ?? null, stars: raw.stars ?? null, ...(raw.game ? { game: raw.game } : {}), ...(raw.refdataText ? { refdataText: raw.refdataText } : {}), ...parsed };
+      // Activation Medium: Energy Shield (game affix 331003744: gate 206 0.1 s, gate 253 the skill ready, Not gate 218 "Energy Shield at
+      // least p0%" on resource type 3): with Max Energy Shield 0 (No Loose Ends, game affix 103360004) the share never reaches p0, so the
+      // medium triggers the skill whenever it is ready, an "Always attempts to trigger … Interval" medium: every max(0.1 s, effective
+      // cooldown), ready at engagement (2026-11-05; user statement; one link inferred: 0 of 0 Energy Shield reads below the threshold).
+      if (clause.family === "trigger" && clause.kind === "playerState" && /Energy Shield is lower than/i.test(String(clause.text)) && (typeof full.noEnergyShield === "function" ? full.noEnergyShield() : full.noEnergyShield === true)) {
+        Object.assign(clause, { kind: "interval", interval: Number(String(clause.text).match(/Interval: ([\d.]+)\s*s/i)?.[1]) || 0.1, startsReady: true, esZero: true });
+      }
       // Census item #2 (CENSUS_SUPPORT_RULES): a multi-line column's value at the support's level, then the census condition.
       if (clause.census && clause.origin === "fixed" && Number.isFinite(clause.value)) {
         const leveled = multiLineColumnValue(support.name, raw.baseText, supportLevel(support));
@@ -1660,7 +1717,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
       // 2026-10-15 patch update: Elemental Impact needs all three Elemental types (the planner refines this from the final hit
       // parts); Hunting Tempo is per metre moved, so it follows the Movement group (unresolved without a state).
       if (clause.family === "allElementalAdditional") clause.active = engine !== "minion" && allElementalState(full.engine === "skill-dot" && !full.dealtTypes.length ? [full.damageType].filter(Boolean) : full.dealtTypes).active;
-      if (clause.family === "movementCharges") clause.active = full.conditions ? full.conditions.moving !== false : null;
+      if (clause.family === "movementCharges") { clause.active = full.conditions ? full.conditions.moving !== false : null; clause.moveSpeed = full.conditions?.playerMoveSpeed || BASE_PLAYER_MOVE_SPEED; }
       if (clause.family === "perStack" && clause.stackSource === "focusBlessing") {
         clause.stacks = full.focusBlessingStacks == null ? null : Math.min(clause.cap ?? Infinity, Math.max(0, full.focusBlessingStacks));
         clause.appliedValue = round(clause.value * (clause.stacks ?? 0));
@@ -1740,7 +1797,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
         case "terraCharge": effects.terraCharge.push({ ...entry, value: clause.value, kind: clause.kind }); break;
         case "empower": effects.empower.push({ ...entry, value: clause.value ?? null, kind: clause.kind, ...(clause.census ? { active: clause.active, appliedValue: clause.appliedValue } : {}) }); break;
         case "allElementalAdditional": effects.allElementalAdditional.push({ ...entry, value: clause.value, typed: "Elemental", active: clause.active }); break;
-        case "movementCharges": effects.movementCharges.push({ ...entry, value: clause.value, uses: clause.uses, meters: clause.meters, knockback: clause.knockback, active: clause.active }); break;
+        case "movementCharges": effects.movementCharges.push({ ...entry, value: clause.value, uses: clause.uses, meters: clause.meters, knockback: clause.knockback, active: clause.active, moveSpeed: clause.moveSpeed }); break;
         case "chunk8Duration": effects.ailmentDuration.push({ ...entry, value: clause.value, additional: clause.additional, ailment: clause.ailment }); break;
         case "chunk8Recovery": effects.demolisherRecovery.push({ ...entry, value: clause.value, kind: clause.kind }); break;
         case "chunk8Focus": effects.focusSpeed.push({ ...entry, value: clause.value, additional: clause.additional }); break;

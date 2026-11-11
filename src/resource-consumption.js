@@ -1,5 +1,6 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { skillTimingSs13 } from "./data/skills/skill-timing-ss13.generated.js";
+import { fixedIntervalSeconds } from "./frame-snapping.js";
 
 // Mana and Life consumed (census item #4, 2026-10-27; research/unmodeled-dps-census-2026-10-26.md §2.3, §3).
 //
@@ -24,6 +25,32 @@ import { skillTimingSs13 } from "./data/skills/skill-timing-ss13.generated.js";
 //   Mana Cost to Life Cost", Cost Conversion "Replace Mana Cost from the supported skill with Life cost") + "N% of current Life
 //   will be consumed when the supported skill is cast" (Recklessness) at the build's current Life.
 //   Held stacks over a steady stream = consumed in the last 4 s ÷ N (a sliding window: the average, not rounded), capped.
+//   Node 612 collectors (SS14 client, research/oq-15t-client-2026-11-05.md §1): accumulate with the remainder carried; a record that
+//   brings the running total to N or more activates. activeAffixType 2 (Vorax chest 146122624, the Life collectors, Valkyrie's Hymn)
+//   runs its row once with active times = floor(total ÷ N), and maxActiveAffixTimes is not read on that path; node 306 mode 1 adds an
+//   uncapped instance on its own 4 s timer each run, so the held value is the window count (consumed in 4 s ÷ N), capped only by the
+//   line's printed "up to". maxActiveAffixTimes caps only an activeAffixType 0 collector's runs per record; its held stacks stay
+//   node 306's count ("Stacks up to N"). One link inferred: each instance keeps its own copy of the written value.
+//   "Consumes X% of current Mana when casting a Main Skill. Interval: Ys" (Arcanist; game record 266457104, 2026-11-05 build audit gap
+//   1): triggers 1000074 (a player use) and 1000060 (a triggered use) on the Main tag 6020000, gate 206 (the record's 0.029 s, a fixed
+//   interval: one frame), node 500 reads current Mana (stat 1301) × p0%, node 122 type 2 consumes it. Each copy fires on every Main Skill
+//   use, at most once per frame, and every copy takes its percent of the same current Mana (SS14 client: node 500 reads current Mana
+//   with no pending field; node 122 only adds to the frame's pending consume, applied once a frame: two 4% copies take 8%, not 7.84%).
+//   Current Mana is the planner's Mana state (Full Mana: the unsealed Max Mana; Low Mana: 35% of it). Node 122's consumption is Mana
+//   consumed for the node 612 collectors on data type 10000010 / 10000011 (proven: the resource update 0x141f36ea0 sends one
+//   Mana-consumed record a frame, research/oq-15t-client-2026-11-05.md §2). A Rosa – Unsullied Blade
+//   Mana lock without Utmost Devotion (label 3050610: "Mana can only be consumed by Mystic Mercury") blocks it.
+
+//   "Consumes X% of current Life when you use Attack Skills" (game record 200000005, 2026-11-08 build audit gap 4): trigger 1000074 (a
+//   player use) on the Attack tag 6001090, node 500 reads current Life (blackboard 13) × p0%, node 122 type 1 consumes it. Like the Mana
+//   copies: each copy fires once per Attack use and takes its percent of the same current Life (the planner's Life state). Its uses: each
+//   Combo step is its own skill instance (its own Split; 703848384 fires on 1000069 with the Finisher's tag), so a Combo cycle is
+//   (steps − 1 + Finishers) uses; a Multistrike repeat is a player use (1000074); the Seething Spirit's casts of an Attack Main Skill
+//   count as your Attack uses (Rehan audit F3). All four links proven from the SS14 client (research/attack-life-consume-2026-11-09.md):
+//   node 122 type 1 adds to the pending Life consume, which the frame update 0x141f36ea0 posts as Life consumed (data types 10000000 /
+//   10000001, the second on the full Max Life); the cast routine 0x141df2c00 creates one instance per Combo step (0x141defa80), each
+//   raising 1000074 at its release; ghost 10100's config_ghost bytes 6 / 7 forward the Seething Spirit's untriggered casts to your rows;
+//   a Focus skill's strike is cast through TriggerSkill (node 2320), so it raises 1000060, not 1000074.
 
 export const RESOURCE_RECENT_SECONDS = 4;
 /** Lines that read the model (the planner measures the player-cast uses when the build carries one). */
@@ -40,6 +67,67 @@ const CONVERT = /^Converts (?:(\d+(?:\.\d+)?)% of )?(?:(\w+) Skills' )?Mana Cost
 const SUPPORT_REPLACE = /Replace Mana Cost from the supported skill with Life\b/i;
 const SUPPORT_LIFE = /(\d+(?:\.\d+)?) ?% of current Life(?: and Energy Shield)? will be consumed when the supported skill is cast/i;
 const OWN_LIFE = /^This skill costs Life instead of Mana$/i;
+
+export const ATTACK_LIFE_CONSUME = /^Consumes (\d+(?:\.\d+)?)% of current Life when you use Attack Skills$/i;
+
+/** The "Consumes X% of current Life when you use Attack Skills" copies: [{ percent, source, text }]. */
+export function attackLifeConsumeLines(modifierTexts = []) {
+  const lines = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived" || line.lineEffect) continue;
+    for (const text of clauses(line.text)) {
+      const match = text.match(ATTACK_LIFE_CONSUME);
+      if (match) lines.push({ percent: Number(match[1]) * (line.multiplier ?? 1), source: line.source, text });
+    }
+  }
+  return lines;
+}
+
+/**
+ * The Life the Attack consume copies take per second: every copy on every Attack use (player steps and the Seething Spirit's), each
+ * percent × the same current Life. `attackUses`: [{ setupKey, name, usesPerSecond, stepsPerUse, from }].
+ */
+export function attackLifeConsumption(lines = [], { attackUses = [], currentLife = 0 } = {}) {
+  if (!lines.length) return null;
+  const life = Math.max(0, Number(currentLife) || 0);
+  const percent = lines.reduce((sum, line) => sum + line.percent, 0);
+  const uses = attackUses.filter((use) => use.usesPerSecond > 0).map((use) => ({ ...use, stepsPerSecond: round(use.usesPerSecond * (use.stepsPerUse || 1)) }));
+  const stepsPerSecond = uses.reduce((sum, use) => sum + use.stepsPerSecond, 0);
+  const lifePerUse = life * percent / 100;
+  return { copies: lines, percent: round(percent), currentLife: round(life), lifePerUse: round(lifePerUse), uses, usesPerSecond: round(stepsPerSecond), lifePerSecond: round(stepsPerSecond * lifePerUse) };
+}
+
+export const MAIN_SKILL_MANA_CONSUME = /^Consumes (\d+(?:\.\d+)?)% of current Mana when casting a Main Skill(?:\. Interval: (\d+(?:\.\d+)?) ?s)?$/i;
+
+/** The "Consumes X% of current Mana when casting a Main Skill" copies (each its own gate): [{ percent, intervalSeconds, source, text }]. */
+export function mainSkillManaConsumeLines(modifierTexts = []) {
+  const lines = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived" || line.lineEffect) continue;
+    for (const text of clauses(line.text)) {
+      const match = text.match(MAIN_SKILL_MANA_CONSUME);
+      if (match) lines.push({ percent: Number(match[1]) * (line.multiplier ?? 1), intervalSeconds: match[2] ? Number(match[2]) : 0, source: line.source, text });
+    }
+  }
+  return lines;
+}
+
+/**
+ * The Mana the consume copies take per second: each copy fires on every Main Skill use (player and triggered), at most once per its
+ * gate (a fixed interval, nearest frame), and takes percent × the same current Mana (the consumes are netted once a frame).
+ */
+export function mainSkillManaConsumption(lines = [], { mainUsesPerSecond = 0, currentMana = 0, blocked = null, mainName = null } = {}) {
+  if (!lines.length) return null;
+  if (blocked) return { manaPerSecond: 0, blocked, mainName, mainUsesPerSecond: round(mainUsesPerSecond), currentMana: round(currentMana), copies: lines.map((line) => ({ ...line, usesPerSecond: 0, manaPerUse: 0, manaPerSecond: 0 })) };
+  const mana = Math.max(0, Number(currentMana) || 0);
+  const copies = lines.map((line) => {
+    const cap = line.intervalSeconds > 0 ? 1 / fixedIntervalSeconds(line.intervalSeconds) : Infinity;
+    const usesPerSecond = Math.max(0, Math.min(Number(mainUsesPerSecond) || 0, cap));
+    const manaPerUse = mana * line.percent / 100;
+    return { ...line, usesPerSecond: round(usesPerSecond), manaPerUse: round(manaPerUse), manaPerSecond: round(usesPerSecond * manaPerUse) };
+  });
+  return { manaPerSecond: round(copies.reduce((sum, copy) => sum + copy.manaPerSecond, 0)), blocked: null, mainName, mainUsesPerSecond: round(mainUsesPerSecond), currentMana: round(currentMana), copies };
+}
 
 /** The build-wide Skill Cost and cost-conversion lines (gear, talents, slates, pacts, memories, cores). */
 export function skillCostLines(modifierTexts = []) {
@@ -109,7 +197,7 @@ export function setupCost(setup, costLines = [], { fixedSupportMultiplierPercent
  * their own player uses (Multistrike repeats and triggered uses excluded: rate.playerUsesPerSecond); the beam its casts; a DoT-only
  * skill its applications unless a trigger casts it (`triggeredKeys`).
  */
-export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey = null, beamCastsPerSecond = 0, triggeredKeys = new Set() } = {}) {
+export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey = null, beamCastsPerSecond = 0, triggeredKeys = new Set(), main = null, attackUses = [] } = {}) {
   const uses = new Map();
   const add = (key, value, label) => { if (!key || !(value > 0)) return; const current = uses.get(key) || { usesPerSecond: 0, from: [] }; current.usesPerSecond += value; current.from.push(label); uses.set(key, current); };
   if (beamSetupKey) add(beamSetupKey, beamCastsPerSecond, "beam casts");
@@ -122,14 +210,17 @@ export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey 
     add(hit.setupKey, Number(hit.rate?.pressedUsesPerSecond ?? hit.rate?.playerUsesPerSecond) || 0, "player uses");
   }
   for (const dot of skillDots) if (dot.modeled && dot.setupKey && !hitKeys.has(dot.setupKey) && !triggeredKeys.has(dot.setupKey)) add(dot.setupKey, Number(dot.applicationsPerSecond) || 0, "DoT applications");
-  return { measured: true, bySetup: uses };
+  // The Main Skill's every use (player presses, Spell Burst automatic casts, Multistrike repeats, triggered uses: triggers 1000074 and
+  // 1000060), for the "Consumes X% of current Mana when casting a Main Skill" copies.
+  // The Attack skills' player uses (1000074) with their skill instances per use, for "Consumes X% of current Life when you use Attack Skills".
+  return { measured: true, bySetup: uses, attackUses, main: main && main.usesPerSecond > 0 ? { setupKey: main.setupKey ?? null, name: main.name ?? null, usesPerSecond: main.usesPerSecond } : null };
 }
 
 /**
  * The build's Mana and Life consumed per second and in the last 4 s. `uses` is resourceUseFacts' output (null before the hit pass:
  * the result is unmeasured and every consumption line stays off with that reason).
  */
-export function resourceConsumption({ setups = [], activeNames = new Set(), modifierTexts = [], uses = null, maxMana = 0, maxLife = 0, currentLife = 0, fixedSupportMultiplierPercent = 100 } = {}) {
+export function resourceConsumption({ setups = [], activeNames = new Set(), modifierTexts = [], uses = null, maxMana = 0, maxLife = 0, currentLife = 0, currentMana = null, consumeBlocked = null, fixedSupportMultiplierPercent = 100, spiritAttackUses = null } = {}) {
   const costLines = skillCostLines(modifierTexts);
   // Frozen Lotus "Skills no longer cost Mana" (record 342173504, label 3010050; chunk 4, 2026-11-01): no Mana is consumed, so every
   // "Mana consumed recently" line reads 0. A share converted to Life stays a Life cost.
@@ -144,8 +235,10 @@ export function resourceConsumption({ setups = [], activeNames = new Set(), modi
     if (noManaCost) cost.mana = 0;
     skills.push({ setupKey: setup.setupKey, name: setup.name, usesPerSecond: round(use.usesPerSecond), from: use.from, ...cost, manaPerSecond: round(use.usesPerSecond * cost.mana), lifePerSecond: round(use.usesPerSecond * cost.life) });
   }
-  const manaPerSecond = skills.reduce((sum, skill) => sum + skill.manaPerSecond, 0), lifePerSecond = skills.reduce((sum, skill) => sum + skill.lifePerSecond, 0);
-  return { measured: true, manaPerSecond: round(manaPerSecond), lifePerSecond: round(lifePerSecond), manaRecently: round(manaPerSecond * RESOURCE_RECENT_SECONDS), lifeRecently: round(lifePerSecond * RESOURCE_RECENT_SECONDS), maxMana, maxLife, skills, costLines };
+  const consume = mainSkillManaConsumption(mainSkillManaConsumeLines(modifierTexts), { mainUsesPerSecond: Number(uses.main?.usesPerSecond) || 0, mainName: uses.main?.name ?? null, currentMana: currentMana ?? maxMana, blocked: consumeBlocked });
+  const attackConsume = attackLifeConsumption(attackLifeConsumeLines(modifierTexts), { attackUses: [...(uses.attackUses || []), ...(spiritAttackUses ? [spiritAttackUses] : [])], currentLife });
+  const manaPerSecond = skills.reduce((sum, skill) => sum + skill.manaPerSecond, 0) + (consume?.manaPerSecond || 0), lifePerSecond = skills.reduce((sum, skill) => sum + skill.lifePerSecond, 0) + (attackConsume?.lifePerSecond || 0);
+  return { measured: true, manaPerSecond: round(manaPerSecond), lifePerSecond: round(lifePerSecond), manaRecently: round(manaPerSecond * RESOURCE_RECENT_SECONDS), lifeRecently: round(lifePerSecond * RESOURCE_RECENT_SECONDS), maxMana, maxLife, skills, costLines, consume, attackConsume };
 }
 
 /**

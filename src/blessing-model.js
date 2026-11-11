@@ -145,6 +145,19 @@ function gainCondition(line, context) {
   // Burst or generating Tangle"; a saved line with the old wording reads the same). An activated Tangle triggers its Spell at
   // the Spell's casting interval (manual rule 1001020420), far more often than a Blessing lasts, so a Tangle Skill on the board
   // holds the stacks (src/tangle-model.js).
+  // "Gains 1 stack(s) of Focus Blessing when consuming Spell Burst" (Magister (4,1), its A Corner of Divinity copies; game record 816003904
+  // row 1: trigger 1000303, raised when a Spell Burst component consumes its charge, gate 290 on resource 11 (the Spell Burst Charge), node
+  // 301 buff 380 for its default duration): one gain per Spell Burst activation as a whole, Ingenuity Overload's activation included, never
+  // one per automatic cast inside it (user-confirmed 2026-11-10). The planner's hit pass measures the activations
+  // (`spellBurstConsumptionsPerSecond`, src/planner.js); before it (null) the gain is held pending the measurement. A gain that needs no
+  // target: the Blessing stays pre-built at engagement (prebuiltSelfBuffs) and the loop renews it on each activation (src/tick-layers.js).
+  if (/when consuming Spell Burst/i.test(line)) {
+    const rate = context.spellBurstConsumptionsPerSecond;
+    if (rate === null || rate === undefined) return [true, "Spell Burst activations pending the hit pass (held until measured)"];
+    if (rate > 0) return [true, `${Math.round(rate * 10000) / 10000} Spell Burst activations per second, Ingenuity Overload's included: one gain per activation (record 816003904, trigger 1000303; user-confirmed 2026-11-10)`];
+    // The old Magister wording "… when consuming Spell Burst or generating Tangle" still gains on a Tangle (below).
+    if (!/generating Tangle/i.test(line)) return [false, "No modeled skill activates Spell Burst"];
+  }
   if (/when Tangle casts a skill|generating Tangle/i.test(line)) return tangleCasts ? [true, "A Tangle Skill on the skill board: its activated Tangle casts the Spell at its casting interval"] : [false, "No Tangle Skill (a Spell with Spell Tangle, Activation Medium: Tangle or Manifold Entanglement)"];
   // Witch of the Night (F2, 2026-10-27): "Gains 1 stack of Focus Blessing every 1 s when Night Feather Entanglement reaches max stacks"
   // (game recipe 5583405: +1 Focus Blessing per p0 s while buff 12090 is held). Recipe 1447677 adds and limits the Night Feather stacks
@@ -185,10 +198,10 @@ const statusKeys = (text) => {
   return [...new Set([clean, clean.replace(/^\[[^\]]+\]\s*/, ""), colon > 0 ? clean.slice(colon + 2) : clean])];
 };
 
-export function calculateBlessings({ dealsDot = false, mobilityUsed = false, tangleCasts = false, nightFeatherMax = false, minionsDealDamage = false, elixirCasts = false, pactState = {}, equipment, talents = [], slates = [], talentState = {}, barrierSources = [], hasReaping = false, canUseNonMain = false, block, canHit = false, canCrit = false, moving = false, enemyAilments = [], enemyBuffs = null, igniteOnTarget = false, spellHitActive = true, extraLines = [], hitRecently = true, stackUsers = new Set(), stackUserTexts = [], stackOverrides = {} , fillShare = 0, fillSource = null, capRules = null, consumptionCycle = null, durationSeconds = {} } = {}) {
+export function calculateBlessings({ spellBurstConsumptionsPerSecond = null, dealsDot = false, mobilityUsed = false, tangleCasts = false, nightFeatherMax = false, minionsDealDamage = false, elixirCasts = false, pactState = {}, equipment, talents = [], slates = [], talentState = {}, barrierSources = [], hasReaping = false, canUseNonMain = false, block, canHit = false, canCrit = false, moving = false, enemyAilments = [], enemyBuffs = null, igniteOnTarget = false, spellHitActive = true, extraLines = [], hitRecently = true, stackUsers = new Set(), stackUserTexts = [], stackOverrides = {} , fillShare = 0, fillSource = null, capRules = null, consumptionCycle = null, durationSeconds = {} } = {}) {
   const result = Object.fromEntries(blessingNames.map(name => [name, { name, baseMax: 4, maxStacks: 4, stacks: 0, ownStacks: 0, ownSources: [], capSources: [], gainSources: [], effectSources: [], unsupported: [] }]));
   const replacements = [], eachMaxSources = [], perStackLines = [], capShares = [];
-  const context = { dealsDot, canUseNonMain, barrierSources, hasReaping, block, canCrit, canHit, moving, enemyAilments, enemyBuffs, igniteOnTarget, hitRecently, mobilityUsed, tangleCasts, nightFeatherMax, minionsDealDamage, elixirCasts };
+  const context = { spellBurstConsumptionsPerSecond, dealsDot, canUseNonMain, barrierSources, hasReaping, block, canCrit, canHit, moving, enemyAilments, enemyBuffs, igniteOnTarget, hitRecently, mobilityUsed, tangleCasts, nightFeatherMax, minionsDealDamage, elixirCasts };
   const add = (text, source, multiplier = 1, phaseSeconds = undefined) => {
     if (multiplier <= 0) return;
     // Arminius Guillotine's catalog row joins its two lines ("… +8% additional damage Own 1 additional stacks of Tenacity Blessing").
@@ -224,7 +237,9 @@ export function calculateBlessings({ dealsDot = false, mobilityUsed = false, tan
       let [available, condition] = gainCondition(parsed.text, context);
       const chance = parsed.text.match(/([\d.]+)% chance/i);
       if (chance && Number(chance[1]) === 0) available = false;
-      for (const name of parsed.names) result[name].gainSources.push({ source, text: clause, available, condition, movement: movementGainPattern.test(parsed.text), ...(Number.isFinite(phaseSeconds) ? { phaseSeconds } : {}) });
+      // A gain on each Spell Burst activation carries its measured rate (the layers' periodic stream, src/blessing-layers.js periodicGainStream).
+      const ratePerSecond = available && /when consuming Spell Burst/i.test(parsed.text) && spellBurstConsumptionsPerSecond > 0 ? spellBurstConsumptionsPerSecond : null;
+      for (const name of parsed.names) result[name].gainSources.push({ source, text: clause, available, condition, movement: movementGainPattern.test(parsed.text), ...(Number.isFinite(phaseSeconds) ? { phaseSeconds } : {}), ...(ratePerSecond ? { ratePerSecond } : {}) });
     }
   };
   for (const item of equipment?.candidateItems || []) for (const text of effectiveGearModifierTexts(item)) add(text, item.name);

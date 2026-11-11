@@ -85,7 +85,7 @@
 //
 // Game code (SS14 client, research/trigger-events-rea-2026-11-04.md, proven unless marked):
 // (a) 1000033 is raised once per hit damage event: each projectile, strike or area that lands on the dummy and passes its hit rule, so an event
-//     counts landings (src/skill-hit-model.js landingsPerUse: a Shotgun fan's reached projectiles, ceil(n / 2) close or all 7 of a Tangle fan),
+//     counts landings (src/skill-hit-model.js landingsPerUse: a Shotgun fan's reached projectiles, all close, one at range, or all 7 of a Tangle fan),
 //     not the falloff-weighted hits; the falloff scales that event's damage only. A hit raises 1000030 after the hit pass, once per event too.
 // (b) bTriggerOnceWithSameSourceEntity (the recipe row's `tr.once`): at most one success per logic frame per other unit, keyed on the target for
 //     1000030 / 1000033 (on the attacker for the incoming 1000036 / 37 / 38 / 40, which the dummy never raises); on any other trigger id it does

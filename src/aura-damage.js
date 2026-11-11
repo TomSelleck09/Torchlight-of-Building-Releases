@@ -33,6 +33,10 @@ export const AURA_STAT_SCOPES = Object.freeze({
   additionalMeleeSkillDamagePercent: { kind: "skillTag", tag: "Melee" },
   meleeCriticalStrikeRatingPercent: { kind: "skillTag", tag: "Melee" },
   meleeAttackSpeedPercent: { kind: "skillTag", tag: "Melee" },
+  // An added effect's Attack / Cast Speed (src/aura-gained-effects.js): the weapon Attack Speed model reads the attack half and the
+  // cast-rate ledger the cast half (2026-11-09).
+  attackSpeedPercent: { kind: "speed", speedType: "attack-speed" },
+  castSpeedPercent: { kind: "speed", speedType: "cast-speed" },
   additionalProjectileDamagePercent: { kind: "skillTag", tag: "Projectile" },
   additionalProjectileAilmentDamagePercent: { kind: "skillTag", tag: "Projectile" },
   projectileSpeedPercent: { kind: "skillTag", tag: "Projectile" },
@@ -99,6 +103,12 @@ export function auraScopeCoverage(entry, planner) {
     if (!scope || scope.kind === "ledger") { notModeled.push(label); continue; }
     if (scope.kind === "resistance") { inCalc.push(`${label} (resistance model)`); continue; }
     if (scope.kind === "none") { noEffect.push(`${label}: ${scope.reason}`); continue; }
+    if (scope.kind === "speed") {
+      const users = (planner?.skillHits || []).filter((hit) => hit.modeled && (hit.rate?.speedType || "cast-speed") === scope.speedType);
+      if (users.length || (scope.speedType === "cast-speed" && main)) inCalc.push(`${label} (${scope.speedType === "attack-speed" ? "weapon Attack Speed" : "cast rate"}: ${users.map((hit) => hit.name).join(", ") || main?.name})`);
+      else noEffect.push(`${label}: no modeled skill uses ${scope.speedType === "attack-speed" ? "Attack" : "Cast"} Speed`);
+      continue;
+    }
     if (scope.kind === "skillTag") {
       if (mainTags.has(scope.tag)) notModeled.push(`${label} (${scope.tag} skills)`);
       else noEffect.push(`${label}: ${main?.name || "the main skill"} is not a ${scope.tag} skill`);

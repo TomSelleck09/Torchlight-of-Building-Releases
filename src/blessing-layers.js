@@ -108,6 +108,8 @@ export function poissonLayerMean(rate, durationSeconds, maxStacks, stacksPerGain
  */
 export function periodicGainStream(source) {
   const text = String(source?.text ?? "");
+  // A gain on a measured event rate (one per Spell Burst activation, src/blessing-model.js): a stream at that rate's mean interval.
+  if (Number(source?.ratePerSecond) > 0) return { intervalSeconds: 1 / Number(source.ratePerSecond), phaseSeconds: Number(source.phaseSeconds) || 0, stacks: Number((text.match(/\b(\d+) stacks?(?:\(s\))?\b/i) || [])[1]) || 1 };
   const every = text.match(/\bevery ([\d.]+) ?s\b/i);
   if (!every || !(Number(every[1]) > 0)) return null;
   const stacks = Number((text.match(/\b(\d+) stacks?(?:\(s\))?\b/i) || [])[1]) || 1;

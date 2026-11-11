@@ -84,7 +84,10 @@ export function collectFocusBuffs({ setups = [], activeNames = new Set(), modifi
   if (effectPercent && seenEffect.size > 1) effectPercent = Math.max(...[...seenEffect].map((key) => number(key.split("|")[1].match(/([\d.]+)%/)[1])));
   for (const setup of setups) {
     if (setup.enabled === false || !activeNames.has(setup.name) || !(setup.tags || []).includes("Focus") || !readsFocusBuffRecord(setup.name)) continue;
-    keep(setup.name, { level: Math.max(1, Math.round(setup.effectiveLevel || 20)), source: setup.name, board: true });
+    // The setup's own Focus Buff support ("+X% buff effect for the supported skill", game affix 163793: attr 3401 mod 3 on [5100306, this
+    // skill]): increased Focus Buff Effect on this skill's buff only, summed with the build's (2026-11-08).
+    const own = (setup.supportEffects?.clauses || []).filter((clause) => clause.family === "focusBuffEffect" && Number.isFinite(clause.value) && clause.status !== "Inactive");
+    keep(setup.name, { level: Math.max(1, Math.round(setup.effectiveLevel || 20)), source: setup.name, board: true, ownEffectPercent: own.reduce((sum, clause) => sum + clause.value, 0), ownEffectSources: own.map((clause) => clause.source || clause.support || "support") });
   }
   return { buffs, effectPercent };
 }
@@ -94,11 +97,12 @@ function focusBuffSyntheticLines({ buffs, effectPercent }) {
   const lines = [], notes = [];
   const order = { base: 0, chance: 1, additional: 2 };
   for (const [name, entry] of buffs) {
-    const record = focusBuffRecordLines(name, entry.level, effectPercent).filter((line) => line.kind in order).sort((a, b) => order[a.kind] - order[b.kind]);
+    const buffEffect = effectPercent + (entry.ownEffectPercent || 0);
+    const record = focusBuffRecordLines(name, entry.level, buffEffect).filter((line) => line.kind in order).sort((a, b) => order[a.kind] - order[b.kind]);
     if (!record.length) continue;
-    const label = entry.board ? `${name}: Focus buff (Lv.${entry.level}, game buff ${focusBuffId(name)})` : `${name} Buff`;
+    const label = entry.board ? `${name}: Focus buff (Lv.${entry.level}, game buff ${focusBuffId(name)}${entry.ownEffectPercent ? `, +${entry.ownEffectPercent}% buff effect from ${entry.ownEffectSources.join(" + ")}` : ""})` : `${name} Buff`;
     for (const line of record) lines.push({ text: line.text, source: line.kind === "additional" && !entry.board ? `${label} (+${effectPercent}% Focus Buff Effect)` : label, origin: "derived", multiplier: 1, focusBuff: name });
-    notes.push(`${entry.board ? name : `${name} Buff`} Lv.${entry.level} (game buff ${focusBuffId(name)}): ${record.map((line) => line.text).join(", ")}; the base is not scaled by Focus Buff Effect${effectPercent ? `, the rest by +${effectPercent}%` : ""}.`);
+    notes.push(`${entry.board ? name : `${name} Buff`} Lv.${entry.level} (game buff ${focusBuffId(name)}): ${record.map((line) => line.text).join(", ")}; the base is not scaled by Focus Buff Effect${buffEffect ? `, the rest by +${buffEffect}%${entry.ownEffectPercent ? ` (${effectPercent}% build + ${entry.ownEffectPercent}% the skill's own Focus Buff support)` : ""}` : ""}.`);
   }
   // Flame Focus's buff (either form): its base Ignite and Ignite chance as the Scorching Beam Ignite ledger's build-wide entries
   // (src/theoretical-sources.js), which every Ignite applier starts from (src/ailment-applications.js igniteGlobalChanceSources and the

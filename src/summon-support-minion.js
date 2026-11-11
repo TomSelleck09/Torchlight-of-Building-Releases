@@ -62,6 +62,12 @@ const listTypes = (rows) => [...new Set(rows.flatMap(rowTypes))].join(" / ") || 
  * One support clause on a summon setup (engine "minion", family other than "minion"): { status, reason, consumers, lines }.
  * `lines` are Minion-model lines ({ kind, value, type?, skillTag?, rowKind?, … }), empty unless the clause applies.
  */
+// An Activation Medium on a summon (interval, position and event triggers alike; the event ones are badged by src/support-effects.js
+// amEventStatus): the game lets it support a module or Synthetic Troop summon (the NPC's stone 402031 carries tag 6400000, an include
+// group of the Activation Mediums; user report 2026-11-09, Module: Trog 2nd General with Activation Medium: Spell Burst in game), but what a
+// triggered summon cast does with the Minions already out is not in the readable records (open question summon-activation-medium-trigger).
+export const SUMMON_ACTIVATION_MEDIUM_REASON = "an Activation Medium on a summon triggers the summon cast, and its Minions are already out: whether a triggered cast resummons (replacing a Minion, restarting its cycle) or only fires the summon's \"when cast\" lines is unconfirmed (open question summon-activation-medium-trigger)";
+
 export function summonSupportReading(clause, ctx = {}) {
   const rows = summonMinionRows(ctx);
   const hits = rows.filter((row) => row.kind === "hit");
@@ -150,7 +156,7 @@ export function summonSupportReading(clause, ctx = {}) {
       return out("Not modeled", "Fervor on a Minion is not modeled");
     case "trigger":
       if (clause.kind === "summon") return out("No DPS effect", "the Minions are summoned before the window starts");
-      return out("Not modeled", "an Activation Medium on a summon triggers the summon (its Minions are already out) or its Minion skills: which one is unconfirmed");
+      return out("Not modeled", SUMMON_ACTIVATION_MEDIUM_REASON);
     case "manualPenalty":
       return out("Not modeled", "the Minion skills are used by the Minion; whether the summon's manual-use penalty reaches them is unconfirmed");
     case "duration":

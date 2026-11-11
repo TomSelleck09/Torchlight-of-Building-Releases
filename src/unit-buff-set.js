@@ -58,7 +58,10 @@ export const DEBUFF_BUFF_RECORDS = Object.freeze({
   Curse: Object.freeze({ buff: null, name: "Curse", stateName: "Cursed", state: 4000560, tags: Object.freeze([5100301, 5100310]), states: Object.freeze([4000560]), damaging: false }),
   // W8 step 3: Sacrificial Pawn (Thea – Blasphemer; reference data keyword "considered a Crowd Control Effect") has no buff record the planner
   // reads: name only, with the crowd control tag the counters query.
-  "Sacrificial Pawn": Object.freeze({ buff: null, name: "Sacrificial Pawn", stateName: null, state: null, tags: Object.freeze([5100101]), states: Object.freeze([]), damaging: false })
+  "Sacrificial Pawn": Object.freeze({ buff: null, name: "Sacrificial Pawn", stateName: null, state: null, tags: Object.freeze([5100101]), states: Object.freeze([]), damaging: false }),
+  // A skill's own Mark (2026-11-09): s_fenshenlingbaozhan_futi 11340 "Spectral Slash: Mark" (tag 5100310 only, no state): not the Mark keyword
+  // 330 (no Marked 4010010, no tag 5100207), so the Marked readers never count it (src/skill-hit-model.js ownMark).
+  "Spectral Slash: Mark": Object.freeze({ buff: 11340, name: "Spectral Slash: Mark", stateName: null, state: null, tags: Object.freeze([5100310]), states: Object.freeze([]), damaging: false })
 });
 
 // The crowd control status tag (W8 step 3, orchestrator decision): the game's counters query buffs by tag (GetBuffCfgIdCountByTag on
@@ -533,6 +536,7 @@ export function putArmorBuffs(set, armor) {
   // (stage "aura"), marked so the attribute pool does not count it twice (src/unit-buff-writes.js).
   const auraOf = (source) => String(source || "").match(/^(.+) \(Aura\)$/)?.[1] ?? null;
   for (const item of armor.flat || []) set.add({ name: item.source, stage: "armor", kind: "armor", value: item.value, layer: "flat", attr: 4001, mod: 1, duplicateOf: auraOf(item.source), text: item.text, source: item.source });
+  for (const item of armor.increased || []) set.add({ name: item.source, stage: "armor", kind: "armor", value: item.value, layer: "increased", attr: 4001, mod: 3, duplicateOf: null, text: item.text, source: item.source });
   for (const item of armor.additional || []) set.add({ name: item.source, stage: "armor", kind: "armor", value: item.value, layer: "additional", attr: 4001, mod: 4, duplicateOf: auraOf(item.source), text: item.text, source: item.source });
   set.setLevel("Armor", armor.value);
   return set.markStaged("armor");

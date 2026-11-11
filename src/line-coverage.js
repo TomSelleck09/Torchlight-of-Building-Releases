@@ -6,7 +6,7 @@ import { collectReapingModifiers } from "./reaping-model.js";
 import { skillHitDotComponents } from "./skill-hit-profiles.js";
 import { parseReapingSource } from "./reaping-sources.js";
 import { plannerContributions } from "./skill-coverage.js";
-import { isCharacterStatLine } from "./character-stats.js";
+import { isCharacterStatLine, parseCharacterStatClause } from "./character-stats.js";
 import { classifyDamageLine, routeDamageLine } from "./damage-line-classifier.js";
 import { matchTalentTextClause } from "./talent-text-effects.js";
 import { lineEffectFor, resolveLineEffects } from "./line-effects.js";
@@ -103,7 +103,8 @@ const engineRules = [
   /^\+?[\d.]+% Blur Effect$/i,
   /chance to (?:gain|regain) Blur/i,
   /^Gains \d+ stack\(s\) of (?:Focus|Tenacity|Agility) Blessing when/i,
-  /^\+[\d.]+% Sealed Mana Compensation$/i,
+  // A reduction too (Dual Kismet: Three-Eyed Cat's "-5% Sealed Mana Compensation"): the same pool the Aura reservations read.
+  /^[+-][\d.]+% Sealed Mana Compensation$/i,
   /^\+[\d.]+% Aura Effect$/i,
   /^\+[\d.]+% Reaping Recovery Speed if you have caused Reaping recently$/i
 ];
@@ -206,6 +207,28 @@ function buffTimingLineStatus(text, planner) {
   // Barrier Shield line is damage there.
   if (/Barrier Shield/i.test(line) && !/Barrier Shield gained|when you have a Barrier/i.test(line)) {
     return (planner.skillHits || []).some((hit) => hit.modeled && hit.name === "Barrier Burst") ? "In calc" : null;
+  }
+  // Barrier Burst's casts follow the Barrier gains (src/barrier-sources.js barrierGainRate; 10 T claim audit G2, 2026-11-09): a gain
+  // line it counts is damage there (Inactive when its condition does not hold, such as a movement line while standing still).
+  if (/Barrier/i.test(line)) {
+    const burst = (planner.skillHits || []).find((hit) => hit.modeled && hit.itemMainSkill?.kind === "barrierBurst");
+    const source = burst?.itemMainSkill?.barrierSources?.find((item) => normalizePercentageText(String(item.text || "")).trim() === line);
+    if (source) return source.active ? "In calc" : "Inactive";
+  }
+  // Barrier Burst deals 75% of a Shield of 20% of (Max Life + Max Energy Shield): a fixed Max Life (Shell's "Your Max Life is set to
+  // 100", node 336 on attribute 1001; 10 T claim audit G3a) sizes it.
+  if (/^Your Max Life is set to [\d.]+$/i.test(line)) return (planner.skillHits || []).some((hit) => hit.modeled && hit.itemMainSkill?.kind === "barrierBurst") ? "In calc" : null;
+  // The Shield's Max Energy Shield is the one pool of src/effective-hp.js energyShieldPoolExtra (G3b, 2026-11-09): with Barrier Burst
+  // modeled, a line the stat sheet reads into Max Energy Shield (or Defense), a per-attribute Energy Shield line and a chest Defense line
+  // are damage; a Max Life line too unless Max Life is fixed.
+  if ((planner.skillHits || []).some((hit) => hit.modeled && hit.itemMainSkill?.kind === "barrierBurst")) {
+    if (/^\+?[\d.]+ Max (?:Energy Shield|Life) per [\d.]+ (?:Strength|Dexterity|Intelligence)$/i.test(line) || /(?:Defense gained from Chest Armou?r|^[+-][\d.]+% Chest Armou?r Defense)$/i.test(line)) return "In calc";
+    const stats = new Set(parseCharacterStatClause(line).map((item) => item.stat));
+    if (stats.has("maxEnergyShield") || stats.has("defense")) return "In calc";
+    // A held "while moving" Max Energy Shield line (G3d): In calc under the Movement group's moving, Inactive standing still.
+    const moving = line.match(/^(.+) while moving$/i);
+    if (moving && parseCharacterStatClause(moving[1]).some((item) => item.stat === "maxEnergyShield")) return (planner.lineEffects?.lines || []).some((entry) => entry.condition === "moving" && entry.active && normalizePercentageText(String(entry.text || "")).trim() === line) ? "In calc" : "Inactive";
+    if (stats.has("maxLife") && !(planner.modifierTexts || []).some((item) => /^Your Max Life is set to [\d.]+$/i.test(String(item.text || "").trim()))) return "In calc";
   }
   if (/^Elixir Skills gain [\d.]+ Charging Progress every second$/i.test(line)) {
     // The casts feed "for every Elixir Skill cast recently" lines (Omni-Elixir Notes) and Miraculous Gain (Miraculous Touch) too.
@@ -359,6 +382,23 @@ export function mainStatLineStatus(text, planner = context) {
   return intelligenceLineStatus(planner, stats);
 }
 
+// Armor sources read on every origin (2026-11-09, 25 T gaps 3 / 4): "+X% Defense gained from Chest Armor" (node 321 on the chest's own
+// defences, src/character-stats.js), In calc where a per-Armor reader is on the build, else Counted in stats; "+X% (additional) Armor per
+// stack of <Blessing> Blessing owned" (records 86093 / 60091; combat Armor, src/combat-armor.js), In calc with a per-Armor reader and the
+// Blessing held, Inactive without the Blessing, No DPS effect without a reader (combat only, not a panel stat).
+export const ARMOR_SOURCE_LINE = /^[+-][\d.]+% (?:additional )?Defense gained from Chest Armou?r$/i;
+const PER_BLESSING_ARMOR_LINE = /^\+?[\d.]+% (?:additional )?Armor per stack of (Tenacity|Focus|Agility) Blessing owned$/i;
+export const armorSourceLineStatus = (text, planner = context) => {
+  const clean = normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim();
+  const perBlessing = clean.match(PER_BLESSING_ARMOR_LINE);
+  if (!ARMOR_SOURCE_LINE.test(clean) && !perBlessing) return null;
+  const reader = (planner?.lineEffects?.lines || []).some((line) => line.active && ["perArmor", "armorAtLeast"].includes(line.condition));
+  if (!perBlessing) return reader ? "In calc" : "Counted in stats";
+  if (!reader) return "No DPS effect";
+  const stacks = new RegExp(`\\d+ ${perBlessing[1]} Blessing stacks\\)$`, "i");
+  return (planner?.lineEffects?.state?.combatArmor?.sources || []).some((item) => stacks.test(item.text)) ? "In calc" : "Inactive";
+};
+
 /**
  * A plain stat line with a reader on some builds only (badge movement probe 2026-11-01: each moved Erika under a neutral badge): Movement
  * Speed (the Mobility attacks' 75% share, Wind Stalker's Interest and Cat Dive, Feline Figure), ±% Armor (the build's per-Armor and
@@ -371,7 +411,7 @@ export function heldStatLineStatus(text, planner = context) {
     const reads = (planner?.skillHits || []).some((hit) => hit.modeled && MOVEMENT_ATTACK_SPEED_SKILLS.has(hit.name)) || state?.windStalker?.interest || state?.windStalker?.catDive || state?.felineFigure?.active;
     return reads ? "In calc" : "Counted in stats";
   }
-  if (/^[+-][\d.]+% (?:additional )?Armor$/i.test(clean)) return (planner?.lineEffects?.lines || []).some((line) => line.active && ["perArmor", "armorAtLeast"].includes(line.condition)) ? "In calc" : "Counted in stats";
+  if (/^[+-][\d.]+% (?:additional )?Armor(?: \(multiplies\))?$/i.test(clean) || ARMOR_SOURCE_LINE.test(clean)) return (planner?.lineEffects?.lines || []).some((line) => line.active && ["perArmor", "armorAtLeast"].includes(line.condition)) ? "In calc" : "Counted in stats";
   if (/^[+-][\d.]+ (?:Strength|Dexterity|Intelligence)(?:,? and |, )(?:Strength|Dexterity|Intelligence)/i.test(clean) && planner?.activation) return mainStatLineStatus(clean, planner) === "In calc" || (planner.lineEffects?.lines || []).some((line) => line.active && ["perAllStats", "highestStat", "lowestStat", "lowestAttributeTied"].includes(line.condition)) ? "In calc" : null;
   return null;
 }
@@ -552,6 +592,12 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     const line = normalizePercentageText(String(text)).replace(/\s+/g, " ").trim();
     const holder = (planner?.lineEffects?.combat?.entries || []).find((item) => item.ccHolder && item.text === line);
     if (holder) return holder.status;
+    // "Consumes X% of current Mana when casting a Main Skill" (src/combat-states.js, 2026-11-05 build audit gap 1): the combat entry
+    // decides (In calc where a Mana-consumed reader takes the consumption); without one the residual rule stands.
+    if (/^Consumes [\d.]+% of current (?:Mana when casting a Main Skill|Life when you use Attack Skills)\b/i.test(line)) {
+      const own = (planner?.lineEffects?.combat?.entries || []).find((item) => item.text === line);
+      if (own) return own.status;
+    }
     // "+X% chance to inflict Frostbite" / "+X% Numbed chance" (game fields 2006490 / 2006530; src/enemy-ailments.js, wiring audit gap 3):
     // In calc where the dummy carries that ailment (an inflicting skill deals Cold / Lightning hits), Inactive otherwise.
     const chance = line.match(/^\+[\d.]+% (?:chance to inflict (Frostbite)|(Numbed) chance(?:, and \+[\d.]+% Numbed Effect)?)$/i);
@@ -584,6 +630,11 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (/^\+[\d.]+% Numbed chance for Minions$/i.test(censusLine) && planner?.activation && (planner.minions || []).some((minion) => minion.modeled !== false)) return (planner.minionAilmentTypes?.types || []).some((type) => type.name === "Numbed" && type.uptime > 0) ? "In calc" : "Inactive";
   if (MINION_AILMENT_LINE.test(censusLine) && planner?.minionAilmentTypes?.active) return "In calc";
   if (FURY_LUCKY_LINE.test(censusLine)) return !planner?.activation ? "In calc" : (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.furyLucky?.active) ? "In calc" : "Inactive";
+  // "+N Jumps" (record 200000435, field 2006204 on the Projectile tag): with Ice Lances: Rebound the lance returns to the dummy (15 T audit G2).
+  if (/^\+\d+ Jumps?$/i.test(text) && planner?.activation && (planner.skillHits || []).some((hit) => hit.modeled && hit.rebound)) return "In calc";
+  // "+X% additional (Attack and) Cast Speed" (Spell Aggression's, Hasten's and Origin of Thunder's derived lines among them): the cast-rate
+  // ledger reads every such line (src/engine.js castSpeedPercent "more"), so In calc where a modeled skill runs on Cast Speed (15 T audit §7).
+  if (/^\+?[\d.]+% additional (?:Attack and )?Cast Speed$/i.test(text) && planner?.activation && (planner.activation.activeNames?.has("Scorching Beam") || (planner.skillHits || []).some((hit) => hit.modeled && !["attack-speed", "fixed"].includes(hit.rate?.speedType)))) return "In calc";
   // Reactive Rainbow's offensive half is read by src/combat-states.js (reactiveRainbowReversal; chunk 2, 2026-11-01).
   if (/chance to inflict Elemental Resistance Reversal on enemies/i.test(text) && planner?.activation) return (Number(planner.lineEffects?.state?.stats?.elementalAilmentAvoidance) || 0) > 100 ? "In calc" : "Inactive";
   // Focus Speed scales the Focus skills' gain-bound rate (src/focus-speed.js): In calc while one is modeled, else it reaches nothing.
@@ -1684,6 +1735,11 @@ function spellToAttackCopy(clause, planner) {
 }
 export function refineCoverage(status, text, planner = context, baseForClause = null) {
   if (settled.includes(status)) return status;
+  const armorSource = armorSourceLineStatus(text, planner);
+  if (armorSource) return armorSource;
+  // Dual Kismet: Sun Slash's "Gains Blazing Sun" (buff 35090, affix 882869952; src/skill-hit-model.js, 2026-11-09): In calc where a modeled
+  // hit has Steep Strike chance, else Inactive.
+  if (/^Gains Blazing Sun$/i.test(String(text || "").trim()) && planner?.skillHits) return planner.skillHits.some((hit) => hit.modeled && hit.steepStrike?.chancePercent > 0) ? "In calc" : "Inactive";
   // Magmaskull's "Affliction gains an additional effect: +X% additional Hit Fire Damage taken, up to +Y%" (game recipe 16021013; src/affliction-fire-hits.js,
   // 2026-10-28): In calc where a modeled skill hit takes it, else Inactive (no Affliction on the dummy, or no Fire hit).
   if (planner?.afflictionFireHits && MAGMASKULL_AFFLICTION_FIRE_LINE.test(normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim())) {

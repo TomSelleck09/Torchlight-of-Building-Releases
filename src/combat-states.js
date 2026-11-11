@@ -331,6 +331,8 @@ const PATTERNS = {
   reactiveRainbowReversal: /^For every (\d+(?:\.\d+)?)% excess chance to avoid Elemental Ailments, \+(\d+(?:\.\d+)?)% chance to inflict Elemental Resistance Reversal on enemies when dealing Elemental Damage$/i,
   channelWeaken: /^For every (\d+) channeled stacks, inflicts Weaken on enemies within (\d+(?:\.\d+)?) ?m$/i,
   attackProjectileBlind: /^Blinds nearby enemies when using an Attack Projectile Skill$/i,
+  mainSkillManaConsume: /^Consumes (\d+(?:\.\d+)?)% of current Mana when casting a Main Skill(?:\. Interval: (\d+(?:\.\d+)?) ?s)?$/i,
+  attackLifeConsume: /^Consumes (\d+(?:\.\d+)?)% of current Life when you use Attack Skills$/i,
   valkyrieGain: /^Gains 1 stack of Valkyrie's Hymn for every (\d+(?:\.\d+)?)% Max Mana consumed$/i,
   valkyrieMax: /^\+(\d+) Max Valkyrie's Hymn Stacks$/i,
   valkyriePerStack: /^\+(\d+(?:\.\d+)?)% Elemental Damage for every stack of Valkyrie's Hymn$/i,
@@ -670,10 +672,13 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const perCast = find(PATTERNS.spellAggressionPerCast);
   // Burning Touch (chunk 4, 2026-11-01; game record 648060544): each Main Spell cast adds a 4 s stack of buff 20391 (cap 10, affix 885799744
   // +10% Spell Aggression Effect), player casts and triggered casts alike: stacks = min(cap, Main Spell casts/s × 4 s), as Elixir Fairies'
-  // "for every ... cast recently" (each stack its own timer: provisional). Before the rate is known, the cap.
-  const perCastStacks = (cap) => { const rate = Number(state.mainUsesPerSecond); return rate > 0 ? Math.min(cap, rate * 4) : cap; };
+  // "for every ... cast recently" (each stack its own timer: provisional). The rate is the hit pass's measured Main Skill uses (your own and
+  // triggered, a Spacetime Illusion's casts included: they raise 1000074 / 1000060 on you, 15 T audit G4, 2026-11-10), else the early
+  // Main Skill rate (the cast-speed factor). Before any rate is known, the cap.
+  const mainCastRate = () => Number.isFinite(state.mainCastsPerSecond) ? state.mainCastsPerSecond : Number(state.mainUsesPerSecond);
+  const perCastStacks = (cap) => { const rate = mainCastRate(); return rate > 0 ? Math.min(cap, rate * 4) : cap; };
   const perCastEffect = hasSpellAggression && state.mainIsSpell ? sum(perCast.map((line) => { const match = line.clean.match(PATTERNS.spellAggressionPerCast); return num(match[1]) * perCastStacks(num(match[2])) * (line.multiplier ?? 1); })) : 0;
-  for (const line of perCast) { const cap = num(line.clean.match(PATTERNS.spellAggressionPerCast)[2]); entry(line, perCastEffect > 0, perCastEffect > 0 ? `${round(Number(state.mainUsesPerSecond) || 0)} Main Spell casts/s × 4 s: ${round(perCastStacks(cap))} of ${cap} stacks (each its own 4 s, provisional)` : "no Spell Aggression or no Main Spell Skill", { provisional: true }); }
+  for (const line of perCast) { const cap = num(line.clean.match(PATTERNS.spellAggressionPerCast)[2]); entry(line, perCastEffect > 0, perCastEffect > 0 ? `${round(mainCastRate() || 0)} Main Spell casts/s × 4 s: ${round(perCastStacks(cap))} of ${cap} stacks (each its own 4 s, provisional)` : "no Spell Aggression or no Main Spell Skill", { provisional: true }); }
   if (hasSpellAggression) {
     const value = round(BUFF_VALUES.spellAggression.percent * (1 + (aggressionEffect("spell") + perCastEffect) / 100));
     derive(`+${value}% additional Spell Damage`, BUFF_VALUES.spellAggression.source, "Spell Aggression held");
@@ -1868,6 +1873,34 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       line, [...find(PATTERNS.valkyrieMax), ...find(PATTERNS.valkyriePerStack), ...find(PATTERNS.valkyrieAtMax)]);
   }
 
+  // "Consumes X% of current Mana when casting a Main Skill" (Arcanist; record 266457104, node 500 + node 122 type 2; 2026-11-05 build
+  // audit gap 1): Mana consumed for the "per Mana consumed" readers (src/resource-consumption.js mainSkillManaConsumption). In calc where
+  // such a reader is on the build (a node 612 collector on data type 10000010 / 10000011, or Utmost Devotion's Mercury Pts); else no
+  // damage effect. Node 122's consumption raises the consumed-Mana event (proven, research/oq-15t-client-2026-11-05.md §2).
+  {
+    const consume = state.resourceConsumption?.consume || null;
+    const readers = lines.some((other) => (/Mana consumed recently/i.test(other.clean) && !/^\+?[\d.]+% Mana Regeneration Speed for every/i.test(other.clean)) || /Mercury Pts for every [\d.]+ Mana consumed/i.test(other.clean));
+    for (const line of find(PATTERNS.mainSkillManaConsume)) {
+      const copy = consume?.copies?.find((item) => item.text === line.clean && item.source === line.source) || consume?.copies?.find((item) => item.text === line.clean) || null;
+      const moving = Boolean(copy && copy.manaPerSecond > 0);
+      const why = !state.resourceConsumption?.measured ? "Mana consumed: measured by the hit pass" : consume?.blocked ? consume.blocked : !moving ? "no Main Skill use measured" : `${copy.manaPerUse} Mana a use (${copy.percent}% of the current Mana, ${consume.currentMana} at the planner's Mana state) × ${copy.usesPerSecond} Main Skill uses/s = ${copy.manaPerSecond} Mana consumed per second${readers ? ", read by the build's Mana-consumed lines" : "; no Mana-consumed reader on the build"}`;
+      entry(line, moving, why, { status: moving && readers ? "In calc" : consume?.blocked ? "Inactive" : "No DPS effect", provisional: moving && readers });
+    }
+  }
+
+  // "Consumes X% of current Life when you use Attack Skills" (record 200000005, node 500 + node 122 type 1; 2026-11-08 build audit gap 4):
+  // Life consumed for the "Life consumed" readers (src/resource-consumption.js attackLifeConsumption), In calc where one is on the build
+  // (a gate 610 / node 612 on 10000000 / 10000001, Hysteria's Rage); its Regain enabler role stays (src/regain-model.js).
+  {
+    const consume = state.resourceConsumption?.attackConsume || null;
+    const readers = lines.some((other) => /Life (?:has been )?consumed recently|consumed more than [+\d.]+ ?% (?:of )?(?:Max )?Life recently|Rage for every [\d.]+% Max Life consumed/i.test(other.clean));
+    for (const line of find(PATTERNS.attackLifeConsume)) {
+      const moving = Boolean(consume && consume.lifePerSecond > 0);
+      const why = !state.resourceConsumption?.measured ? "Life consumed: measured by the hit pass" : !moving ? "no Attack use measured" : `${consume.percent}% of ${consume.currentLife} current Life (the planner's Life state; every copy reads the same current Life) × ${consume.usesPerSecond} Attack uses/s (${consume.uses.map((use) => `${use.name} ${use.stepsPerSecond}`).join(", ")}) = ${consume.lifePerSecond} Life consumed per second${readers ? ", read by the build's Life-consumed lines" : "; no Life-consumed reader on the build"} (record 200000005; its links proven, research/attack-life-consume-2026-11-09.md; current Life the Life group's best case)`;
+      entry(line, moving, why, { status: moving && readers ? "In calc" : "No DPS effect", provisional: moving && readers });
+    }
+  }
+
   // Icemirror: Stage in the Mirror. Mirrored Shade (buff 11750) every 1 s while standing on a Terra Skill: "+X% additional Terra
   // Skill Damage while having Mirrored Shade" and "+1 Max Terra Charge Stacks when Mirrored Shade reaches max stacks" (the max
   // is 3 in buff 11750's record). Best case (condition mirroredShade): the player stands on the Main Terra Skill; own buff, so the
@@ -1903,7 +1936,10 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // when Spell Burst is consumed with at least 4 Max Spell Burst; "+X% additional Spell Damage" and "+1 Max Spell Burst" while
   // having it. Best case (condition squidnova): held while a Spell Main Skill Spell Bursts (its duration is not in the saved
   // data; provisional).
-  const maxSpellBurst = maxSpellBurstTotal(modifierTexts);
+  // The Max Spell Burst a Spell Burst consumes (record 162938320: gate |Δ Spell Burst Charge| ≥ P1 on the consume, trigger 1000303):
+  // the build's lines plus Bing's Multi-Coupling Equation stacks (record 53529464, attr 6361 flat), the figure the hit model reads
+  // (src/bing-traits.js creative.maxSpellBurst). Before (10 T claim audit, 2026-11-09) Squidnova read the lines alone (3 for 4).
+  const maxSpellBurst = Number.isFinite(state.bing?.creative?.maxSpellBurst) ? state.bing.creative.maxSpellBurst : maxSpellBurstTotal(modifierTexts);
   for (const line of find(PATTERNS.squidGain)) {
     const threshold = num(line.clean.match(PATTERNS.squidGain)[1]);
     const effect = sum(values(PATTERNS.squidEffect)), spell = sum(values(PATTERNS.squidDamage)), burst = sum(values(PATTERNS.squidBurst));

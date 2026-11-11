@@ -649,5 +649,9 @@ export function slateLineCoverage(text, active, slateId = null) {
     const statuses = clauses.map((clause) => isNameReadCoreClause(coreName, clause) ? nameReadCoreStatus(coreName) : refineCoverage("Not independently modeled", clause));
     return statuses.length === 1 ? statuses[0] : combineStatuses(statuses);
   }
+  // Movement Speed, ±% Armor (Banishment's per-slate "+X% additional Armor (multiplies)" included) and two-stat lines: summed by the
+  // stat sheet, In calc where the build has a reader, as on gear (src/line-coverage.js heldStatLineStatus; 2026-11-09).
+  const heldStat = active && coverageContext() && !/\s+\|\s+|\s+·\s+/.test(body) ? heldStatLineStatus(body.trim()) : null;
+  if (heldStat) return heldStat;
   return refineCoverage(baseSlateLineCoverage(body, active), body, undefined, (clause) => baseSlateLineCoverage(clause, active));
 }

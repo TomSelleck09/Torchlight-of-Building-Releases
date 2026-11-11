@@ -463,11 +463,26 @@ export function splitStatSentences(line) {
   return parts.length > 1 && parts.every((part) => /^[+-]\d/.test(part)) ? parts : [line];
 }
 
+// One gear row's lines (planner performance 2026-11-08): a pure function of the item name and the row text, memoised; the cached
+// array is frozen and only ever spread into a new one.
+const gearLineCache = new Map();
+function gearTextLines(itemName, text) {
+  const run = () => carryNameReadBracket(averageRotatingBuffs(splitJoinedLegendaryLines(text)).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)).flatMap((line) => expandScriptedItemLine(itemName, line));
+  if (typeof text !== "string") return run();
+  const key = String(itemName ?? "") + "\u0001" + text;
+  let lines = gearLineCache.get(key);
+  if (!lines) {
+    lines = Object.freeze(run());
+    if (gearLineCache.size > 50000) gearLineCache.clear();
+    gearLineCache.set(key, lines);
+  }
+  return lines;
+}
 export function effectiveGearModifierTexts(item) {
   const modifiers=[...(item.modifiers||[])];
   // Corrosion removes the rolled Base Affixes and no Base Stats line (src/gear-base-stats.js).
   if(corrosionRemovesBaseAffixes(item)) for(const line of item.baseAffixModifiers||[]){ const index=modifiers.indexOf(line); if(index>=0)modifiers.splice(index,1); }
-  const lines=[...modifiers,...missingBaseStatImplicits(item),...(item.legendaryBaseLines||[]),...(item.corrosionModifiers||[])].flatMap((text) => carryNameReadBracket(averageRotatingBuffs(splitJoinedLegendaryLines(text)).split(/\r?\n/).map((line) => line.trim()).filter(Boolean))).flatMap((line) => expandScriptedItemLine(item.name, line));
+  const lines=[...modifiers,...missingBaseStatImplicits(item),...(item.legendaryBaseLines||[]),...(item.corrosionModifiers||[])].flatMap((text) => gearTextLines(item.name, text));
   // A duplicate copy of a core talent (another source already grants it; src/granted-core-lines.js resolveCoreCopies, user rule
   // 2026-10-21: cores never stack) reaches no reader.
   return item.inactiveCoreLines?.length ? lines.filter((line) => !isInactiveCoreLine(item, line)) : lines; // two-line rows of scripted uniques (gear-pact batch chunk 4)

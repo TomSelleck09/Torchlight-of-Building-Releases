@@ -207,7 +207,8 @@ export const tangleLinesFor = (tangles, setupKey) => tangles?.linesBySetup?.[set
 export function tangleHitEffects(tangles, setupKey) {
   // Banishment: Tangle: a Tangle-fired cast from a Minion lands every projectile of a fan on the dummy (user statement 2026-11-03:
   // more land than when the player casts; all of them is the best-case reading, the count stays open in
-  // `banishment-tangle-minion-attach`). The Shotgun falloff still applies; the player's own casts keep ceil(n / 2) / 1 at range.
+  // `banishment-tangle-minion-attach`). The Shotgun falloff still applies; the player's own casts land all close and one at range (since 2026-11-05 the close count
+  // equals this one; the flag still lands every projectile at range).
   const ordinary = (tangles?.setups || []).some((setup) => setup.setupKey === setupKey && !setup.clockworkCore);
   const fan = ordinary && tangles?.minionAttach && tangles.activated > 0
     ? { fanLandsAll: true, fanNote: "Banishment: Tangle: Tangle-fired casts from Minions land every projectile of a fan on the dummy (best case, user statement 2026-11-03; Shotgun falloff kept; exact count open)" } : null;

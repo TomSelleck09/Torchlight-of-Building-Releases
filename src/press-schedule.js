@@ -9,8 +9,11 @@
 //   - pressed: a Demolisher-Charge proc skill once per Charge (2026-11-05 rule); a curse when it lapses, every max(cooldown, 5 s × its
 //     duration lines: the curses' Split duration, research/buff-skills-chunk9-2026-11-01.md); a buff skill (Empower, Warcry, Aim, Elixir)
 //     when its buff would lapse, every max(cooldown, buff duration); a damage skill with a cooldown on its cooldown; a Mobility skill
-//     when a line needs it ("for N s after using Mobility Skills", Periodic Burst's 6 s, a Blessing gained on Mobility use), every
-//     max(cooldown, the shortest window); a recast DoT area (a non-Main Terra) at its recast; any other skill with a cooldown on it;
+//     (a Mobility attack included: user decision 2026-11-08, it is cast for its buff timing, not nonstop) when a buff it feeds needs
+//     renewing (mobilityWindows: "for N s after using Mobility Skills", Periodic Burst's period, a Blessing or Pure Heart gained on its
+//     use, an item's Mobility trigger interval, an Empower's own buff), as rarely as keeps every one of them renewed (mobilityPressInterval);
+//     a Mobility skill that feeds no window keeps the other rules; a recast DoT area (a non-Main Terra) at its recast; any other skill
+//     with a cooldown on it;
 //   - split: a skill whose only role is damage, with no cooldown, keeps the planner's own rate beside the Main Skill and takes none of
 //     its time (unchanged; it would otherwise eat all of it);
 //   - its own model: a skill whose model already takes the Main Skill time it costs (Vendetta, Endless Vendetta);
@@ -23,6 +26,7 @@
 import { buffTiming } from "./empower-buffs.js";
 import { skillTimingSs13 } from "./data/skills/skill-timing-ss13.generated.js";
 import { setupBoardTab } from "./magus-active-slot.js";
+import { BASE_BLESSING_SECONDS } from "./blessing-layers.js";
 
 export const PRESS_SWITCH = "castOtherSkills";
 export const PRESS_SWITCH_LABEL = "Cast other active skills on the dummy";
@@ -47,6 +51,59 @@ function triggerOf(setup, hit, tangleKeys) {
   return null;
 }
 
+/** The support or Tangle that triggers a setup, read before its hit model runs (no hit-model trigger), or null. */
+export function setupTrigger(setup, tangleKeys = new Set()) { return triggerOf(setup, null, tangleKeys); }
+
+/**
+ * The buff windows a Mobility skill that is not the Main Skill feeds (user decision 2026-11-08: it is pressed when a buff it feeds needs
+ * renewing, not nonstop). Each window { kind, source, seconds, label } is the longest gap between two presses that keeps that buff renewed:
+ *   - "line": an "after / when using Mobility Skills" line (mobilityNeeds: its N s, "recently" 4 s);
+ *   - "blessing": a Blessing gained when using Mobility Skills (mobilityNeeds): duration × stacks per gain ÷ max stacks, which holds the
+ *     max with each layer on its own timer (user decision 2026-11-04);
+ *   - "periodic": Periodic Burst on this skill (src/periodic-burst.js): a stack every max(6 s, cooldown), its period;
+ *   - "pureHeart": Pure Heart on an Attack Mobility skill (src/pure-heart.js holdIntervalSeconds): duration × stacks per use ÷ max stacks;
+ *   - "itemTrigger": an item's active "Triggers … when using a Mobility Skill. Interval: N s": N s.
+ * collectPressInputs adds an Empower's own buff (kind "buff").
+ */
+export function mobilityWindows(setup, { periodicBurst = [], needs = [], pureHeart = null, itemTriggers = [] } = {}) {
+  if (!hasTag(setup, "Mobility")) return [];
+  const windows = needs.map((need) => ({ kind: need.kind || "line", source: need.source, seconds: need.seconds, label: need.label || `${need.source}: ${round(need.seconds)} s` }));
+  const periodic = periodicBurst.find((entry) => entry.setupKey === setup.setupKey && entry.active);
+  if (periodic?.periodSeconds > 0) windows.push({ kind: "periodic", source: "Periodic Burst", seconds: periodic.periodSeconds, label: `Periodic Burst's stack every ${round(periodic.periodSeconds)} s` });
+  if (pureHeart?.active && hasTag(setup, "Attack") && pureHeart.holdIntervalSeconds > 0) windows.push({ kind: "pureHeart", source: "Pure Heart (Azure Gunslinger)", seconds: pureHeart.holdIntervalSeconds, label: `Pure Heart held at ${pureHeart.maxStacks} stacks (${round(pureHeart.durationSeconds)} s each, ${round(pureHeart.stacksPerUse)} per use): ${round(pureHeart.holdIntervalSeconds)} s` });
+  for (const trigger of itemTriggers) if (trigger.intervalSeconds > 0) windows.push({ kind: "itemTrigger", source: trigger.source, seconds: trigger.intervalSeconds, label: `${trigger.name} triggered on a Mobility use (${trigger.source}): ${round(trigger.intervalSeconds)} s` });
+  return windows.filter((window) => window.seconds > 0);
+}
+
+/**
+ * The press interval of a Mobility skill from the windows it feeds (user decision 2026-11-08): the fewest presses that renew every window.
+ * Without a Periodic Burst period it is max(cooldown, the shortest window). Periodic Burst gains its stack only on a press at least its period
+ * after the last, so a gap that does not divide the period pushes the stack to a later press: every period then takes ceil(period ÷ the
+ * shortest other window) presses, period ÷ that many apart (a press every 2.5 s gives the stack every 7.5 s; three presses per 6 s keep it on
+ * 6 s and the 2.5 s window too). When the cooldown does not allow that, max(cooldown, the shortest window).
+ * @returns {{ intervalSeconds: number, shortest: object, aligned: boolean, text: string }|null}
+ */
+export function mobilityPressInterval(windows = [], cooldownSeconds = 0) {
+  const valid = windows.filter((window) => window.seconds > 0);
+  if (!valid.length) return null;
+  const cooldown = Math.max(0, Number(cooldownSeconds) || 0);
+  const shortestOf = (list) => list.reduce((best, window) => (!best || window.seconds < best.seconds ? window : best), null);
+  const shortest = shortestOf(valid);
+  const period = shortestOf(valid.filter((window) => window.kind === "periodic"));
+  const shortestOther = shortestOf(valid.filter((window) => window.kind !== "periodic"));
+  let intervalSeconds = Math.max(cooldown, shortest.seconds), aligned = false;
+  if (period && shortestOther && shortestOther.seconds < period.seconds) {
+    const presses = Math.ceil(period.seconds / shortestOther.seconds - 1e-9);
+    const even = period.seconds / presses;
+    if (even + 1e-9 >= cooldown) { aligned = even + 1e-9 < shortestOther.seconds; intervalSeconds = even; }
+  }
+  const list = valid.map((window) => window.label).join("; ");
+  const text = aligned
+    ? `${round(period.seconds / intervalSeconds)} presses per ${round(period.seconds)} s keep Periodic Burst's stack on its period and the shortest window renewed: every ${round(intervalSeconds)} s (windows: ${list}${cooldown > 0 ? `; cooldown ${round(cooldown)} s` : ""})`
+    : `every ${round(intervalSeconds)} s (${intervalSeconds > shortest.seconds + 1e-9 ? `its ${round(cooldown)} s cooldown is longer than the shortest window` : "the shortest window"}; windows: ${list})`;
+  return { intervalSeconds, shortest, aligned, text };
+}
+
 /** The Split header use time of a skill without a hit model, Cast Speed-scaled for a Cast Speed skill. */
 function headerUseTime(name, castSpeedFactor) {
   const timing = skillTimingSs13[name];
@@ -61,7 +118,7 @@ function headerUseTime(name, castSpeedFactor) {
  * @returns {{ skills: object[] }} each { key, name, kind: "pressed" | "triggered" | "held" | "split" | "notNeeded", intervalSeconds,
  *   pressSeconds, reason, demolisher }
  */
-export function collectPressInputs({ setups = [], activeNames = new Set(), mainKey = null, skillHits = [], empowerEntries = [], aim = null, elixirSetups = [], periodicBurst = [], mobilityNeeds = [], tangleKeys = new Set(), ownTimeKeys = new Set(), skillDots = [], inactiveReasons = new Map(), idleBuff = () => null, modifierTexts = [], castSpeedFactor = 1 } = {}) {
+export function collectPressInputs({ setups = [], activeNames = new Set(), mainKey = null, skillHits = [], empowerEntries = [], aim = null, elixirSetups = [], periodicBurst = [], mobilityNeeds = [], pureHeart = null, mobilityItemTriggers = [], tangleKeys = new Set(), ownTimeKeys = new Set(), skillDots = [], inactiveReasons = new Map(), idleBuff = () => null, modifierTexts = [], castSpeedFactor = 1 } = {}) {
   const skills = [];
   for (const setup of setups) {
     if (!setup || setup.enabled === false || !activeNames.has(setup.name) || setup.setupKey === mainKey || setup.role === "support" || setupBoardTab(setup) !== "skills") continue;
@@ -78,6 +135,8 @@ export function collectPressInputs({ setups = [], activeNames = new Set(), mainK
     const cooldownOnly = () => buffTiming({ name, clauses, modifierTexts, durationSeconds: 0, cooldownSeconds: baseCooldown }).cooldownSeconds || 0;
     const pressed = (intervalSeconds, reason) => intervalSeconds > 0 ? skills.push({ key, name, kind: "pressed", intervalSeconds, pressSeconds, useNote, reason }) : skills.push({ key, name, kind: "notNeeded", reason: `${reason}, but no interval is derived` });
     const other = (kind, reason) => skills.push({ key, name, kind, reason });
+    // The buff windows a Mobility skill feeds (user decision 2026-11-08): it is pressed for them, not nonstop.
+    const windows = mobilityWindows(setup, { periodicBurst, needs: mobilityNeeds, pureHeart, itemTriggers: mobilityItemTriggers });
     // A skill whose own model already takes the Main Skill time its casts cost (Vendetta / Endless Vendetta, src/vendetta-model.js:
     // the net gain over plain attacking) is left to that model.
     if (ownTimeKeys.has(key)) { other("held", "its own model already counts the Main Skill time its casts take"); continue; }
@@ -116,12 +175,27 @@ export function collectPressInputs({ setups = [], activeNames = new Set(), mainK
       if (idle) { other("notNeeded", `its buff does nothing here (${String(idle).replace(/^[^:]*: /, "").replace(/\.$/, "")})`); continue; }
       const timing = empower.euphoria;
       if ((timing.durationSeconds || 0) >= 3600) { other("held", "its buff has no timer: one press holds it"); continue; }
+      // A Mobility Empower (Speed Phantom) also renews the Mobility windows it feeds; its own buff is one more window (user decision 2026-11-08).
+      const cadence = windows.length && timing.durationSeconds > 0 ? mobilityPressInterval([{ kind: "buff", source: name, seconds: timing.durationSeconds, label: `its buff (${round(timing.durationSeconds)} s)` }, ...windows], timing.cooldownSeconds || 0) : null;
+      if (cadence && cadence.intervalSeconds + 1e-9 < Math.max(timing.cooldownSeconds || 0, timing.durationSeconds || 0)) { pressed(cadence.intervalSeconds, `for its buffs, ${cadence.text}`); continue; }
       pressed(Math.max(timing.cooldownSeconds || 0, timing.durationSeconds || 0), `when its buff lapses (${round(timing.durationSeconds || 0)} s, cooldown ${round(timing.cooldownSeconds || 0)} s)`);
       continue;
     }
+    // A Mobility attack (a Mobility skill with a hit model: Spiral Strike) is pressed for the buff windows it feeds, not nonstop (user decision
+    // 2026-11-08; before, one with no cooldown kept its full rate beside the Main Skill: 21 uses/s on the 15 T build). Its hits follow the
+    // press interval (`cadence`: pressRotation hands it to the hit model as pressEverySeconds) and each press takes its use time from the Main
+    // Skill. One that feeds no window keeps the rules below (on its cooldown, or its own rate beside the Main Skill).
+    const mobilityHit = Boolean(hit && hasTag(setup, "Mobility") && !hasTag(setup, "Empower") && hit.rate.fullManualUsesPerSecond > 0);
+    const hitCadence = mobilityHit ? mobilityPressInterval(windows, hitCooldown) : null;
+    if (hitCadence) {
+      const intervalSeconds = Math.max(hitCadence.intervalSeconds, 1 / hit.rate.fullManualUsesPerSecond);
+      skills.push({ key, name, kind: "pressed", cadence: true, intervalSeconds, pressSeconds, useNote, reason: `a Mobility skill pressed for its buffs, not nonstop (user decision 2026-11-08): ${hitCadence.text}`, windows: windows.map((window) => ({ kind: window.kind, source: window.source, seconds: round(window.seconds) })) });
+      continue;
+    }
+    const noWindow = mobilityHit ? "; a Mobility skill that feeds no buff window on the dummy, so the 2026-11-08 buff cadence does not apply" : "";
     if (hit) {
-      if (hitCooldown > (hit.rate.effectiveUseTimeSeconds || 0) + 1e-9 && hit.rate.fullManualUsesPerSecond > 0) { pressed(1 / hit.rate.fullManualUsesPerSecond, `on its ${round(hitCooldown)} s cooldown`); continue; }
-      if (!hasTag(setup, "Empower") && hitCooldown <= (hit.rate.effectiveUseTimeSeconds || 0) + 1e-9) { other("split", "no cooldown: keeps its own rate beside the Main Skill and takes none of its time"); continue; }
+      if (hitCooldown > (hit.rate.effectiveUseTimeSeconds || 0) + 1e-9 && hit.rate.fullManualUsesPerSecond > 0) { pressed(1 / hit.rate.fullManualUsesPerSecond, `on its ${round(hitCooldown)} s cooldown${noWindow}`); continue; }
+      if (!hasTag(setup, "Empower") && hitCooldown <= (hit.rate.effectiveUseTimeSeconds || 0) + 1e-9) { other("split", `no cooldown: keeps its own rate beside the Main Skill and takes none of its time${noWindow}`); continue; }
     }
     // A damage-over-time skill that is not the Main Skill: a recast area (a Terra) pressed at its model's recast; a channel keeps its
     // own rate beside the Main Skill, as a no-cooldown damage skill does.
@@ -132,11 +206,9 @@ export function collectPressInputs({ setups = [], activeNames = new Set(), mainK
       continue;
     }
     if (hasTag(setup, "Mobility")) {
-      const periodic = periodicBurst.find((entry) => entry.setupKey === key && entry.active);
-      const windows = [...mobilityNeeds.map((need) => need.seconds), ...(periodic ? [periodic.periodSeconds] : [])].filter((value) => value > 0);
       if (!windows.length) { other("notNeeded", "no line on the dummy needs a Mobility Skill used"); continue; }
-      const cooldown = cooldownOnly();
-      pressed(Math.max(cooldown, Math.min(...windows)), `for ${periodic && Math.min(...windows) === periodic.periodSeconds ? "Periodic Burst" : "the \"after using Mobility Skills\" lines"} (every ${round(Math.min(...windows))} s${cooldown > 0 ? `, cooldown ${round(cooldown)} s` : ""})`);
+      const cadence = mobilityPressInterval(windows, cooldownOnly());
+      pressed(cadence.intervalSeconds, `for its buffs, ${cadence.text}`);
       continue;
     }
     const cooldown = cooldownOnly();
@@ -146,11 +218,29 @@ export function collectPressInputs({ setups = [], activeNames = new Set(), mainK
   return { skills };
 }
 
-/** The "after using Mobility Skills" windows the build's active lines need (seconds; "recently" 4 s). */
+/**
+ * The windows the build's Mobility lines need: an active "after using Mobility Skills" line its N s ("recently" 4 s; kind "line"); a held
+ * Blessing gained when using Mobility Skills the gap that keeps it at its max, duration × stacks per gain ÷ max stacks (kind "blessing"; each
+ * gain a layer on its own timer, user decision 2026-11-04; "X% chance" counts X ÷ 100 stacks; before 2026-11-08 the gain line's own "N s",
+ * else 4 s).
+ */
 export function mobilityNeeds(lines = [], blessings = []) {
   const window = (text) => { const match = String(text || "").match(/(\d+(?:\.\d+)?)\s*s\b/); return match ? Number(match[1]) : RECENTLY_SECONDS; };
-  const needs = lines.filter((line) => line.condition === "mobility" && line.active !== false).map((line) => ({ source: line.source, seconds: window(line.text) }));
-  for (const blessing of blessings) for (const source of blessing.gainSources || []) if (/Mobility Skill/i.test(source.text || "")) needs.push({ source: source.source, seconds: window(source.text) });
+  const needs = lines.filter((line) => line.condition === "mobility" && line.active !== false).map((line) => ({ kind: "line", source: line.source, seconds: window(line.text), label: `"${line.text}" (${line.source}): ${window(line.text)} s` }));
+  for (const blessing of blessings) {
+    if (!(blessing.stacks > 0)) continue;
+    const durationSeconds = Number(blessing.layers?.durationSeconds) > 0 ? Number(blessing.layers.durationSeconds) : BASE_BLESSING_SECONDS;
+    const maxStacks = Number(blessing.layers?.maxStacks ?? blessing.maxStacks) || 0;
+    for (const source of blessing.gainSources || []) {
+      const text = String(source.text || "");
+      if (!/Mobility Skill/i.test(text) || source.available === false || !(maxStacks > 0)) continue;
+      const chance = text.match(/([\d.]+)% chance/i);
+      const stacks = (Number((text.match(/\b(\d+) stacks?\b/i) || [])[1]) || 1) * (chance ? Number(chance[1]) / 100 : 1);
+      if (!(stacks > 0)) continue;
+      const seconds = durationSeconds * stacks / maxStacks;
+      needs.push({ kind: "blessing", source: source.source, seconds, label: `${blessing.name} Blessing held at ${maxStacks} stacks (${round(durationSeconds)} s each, ${round(stacks)} per use; ${source.source}): ${round(seconds)} s` });
+    }
+  }
   return needs;
 }
 
@@ -187,9 +277,9 @@ export function pressRotation({ setups = [], mainKey = null, bySetup = null, inp
     const share = skill.pressSeconds / skill.intervalSeconds;
     busy += share;
     const text = `pressed every ${round(skill.intervalSeconds)} s (${skill.reason}), ${round(skill.pressSeconds)} s a press (${skill.useNote}): ${round(share * 100)}% of your time; ${mainName} takes the rest (rotation estimate, provisional)`;
-    // Only a Demolisher proc's own rate follows its press interval (the skill-hit model reads pressEverySeconds); the other pressed skills
-    // keep their models' cadence, which the press interval matches.
-    if (skill.demolisher) rotation.set(skill.key, { pressEverySeconds: skill.intervalSeconds, pressSeconds: skill.pressSeconds, text });
+    // A Demolisher proc's and a Mobility attack's own rate follow the press interval (the skill-hit model reads pressEverySeconds; user
+    // decision 2026-11-08 for the Mobility attack); the other pressed skills keep their models' cadence, which the press interval matches.
+    if (skill.demolisher || skill.cadence) rotation.set(skill.key, { pressEverySeconds: skill.intervalSeconds, pressSeconds: skill.pressSeconds, text, ...(skill.cadence ? { cadence: true } : {}) });
     parts.push(`${skill.name} every ${round(skill.intervalSeconds)} s (${round(share * 100)}%)`);
     assumptions.push({ id: `pressRotation:${skill.key}`, value: round(share), text: `${skill.name}: pressed every ${round(skill.intervalSeconds)} s, ${round(share * 100)}% of your time (${skill.reason}; ${skill.useNote}; rotation estimate, provisional).` });
   }

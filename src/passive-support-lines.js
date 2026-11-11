@@ -9,8 +9,8 @@ import { normalizePercentageText } from "./percentage-text.js";
 //     supports).
 //   Multistrike (reference data glossary): attacks only; chance → expected extra strikes; "Multistrikes deal X% increasing damage".
 //   Projectile Quantity: extra projectiles reach the dummy only for a skill whose text says its projectiles can hit the same
-//     enemy (Ice Lances run 2026-10-12; src/support-effects.js projectileQuantityFalloff), and then as a fan: ceil(n / 2)
-//     land standing close, each after the first at the skill's coefficient (linear; src/shotgun-effect.js).
+//     enemy (Ice Lances run 2026-10-12; src/support-effects.js projectileQuantityFalloff), and then as a fan: all land
+//     standing close (one at range), each after the first keeping the hit rule's share (linear; src/shotgun-effect.js).
 // Lines scoped to Minions, conditional wordings ("when …", "while …") and "for the supported skill" wordings are not read here.
 const N = "(\\d+(?:\\.\\d+)?)";
 const TYPE = "(Physical|Fire|Cold|Lightning|Erosion)";

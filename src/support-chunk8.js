@@ -226,9 +226,13 @@ export function resolveChunk8Condition(clause, full, siblings = [], setupKey = n
     case "reapOnTerra":
       return state.hasReapSource ? on(`a Reap source and the dummy on the Fire Terra (best case): +${clause.value}% additional damage taken held from the first Reap (${recipe}; src/planner.js)`, { provisional: true }) : off("the build has no Reap source");
     case "markEffectUses":
-    case "infiltrationTaken":
       // Read on the debuff in src/planner.js (chunk8EnemyLines).
       return hits ? on(`read on the debuff the build holds on the dummy (${recipe}; src/planner.js)`, { provisional: true }) : off("the supported skill deals no hits");
+    case "infiltrationTaken":
+      // Read on the debuff in src/planner.js (chunk8EnemyLines). The row's trigger is 1000031 on "this skill" (5000002) alone, which fires on
+      // the skill's hits and when its damage over time's value is set (research/core-formulas-chunk0-2026-10-31.md §14), so a skill that
+      // deals only damage over time holds it too (30 T claim audit, 2026-11-09).
+      return hits || full.engine === "skill-dot" ? on(`read on the debuff the build holds on the dummy (${recipe}: trigger 1000031 on this skill, its hits and its damage over time; src/planner.js)`, { provisional: true }) : off("the supported skill deals no modeled damage (hit or damage over time)");
     default:
       return off("condition not read");
   }

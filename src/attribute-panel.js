@@ -23,6 +23,7 @@ import { ATTRIBUTE_DEFINITIONS } from "./data/game/attribute-definitions.generat
 import { createPanelEvaluator, evaluateFormula } from "./attribute-formula.js";
 import { characterStatTotals } from "./character-stats.js";
 import { MAX_RESISTANCE_DEFAULT_PERCENT } from "./game-attribute-defaults.js";
+import { maxSpellBurstTotal } from "./max-spell-burst.js";
 
 export const TAGS = Object.freeze({ SPELL: 6001100, ATTACK: 6001090, HIT: 6001060, DOT: 6001170, MINION: 6000340, DOT_STATE: 5100309, AILMENT_STATE: 5100001, IGNITE_STATE: 5100003, TRAUMA_STATE: 5100006, WILT_STATE: 5100007 });
 export const TYPE_ATTRIBUTES = Object.freeze({ Physical: 5002, Lightning: 5108, Cold: 5109, Fire: 5107, Erosion: 5402 });
@@ -85,6 +86,21 @@ function aggregateDamage(lines, excluded, context) {
     byAttribute.get(attribute)[line.bucket === "additional" ? "additional" : "increased"].push(line);
   }
   return byAttribute;
+}
+
+// A "per stack of Max Spell Burst" conversion (Vorax Neck 812952064: node 114 from attr 6361's final value) on the hit reads the combat Max
+// Spell Burst; the town panel reads the build's "+N Max Spell Burst" lines alone (Squidnova's and Multi-Coupling's stacks are combat-only;
+// bing2 F2, 2026-11-10). `townMaxSpellBurstLines` gives such lines their town value; `perMaxSpellBurstCombatPart` the combat part above it.
+const PER_MAX_SPELL_BURST = /^\+?(\d+(?:\.\d+)?)% .+? per stack of Max Spell Burst ?, up to \+?(\d+(?:\.\d+)?)%/i;
+function townMaxSpellBurstLines(planner, lines = []) {
+  const town = maxSpellBurstTotal((planner.modifierTexts || []).filter((line) => !line.lineEffect && line.origin !== "derived"));
+  return lines.map((line) => {
+    const match = line?.conversion ? String(line.text ?? "").match(PER_MAX_SPELL_BURST) : null;
+    return match ? { ...line, value: Math.min(Number(match[2]), Number(match[1]) * town), combatValue: line.value } : line;
+  });
+}
+function perMaxSpellBurstCombatPart(planner, lines = []) {
+  return sum(townMaxSpellBurstLines(planner, lines).map((line) => (Number.isFinite(line.combatValue) ? Math.max(0, line.combatValue - line.value) : 0)));
 }
 
 // ---- Input store ------------------------------------------------------------------------------------------------------
@@ -216,7 +232,7 @@ export function panelInputs(planner) {
     }
   } else if (context.hit?.primary) {
     const primary = context.hit.primary;
-    const lines = [...valueLines(primary.increased, "increased"), ...valueLines(primary.additional, "additional")];
+    const lines = [...valueLines(townMaxSpellBurstLines(planner, primary.increased), "increased"), ...valueLines(primary.additional, "additional")];
     setDamageContext(store, aggregateDamage(lines, excluded, "hit"), "", `skillHits[${context.hit.name}].primary (town lines)`);
     // The skill hit's combat-only layer (Aim) is already outside the planner value these rows read (townAdditionalFactor), so it is
     // listed under its own context and not divided out of the "hit" split again (2026-10-18: the Youga / Homing Frost Bolt fixture,
@@ -372,11 +388,27 @@ export function plannerPanelValue(planner, id, context = mainSkillContext(planne
   const max = MAX_ROW[id] && planner.resistances?.entries?.find((entry) => entry.element === MAX_ROW[id]);
   if (max) return val(max.maximum, `resistances.${max.element}.maximum`);
   const hit = context.hit, rate = hit?.rate, shared = planner.ailments?.trauma?.shared ?? planner.ailments?.wilt?.shared ?? context.dot?.shared;
+  // A rating whose increased sum is below -100% (Keep It Up's -25% per stack at 8 stacks: the 2026-11-05 shared build) or whose flat lines are
+  // negative: the planner floors the combat rating and chance at 0, since a chance at or below 0 never rolls a Critical Strike (the whole-percent
+  // roll, 1-100 <= floor(chance)), while the panel's formulas carry the product unfloored (config_attributes_show 20600 / 21300: (base + weapon)
+  // × X × E, 20500 / 21200: ÷ 10000, 20502 / 20506 and 21210 / 21212: no floor; panel format "%.0f" and "%.2f%%"). The rows then read the
+  // planner's own product before its floor (the inputs set above: X raw, E 1), and its chance at the planner's 100 rating per point. The
+  // planner's damage is unchanged. Whether the game shows the negative figure or 0 is not checked in game.
+  const negativeRating = (() => {
+    const attack = context.attack && crit?.attackCrit;
+    const raw = attack ? ((attack.weaponRating ?? 0) + (attack.flatRating ?? 0)) * (1 + (attack.increasedRatingPercent ?? 0) / 100) * (attack.additionalRatingFactor ?? 1)
+      : crit ? ((crit.baseRating ?? 0) + (crit.flatRating ?? 0)) * (1 + (crit.increasedRatingPercent ?? 0) / 100) : NaN;
+    const path = attack ? `(${context.critPath}.attackCrit.weaponRating + flatRating) × (1 + increasedRatingPercent) × additionalRatingFactor` : `(${context.critPath}.baseRating + flatRating) × (1 + increasedRatingPercent)`;
+    return raw < 0 ? { raw, path: `${path}, before the planner's floor at 0 (no Critical Strike either way; the panel formula has no floor)` } : null;
+  })();
   switch (id) {
-    case 21300: case 20600: return context.attack && crit?.attackCrit ? val(crit.attackCrit.rating, `${context.critPath}.attackCrit.rating`) : val(crit?.rating, `${context.critPath}.rating`);
+    case 21300: case 20600: if (negativeRating) return val(negativeRating.raw, negativeRating.path);
+      return context.attack && crit?.attackCrit ? val(crit.attackCrit.rating, `${context.critPath}.attackCrit.rating`) : val(crit?.rating, `${context.critPath}.rating`);
     case 21301: case 20602: return context.attack && crit?.attackCrit ? val(crit.attackCrit.increasedRatingPercent, `${context.critPath}.attackCrit.increasedRatingPercent`) : val(crit?.increasedRatingPercent, `${context.critPath}.increasedRatingPercent`);
-    case 21210: case 20502: return context.attack && crit?.attackCrit ? val(crit.attackCrit.chancePercent, `${context.critPath}.attackCrit.chancePercent`) : val(crit?.criticalChancePercent, `${context.critPath}.criticalChancePercent`);
-    case 21212: case 20506: return context.attack && crit?.attackCrit ? val(Math.min(100, crit.attackCrit.chancePercent), `min(100, ${context.critPath}.attackCrit.chancePercent)`) : val(Math.min(100, crit?.criticalChancePercent), `min(100, ${context.critPath}.criticalChancePercent)`);
+    case 21210: case 20502: if (negativeRating) return val(negativeRating.raw / 100, `${negativeRating.path} ÷ 100`);
+      return context.attack && crit?.attackCrit ? val(crit.attackCrit.chancePercent, `${context.critPath}.attackCrit.chancePercent`) : val(crit?.criticalChancePercent, `${context.critPath}.criticalChancePercent`);
+    case 21212: case 20506: if (negativeRating) return val(negativeRating.raw / 100, `${negativeRating.path} ÷ 100`);
+      return context.attack && crit?.attackCrit ? val(Math.min(100, crit.attackCrit.chancePercent), `min(100, ${context.critPath}.attackCrit.chancePercent)`) : val(Math.min(100, crit?.criticalChancePercent), `min(100, ${context.critPath}.criticalChancePercent)`);
     case 21400: case 20700: return val(crit?.townDamagePercent ?? crit?.criticalDamagePercent, `${context.critPath}.criticalDamagePercent`);
     case 21000: return context.beam ? val(planner.beamCastRate?.castsPerSecond, "beamCastRate.castsPerSecond") : val(rate?.usesPerSecond, `skillHits[${hit?.name}].rate.usesPerSecond`);
     case 21001: return context.beam ? val(planner.beamCastRate?.increasedPercent, "beamCastRate.increasedPercent") : val(sum((rate?.castSpeedSources || []).filter((line) => !line.additional).map((line) => line.value)), "Σ rate.castSpeedSources (increased)");
@@ -391,7 +423,7 @@ export function plannerPanelValue(planner, id, context = mainSkillContext(planne
       return val(hit?.town?.dps, `skillHits[${hit?.name}].town.dps`);
     case 20212: {
       if (context.beam) { const town = (planner.directHit?.ledger || []).filter((line) => line.bucket === "increased" && !townExclusion({ ...line, text: line.text })); return val(sum(town.map((line) => line.percent)), "directHit increased lines (town)"); }
-      if (hit?.primary) return val((hit.primary.increasedFactor - 1) * 100 - sum((hit.primary.increased || []).filter((line) => townExclusion(line)).map((line) => line.value)), `skillHits[${hit.name}].primary.increasedFactor − 1 (town)`);
+      if (hit?.primary) return val((hit.primary.increasedFactor - 1) * 100 - sum((hit.primary.increased || []).filter((line) => townExclusion(line)).map((line) => line.value)) - perMaxSpellBurstCombatPart(planner, hit.primary.increased), `skillHits[${hit.name}].primary.increasedFactor − 1 (town)`);
       return none("no hit ledger for the main skill");
     }
     case 20229: {
@@ -546,7 +578,7 @@ function plannerChain(planner, context, kind) {
   if (!primary) return { value: null, reason: "no hit ledger" };
   // The increased lines the town panel leaves out (combat-only: "+X% damage against Cursed enemies") come off the pool, as row 20212
   // takes them off (2026-11-02: the Gemma Chromatic Shot fixture is the first with such a line on a hit chain).
-  const townIncreased = primary.increasedFactor - sum((primary.increased || []).filter((line) => townExclusion(line)).map((line) => line.value)) / 100;
+  const townIncreased = primary.increasedFactor - (sum((primary.increased || []).filter((line) => townExclusion(line)).map((line) => line.value)) + perMaxSpellBurstCombatPart(planner, primary.increased)) / 100;
   return { value: townIncreased * (primary.townAdditionalFactor ?? primary.additionalFactor), path: `skillHits[${context.hit.name}].primary.increasedFactor (town lines) × townAdditionalFactor` };
 }
 

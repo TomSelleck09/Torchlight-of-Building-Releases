@@ -11,6 +11,10 @@
 //     at its uptime min(1, 3 s × the follower skill's casts/s), time-averaged (provisional, open question combat-armor-buffs);
 //   - Thea's Prophecy of Shelter (4791021: attr 4001 / 4002 / 1601 mod 4, p0 × Tenacity stacks, gate 300 Tenacity stacks = Focus stacks),
 //     with the early Blessing pass's stacks.
+//   - "+X% (additional) Armor per stack of <Blessing> Blessing owned" (2026-11-09, 25 T gap 4): The Brave's Resolve (86093: attr 4001 mod 4,
+//     GetBuffStack(340) × p0, one additional term) and the God of Might slate's line (60091: node 116 runs its row once per Tenacity stack,
+//     uncapped, attr 4001 mod 3: increased), with the early Blessing pass's stacks (Tenacity 340, Focus 320, Agility 380). Combat only:
+//     the town panel holds no Tenacity.
 // The town stat sheet keeps its own Armor (stat-sheet lines only).
 
 import { resourcePool } from "./effective-hp.js";
@@ -20,10 +24,11 @@ import { normalizePercentageText } from "./percentage-text.js";
 import { playerBuffSet } from "./unit-buff-set.js";
 
 const round = (value, digits = 4) => Math.round(value * 10 ** digits) / 10 ** digits;
+const PER_BLESSING_ARMOR = /^\+?(\d+(?:\.\d+)?)% (additional )?Armor per stack of (Tenacity|Focus|Agility) Blessing owned$/i;
 const SHELTER = /^\+?(\d+(?:\.\d+)?)% additional Defense per stack of Tenacity Blessing when the number of Tenacity Blessing stacks equals the number of Focus Blessing stacks$/i;
 
 /**
- * @returns {{ value: number, town: number, flat: object[], additional: object[], sources: object[] }}
+ * @returns {{ value: number, town: number, flat: object[], increased: object[], additional: object[], sources: object[] }}
  */
 export function combatArmor({ statTotals, auraEntries = [], activeNames = new Set(), setups = [], modifierTexts = [], state = {}, requestedConditions = {}, followerSelection = null, blessingStacks = {}, playerBuffs = null } = {}) {
   const flat = [], additional = [];
@@ -51,7 +56,17 @@ export function combatArmor({ statTotals, auraEntries = [], activeNames = new Se
     const value = Number(match[1]) * multiplier * tenacity;
     additional.push({ source: line.source, text: `+${round(value)}% additional Armor (${match[1]}% × ${tenacity} Tenacity stacks = ${focus} Focus stacks)`, value });
   }
+  const increased = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived") continue;
+    const match = normalizePercentageText(String(line.text || "")).replace(/\s+/g, " ").trim().match(PER_BLESSING_ARMOR);
+    const stacks = match ? Number(held[match[3][0].toUpperCase() + match[3].slice(1).toLowerCase()]) || 0 : 0;
+    if (!match || !(stacks > 0)) continue;
+    const multiplier = Number.isFinite(line.multiplier) ? line.multiplier : 1;
+    const value = Number(match[1]) * multiplier * stacks;
+    (match[2] ? additional : increased).push({ source: line.source, text: `+${round(value)}% ${match[2] ? "additional " : ""}Armor (${round(Number(match[1]) * multiplier)}% × ${stacks} ${match[3]} Blessing stacks)`, value });
+  }
   const town = resourcePool(statTotals, "armor", 0, { defense: true }).value;
-  const pool = resourcePool(statTotals, "armor", 0, { defense: true, extra: { flat, additional } });
-  return { value: pool.value, town, flat, additional, sources: [...flat, ...additional] };
+  const pool = resourcePool(statTotals, "armor", 0, { defense: true, extra: { flat, increased, additional } });
+  return { value: pool.value, town, flat, increased, additional, sources: [...flat, ...increased, ...additional] };
 }

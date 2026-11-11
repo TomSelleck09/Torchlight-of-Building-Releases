@@ -41,7 +41,8 @@ const DEFINITIONS = [
   { name: "Chain Lightning", delivery: "spell-chain", components: [{ key: "hit", label: "Chain Lightning", groupId: 211, perUse: 1, ...text("+2 Jumps need other enemies: one hit per cast on a single dummy") }] },
   { name: "Fire Burst", delivery: "spell-area", components: [{ key: "hit", label: "Fire Burst", groupId: 521, perUse: 1, ...text("one area hit per cast") }], notes: ["Game description (group 521): extra damage to enemies at the centre of the area; the magnitude is not in the decoded row, so the plain hit is used."], timingFallback: { useTime: 0.8, speedType: "cast-speed", cooldown: 0, cdTimes: 0, source: "Reference data cast speed 0.8 s (no Split skill file linked for Fire Burst)" } },
   { name: "Frigid Transmission", delivery: "spell-area", components: [{ key: "hit", label: "Frigid Transmission", groupId: 471, perUse: 1, ...text("one area hit per cast; 3 s cooldown (game)") }], notes: ["The Frostbite-on-Cold-hit buff it grants is not applied yet (hit ailments are a follow-up)."] },
-  { name: "Ice Lances", delivery: "spell-projectile", components: [{ key: "hit", label: "Ice Lances", groupId: 291, perUse: 1, ...text("Reference data: the projectiles cannot hit the same enemy, so one lance per cast reaches the dummy") }] },
+  // ownJumps: the SS14 tooltip's "+1 Jumps for this skill" (Split 225028); read only with Ice Lances: Rebound (src/ice-lances-rebound.js).
+  { name: "Ice Lances", delivery: "spell-projectile", ownJumps: { value: 1, text: "+1 Jumps for this skill (SS14 tooltip)" }, components: [{ key: "hit", label: "Ice Lances", groupId: 291, perUse: 1, ...text("Reference data: the projectiles cannot hit the same enemy, so one lance per cast reaches the dummy (with Ice Lances: Rebound the lance returns: src/ice-lances-rebound.js)") }] },
   { name: "Lightning Beam", delivery: "spell-beam", components: [
     { key: "hit", label: "Lightning Beam", groupId: 900, perUse: 1, ...text("one beam hit per cast") },
     { key: "thunderbolts", label: "Thunderbolts", groupId: 900, perUse: { heldEntities: { everyUses: 2, durationSeconds: 6, cap: 3, intervalSeconds: 0.65 } }, ...provisional("game text: one Thunderbolt every 2 casts, up to 3, 6 s, each casting the skill by itself; Split 163969's ghost 10020: trigger interval 0.65 s, frequencyAtkSpeedPercent 0, so Cast Speed does not speed it. Best case: every cast reaches the dummy, as it follows you") }
@@ -55,9 +56,9 @@ const DEFINITIONS = [
   { name: "Blizzard", delivery: "spell-area", components: [{ key: "waves", label: "Blizzard waves", groupId: 141, perUse: 3, ...text("Reference data: 1 wave + 2 total waves; game description (group 141): the three waves can hit the same enemy") }],
     selfDebuffTaken: [{ types: ["Cold"], value: 10, text: "+10% additional Cold Damage taken (reference data: Blizzard's hit debuff; game description: Cold and Lightning Resistance reduced for 5 s)" }],
     notes: ["Blizzard: Split 308252, 0.9 s scaled by Cast Speed, no cooldown; waves 0.4 s apart. Split 207367 (1 s fixed, 2 s cooldown, no cast) is Blizzard: Freezing Point's. The drop-speed cast-speed scaling (up to +100%) changes when waves land, not how many, so it is not applied."] },
-  { name: "Chromatic Shot", delivery: "spell-projectile", components: [{ key: "hit", label: "Chromatic Shot projectiles", groupId: 41, perUse: { perTick: 1, falloff: { count: 3, factor: 0.8, reach: "fan" } }, basis: "observed", note: `Reference data: 1 + "Projectile Quantity of this skill +2" = 3 projectiles that "can hit the same enemy"; "This skill's Shotgun Effect falloff coefficient is 80%"; ${SHOTGUN_NOTE(3, 0.8, "fan")}. Dummy runs (no-gear Lv.94 Iris, Lv16, 2026-10-12, at the then 70% coefficient): 2 of 3 land within 6 m, 3 of 5 with Multiple Projectiles, one at about 10 m` }], notes: ["Chromatic Shot: the on-kill True Damage explosion (25% Max Life) does not apply to the dummy."] },
+  { name: "Chromatic Shot", delivery: "spell-projectile", components: [{ key: "hit", label: "Chromatic Shot projectiles", groupId: 41, perUse: { perTick: 1, falloff: { count: 3, factor: 0.2, reach: "fan" } }, basis: "observed", note: `Reference data: 1 + "Projectile Quantity of this skill +2" = 3 projectiles that "can hit the same enemy"; SS14 tooltip (user, 2026-11-05) "This skill's Shotgun Effect falloff coefficient is 80%" = 100 − its hit rule's table 20 (Split 466048), so each later projectile keeps 20%; ${SHOTGUN_NOTE(3, 0.2, "fan")}. Dummy runs (SS13, table 30, tooltip 70%; no-gear Lv.94 Iris, Lv16, 2026-10-12), read by the client: all 3 land within 6 m (1.6 × 189 = 302 vs 311), all 5 with Multiple Projectiles (2.2 × 1.15 × 189 = 478 vs 524), one at about 10 m (189)` }], notes: ["Chromatic Shot: the on-kill True Damage explosion (25% Max Life) does not apply to the dummy."] },
   { name: "Fallen Star", delivery: "spell-terra", useModel: terra(6, "No duration is published for the Comet Terra; 6 s is assumed from the other Terra skills (provisional)"), terraCharge: TERRA_CHARGE,
-    components: [{ key: "comets", label: "Comets", groupId: 1221, perUse: { perTick: 1, intervalSeconds: 0.8, castSpeedScaled: true, falloff: { count: 3, factor: 0.7, reach: "all" } }, ...provisional(`Reference data: a wave every 0.8 s (cast-speed scaled), 3 comets per wave; ${SHOTGUN_NOTE(3, 0.7, "all")} (game data: the comets are fallen projectiles that all aim at the enemy, aimEmemyPercent 100); best case: every wave lands on the dummy`) }],
+    components: [{ key: "comets", label: "Comets", groupId: 1221, perUse: { perTick: 1, intervalSeconds: 0.8, castSpeedScaled: true, falloff: { count: 3, factor: 0.3, reach: "all" } }, ...provisional(`Reference data: a wave every 0.8 s (cast-speed scaled), 3 comets per wave; ${SHOTGUN_NOTE(3, 0.3, "all")} (game data: the comets are fallen projectiles that all aim at the enemy, aimEmemyPercent 100); best case: every wave lands on the dummy`) }],
     notes: ["Fallen Star: \"80% of the damage increase per Barrage Wave is also applied to Comet Damage\" has no published per-wave value and is not modeled."] },
   { name: "Flame Jet", delivery: "spell-terra", useModel: terra(), terraCharge: TERRA_CHARGE, parabolicSplit: { components: ["bombs"], additionalPercent: -50, text: "The skill's Projectiles' effect after splitting -50% additional damage (skill text)" },
     components: [
@@ -103,7 +104,7 @@ const DEFINITIONS = [
       { key: "thunderstrike", label: "Thunderstrike", groupId: 1241, perUse: { perTick: 1, intervalSeconds: 0.8, castSpeedScaled: true }, extraAdditional: [{ source: "Storm Field: Currents", text: "+3% additional Hit Damage per target hit by Currents: one target", value: 3 }], ...provisional("one Thunderstrike per Currents generation assumed (the trigger is not described); the +3% per target hit by Currents is one target") }
     ] },
   { name: "Tidewell", delivery: "spell-terra", useModel: terra(), terraCharge: TERRA_CHARGE,
-    components: [{ key: "torrents", label: "Torrents", groupId: 1211, perUse: { perTick: 1, intervalSeconds: 0.8, castSpeedScaled: true, falloff: { count: 2, factor: 0.7, reach: "all" } }, ...provisional(`Reference data: an eruption every 0.8 s (cast-speed scaled) firing 2 Torrents; ${SHOTGUN_NOTE(2, 0.7, "all")}; best case: every eruption lands`) }],
+    components: [{ key: "torrents", label: "Torrents", groupId: 1211, perUse: { perTick: 1, intervalSeconds: 0.8, castSpeedScaled: true, falloff: { count: 2, factor: 0.3, reach: "all" } }, ...provisional(`Reference data: an eruption every 0.8 s (cast-speed scaled) firing 2 Torrents; ${SHOTGUN_NOTE(2, 0.3, "all")}; best case: every eruption lands`) }],
     notes: ["Tidewell: +5% additional Hit Damage per Slow stack on the enemy is not applied (Slow stack count on the dummy unknown)."] },
   // --- batch 1 (2026-10-11): spell channels. One "use" is one channel interval (game doSpeed 0.333 s, cast-speed
   // scaled); the channel holds its max stacks (own buffs pre-built, user 2026-10-09), so per-stack effects are taken
@@ -114,7 +115,7 @@ const DEFINITIONS = [
   { name: "Icebound Beam", delivery: "channel-beam", useModel: channel(),
     components: [
       { key: "beam", label: "Cold Beam", groupId: 800, perUse: 1, ...text("one beam hit per channel use (reference data: not affected by beam quantity bonuses)") },
-      { key: "blades", label: "Icy Blade projectiles", groupId: 801, perUse: { perTick: 1, everyUses: 5, falloff: { count: 2, factor: 0.65, reach: "all" } }, ...provisional(`game description (group 800): a projectile volley every 5 channel stacks; reference data: 1 base + 1 Projectile Quantity, ${SHOTGUN_NOTE(2, 0.65, "all")} per volley (game data: the Icy Blade shot has no spread angle, so the volley flies one line; its hit rule's repeat decrease 35 matches the 65% coefficient); every fifth use fires it (the stack counter is assumed to keep cycling at max stacks)`) }
+      { key: "blades", label: "Icy Blade projectiles", groupId: 801, perUse: { perTick: 1, everyUses: 5, falloff: { count: 2, factor: 1, reach: "all" } }, ...provisional(`game description (group 800): a projectile volley every 5 channel stacks; reference data: 1 base + 1 Projectile Quantity, all 2 reach the dummy, each at 100% (game data: the Icy Blade shot has no spread angle, so the volley flies one line; its hit rule, Split 127219 reaction_shot, is in brother group −1 with bCalcPercentOnSameEntity 0, so the client's repeat multiplier counts no earlier hit and its table 35 never applies: SS14 0x1423e3d40, research/oq-shadows-seal-client-2026-11-05.md §1, empty-table and group −1 paths read 2026-11-08; the text's "Shotgun Effect falloff coefficient is 65%" describes that inert table); every fifth use fires it (the stack counter is assumed to keep cycling at max stacks)`) }
     ],
     notes: ["Icebound Beam: beam reflections → projectile jumps need other enemies and are not modeled."] },
   { name: "Howling Gale", delivery: "channel-other", useModel: channel(), channel: { perAdditionalMaxStackAdditionalPercent: 21.5 },
@@ -197,13 +198,13 @@ const DEFINITIONS = [
   // midpoint in the hit engine. Voltaic Ripple deals only damage over time and is a skill-DoT profile
   // (src/skill-damage-profiles.js).
   { name: "Psionic Missile", delivery: "spell-projectile", timingFallback: newSkillTiming("Psionic Missile", 0.649),
-    projectileVolley: { factor: 0.8, reach: "all", note: "the first projectile explodes at the targeted location and the rest land around it, and they can hit the same enemy (reference data card), so every one lands, each after the first at 80%",
-      status: "Reference data: \"Multiple projectiles can hit the same enemy. This skill's Shotgun Effect falloff coefficient is 80%\"; the extra projectiles land around the targeted location, so all are read as reaching the dummy, each after the first at ×0.8 (linear Shotgun falloff)" },
+    projectileVolley: { factor: 0.2, reach: "all", note: "the first projectile explodes at the targeted location and the rest land around it, and they can hit the same enemy (reference data card), so every one lands, each after the first at 20% (hit rule table 20, Split 380408; the text's 80% is the share lost)",
+      status: "Reference data: \"Multiple projectiles can hit the same enemy. This skill's Shotgun Effect falloff coefficient is 80%\"; the extra projectiles land around the targeted location, so all are read as reaching the dummy, each after the first at ×0.2 (hit rule table 20 kept; linear Shotgun falloff)" },
     components: [{ key: "hit", label: "Psionic Missile", groupId: 1271, perUse: 1, ...text("Reference data: fires 1 projectile that explodes on landing, so one hit per cast; extra projectiles from Projectile Quantity land around the target and can hit the same enemy at the 80% Shotgun Effect coefficient") }],
     notes: ["Psionic Missile: game row 1272 (Physical 943–1571 at Lv.20, effectiveness 233%: 1.5 × the missile's row) has no line on the reference data card and is not modeled."] },
   { name: "Homing Frost Bolt", delivery: "spell-projectile", timingFallback: newSkillTiming("Homing Frost Bolt", 0.649),
-    projectileVolley: { factor: 0.6, reach: "all", perQuantity: 2, maxExtra: 2, note: "1 additional Frost Bolt for every +2 Projectile Quantity, up to +2; the bolts launch at an enemy and can hit the same enemy, so every bolt lands on the single dummy, each after the first at 60%",
-      status: "Reference data: 1 additional Frost Bolt for every +2 Projectile Quantity (up to +2); the bolts launch at an enemy and can hit the same enemy, so all reach the dummy, each after the first at ×0.6 (linear Shotgun falloff)" },
+    projectileVolley: { factor: 0.4, reach: "all", perQuantity: 2, maxExtra: 2, note: "1 additional Frost Bolt for every +2 Projectile Quantity, up to +2; the bolts launch at an enemy and can hit the same enemy, so every bolt lands on the single dummy, each after the first at 40% (hit rule table 40, Split 505568; the text's 60% is the share lost)",
+      status: "Reference data: 1 additional Frost Bolt for every +2 Projectile Quantity (up to +2); the bolts launch at an enemy and can hit the same enemy, so all reach the dummy, each after the first at ×0.4 (hit rule table 40 kept; linear Shotgun falloff)" },
     components: [{ key: "hit", label: "Frost Bolt", groupId: 1281, perUse: 1,
       extraAdditional: [{ source: "Homing Frost Bolt: unfired Frost Bolts", text: "+4% additional damage for this skill for every 1 unfired Frost Bolt, up to +24%; best case: held at the +24% cap", value: 24 }],
       ...text("Reference data: each cast generates 1 Frost Bolt that condenses (1 s, Cast Speed at 55% efficiency) and then launches at an enemy, so one hit per cast on the dummy; the condensation delays the hit, not the rate") }],
@@ -302,6 +303,8 @@ function buildProfile(definition) {
     additionalPerAttackSpeedPercent: definition.additionalPerAttackSpeedPercent || 0, warnings: definition.warnings || [],
     useModel: definition.useModel || { kind: "cast" },
     cycle: definition.cycle || null,
+    // A Combo skill's own Mark on the dummy (Spectral Slash: Mark, buff 11340; src/skill-hit-model.js ownMark).
+    ownMark: definition.ownMark || null,
     // Slash-Strike skills (src/attack-hit-profiles.js; 2026-10-14): own Steep Strike chance and how the chance acts
     // (src/skill-hit-model.js steepStrikeState).
     steepStrike: definition.steepStrike || null,
@@ -317,6 +320,9 @@ function buildProfile(definition) {
     // src/skill-hit-model.js instead of the shared text rule) and "+X% additional Damage per +1 Projectile Quantity".
     projectileVolley: definition.projectileVolley || null,
     additionalPerProjectileQuantityPercent: definition.additionalPerProjectileQuantityPercent || 0,
+    // "+X% additional damage when this skill hits an enemy with at least N Frostbite Rating" (Frost Spike, record 559611328): read against
+    // the dummy's Frostbite Rating (src/skill-hit-model.js).
+    frostbiteRatingAdditional: definition.frostbiteRatingAdditional || null,
     // Forks left at the projectile's first hit (Disintegration (Noble) "for each remaining fork"; F4 2026-10-27).
     forks: definition.forks || 0,
     // Parabolic Projectile Splits (Three Birds with One Stone; user-supplied 2026-10-19): the components a split lands as again and
@@ -326,6 +332,8 @@ function buildProfile(definition) {
     fervorBonus: definition.fervorBonus || null,
     // A Shadow Strike skill's own Shadow Quantity (Wilt Spike: +1 at max buff stacks; src/skill-hit-model.js shadowState).
     ownShadowQuantity: definition.ownShadowQuantity || null,
+    // A skill's own Jumps (Ice Lances' +1), read with Ice Lances: Rebound (src/ice-lances-rebound.js).
+    ownJumps: definition.ownJumps || null,
     // Parts of the skill that would change dummy damage and are not modeled (src/skill-coverage.js: Partly modeled).
     unmodeled: definition.unmodeled || [],
     conversion,

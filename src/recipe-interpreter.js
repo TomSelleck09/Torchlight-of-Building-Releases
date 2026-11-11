@@ -29,7 +29,11 @@ const EMPTY_DATA = Object.freeze({ AFFIX_RECIPES: {}, AFFIX_ATTRIBUTE_LABELS: {}
 export function setAffixRecipeData(data) {
   DATA = data ? { ...EMPTY_DATA, ...data, AFFIX_GAME_NAMES: { ...EMPTY_NAMES, ...(data.AFFIX_GAME_NAMES || {}) } } : null;
   lineIndex = null;
+  dataVersion += 1;
 }
+let dataVersion = 0;
+/** Bumped on every setAffixRecipeData: memo keys of readers that depend on the installed table (src/skill-level-bonuses.js). */
+export const recipeDataVersion = () => dataVersion;
 export async function loadAffixRecipes() {
   if (!DATA) setAffixRecipeData(await import("./data/game/affix-recipes.generated.js"));
   return DATA;
@@ -1031,6 +1035,10 @@ const TRAIT_SOURCE = /^Hero trait: (.+?) \(Lv (\d+)/;
 // A gear line carries no row id. These are the legendary lines whose words reach another record's writes (chunk 12, research/legendaries-chunk12-2026-11-01.md §4): the corroded
 // Glacial Abyss Arrow says Lightning, and its row's 737388224 writes attr 5719, all damage, on Numbed enemies.
 const GEAR_LINE_RECORDS = Object.freeze({ "Glacial Abyss Arrow": [737388224] });
+// Memo (planner performance 2026-11-08): keyed on every field lineGameIdsUncached reads (the text only on pact lines) and on the id
+// table itself; the result is frozen and shared, so no caller may change it.
+const lineIdsCache = new Map();
+let lineIdsCacheMap = null;
 /**
  * Game affix ids for a planner modifier line ({ origin, source, text, reflectedFrom?, grantedCore? }), or null.
  * @returns {null | { ids: number[], exact: boolean, how: string, key: string }}
@@ -1038,6 +1046,17 @@ const GEAR_LINE_RECORDS = Object.freeze({ "Glacial Abyss Arrow": [737388224] });
 export function lineGameIds(line) {
   const map = data().AFFIX_LINE_IDS;
   if (!map || !line) return null;
+  if (lineIdsCacheMap !== map) { lineIdsCache.clear(); lineIdsCacheMap = map; }
+  const key = [line.origin, line.source ?? "", line.talentGameId ?? "", line.reflectedFrom ?? "", line.grantedCore ?? "\u0002", line.pactDestiny ? 1 : 0, line.origin === "pact" ? String(line.text ?? "") : ""].join("\u0001");
+  const cached = lineIdsCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = lineGameIdsUncached(line, map);
+  if (result) { Object.freeze(result.ids); Object.freeze(result); }
+  if (lineIdsCache.size > 100000) lineIdsCache.clear();
+  lineIdsCache.set(key, result);
+  return result;
+}
+function lineGameIdsUncached(line, map) {
   const source = String(line.source ?? "");
   const out = (ids, exact, how, key) => (Array.isArray(ids) && ids.length ? { ids: [...new Set(ids)], exact, how, key } : null);
   switch (line.origin) {

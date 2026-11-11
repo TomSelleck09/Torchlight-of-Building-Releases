@@ -23,11 +23,26 @@ import { migrateTraitGrantedSetups } from "./trait-granted-skills.js";
 import { migrateRenamedSkills } from "./skill-rename-migration.js";
 import { defaultFollowerState, normalizeFollowerState } from "./follower-model.js";
 import { normalizeModuleProtocols } from "./module-protocols.js";
+// The library is stored compactly (2026-11-09, user report: "Storage full" and a reload lost the open build; src/library-storage-codec.js).
+import { UNSAVED_COPY_KEY, UNSAVED_COPY_LOCAL_PREFIX, decodeBuildRecord, decodeUnsavedCopy, encodeBuildPayload, encodeLibraryText, encodeUnsavedCopy, isCompactBuildRecord, parseStoredLibrary } from "./library-storage-codec.js";
 
 const storageKey = "tli-builder:selena-candidate:v1";
 const libraryStorageKey = "tli-builder:build-library:v1";
 let unsavedLibrary = null;
 let storageFailure = false;
+// Why the last library write failed ({ reason: "quota" | "error", message }) and where this tab's open build was kept instead.
+let lastSaveIssue = null;
+let unsavedCopyPlaces = [];
+// Builds put back from unsaved copies when this tab loaded (takeRecoveredUnsavedBuilds), and the storages that check ran for.
+let recoveredNotice = null;
+const recoveryCheckedFor = new WeakSet();
+// Each build's verified compact payload, kept while its state and revisions are the same objects (a save re-encodes only the
+// build it changed), and each revision's packed difference (library-storage-codec.js encodeBuildPayload).
+const payloadCache = new WeakMap();
+const revisionCache = new WeakMap();
+// Decoded payload text per stored z, for the builds in the library last read (a re-read after another tab saved decodes only
+// the build that tab changed).
+const decodedPayloads = new Map();
 let cachedStorage = null;
 let cachedSerializedLibrary = null;
 let cachedLibrary = null;
@@ -326,15 +341,24 @@ export function loadBuildLibrary() {
   try { legacy = normalizePlannerState(JSON.parse(storage.getItem(storageKey) || "{}")); } catch {}
   let parsed;
   try {
-    parsed = JSON.parse(serialized || "{}");
+    // The compact format (library-storage-codec.js) or the plain JSON written before 2026-11-09.
+    parsed = parseStoredLibrary(serialized || "{}");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || (parsed.builds !== undefined && !Array.isArray(parsed.builds))) throw new TypeError("The stored build library has an unexpected shape");
   } catch (error) { return blockUnreadableLibrary(storage, serialized, legacy, error); }
   try {
     if (cachedStorage && cachedStorage !== storage) setBase(null);
     const valid = [], rejected = Array.isArray(parsed.quarantinedBuilds) ? [...parsed.quarantinedBuilds] : [];
     (parsed.builds || []).forEach((build, index) => {
-      try { valid.push(normalizeBuildRecord(build, index, legacy)); } catch { rejected.push(build); }
+      try {
+        // A compact record that cannot be decoded is kept as stored, like a build that fails validation.
+        const record = normalizeBuildRecord(decodeBuildRecord(build, { cache: decodedPayloads }), index, legacy);
+        // An untouched build is written back as it was stored (its stored payload), until its state or revisions change.
+        if (isCompactBuildRecord(build)) rememberPayload(record, { rv: build.rv, z: build.z });
+        valid.push(record);
+      } catch { rejected.push(build); }
     });
+    const storedPayloads = new Set((parsed.builds || []).filter(isCompactBuildRecord).map((build) => build.z));
+    for (const z of decodedPayloads.keys()) if (!storedPayloads.has(z)) decodedPayloads.delete(z);
     cachedLibrary = normalizeBuildLibrary(parsed, legacy, valid);
     quarantinedBuilds = rejected;
     cachedStorage = storage;
@@ -360,11 +384,15 @@ function writeBuildLibrary(normalized, { lastUsed = false } = {}) {
     unsavedLibrary = normalized;
     unsavedStorage = globalThis.localStorage;
     storageFailure = true;
+    lastSaveIssue = { reason: "unreadable", message: libraryWriteBlock.error };
+    keepUnsavedCopy(normalized, "unreadable");
     return normalized;
   }
   try {
     const storage = globalThis.localStorage;
-    const serialized = JSON.stringify(quarantinedBuilds.length ? { ...stored, quarantinedBuilds } : stored);
+    // Compact (library-storage-codec.js): every compact build record is verified to decode to its exact state and revisions
+    // before it is written, and the plain JSON of before 2026-11-09 is replaced only by that verified text (one setItem).
+    const serialized = encodeLibraryText(quarantinedBuilds.length ? { ...stored, quarantinedBuilds } : stored, { payloadFor: buildPayload });
     try { storage.setItem(libraryStorageKey, serialized); }
     catch (error) {
       // Older versions kept a second full copy of the active build. Reclaim it
@@ -373,29 +401,146 @@ function writeBuildLibrary(normalized, { lastUsed = false } = {}) {
       storage.removeItem(storageKey);
       storage.setItem(libraryStorageKey, serialized);
     }
+    if (storage.getItem(libraryStorageKey) !== serialized) throw new Error("The browser did not keep the saved library");
     try { storage.removeItem(storageKey); } catch {}
     unsavedLibrary = null;
     unsavedStorage = null;
     storageFailure = false;
+    lastSaveIssue = null;
     cachedLibrary = normalized;
     cachedStorage = storage;
     cachedSerializedLibrary = serialized;
     storedActiveBuildId = stored.activeBuildId;
-  } catch {
+    clearUnsavedCopies(normalized);
+  } catch (error) {
     // Keep the current session usable and retain edits in memory. Never claim
-    // they were saved when the browser rejected the write.
+    // they were saved when the browser rejected the write; keep this tab's
+    // open build in a small copy that a reload puts back (recoverUnsavedCopies).
     unsavedLibrary = normalized;
     unsavedStorage = globalThis.localStorage;
     storageFailure = true;
+    lastSaveIssue = { reason: isQuotaError(error) ? "quota" : "error", message: String(error?.message || error || "unknown error") };
+    keepUnsavedCopy(normalized, lastSaveIssue.reason);
   }
   return normalized;
 }
+
+const isQuotaError = (error) => error?.name === "QuotaExceededError" || error?.name === "NS_ERROR_DOM_QUOTA_REACHED" || error?.code === 22 || error?.code === 1014;
+
+function revisionRefs(revisions) { return Array.isArray(revisions) ? revisions.map((revision) => [revision, revision?.state, revision?.timestamp, revision?.label]) : null; }
+function sameRevisionRefs(refs, revisions) {
+  if (!refs || !Array.isArray(revisions) || refs.length !== revisions.length) return false;
+  return refs.every(([revision, state, timestamp, label], index) => { const current = revisions[index]; return current === revision && current?.state === state && current?.timestamp === timestamp && current?.label === label; });
+}
+function rememberPayload(build, payload) { payloadCache.set(build, { state: build.state, revisions: revisionRefs(build.revisions), payload }); }
+// The verified compact payload of a build, re-encoded only when its state or revisions changed.
+function buildPayload(build) {
+  const cached = payloadCache.get(build);
+  if (cached && cached.state === build.state && sameRevisionRefs(cached.revisions, build.revisions)) return cached.payload;
+  const payload = encodeBuildPayload(build, { revisionCache });
+  rememberPayload(build, payload);
+  return payload;
+}
+
+// ---- Unsaved copies (a failed write never loses the open build) ----
+// When the library cannot be written, this tab's open build is kept in its sessionStorage (kept across a reload of the tab;
+// a separate quota) and, when it fits, in localStorage under its own key. The next load puts the newest copy back into the
+// library (recoverUnsavedCopies); a successful write removes the copies it saved.
+function keepUnsavedCopy(library, reason) {
+  const build = library.builds.find((entry) => entry.id === library.activeBuildId);
+  unsavedCopyPlaces = [];
+  if (!build) return;
+  let text;
+  try { text = encodeUnsavedCopy({ build, savedAt: now(), reason }); } catch { return; }
+  try { const session = sessionStore(); if (session) { session.setItem(UNSAVED_COPY_KEY, text); if (session.getItem(UNSAVED_COPY_KEY) === text) unsavedCopyPlaces.push("session"); } } catch {}
+  try { const local = globalThis.localStorage; const key = `${UNSAVED_COPY_LOCAL_PREFIX}${build.id}`; local.setItem(key, text); if (local.getItem(key) === text) { unsavedCopyPlaces.push("local"); localCopyIds.add(build.id); } } catch {}
+}
+const localCopyIds = new Set();
+function clearUnsavedCopies(library) {
+  unsavedCopyPlaces = [];
+  const saved = new Set(library.builds.map((build) => build.id));
+  try {
+    const session = sessionStore(), text = session?.getItem(UNSAVED_COPY_KEY);
+    const copy = text ? decodeUnsavedCopy(text) : null;
+    if (text && (!copy || saved.has(copy.build.id))) session.removeItem(UNSAVED_COPY_KEY);
+  } catch {}
+  for (const id of [...localCopyIds]) {
+    if (!saved.has(id)) continue;
+    try { globalThis.localStorage.removeItem(`${UNSAVED_COPY_LOCAL_PREFIX}${id}`); localCopyIds.delete(id); } catch {}
+  }
+}
+// Puts the newest unsaved copy of each build back into the library: a stored build older than its copy takes the copy's state
+// (the stored state goes to its revisions), and a build that never reached storage (an import made while storage was full) is
+// added again. A copy older than the stored build (a later save succeeded) or equal to it is removed.
+function recoverUnsavedCopies() {
+  const local = globalThis.localStorage, session = sessionStore();
+  const copies = [];
+  let sessionCopy = null;
+  try { const text = session?.getItem(UNSAVED_COPY_KEY); const copy = text ? decodeUnsavedCopy(text) : null; if (copy) copies.push(sessionCopy = { ...copy, local: false, remove: () => session.removeItem(UNSAVED_COPY_KEY) }); } catch {}
+  for (const key of storageKeys(local).filter((name) => name.startsWith(UNSAVED_COPY_LOCAL_PREFIX))) {
+    try { const copy = decodeUnsavedCopy(local.getItem(key)); if (copy) copies.push({ ...copy, local: true, remove: () => local.removeItem(key) }); } catch {}
+  }
+  if (!copies.length) return;
+  const newest = new Map();
+  for (const copy of copies) { const kept = newest.get(copy.build.id); if (!kept || copy.savedAt > kept.savedAt) newest.set(copy.build.id, copy); }
+  const library = loadBuildLibrary();
+  const recovered = [], recoveredIds = new Set();
+  // This tab's own copy is the build it had open: it stays the tab's build (it may be one that never reached storage).
+  const tabBuildId = sessionCopy?.build.id || null;
+  for (const copy of newest.values()) {
+    let state;
+    try { state = normalizePlannerState(copy.build.state); } catch { continue; }
+    const existing = library.builds.find((build) => build.id === copy.build.id);
+    if (existing) {
+      if (copy.savedAt < String(existing.updatedAt || "") || same(existing.state, state)) continue;
+      existing.revisions = [...existing.revisions, { timestamp: now(), label: "Before recovered changes", state: clone(existing.state) }].slice(-10);
+      existing.state = state;
+      existing.updatedAt = now();
+      recovered.push(existing.name); recoveredIds.add(existing.id);
+    } else {
+      const name = typeof copy.build.name === "string" && copy.build.name.trim() ? copy.build.name : "Recovered build";
+      library.builds.push({ id: copy.build.id, name, notes: String(copy.build.notes || ""), createdAt: copy.build.createdAt || now(), updatedAt: now(), state, revisions: [], shareHistory: Array.isArray(copy.build.shareHistory) ? copy.build.shareHistory : [] });
+      recovered.push(name); recoveredIds.add(copy.build.id);
+    }
+  }
+  if (recovered.length) {
+    if (tabBuildId && library.builds.some((build) => build.id === tabBuildId)) { library.activeBuildId = tabBuildId; if (library.compareBuildId === tabBuildId) library.compareBuildId = null; }
+    // Local copies of the recovered builds are removed by the write that saves them (now, or a later one).
+    for (const copy of copies) if (copy.local && recoveredIds.has(copy.build.id)) localCopyIds.add(copy.build.id);
+    writeBuildLibrary(library);
+    recoveredNotice = { names: recovered, saved: !storageFailure };
+  }
+  // Remove every copy the stored library now holds (stale ones included); keep them all while the library is not saved.
+  if (!storageFailure) {
+    const stored = loadBuildLibrary();
+    for (const copy of copies) {
+      const build = stored.builds.find((entry) => entry.id === copy.build.id);
+      if (!build) continue;
+      let state;
+      try { state = normalizePlannerState(copy.build.state); } catch { continue; }
+      if (same(build.state, state) || copy.savedAt < String(build.updatedAt || "")) { try { copy.remove(); } catch {} }
+    }
+  }
+}
+
+/** Why the library is not saved (null when it is): { reason: "quota" | "error" | "unreadable", message, copyKept: ["session", "local"] }. */
+export function plannerStorageIssue() {
+  if (!storageFailure) return null;
+  const issue = libraryWriteBlock ? { reason: "unreadable", message: libraryWriteBlock.error } : lastSaveIssue || { reason: "error", message: "" };
+  return { ...issue, copyKept: [...unsavedCopyPlaces] };
+}
+
+/** The builds this tab put back from unsaved copies when it loaded ({ names, saved }), once; null otherwise. */
+export function takeRecoveredUnsavedBuilds() { const notice = recoveredNotice; recoveredNotice = null; return notice; }
 
 export function saveBuildLibrary(library, options) {
   return writeBuildLibrary(normalizeBuildLibrary(library), options);
 }
 
 export function loadPlannerState() {
+  // Once per page load and storage: put back the open build a failed write kept aside (recoverUnsavedCopies).
+  const local = globalThis.localStorage;
+  if (local && !recoveryCheckedFor.has(local)) { recoveryCheckedFor.add(local); try { recoverUnsavedCopies(); } catch {} }
   const library = loadBuildLibrary();
   const build = library.builds.find((entry) => entry.id === library.activeBuildId);
   setBase(build?.id, build ? JSON.stringify(build.state) : null);

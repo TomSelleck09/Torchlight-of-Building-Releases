@@ -106,7 +106,8 @@ function poolRow(label, pool, key, ehp, format, { shownValue = null, note = "", 
     ...(stat?.sources || []),
     ...(defenseStat?.sources || []).map((item) => ({ ...item, text: `${item.text} (Defense: Armor, Evasion and Energy Shield)` }))
   ];
-  const formula = `${label} · (base + flat + gear) × (1 + increased%) × additional = ${format(Math.round(pool.value))}`;
+  // A fixed pool ("Your Max Energy Shield is fixed at 0", node 336; src/effective-hp.js pool) ignores its lines.
+  const formula = Number.isFinite(pool.fixed) ? `${label} · fixed at ${format(pool.fixed)} (the lines below do not count)` : `${label} · (base + flat + gear) × (1 + increased%) × additional = ${format(Math.round(pool.value))}`;
   const components = `base ${pool.base} · flat ${pool.flat} · gear ${pool.gear} · +${pool.increased}% · ×${pool.additional}`;
   const notes = [...(note ? [note] : []), ...elixirNotes(sources, elixirNote)];
   return { label, value: format(Math.round(shownValue ?? pool.value)), title: [formula, components, ...notes, ...sources.map((item) => `${item.source}: ${item.text}`)].join("\n"), drill: drill(sources, "", formula, [components, ...notes]) };

@@ -186,6 +186,19 @@ export function startCastPhase(useSeconds, carriedFrames = 0) {
   return { remaining: Math.max(1, useSeconds * TICKS_PER_SECOND) - carriedFrames };
 }
 
+/**
+ * Uses one placed action carries when its steady use interval is shorter than one frame. The one-frame floor above lets an action end at
+ * most one use per tick, which cut a faster skill to 30 uses/s on the loops (the 2026-11-10 Youga Spacetime Illusion build: two Illusions,
+ * every cast Spell Bursting, 55.6 Ice Lances/s; the client's Spell Burst component casts every due queued record each frame,
+ * research/build-15t-claim-audit-2026-11-10.md §4.1, G3). A program places k = ⌈1 ÷ (30 × interval)⌉ uses per action, k × the interval
+ * apart, each firing its own effects: the long-run rate is the planner's. 1 for an interval of one frame or more (every other build).
+ */
+export function usesPerPlacement(seconds) {
+  if (!(seconds > 0)) return 1;
+  const frames = seconds * TICKS_PER_SECOND;
+  return frames >= 1 - PHASE_EPS ? 1 : Math.ceil(1 / frames - 1e-9);
+}
+
 /** Advance a phase by one tick. Null while it runs; at its end the overshoot in frames that the next use starts with. */
 export function tickCastPhase(phase, rule = CAST_OVERSHOOT_RULE) {
   if (!CAST_OVERSHOOT_RULES.includes(rule)) throw new RangeError(`tick engine: unknown cast overshoot rule ${rule}`);
@@ -485,9 +498,12 @@ function deal(world, key, amount, fields) {
 
 // The one rule for chance-gated events (decision 2026-10-31): an eligible event adds its probability and the effect fires when the sum
 // reaches 1. A closed gate makes the event ineligible, so it adds nothing, as a real roll behind that gate would not happen.
+// A row gated on the target's state (`requiresAny`: buff keys, one of them held; a Blessing gain "upon inflicting damage to a Frostbitten enemy",
+// record 424329's trigger tags on 4000112) is ineligible while none is held, like a closed gate.
 function rollAccumulator(world, effect, origin) {
   let state = world.accumulators.get(effect.key);
   if (!state) { state = { sum: 0, gate: newGate(), fires: 0 }; world.accumulators.set(effect.key, state); }
+  if (effect.requiresAny && !effect.requiresAny.some((key) => buffStacks(world, key) > 0)) return;
   if (effect.gate && !fixedGateReady(state.gate, world.frame, effect.gate.fixedSeconds)) return;
   state.sum += effect.probability;
   if (state.sum < 1 - 1e-9) return;
@@ -1288,7 +1304,7 @@ export const firstHitTimeline = (run) => ({ ...run, firstDamageSeconds: Number.i
  *   on the dummy (`record.presence`), and each Reap its Reap event (its spec's `holder`) in the share that fired
  * Effects: { kind: "hit", path, count, weight (a use's share, for the trace), onHit, landings (a Minion hit's landings for the trigger bus, W10 step 3c) } | { kind: "event", effects } | { kind: "buff", buff, seconds, stacks, maxStacks, layered (each gain its own layers and timers, the oldest out at the cap: the Blessings) } |
  * { kind: "dot", dot, seconds } | { kind: "collect", collector, value } | { kind: "delay", seconds, effects } |
- * { kind: "chance", key, probability, gate: { fixedSeconds }, effects } | { kind: "reduceCooldowns", seconds } |
+ * { kind: "chance", key, probability, gate: { fixedSeconds }, requiresAny: [buff], effects } | { kind: "reduceCooldowns", seconds } |
  * { kind: "use", event, units } (a skill use for the trigger bus, W10 step 3b) | { kind: "consume", buff, stacks } | { kind: "ailment", ailment, key, chance, notActiveChance, attempts, stream, stacks, value, reapUses: [reap key] } |
  * { kind: "reapUse", reap }.
  * Modifiers (on a path or a speed): { buff | collector | count: [{ buff } | { held: true } | { level: world => share }] (with linear, capCount: a

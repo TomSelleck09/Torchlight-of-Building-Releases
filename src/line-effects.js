@@ -90,6 +90,11 @@ export function bodyReaders(body) {
   if (/^[+-]?[\d.]+% Aura Effect$/i.test(body)) readers.push("aura");
   // "+X% Reaping Duration" (src/reaping-model.js collectReapingModifiers reads the derived line; Psychic's Dirge).
   if (/^\+[\d.]+% Reaping Duration$/i.test(body)) readers.push("reaping");
+  // "+X% Projectile Speed" (Law of Greed's "+X% Projectile Speed per stack of Max Spell Burst, up to +Y%", record 125797304: node 114
+  // from Max Spell Burst to attr 6005 increased): the derived line joins the plain Projectile Speed lines every Projectile Speed
+  // reader takes (the Gale-type conversions in src/skill-hit-model.js projectileSpeedState, Youga's Projectile Speed bonus, the
+  // Minion batch-6 summoner sum). Before 2026-11-09 the body had no reader and the line read Not modeled.
+  if (/^[+-]?[\d.]+% Projectile Speed$/i.test(body)) readers.push("projectileSpeed");
   // "+X% Affliction Effect" (src/build-mechanics.js derivedAfflictionEffect → the shared Affliction effect ledger; the revived
   // "For every enemy within 20 m nearby" family).
   if (/^\+[\d.]+% Affliction Effect$/i.test(body)) readers.push("affliction");

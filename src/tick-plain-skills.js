@@ -19,6 +19,8 @@
 // Skill DoTs with one strongest application go on the loop too, through the ailment program (src/tick-ailments.js): the recount's own values,
 // Affliction live. A DoT's Reap is a series of its own there.
 
+import { usesPerPlacement } from "./tick-engine.js";
+
 const TICK_DETAIL = /^([\d.]+) ticks \(every ([\d.]+) s over ([\d.]+) s\)/;
 const ENDS_THE_AREA = /\bwhen the .* ends\b/i;
 const SHARE_OF_USES = /× [\d.]+ share of (?:cycles|uses)/;
@@ -52,13 +54,24 @@ function useTiming(hit, speedKey = null) {
   const ownInterval = Math.max(use || 0, rate.intervalSeconds || 0);
   const budget = waits && rate.rotation && !(rate.rotation.pressEverySeconds > 0) && period > ownInterval * (1 + 1e-9);
   const cooldownSeconds = budget ? (rate.intervalSeconds > use * (1 + 1e-9) ? rate.intervalSeconds : null) : waits ? period : null;
-  const seconds = budget ? period : waits ? use : period;
+  const steady = budget ? period : waits ? use : period;
+  // Faster than one use per frame: k uses per placed action (src/tick-engine.js usesPerPlacement), k × the interval apart.
+  const batch = usesPerPlacement(steady), seconds = steady * batch;
   const useSeconds = speedKey ? { baseSeconds: seconds * rate.speedFactor, speed: speedKey } : seconds;
-  return { useSeconds, ...(cooldownSeconds ? { cooldown: { baseSeconds: cooldownSeconds } } : {}), ...firstUseField(rate) };
+  return { useSeconds, batch, ...(cooldownSeconds ? { cooldown: { baseSeconds: cooldownSeconds * batch } } : {}), ...batchedFirstUse(rate, steady, batch) };
 }
 
+// The batch lands when its last use would: the first placed use at the first use + (k − 1) intervals.
+function batchedFirstUse(rate, seconds, batch) {
+  const field = firstUseField(rate);
+  return batch > 1 && field.firstUseSeconds !== undefined ? { firstUseSeconds: field.firstUseSeconds + (batch - 1) * seconds } : field;
+}
+// Each use of a batch fires its own effects.
+export const repeatEffects = (effects, batch) => batch > 1 ? Array.from({ length: batch }, () => effects).flat() : effects;
+
 const componentOf = (hit, part) => hit.components[Number(String(part.key).split("#")[1])] ?? null;
-const baseKey = (key) => String(key).split(/[+>]/)[0];
+// A later Combo Finisher of the cycle (src/skill-hit-model.js finisherCharges: `<key>:chargeN`) lands with its Finisher step.
+const baseKey = (key) => String(key).split(/[+>]/)[0].replace(/:charge\d+(?::none)?$/, "");
 
 // A path over some of a skill's parts: the same series, its own events.
 const subPath = (path, key, parts) => ({ ...path, key, source: path.key, parts, modifiers: (path.modifiers || []).filter((modifier) => !modifier.parts || modifier.parts.some((name) => parts.some((part) => part.key === name))) });
@@ -191,23 +204,27 @@ export function compilePlainProgram(planner, hits, staticPaths, readings = {}, a
       actions.push({ ...base, steps });
       assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: kind, text: `${hit.name}: a cycle of ${steps.length} attacks, each landing its own components at its end (the steps scale together with the planner's interval: provisional).` });
     } else if (kind === "channel") {
-      const count = 1 / rate.hitsPerUse;
-      actions.push({ ...base, useSeconds: 1 / rate.hitsPerSecond, ...firstUseField(rate), effects: [...onUse, { ...strike, ...(count !== 1 ? { count } : {}) }, ...after, ...dotEffects] });
+      const count = 1 / rate.hitsPerUse, every = 1 / rate.hitsPerSecond, batch = usesPerPlacement(every);
+      actions.push({ ...base, useSeconds: every * batch, ...batchedFirstUse(rate, every, batch), effects: repeatEffects([...onUse, { ...strike, ...(count !== 1 ? { count } : {}) }, ...after, ...dotEffects], batch) });
       assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: kind, text: `${hit.name}: ${rate.hitsPerSecond} hits/s, one event per hit; full channeled stacks from engagement (a cold start is not on the loop).` });
     } else if (kind === "area") {
       const area = areaEffects(hit, path, readings.areaTicks ?? "planner", paths);
-      actions.push({ ...base, ...useTiming(hit, speedKey), effects: [...onUse, ...(onHit.length ? area.effects.map((effect) => withOnHit(effect, onHit)) : area.effects), ...after, ...dotEffects] });
+      const { batch, ...timing } = useTiming(hit, speedKey);
+      actions.push({ ...base, ...timing, effects: repeatEffects([...onUse, ...(onHit.length ? area.effects.map((effect) => withOnHit(effect, onHit)) : area.effects), ...after, ...dotEffects], batch) });
       assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: readings.areaTicks ?? "planner", text: `${hit.name}: the use lands a ${rate.terraDurationSeconds} s area. ${area.text} (open question tick-area-ticks).` });
     } else {
-      actions.push({ ...base, ...useTiming(hit, speedKey), effects: [...onUse, strike, ...after, ...dotEffects] });
-      assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: kind, text: `${hit.name}: one use per ${Math.round(1e4 / rate.usesPerSecond) / 1e4} s, the hit landing as the use ends${speedKey ? ", its use time read at the press from the live Cast Speed" : ""}.` });
+      const { batch, ...timing } = useTiming(hit, speedKey);
+      actions.push({ ...base, ...timing, effects: repeatEffects([...onUse, strike, ...after, ...dotEffects], batch) });
+      assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: kind, text: `${hit.name}: one use per ${Math.round(1e4 / rate.usesPerSecond) / 1e4} s, the hit landing as the use ends${speedKey ? ", its use time read at the press from the live Cast Speed" : ""}${batch > 1 ? `; faster than one use per frame, so ${batch} uses land together every ${batch} intervals` : ""}.` });
     }
   }
   // A skill that only applies a DoT (Frost Terra): its casts, at the planner's rate.
   for (const dot of skillDots) {
     if (placedDots.has(dot) || hits.some((hit) => hit.setupKey === dot.setupKey) || staticPaths[`hit:${dot.setupKey}`]) continue;
     const effect = placeDot(dot), use = bus?.dotUseEffect ? bus.dotUseEffect(dot) : null;
-    actions.push({ key: `${dot.key}:use`, label: `${dot.name} casts`, actor: "player", useSeconds: 1 / dot.applicationsPerSecond, ...(Number.isFinite(dot.firstApplicationSeconds) ? { firstUseSeconds: dot.firstApplicationSeconds } : {}), ...timerField(readings), effects: use ? [use, effect] : [effect] });
+    const every = 1 / dot.applicationsPerSecond, batch = usesPerPlacement(every);
+    const first = Number.isFinite(dot.firstApplicationSeconds) ? { firstUseSeconds: dot.firstApplicationSeconds + (batch - 1) * every } : {};
+    actions.push({ key: `${dot.key}:use`, label: `${dot.name} casts`, actor: "player", useSeconds: every * batch, ...first, ...timerField(readings), effects: repeatEffects(use ? [use, effect] : [effect], batch) });
   }
   for (const dot of placedDots) assumptions.push({ id: `tick:plain:${dot.key}`, value: dot.durationSeconds, text: `${dot.name}: ${Math.round(dot.combat.steadyDps / dot.combat.uptime * 100) / 100} DPS while active, ${dot.durationSeconds} s from each application, first settling on the next tick.` });
   return { paths, actions, periodics, dots, layers, assumptions };

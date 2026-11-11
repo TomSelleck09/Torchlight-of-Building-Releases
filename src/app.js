@@ -70,6 +70,7 @@ import { itemBaseName } from "./item-base-name.js";
 import { slateBaseName } from "./slate-base-name.js";
 import { baseAffixesSs13, baseAffixTiersSs13 } from "./data/gear/base-affixes-ss13.generated.js";
 import { voraxBaseAffixSlotPool } from "./vorax-base-affixes.js";
+import { voraxLegendaryAffixPool } from "./vorax-legendary-pool.js";
 import { craftAffixesSs13 } from "./data/gear/craft-affixes-ss13.generated.js";
 import { legendaryGearSs13 } from "./data/gear/legendary-gear-ss13.generated.js";
 import { corrodedLinesById, corrodedLinesFor } from "./legendary-corroded-lines.js";
@@ -115,7 +116,7 @@ import { downloadBackup, isSafeMode, setSafeMode } from "./recovery-core.js";
 import { buildCodeFromFileText, buildFileName, buildFileText, copyBuildCodeToClipboard, downloadTextFile, shareableBuildCode } from "./build-file.js";
 import { restoreLatestRevision } from "./planner-state.js";
 import { selectorBaseLevel } from "./skill-level-input.js";
-import { clearPlannerState, createBuild, defaultPlannerState, deleteAllBuilds, deleteBuild, duplicateActiveBuild, encodePlannerState, importBuildCode, libraryLoadIssues, loadBuildLibrary, loadPlannerState, plannerLibraryStorageKey, plannerStorageStatus, reconcileExternalLibraryChange, restoreBuildsFromBackup, savePlannerState, setActiveBuild, openBuildChangedElsewhere, dismissOpenBuildChange, markPlannerStateClean, startNewLibrary, updateActiveBuildMetadata } from "./planner-state.js";
+import { clearPlannerState, createBuild, defaultPlannerState, deleteAllBuilds, deleteBuild, duplicateActiveBuild, encodePlannerState, importBuildCode, libraryLoadIssues, loadBuildLibrary, loadPlannerState, plannerLibraryStorageKey, plannerStorageIssue, plannerStorageStatus, reconcileExternalLibraryChange, restoreBuildsFromBackup, savePlannerState, setActiveBuild, openBuildChangedElsewhere, dismissOpenBuildChange, markPlannerStateClean, startNewLibrary, takeRecoveredUnsavedBuilds, updateActiveBuildMetadata } from "./planner-state.js";
 import { carinoSpecialAmmoOptions } from "./carino-special-ammo.js";
 import { importReportText, importSnapshot, listSnapshots, loadGameIdMap, readGameLogFile } from "./game-log-import.js";
 import { gameLogAutoSnapshots, gameLogBuildName, gameLogFileStatusMarkup, gameLogFoundMarkup, gameLogListFailedMarkup, gameLogSnapshotListMarkup, gameLogSummaryMarkup } from "./game-log-import-view.js";
@@ -472,14 +473,7 @@ function persistPlannerState() {
   if (document.getElementById("other-tab-notice") && !openBuildChangedElsewhere()) hideOtherTabNotice();
   updateStorageStatus();
   renderPassPlanner = null;
-  if (!pendingCandidateRender) {
-    pendingCandidateRender = true;
-    queueMicrotask(() => {
-      if (!pendingCandidateRender) return;
-      pendingCandidateRender = false;
-      renderCandidateViews();
-    });
-  }
+  scheduleCandidateRender();
 }
 
 function startActiveBuildRename(tab) {
@@ -505,18 +499,94 @@ function startActiveBuildRename(tab) {
 }
 
 // The Active build card in the tab row (user, 2026-10-29: no visible autosave status). Autosave is unchanged; a failed save
-// (storage full or unreadable library) still marks the card in red with the reason on hover.
+// (storage full or unreadable library) still marks the card in red with the reason on hover, and (2026-11-09, user report:
+// a reload lost the open build) a notice says what was kept and offers Download backup (the header Backup: this build's code).
+function storageIssueText(issue){
+  if(!issue)return "";
+  if(issue.reason==="unreadable")return "Saved builds unreadable — changes not saved";
+  const kept=issue.copyKept?.includes("session")?" A copy of this build is kept in this tab and is restored after a reload.":issue.copyKept?.includes("local")?" A copy of this build is kept in this browser and is restored when the planner opens.":" No copy could be kept: download a backup before you reload.";
+  const reason=issue.reason==="quota"?"Browser storage is full: changes are not saved to the build library.":`Changes could not be saved to the build library (${issue.message||"unknown error"}).`;
+  return `${reason}${kept} Download a backup of this build to keep it safe.`;
+}
+let storageNoticeDismissed=false;
+function renderStorageFailureNotice(issue){
+  const existing=document.getElementById("storage-failure-notice");
+  // An unreadable library has its own notice (renderLibraryNotice).
+  if(!issue||issue.reason==="unreadable"){existing?.remove();if(!issue)storageNoticeDismissed=false;return;}
+  const text=storageIssueText(issue);
+  if(existing){existing.querySelector("span").textContent=text;return;}
+  if(storageNoticeDismissed||!document.body)return;
+  document.body.insertAdjacentHTML("beforeend",'<div id="storage-failure-notice" class="toast toast-action visible" role="alert"><span></span><button type="button" data-storage-backup>Download backup</button><button type="button" class="toast-dismiss" data-dismiss-storage-notice aria-label="Dismiss">×</button></div>');
+  const notice=document.getElementById("storage-failure-notice");
+  notice.querySelector("span").textContent=text;
+  notice.querySelector("[data-storage-backup]").addEventListener("click",()=>document.getElementById("backup-build")?.click());
+  notice.querySelector("[data-dismiss-storage-notice]").addEventListener("click",()=>{storageNoticeDismissed=true;notice.remove();});
+}
 function updateStorageStatus() {
   const library=loadBuildLibrary(),active=library.builds.find((build)=>build.id===library.activeBuildId);
   const unsaved = plannerStorageStatus() === "unsaved";
-  const warning = unsaved ? (libraryLoadIssues().unreadable ? "Saved builds unreadable — changes not saved" : "Storage full — changes not saved. Export your build.") : "";
+  const issue = unsaved ? plannerStorageIssue() : null;
+  const warning = unsaved ? (libraryLoadIssues().unreadable ? "Saved builds unreadable — changes not saved" : storageIssueText(issue) || "Storage full — changes not saved. Export your build.") : "";
   const tab=document.querySelector(".loadout-tab");
   if(tab){const label=tab.querySelector("span"); if(label)label.textContent=active?"Active build":"No active build";tab.querySelector("strong").textContent=active?.name||"Start a new build";tab.title=[active?`${active.name} · right-click to rename`:"",warning].filter(Boolean).join(" · ");tab.classList.toggle("storage-warning",unsaved);}
+  renderStorageFailureNotice(issue);
 }
 
 const cachedPlanner = createPlannerCache((state) => { if (calculationsPaused) throw new Error("Safe mode: calculations paused"); return calculatePlanner(state); });
 function currentPlanner() { const planner = renderPassPlanner || cachedPlanner(capturePlannerState()); setCoverageContext(planner); return planner; }
+// Coalesced recalculation (planner performance 2026-11-08). An edit schedules one render task (persistPlannerState); a view render
+// that would have to calculate (no render pass running, no kept result for the current state) is deferred to that task instead of
+// calculating inside the handler, so k quick edits cost one calculation on the latest state, and edits queued during a long
+// calculation share the next one. The task calculates once (renderCandidateViewsNow) and then runs the deferred renders the pass
+// did not already run, from the kept result. Logic that needs the planner now (currentPlanner outside a render) still calculates
+// at once, and its result is kept for the task. Page start renders synchronously (coalesceRenders is set after it).
+let coalesceRenders = false;
+let candidateRenderTimer = null;
+let renderPassNames = null;
+let flushingDeferredRenders = false;
+const deferredRenders = new Map();
+function scheduleCandidateRender() {
+  pendingCandidateRender = true;
+  if (candidateRenderTimer !== null) return;
+  candidateRenderTimer = setTimeout(() => {
+    candidateRenderTimer = null;
+    if (pendingCandidateRender || deferredRenders.size) renderCandidateViewsNow();
+  }, 0);
+}
+const renderWouldCalculate = () => coalesceRenders && !calculationsPaused && !renderPassPlanner && !flushingDeferredRenders && cachedPlanner.peek(capturePlannerState()) === undefined;
+function deferredRender(name, renderView) {
+  return function (...args) {
+    if (renderWouldCalculate()) { deferredRenders.set(name, () => renderView.apply(this, args)); scheduleCandidateRender(); return undefined; }
+    renderPassNames?.add(name);
+    return renderView.apply(this, args);
+  };
+}
+function flushDeferredRenders() {
+  if (!deferredRenders.size) return;
+  const pending = [...deferredRenders].filter(([name]) => !renderPassNames?.has(name));
+  deferredRenders.clear();
+  flushingDeferredRenders = true;
+  try { for (const [, run] of pending) { try { run(); } catch (error) { showCalculationFailure(error); } } }
+  finally { flushingDeferredRenders = false; }
+}
 // The Damage path's own pass when the build's Target Fire Resistance is not 30% (src/planner-cache.js damagePathPlanner).
+// The view renders that read the planner wait for the scheduled calculation (deferredRender above). The Config card is rendered
+// only while the Config view shows (activating it renders it): in manual mode its source probe is a second full calculation.
+render = deferredRender("render", render);
+renderTalents = deferredRender("renderTalents", renderTalents);
+renderSkills = deferredRender("renderSkills", renderSkills);
+renderSlates = deferredRender("renderSlates", renderSlates);
+renderEquipment = deferredRender("renderEquipment", renderEquipment);
+renderPacts = deferredRender("renderPacts", renderPacts);
+renderOverview = deferredRender("renderOverview", renderOverview);
+renderStatsSidebar = deferredRender("renderStatsSidebar", renderStatsSidebar);
+renderHeroTraitTree = deferredRender("renderHeroTraitTree", renderHeroTraitTree);
+renderHeroPanel = deferredRender("renderHeroPanel", renderHeroPanel);
+renderHeroMemoryInventory = deferredRender("renderHeroMemoryInventory", renderHeroMemoryInventory);
+renderSlateInventory = deferredRender("renderSlateInventory", renderSlateInventory);
+renderPrismInventory = deferredRender("renderPrismInventory", renderPrismInventory);
+renderCharacter = deferredRender("renderCharacter", renderCharacter);
+renderConfiguration = ((renderView) => function (...args) { return coalesceRenders && activeWorkspaceView !== "configuration" ? undefined : renderView.apply(this, args); })(deferredRender("renderConfiguration", renderConfiguration));
 const damagePathPlannerCache = createPlannerCache((state) => { if (calculationsPaused) throw new Error("Safe mode: calculations paused"); return calculatePlanner(state); });
 // Curse limit (user-confirmed 2026-10-19: slots go in skill bar order, then gear, then pacts). Every curse applies (user decision
 // 2026-10-21): the skill bar curses and triggered curse lines past the limit keep the red outline with the warning "Over the
@@ -954,6 +1024,15 @@ $("#stats-sidebar").addEventListener("keydown", (event) => {
 document.addEventListener("click", (event) => { if (!event.target.closest?.(".sidebar-skill-picker")) closeSidebarSkillList({ focus: false }); });
 
 function renderCandidateViews() {
+  if (renderWouldCalculate()) { scheduleCandidateRender(); return; }
+  renderCandidateViewsNow();
+}
+function renderCandidateViewsNow() {
+  renderPassNames = new Set();
+  try { renderCandidateViewsOnce(); flushDeferredRenders(); }
+  finally { renderPassNames = null; }
+}
+function renderCandidateViewsOnce() {
   if (calculationsPaused) { pendingCandidateRender = false; renderBuilds(); renderStatsSidebar(); return; }
   pendingCandidateRender = false;
   try {
@@ -2367,10 +2446,7 @@ function previewModifierSections(item){ const corroded=new Set(item.corrodedModi
 // A glove transformed from First Aember shows First Aember's own icon in the card's top-left corner (user request 2026-10-28).
 function aemberOriginBadge(item){ if(!isTransformedAember(item))return ""; const icon=legendaryGearSs13.find((entry)=>entry.id===FIRST_AEMBER_ID)?.icon; return icon?`<img class="aember-origin-badge" src="${icon}" alt="Transformed from First Aember" title="Transformed from First Aember">`:""; }
 function equipmentPreview(item){ const rarity=itemDisplayRarity(item), rarityLabel=rarity==="vorax"?"VORAX GEAR":rarity.toUpperCase(); return `<article class="equipment-preview rarity-${itemCardRarity(rarity,item)}${sixAffixClass(item)}${pricelessClass(item)}${itemLevel100Class(item)}">${aemberOriginBadge(item)}<img src="${gearIcon(item)}" alt=""><p>${rarityLabel}</p><h3>${escapeHtml(item.name)}</h3><small>${escapeHtml(item.base||titleCase(item.slot))} · Require Lv.${item.level||1}</small><div class="item-mod-sections">${previewModifierSections(item)||"<p>Configure affixes to preview this item.</p>"}</div></article>`; }
-function voraxModifierLabel(template){ return template.replace(/\((-?\d+(?:\.\d+)?)\s*–\s*(-?\d+(?:\.\d+)?)\)/g,(_,minimum,maximum)=>Number(minimum)<0&&Number(maximum)<0?"-#":"#").replace(/(-?)\d+(?:\.\d+)?/g,"$1#"); }
-function voraxLegendaryAffixPool(type){
-  return (voraxCraftingSs13.legendaryDonors[type]||[]).flatMap((donor)=>donor.modifiers.map((template,modifierIndex)=>({id:`${donor.id}-mod-${modifierIndex}`,label:`[${donor.name}] ${voraxModifierLabel(template)}`,library:"Legendary",donor:donor.name,tiers:[{tier:"L",level:donor.level||1,template}]})));
-}
+// voraxLegendaryAffixPool (src/vorax-legendary-pool.js): the graftable Legendary lines of a Vorax base, every roll of a donor's rolled or placeholder slot included.
 function isVoraxLegendaryAffix(body,index){ return body?.querySelector(`[data-toggle-vorax-legendary="${index}"]`)?.dataset.legendaryActive==="true"; }
 function craftAffixPool(type,index,body=$("#equipment-crafter-body")){ if(equipmentCraftMode==="vorax"&&isVoraxLegendaryAffix(body,index))return voraxLegendaryAffixPool(type); return (equipmentCraftMode==="vorax"?voraxCraftingSs13.affixes[type]:craftAffixesSs13[type])?.[index<3?"prefix":"suffix"]||[]; }
 function craftAffixFamilyOptions(type,index){ return `<option value="">None</option>${craftAffixPool(type,index).map((family)=>`<option value="${escapeHtml(family.id)}">${escapeHtml(family.label)}</option>`).join("")}`; }
@@ -5831,9 +5907,12 @@ if(calculationsPaused)$("#builds-view").insertAdjacentHTML("afterbegin",'<div cl
 renderCandidateViews();
 scheduleRangeFillRefresh();
 updateStorageStatus();
+// Builds a failed save had kept aside (planner-state.js recoverUnsavedCopies) were put back when the planner opened.
+{const recovered=takeRecoveredUnsavedBuilds();if(recovered)showToast(`Unsaved changes restored · ${toastText(recovered.names.join(", "))}${recovered.saved?"":" · still not saved: download a backup"}`);}
 const restoredView=["talents","slates","skills","equipment","pacts","builds","character","configuration"].includes(restoredWorkspaceLocation?.view)?restoredWorkspaceLocation.view:"talents";
 runGuardedRender(()=>{ const slates=hashOpensSlates(); activateSectionTab(sectionTabFromHash()||readStoredSectionTab()||VIEW_SECTION_TAB[restoredView]||"talents",{scroll:false,remember:false}); if(slates)openSlatesFromHash(); });
 if(restoredView==="slates")activeWorkspaceView="talents";
+coalesceRenders=true;
 if(restoredWorkspaceLocation&&restoredWorkspaceLocation.view!=="overview"&&Number.isFinite(restoredWorkspaceLocation.scrollY))requestAnimationFrame(()=>window.scrollTo(0,Math.max(0,restoredWorkspaceLocation.scrollY)));
 window.addEventListener("pagehide",saveWorkspaceLocation);
 // Each tab autosaves synchronously on every edit; this also writes anything

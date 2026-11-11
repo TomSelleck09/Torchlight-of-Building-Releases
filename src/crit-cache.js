@@ -35,7 +35,9 @@ export function critCacheFor(name) {
  * Crit determinations per use of a cached skill: per strike group min(1, hits ÷ (critRepeat × critEntities)) × critEntities.
  * Components carry `critEntities` (separate determinations per launch: Sentries, extra Combo Finishers, Blade Cluster's generated Steep
  * Strikes) and optionally `critRepeat` (hits per determination beyond the per-use count); added-only and split parts never count, as in
- * strikeHitsPerUse.
+ * strikeHitsPerUse. `critShare` (a share of uses, its hits already weighted: a later Combo Finisher's crit / no-crit outcome of the previous
+ * one, src/skill-hit-model.js finisherInstances) gives that share of a determination: min(1, hits ÷ (critRepeat × critEntities × share)) ×
+ * critEntities × share.
  */
 export function cachedCritChecksPerUse(components = []) {
   const groups = new Map();
@@ -44,7 +46,8 @@ export function cachedCritChecksPerUse(components = []) {
     const key = component.strikeKey ?? component.componentKey ?? component.key ?? component.label;
     const entities = Math.max(1, Number(component.critEntities) || 1), repeat = Math.max(1, Number(component.critRepeat) || 1);
     const hits = Number(component.hitsPerUse) || 0;
-    const checks = Math.min(1, hits / (repeat * entities)) * entities;
+    const share = Number(component.critShare) > 0 ? Math.min(1, Number(component.critShare)) : 1;
+    const checks = share === 1 ? Math.min(1, hits / (repeat * entities)) * entities : Math.min(1, hits / (repeat * entities * share)) * entities * share;
     groups.set(key, Math.max(groups.get(key) ?? 0, checks));
   }
   return [...groups.values()].reduce((total, checks) => total + checks, 0);

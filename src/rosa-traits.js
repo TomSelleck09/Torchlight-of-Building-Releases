@@ -44,7 +44,9 @@
 //   stacks) follow the "Hit or blocked recently" best case (user rule 2026-10-12).
 // - No Guard: held on the dummy (the channel recasts at 2 stacks, inside 8 s); the channel's time is not taken from the attacks.
 // - Mystic Mercury's use rate: trigger 1000074 alone, so player uses (Multistrike repeats and triggered uses do not count); Utmost
-//   Devotion counts Mystic Mercury's own Mana, and skill Mana costs are left out. Each bonus is time-averaged over the cycle (the 5 s /
+//   Devotion counts Mystic Mercury's own Mana and every other Mana consumed (record 694509760: node 612 on data type 10000010, no cap:
+//   the skill costs and Arcanist's "Consumes X% of current Mana" copies, src/resource-consumption.js; 2026-11-05 build audit gap 5),
+//   that other consumption read as a steady stream that does not lower the cycle's Mana (Full Mana). Each bonus is time-averaged over the cycle (the 5 s /
 //   20 s windows too), at the rate measured without the Realm's own Attack Speed.
 // - Mercury Baptism: the record is the dealt value (read as after the dummy's mitigation); the type of the largest record inflicts its
 //   Infiltration.
@@ -166,7 +168,7 @@ const INFILTRATION_EFFECT = (type) => new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% ${type
  * restorePercent Mana a use. A Baptism needs a record (a use since the last one) and restarts its interval.
  * @returns {{ realmShare, averagePts, realmBonusPercent, moonStacks, infiltrationShare, stalled, mysticSeconds, realmSeconds, baptismsPerSecond }}
  */
-export function mercuryCycle({ manaLocked = true, usesPerSecond = 0, maxPts = 100, drainPerSecond = 30, baptism = null, restorePercent = 15, unsealedMana = 0, fullySealed = false, retain = 0, devotion = null, moon = null, horizonSeconds = 240 } = {}) {
+export function mercuryCycle({ manaLocked = true, usesPerSecond = 0, maxPts = 100, drainPerSecond = 30, baptism = null, restorePercent = 15, unsealedMana = 0, fullySealed = false, retain = 0, devotion = null, otherManaPerSecond = 0, moon = null, horizonSeconds = 240 } = {}) {
   const u = Math.max(0, Number(usesPerSecond) || 0);
   if (!(u > EPS)) return { realmShare: 0, averagePts: 0, realmBonusPercent: 0, moonStacks: 0, infiltrationShare: 0, stalled: true, mysticSeconds: Infinity, realmSeconds: 0, baptismsPerSecond: 0 };
   const dt = Math.min(0.01, 1 / u / 4);
@@ -174,6 +176,8 @@ export function mercuryCycle({ manaLocked = true, usesPerSecond = 0, maxPts = 10
   const steps = Math.ceil(horizon / dt), warm = Math.floor(steps / 4);
   const useEvery = 1 / u, baptismEvery = baptism ? baptism.intervalSeconds : Infinity;
   const ptsPerDevotion = devotion && unsealedMana > 0 ? devotion.ptsPercent / 100 * maxPts / devotion.perMana : 0;
+  // Utmost Devotion on the Mana consumed by other methods (skill costs, Arcanist's consume): Pts per second, added every step.
+  const otherPtsPerSecond = devotion ? devotion.ptsPercent / 100 * maxPts / devotion.perMana * Math.max(0, Number(otherManaPerSecond) || 0) : 0;
   const { costPercent, pts: fullPts, lowCostPercent, lowPts } = KEYWORDS.mysticMercury;
   let realm = false, mana = 100, pts = 0, nextUse = useEvery, nextBaptism = 0, recorded = false, lastBaptism = -Infinity, t = 0;
   const baptismTimes = [];
@@ -197,6 +201,8 @@ export function mercuryCycle({ manaLocked = true, usesPerSecond = 0, maxPts = 10
       recorded = true;
       nextUse += useEvery;
     }
+    if (otherPtsPerSecond > 0) pts = Math.min(maxPts, pts + otherPtsPerSecond * dt);
+    if (!realm && pts >= maxPts - EPS) { pts = maxPts; realm = true; nextBaptism = t + baptismEvery; if (measuring) realmStarts += 1; }
     if (realm) {
       pts -= drainPerSecond * dt;
       if (baptism && recorded && nextBaptism <= t + EPS) { pts = Math.min(maxPts, pts + baptism.pts); baptismTimes.push(t); lastBaptism = t; recorded = false; nextBaptism = t + baptismEvery; if (measuring) sum.baptisms += 1; }
@@ -302,7 +308,8 @@ function unsullied(lines, modifierTexts, requestedConditions, facts, inputs) {
   const elementalByType = facts?.elementalByType || {};
   const recordType = ELEMENTAL.filter((type) => (elementalByType[type] || 0) > 0).sort((a, b) => (elementalByType[b] || 0) - (elementalByType[a] || 0))[0] || null;
   // A Baptism needs a record (the client casts only with records held), so a build with no Elemental Attack hit casts none.
-  const cycle = measured && grants && realmLine ? mercuryCycle({ manaLocked: has("manaLock"), usesPerSecond, maxPts, drainPerSecond: drain, baptism: recordType ? baptism : null, restorePercent, unsealedMana, fullySealed: maxMana > 0 && unsealedShare <= 0, retain, devotion, moon: recordType ? moon : null }) : { realmShare: 0, averagePts: 0, realmBonusPercent: 0, moonStacks: 0, infiltrationShare: 0, stalled: true, mysticSeconds: Infinity, realmSeconds: 0, baptismsPerSecond: 0 };
+  const otherManaPerSecond = devotion ? Math.max(0, Number(inputs.otherManaPerSecond) || 0) : 0;
+  const cycle = measured && grants && realmLine ? mercuryCycle({ manaLocked: has("manaLock"), usesPerSecond, maxPts, drainPerSecond: drain, baptism: recordType ? baptism : null, restorePercent, unsealedMana, fullySealed: maxMana > 0 && unsealedShare <= 0, retain, devotion, otherManaPerSecond, moon: recordType ? moon : null }) : { realmShare: 0, averagePts: 0, realmBonusPercent: 0, moonStacks: 0, infiltrationShare: 0, stalled: true, mysticSeconds: Infinity, realmSeconds: 0, baptismsPerSecond: 0 };
   const U = cycle.realmShare;
   const mysticFactor = round((1 - U) + retain * U);
   // 740256960 reads buff 81930 with no l0: with Born to Cleanse the buff stays in the Realm, so the Main-Hand line stays at full value.
@@ -323,7 +330,7 @@ function unsullied(lines, modifierTexts, requestedConditions, facts, inputs) {
     cleanseMainHand: one("cleanseMainHand") && mainHandShare > 0 ? [`+${round(Number(one("cleanseMainHand").match[1]) * mainHandShare)}% additional damage for Main-Hand Weapons`] : []
   };
   const infiltrationShare = cycle.infiltrationShare;
-  const state = { active: true, measured, usesPerSecond: round(usesPerSecond), grants, maxMana: round(maxMana), unsealedMana: round(unsealedMana), maxPts, maxPtsPercent, drain, baptism, restorePercent: round(restorePercent), devotion, moon, cycle, realmShare: U, retain, mysticFactor, mainHandShare,
+  const state = { active: true, measured, usesPerSecond: round(usesPerSecond), grants, maxMana: round(maxMana), unsealedMana: round(unsealedMana), maxPts, maxPtsPercent, drain, baptism, restorePercent: round(restorePercent), devotion, otherManaPerSecond: round(otherManaPerSecond), moon, cycle, realmShare: U, retain, mysticFactor, mainHandShare,
     bossCount, enemies, sanctuaryPercent, recordType, infiltration: baptism && has("infiltration") && recordType && infiltrationShare > 0 ? { type: recordType, uptime: infiltrationShare, takenPercent: infiltrationPercent } : null, bodies };
   const switches = [], assumptions = [];
   if (sanctuary) switches.push({ id: BOSS_COUNT_SWITCH, label: "The dummy (a Boss) counts as 5 enemies", enabled: bossCount, active: bossCount && U > 0, summary: "Boundless Sanctuary counts 5 enemies inside Realm of Mercury", reason: bossCount ? "game record: the row for a Boss adds 5 × the value (998107840 row 4), and the dummy counts as a Boss" : "switched off: one enemy" });
@@ -440,7 +447,7 @@ function mercuryRead(key, match, m, purged) {
     case "baptism": return U > 0 ? inCalc(`every ${match[2]} s in the Realm (${pct(U)}% of the time) Mercury Baptism re-deals ${match[1]}% of the non-Channeled Attack Elemental Hit Damage dealt since the last one, as True Damage (a damage source), and adds ${match[3]} Mercury Pts`) : inactive(m.measured ? (cyc.stalled ? "the Realm is never reached" : "no Realm time") : `the Realm waits for the measured attack rate${pending}`);
     case "infiltration": return m.infiltration ? inCalc(`${m.infiltration.type} (the largest recorded Elemental type) Infiltration on the dummy, ${KEYWORDS.infiltration.seconds} s from each Baptism, ${pct(m.infiltration.uptime)}% of the time: +${m.infiltration.takenPercent}% additional ${m.infiltration.type} Damage taken at that share`) : inactive(!m.baptism ? "no Mercury Baptism" : U > 0 ? "no Elemental hit damage is recorded" : `the Realm is never reached${pending}`);
     case "sanctuaryEnemy": return off(m.bodies.sanctuaryEnemy, `${m.enemies} enem${m.enemies === 1 ? "y" : "ies"} inside the Realm (${m.bossCount ? "the dummy is a Boss: the game record adds 5 × the value" : "one dummy"}): +${m.sanctuaryPercent}% while the Realm exists (${pct(U)}%): ${m.bodies.sanctuaryEnemy[0] || ""} (time-averaged)`, `the Realm is never reached${pending}`);
-    case "devotionMana": return m.measured && m.usesPerSecond > 0 ? inCalc(`${match[1]}% of Max Mercury Pts per ${match[2]} Mana consumed (${fmt(m.unsealedMana)} Unsealed Max Mana; Mystic Mercury's own consumption counted, skill Mana costs left out: provisional)`) : inactive(m.measured ? noAttack : `the cycle waits for the measured attack rate${pending}`);
+    case "devotionMana": return m.measured && m.usesPerSecond > 0 ? inCalc(`${match[1]}% of Max Mercury Pts per ${match[2]} Mana consumed (${fmt(m.unsealedMana)} Unsealed Max Mana; Mystic Mercury's own consumption and ${fmt(m.otherManaPerSecond)} Mana/s consumed by other methods (skill costs, "Consumes X% of current Mana") counted: provisional)`) : inactive(m.measured ? noAttack : `the cycle waits for the measured attack rate${pending}`);
     case "devotionMax": return m.maxPtsPercent > 0 ? inCalc(`${fmt(m.maxMana)} Max Mana: +${fmt(m.maxPtsPercent)}% Max Mercury Pts (${m.maxPts}), which lengthens the cycle and raises the per-Pt bonus`) : inactive("no Max Mana");
     case "devotionPer": return off(m.bodies.devotionPer, `${fmt(cyc.averagePts)} Mercury Pts on average × ${match[1]}%: ${m.bodies.devotionPer[0] || ""} (time-averaged, provisional)`, `no Mercury Pts held${pending}`);
     case "cleanseRestore": return inCalc(`the Realm restores ${fmt(m.restorePercent)}% Unsealed Max Mana per use instead of 15%: it lowers the Realm's Mana bonus`);

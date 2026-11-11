@@ -269,12 +269,33 @@ export const blessingSeconds = (planner, name) => blessingDurationSeconds(planne
 export const onTargetBlessing = (entry) => {
   if (!entry || entry.consumptionCycle) return null;
   const gains = (entry.gainSources || []).filter((item) => item.available !== false);
-  const kindOf = (text) => /\bwhen Reaping\b/i.test(text) ? "reap" : /\bNon-Critical Strikes?\b/i.test(text) ? "nonCrit" : /\bon Critical Strike\b/i.test(text) ? "crit" : /\bon hit\b/i.test(text) ? "hit" : null;
+  const kindOf = (text) => /\bwhen Reaping\b/i.test(text) ? "reap" : /\bNon-Critical Strikes?\b/i.test(text) ? "nonCrit" : /\bon Critical Strike\b/i.test(text) ? "crit" : /\bon hit\b/i.test(text) ? "hit" : DAMAGE_GAIN.test(text) ? "damage" : null;
   const read = gains.map((item) => ({ text: String(item.text || ""), kind: kindOf(String(item.text || "")) }));
   if (!read.length || read.some((item) => !item.kind)) return null;
-  const hits = read.filter((item) => item.kind !== "reap").map(({ text, kind }) => ({ when: kind, chance: Math.min(1, (Number((text.match(/(\d+(?:\.\d+)?) ?% chance/i) || [])[1]) || 100) / 100), stacks: Number((text.match(/(\d+) stacks?(?:\(s\))? of/i) || [])[1]) || 1 }));
+  const hits = read.filter((item) => item.kind !== "reap").map(({ text, kind }) => {
+    const states = targetStatesOf(text), interval = Number((text.match(/\bInterval: ?(\d+(?:\.\d+)?) ?s\b/i) || [])[1]);
+    return { when: kind, chance: Math.min(1, (Number((text.match(/(\d+(?:\.\d+)?) ?% chance/i) || [])[1]) || 100) / 100), stacks: Number((text.match(/(\d+) stacks?(?:\(s\))? of/i) || [])[1]) || 1,
+      ...(states ? { states } : {}), ...(interval > 0 ? { intervalSeconds: interval } : {}) };
+  });
   return { reap: read.some((item) => item.kind === "reap"), hits };
 };
+// A gain on dealing damage to the dummy, or on hitting it (game records 424329 and 2793789: trigger 1000030, your hits and your DoT's damage; 2359509:
+// trigger 1000033, your hits): it needs the dummy, so it builds from 0 like the "on hit" gains (user decision 2026-11-02). On the layers it lands
+// on the loop's hits (src/blessing-model.js gainCondition reads the same wordings).
+const DAMAGE_GAIN = /\b(?:upon|when) (?:dealing|inflicting) damage\b|\bwhen hitting an? enem/i;
+// The dummy state a gain needs, from its record's trigger tags on the other unit ("others": 424329 on 4000112 Frostbitten, 2793789 on 4000130
+// Ignited, 2359509 on 4000570 the Elemental Ailment group: Ignite, Frostbite, Freeze, Numbed, game keyword 101; 4000580 any Ailment adds Trauma
+// and Wilt), read from the same wordings as src/blessing-model.js: the ailment types of which one must be held, or null.
+const TARGET_STATE_WORD = /\b(?:to|against) (?:an? )?(Ignited|Frostbitten|Frozen|Numbed|Traumatized|Wilted|Withered|Shocked) enem(?:y|ies)\b/i;
+const TARGET_STATE_GROUP = /\ban? enem(?:y|ies) (?:with|affected by) (Elemental )?Ailments?\b/i;
+const TARGET_STATE_TYPES = Object.freeze({ ignited: "Ignite", frostbitten: "Frostbite", frozen: "Frozen", numbed: "Numbed", traumatized: "Trauma", wilted: "Wilt", withered: "Wilt", shocked: "Shock" });
+const ELEMENTAL_STATE_TYPES = ["Ignite", "Frostbite", "Frozen", "Numbed"];
+function targetStatesOf(text) {
+  const word = String(text).match(TARGET_STATE_WORD);
+  if (word) return [TARGET_STATE_TYPES[word[1].toLowerCase()]];
+  const group = String(text).match(TARGET_STATE_GROUP);
+  return group ? (group[1] ? ELEMENTAL_STATE_TYPES : [...ELEMENTAL_STATE_TYPES, "Trauma", "Wilt"]) : null;
+}
 /** The texts of onTargetBlessing's hit gains, in its order (the trigger bus matches a gain it owns by its text). */
 const onTargetHitTexts = (entry) => (entry?.gainSources || []).filter((item) => item.available !== false).map((item) => String(item.text || "")).filter((text) => !/\bwhen Reaping\b/i.test(text));
 /** The Reap case of onTargetBlessing (the 2026-11-02 Reap-only rule): a gain when Reaping, every other gain on the dummy too. */
@@ -288,17 +309,45 @@ function placeHitGains(ctx, gains, buff, seconds, maxStacks, entry) {
   const texts = onTargetHitTexts(entry);
   const owned = (index) => Boolean(ctx.bus?.ownsBlessingGain(entry.name, texts[index]));
   if (gains.hits.some((gain, index) => owned(index)) && ctx.bus.placesBlessing(entry.name)) placed = true;
+  // A gain gated on the dummy's state reads it on the loop (holdTargetStates), and its record's gate 206 (Interval) closes it after a gain.
+  const gated = new Map(gains.hits.map((gain, index) => [index, gain.states && !owned(index) ? holdTargetStates(ctx, gain.states) : null]));
   for (const target of ctx.targets) {
     const crit = Math.max(0, Math.min(1, (target.hit.crit?.chancePercent ?? 0) / 100));
-    for (const gain of gains.hits.filter((item, index) => !owned(index))) {
-      const share = gain.when === "crit" ? crit : gain.when === "nonCrit" ? 1 - crit : 1;
-      if (!(gain.chance * share > 0)) continue;
-      target.onHit.push({ kind: "chance", key: `${buff}Blessing:${gain.when}`, probability: gain.chance * share, effects: [{ kind: "buff", buff, seconds, stacks: gain.stacks, maxStacks, layered: true }] });
+    gains.hits.forEach((gain, index) => {
+      if (owned(index)) return;
+      const share = gain.when === "crit" ? crit : gain.when === "nonCrit" ? 1 - crit : 1, state = gated.get(index);
+      const probability = gain.chance * share * (state?.share ?? 1);
+      if (!(probability > 0)) return;
+      const key = gain.states || gain.intervalSeconds ? `${buff}Blessing:${gain.when}:${index}` : `${buff}Blessing:${gain.when}`;
+      target.onHit.push({ kind: "chance", key, probability, ...(gain.intervalSeconds ? { gate: { fixedSeconds: gain.intervalSeconds } } : {}), ...(state?.keys?.length ? { requiresAny: state.keys } : {}), effects: [{ kind: "buff", buff, seconds, stacks: gain.stacks, maxStacks, layered: true }] });
       placed = true;
-    }
+    });
   }
+  // The states' own events after the gains: a hit's gain reads the state the earlier hits left (as a hit reads its own Frail only from the next).
+  for (const state of gated.values()) for (const type of state?.inflict || []) addStateEvent(ctx, type);
   return placed;
 }
+
+// The dummy states a gated gain reads on the loop: each type the planner holds on the dummy, as the buff `ailment:<Type>` the per-type layer uses
+// (ailmentTypeLayer), on each of its inflicting hits (the follower's casts when it inflicts it; addAilmentEvent). A type only your Minions keep is
+// not on the loop: when only such types hold, the gain reads the planner's share of the largest instead of a gate. Returns { keys, inflict, share }
+// (share null with a gate), or { keys: [], share: 0 } when the planner holds none of them (the Blessing model then leaves the gain unavailable).
+function holdTargetStates(ctx, types) {
+  const state = ctx.planner.lineEffects?.state || {}, buffs = enemyBuffSet(state);
+  const held = types.filter((type) => buffs ? buffs.holds(type) : (state.enemyAilments || []).includes(type));
+  const minionOnly = (type) => Boolean(ctx.bus?.ownsMinionAilment?.(type)) || (buffs ? buffs.heldOnlyBy(type, "minion", { stage: "model" }) : Object.prototype.hasOwnProperty.call(state.enemyAilmentUptime || {}, type));
+  const onLoop = held.filter((type) => !minionOnly(type));
+  if (onLoop.length) return { keys: onLoop.map((type) => `ailment:${type}`), inflict: onLoop, share: null };
+  const shareOf = (type) => buffs ? buffs.share(type, { stage: "model" }) : Number(state.enemyAilmentUptime?.[type]) || 0;
+  return { keys: [], inflict: [], share: held.length ? Math.max(...held.map(shareOf)) : 0 };
+}
+function addStateEvent(ctx, type) {
+  ctx.targetStateEvents ??= new Set();
+  if (ctx.targetStateEvents.has(type)) return;
+  ctx.targetStateEvents.add(type);
+  addAilmentEvent(ctx, type, { kind: "buff", buff: `ailment:${type}`, seconds: AILMENT_SECONDS[type] ?? 4 }, stateDealt(type));
+}
+const stateDealt = (type) => type === "Frostbite" || type === "Frozen" ? "Cold" : type === "Numbed" ? "Lightning" : null;
 
 // A Blessing's own per-stack line (src/planner.js: "<Blessing> Blessing (blessing model)"). With Divine Grace (the base effect replaced by +4%
 // additional damage per stack, src/blessing-model.js) the line is "<Blessing> Blessing (Divine Grace) (blessing model)": it reads the loop's stacks
@@ -307,6 +356,11 @@ function placeHitGains(ctx, gains, buff, seconds, maxStacks, entry) {
 // skill use, so claiming it there would show a lapse that does not happen in game (Erika's Focus and Agility, 10 s in).
 const ownBlessingLine = (name, kept) => new RegExp(kept ? String.raw`^${name} Blessing (?:\(Divine Grace\) )?\(blessing model\)` : String.raw`^${name} Blessing \(blessing model\)`);
 const busRenews = (ctx, name) => Boolean(ctx.bus?.owned?.useBlessings?.includes(name) || ctx.bus?.owned?.eventBlessings?.includes(name));
+// A Blessing gained when using Mobility Skills (Bladerunner's "Gains a stack Agility Blessing when using Mobility Skills"): by the user rule of
+// 2026-10-14 the gain is active whenever an enabled Mobility skill is on the board (the Blessing model makes it available only then), as the
+// "after using Mobility Skills" lines are (held, nothing to time). So with the Blessing pre-built at engagement it stays held for the fight
+// instead of lapsing after its duration with nothing on the layers renewing a use gain; the trigger bus renews it from the loop's uses instead.
+const mobilityHeld = (ctx, entry, name) => (entry?.gainSources || []).some((item) => item.available !== false && /\bwhen using (?:a )?Mobility Skills?\b/i.test(String(item.text || ""))) && !busRenews(ctx, name);
 
 export function blessingLayer(ctx) {
   if (!ctx.isLive("blessings")) return;
@@ -319,7 +373,11 @@ export function blessingLayer(ctx) {
   if (focus?.stacks > 0) {
     const seconds = blessingSeconds(planner, "Focus");
     const focusPeriodic = Number((String((focus.gainSources || []).find((item) => item.available !== false && /every ([\d.]+) ?s/.test(item.text))?.text).match(/every ([\d.]+) ?s/) || [])[1]) > 0;
-    const focusKept = focusPeriodic || Boolean(onTargetBlessing(focus)) || busRenews(ctx, "Focus");
+    // A gain on each Spell Burst activation (record 816003904, trigger 1000303; src/blessing-model.js): it needs no target, so the Blessing is
+    // pre-built at engagement and the loop renews it at the activations' rate (one gain per activation, Overload's included; user-confirmed
+    // 2026-11-10), so the stacks do not lapse after the Blessing's duration.
+    const burstGain = (focus.gainSources || []).find((item) => item.available !== false && Number(item.ratePerSecond) > 0 && /when consuming Spell Burst/i.test(String(item.text || "")));
+    const focusKept = focusPeriodic || Boolean(burstGain) || Boolean(onTargetBlessing(focus)) || busRenews(ctx, "Focus");
     for (const target of ctx.targets) {
       for (const line of target.claimPattern("blessings", ownBlessingLine("Focus", focusKept))) { target.addModifier(line, { buff: "focus", perStack: true, percent: line.value / focus.stacks, steadyAmount: line.value }); any = true; }
       for (const source of perStackLines.filter((line) => /Focus Blessing/.test(line.text))) {
@@ -344,13 +402,14 @@ export function blessingLayer(ctx) {
       // Game recipe 5583405 (Night Feather): while buff 12090 is up, 1 stack every P1 s (node 206, buff 380, its record's duration). A gain
       // tied to the Clockwork Core's Tangles waits for the Core; any other periodic gain runs from t = 0.
       const needsCore = ctx.targets.some((target) => target.core) && /Night Feather|Tangle|Clockwork/.test(`${gain?.source} ${gain?.text}`);
+      if (burstGain) ctx.periodics.push({ key: "focusSpellBurstGain", actor: "player", label: burstGain.source, intervalSeconds: 1 / burstGain.ratePerSecond, effects: [{ kind: "buff", buff: "focus", seconds, stacks: Number((String(burstGain.text).match(/\b(\d+) stacks?(?:\(s\))?/i) || [])[1]) || 1, maxStacks: focus.maxStacks, layered: true }] });
       if (every > 0) ctx.periodics.push({ key: "focusGain", actor: "player", label: gain.source, intervalSeconds: every, ...(needsCore ? { requiresBuff: "coreActive" } : {}), effects: [{ kind: "buff", buff: "focus", seconds, stacks: 1, maxStacks: focus.maxStacks, layered: true }] });
       // A gain only from the dummy (onTargetBlessing) starts at 0: its hit gains go on the hits here, src/tick-ledger.js puts a Reap gain on the
       // Reaps on the loop, src/tick-ailments.js the stacks on the DoT paths.
       const gains = onTargetBlessing(focus);
       if (gains) { addTargetBlessing(ctx, { buff: "focus", name: "Focus", stacks: focus.stacks, seconds, gains, hitPlaced: placeHitGains(ctx, gains, "focus", seconds, focus.maxStacks, focus) }); any = true; }
       // A Blessing the trigger bus builds from its only gains, on Regains or your Minions' damage (W10 step 3c), starts at 0 as well.
-      else if (ctx.prebuilt && !ctx.bus?.busBuildsBlessing?.("Focus")) ctx.initialBuffs.push(prebuiltBlessing("focus", focus, seconds, focus.layers?.reading === "periodic" ? every : 0));
+      else if (ctx.prebuilt && !ctx.bus?.busBuildsBlessing?.("Focus")) ctx.initialBuffs.push(mobilityHeld(ctx, focus, "Focus") ? { buff: "focus", stacks: focus.stacks, seconds: Infinity, layered: true } : prebuiltBlessing("focus", focus, seconds, focus.layers?.reading === "periodic" ? every : 0));
     }
   }
   // Agility a Regain spends (node 623, W10 step 4a): the planner holds the cycle's average (src/consumption-procs.js regainAgilitySpend). The loop
@@ -377,12 +436,14 @@ export function blessingLayer(ctx) {
     if (ctx.first("agilityStart")) {
       if (gains) addTargetBlessing(ctx, { buff: "agility", name: "Agility", stacks: agility.stacks, seconds, gains, hitPlaced: placeHitGains(ctx, gains, "agility", seconds, agility.maxStacks, agility) });
       // Pre-built Agility a Regain spends on the loop starts at its stacks before the spend (the Regains take them from there).
-      else if (ctx.prebuilt && !ctx.bus?.busBuildsBlessing?.("Agility")) ctx.initialBuffs.push({ buff: "agility", stacks: busSpends ? agility.heldBeforeConsumption ?? agility.stacks : agility.stacks, seconds, layered: true });
+      else if (ctx.prebuilt && !ctx.bus?.busBuildsBlessing?.("Agility")) ctx.initialBuffs.push({ buff: "agility", stacks: busSpends ? agility.heldBeforeConsumption ?? agility.stacks : agility.stacks, seconds: !busSpends && mobilityHeld(ctx, agility, "Agility") ? Infinity : seconds, layered: true });
       if (busSpends) any = true;
     }
   }
   const fromZero = (ctx.targetBlessings || []).map((item) => `${item.name} from 0, built on ${[item.gains.reap ? "the Reaps" : "", item.gains.hits.length ? "the hits" : ""].filter(Boolean).join(" and ")} (its only gains)`);
-  if (any) ctx.reported("blessings").events = `Focus ${focus?.stacks ?? 0}, Agility ${agility?.stacks ?? 0}: ${fromZero.length ? `${fromZero.join("; ")}; ` : ""}${ctx.prebuilt ? "the rest full at engagement (prebuilt), " : "from zero, "}each gain a layer on its own timer (the oldest out at the cap; SS14 client, blessing-layer-timers)`;
+  const mobility = ctx.prebuilt ? [focus?.stacks > 0 && !onTargetBlessing(focus) && mobilityHeld(ctx, focus, "Focus") ? "Focus" : null, agility?.stacks > 0 && !spentOnRegain && !onTargetBlessing(agility) && mobilityHeld(ctx, agility, "Agility") ? "Agility" : null].filter(Boolean) : [];
+  const held = mobility.length ? `${mobility.join(" and ")} held for the fight (gained when using Mobility Skills: active while a Mobility skill is on the board, user rule 2026-10-14); ` : "";
+  if (any) ctx.reported("blessings").events = `Focus ${focus?.stacks ?? 0}, Agility ${agility?.stacks ?? 0}: ${fromZero.length ? `${fromZero.join("; ")}; ` : ""}${held}${ctx.prebuilt ? "the rest full at engagement (prebuilt), " : "from zero, "}each gain a layer on its own timer (the oldest out at the cap; SS14 client, blessing-layer-timers)`;
 }
 
 /**
@@ -705,7 +766,8 @@ export function ailmentTypeLayer(ctx) {
   }
   if (!any || !ctx.first("ailmentTypes")) return;
   const eventTypes = [...new Set([...all, ...elemental])].filter((type) => !fromBus(type) && !minionOnly(type));
-  for (const type of eventTypes) addAilmentEvent(ctx, type, { kind: "buff", buff: `ailment:${type}`, seconds: AILMENT_SECONDS[type] ?? 4 }, type === "Frostbite" || type === "Frozen" ? "Cold" : type === "Numbed" ? "Lightning" : null);
+  // (A type a gated Blessing gain already holds, placeHitGains, keeps that one event.)
+  for (const type of eventTypes) if (!ctx.targetStateEvents?.has(type)) addAilmentEvent(ctx, type, { kind: "buff", buff: `ailment:${type}`, seconds: AILMENT_SECONDS[type] ?? 4 }, stateDealt(type));
   const minionTypes = [...new Set([...all, ...elemental])].filter((type) => fromBus(type) || minionOnly(type));
   report.events = `${described.join("; ")}, with n the ailment types held now: ${eventTypes.join(", ")}, each on its own inflicting hit${minionTypes.length ? `; ${minionTypes.join(", ")} only your Minions keep, at ${minionTypes.some(fromBus) ? "the trigger bus's share from their landings" : "the planner's uptime"}` : ""}`;
 }

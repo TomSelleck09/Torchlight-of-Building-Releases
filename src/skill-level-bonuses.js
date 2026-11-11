@@ -2,6 +2,7 @@ import { isInactiveCoreLine } from "./granted-core-lines.js";
 import { ACTIVE_SLOT_MAGUS_LEVEL_NOTE } from "./magus-active-slot.js";
 import { slateTalentLines } from "./nether-king-authority.js";
 import { hitPathMode, recipeHitFacts, skillLevelFromFacts } from "./recipe-hit-layers.js";
+import { recipeDataVersion } from "./recipe-interpreter.js";
 import { talentNodeClauses } from "./inverse-image-values.js";
 import { normalizePercentageText } from "./percentage-text.js";
 
@@ -53,6 +54,7 @@ export function skillLevelLineApplies(text, skill) {
 // slots, 4 Aura slots read as the Passive Skill slots: provisional), `sources.emptySkillSlots`.
 const EMPTY_SLOT_LEVEL = /^\+(\d+) (Main|Passive|Active) Skill Levels? for each empty (Passive|Active) Skill Slot$/i;
 export function emptySlotLevelLine(text) {
+  if (!/each\s+empty/i.test(String(text || ""))) return null;
   const match = String(text || "").replace(/\s+/g, " ").trim().match(EMPTY_SLOT_LEVEL);
   return match ? { per: Number(match[1]), target: match[2].toLowerCase(), slot: match[3].toLowerCase() } : null;
 }
@@ -67,8 +69,20 @@ const SAINTS_LEVEL = /^\+(\d+) to corresponding Elemental Skill Level for every 
 const TERRA_FIRE_LEVEL = /^\+(\d+) to Terra Skill Level for every \+(\d+(?:\.\d+)?)% Fire Resistance, up to \+(\d+)$/i;
 const SEALED_LIFE_LEVEL = /^For every (\d+(?:\.\d+)?)% Life Sealed when at Full Mana, Main Skill's level \+(\d+)$/i;
 const cleanLevelLine = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").replace(/ ([,.])/g, "$1").trim();
-export const isDerivedLevelLine = (text) => String(text ?? "").split(/\r?\n/).some((part) => [SAINTS_LEVEL, TERRA_FIRE_LEVEL, SEALED_LIFE_LEVEL].some((pattern) => pattern.test(cleanLevelLine(part))));
+const derivedLineCache = new Map();
+export const isDerivedLevelLine = (text) => {
+  const key = String(text ?? "");
+  let out = derivedLineCache.get(key);
+  if (out === undefined) {
+    out = isDerivedLevelLineUncached(key);
+    if (derivedLineCache.size > 100000) derivedLineCache.clear();
+    derivedLineCache.set(key, out);
+  }
+  return out;
+};
+const isDerivedLevelLineUncached = (text) => String(text ?? "").split(/\r?\n/).some((part) => [SAINTS_LEVEL, TERRA_FIRE_LEVEL, SEALED_LIFE_LEVEL].some((pattern) => pattern.test(cleanLevelLine(part))));
 export function derivedLevelLine(text, skill, facts) {
+  if (!isDerivedLevelLine(text)) return null;
   const line = String(text ?? "").split(/\r?\n/).map(cleanLevelLine).find((part) => isDerivedLevelLine(part));
   if (!line) return null;
   const tags = new Set(skill.tags || []);
@@ -90,7 +104,20 @@ export function derivedLevelLine(text, skill, facts) {
 // Recipe step 3 (research/recipe-interpreter-step1-2026-10-25.md §15): each line's skill levels from its game recipe (field 2006400 by skill
 // tag: a type tag, Active 6000200, Main Skill 6020000, Support 6000100) where the recipe places the line; the text pattern otherwise
 // (TLI_HIT_PATH=text restores it).
+// Memo (planner performance 2026-11-08): keyed on everything levelDetailUncached reads (the path mode, the installed recipe table,
+// the line's origin, source and text, the skill's role, tags and active-slot Magus flag); each call gets a fresh copy.
+const levelDetailCache = new Map();
 function levelDetail(text, skill, origin, source) {
+  const key = [hitPathMode(), recipeDataVersion(), origin ?? "\u0002", source ?? "\u0002", String(text ?? ""), skill.role ?? "\u0002", skill.activeSlotMagus === true ? 1 : 0, (skill.tags || []).join("\u0002")].join("\u0001");
+  let hit = levelDetailCache.get(key);
+  if (!hit) {
+    hit = levelDetailUncached(text, skill, origin, source);
+    if (levelDetailCache.size > 100000) levelDetailCache.clear();
+    levelDetailCache.set(key, hit);
+  }
+  return { total: hit.total, activeSlot: hit.activeSlot };
+}
+function levelDetailUncached(text, skill, origin, source) {
   if (hitPathMode() !== "recipe") return matchingBonusDetail(text, skill);
   let total = 0, activeSlot = 0;
   for (const part of String(text || "").split(/\r?\n/)) {
@@ -134,6 +161,13 @@ export function skillLevelBonus(skill, sources) {
   }
   for (const slate of sources.slates || []) {
     for (const affix of slateTalentLines(slate)) add(affix, slate.name, 1, "slate");
+  }
+  // Levels the planner settles behind a gate (Dual Kismet: Hatch Out's "-5 to Aura Skill Level" with no Energy Shield, game affix 916287744:
+  // field 2006400 on the Aura tag; src/planner.js levelSources.gatedLevels): { name, text, levels, tag }. An Aura skill only, not a support
+  // whose catalog tags list Aura (Aura Amplification): the record names the skill tag.
+  for (const entry of sources.gatedLevels || []) {
+    if (skill.role === "support" || !(skill.tags || []).includes(entry.tag) || !entry.levels) continue;
+    contributions.push({ name: entry.name, text: entry.text, levels: entry.levels, ...(entry.note ? { provisional: entry.note } : {}) });
   }
   return { total: contributions.reduce((sum, entry) => sum + entry.levels, 0), contributions };
 }

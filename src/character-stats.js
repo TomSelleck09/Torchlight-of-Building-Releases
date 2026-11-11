@@ -8,6 +8,7 @@ import { heroTraitTree, heroTreeSelections, treeRowSlotKeys, TREE_ROW_LEVELS, EX
 import { heroTraitKeywordPlainLines } from "./inline-keywords.js";
 import { chooseStatReading, gameStatInfo } from "./recipe-stat-layers.js";
 import { statDataMode } from "./game-skill-data.js";
+import { NO_ENERGY_SHIELD_COMPENSATION } from "./sealed-mana-compensation.js";
 
 // Character stat totals: every plain "+X stat" line the build carries, summed by stat and
 // bucket whether or not it changes dummy damage. Input is the planner's own flattened
@@ -135,12 +136,23 @@ const RULES = [
   // attribute total (gear uniques round 2).
   rule("^NUM% additional (Strength|Dexterity|Intelligence)(?: and (Strength|Dexterity|Intelligence))?$", (m) => [m[2], m[3]].filter(Boolean).map((name) => c(lower(name), "additional", +m[1]))),
   rule("^NUM Max (Life|Mana|Energy Shield)$", (m) => [c(resourceKey[lower(m[2])], "flat", +m[1])]),
-  rule("^NUM% (additional )?(Max (?:Life|Mana|Energy Shield)(?:(?:\\s*,\\s*(?:and\\s+)?|\\s+and\\s+)Max (?:Life|Mana|Energy Shield))*)$", (m) =>
+  // A trailing "(multiplies)" is the game's mark of an additional (mod 4) write: Banishment's "+3% additional Max Energy Shield
+  // (multiplies)" per non-adjacent slate (server affix 10052 rows 151300101-103), already one factor per slate when scaled.
+  rule("^NUM% (additional )?(Max (?:Life|Mana|Energy Shield)(?:(?:\\s*,\\s*(?:and\\s+)?|\\s+and\\s+)Max (?:Life|Mana|Energy Shield))*)(?: \\(multiplies\\))?$", (m) =>
     splitNames(m[3]).map((name) => c(resourceKey[lower(name.replace(/^Max\s+/i, ""))], m[2] ? "additional" : "increased", +m[1]))),
   rule("^NUM(%?) gear (Armou?r|Evasion|Energy Shield)$", (m) => [c(defenseKey[lower(m[3])], m[2] ? "gearIncreased" : "gearFlat", +m[1])]),
   rule("^NUM gear (Armou?r|Evasion|Energy Shield),? (?:and )?NUM gear (Armou?r|Evasion|Energy Shield)$", (m) => [c(defenseKey[lower(m[2])], "gearFlat", +m[1]), c(defenseKey[lower(m[4])], "gearFlat", +m[3])]),
   rule("^NUM(%?) (Armou?r|Evasion)$", (m) => [c(defenseKey[lower(m[3])], m[2] ? "increased" : "flat", +m[1])]),
+  // "+X% additional Armor / Evasion" (attr 4001 / 4002 mod 4: Clenched Spring's 10839701, Banishment's per-slate rows 151300101 / 102,
+  // which carry the same payload; 2026-11-09): one factor on the pool.
+  rule("^NUM% additional (Armou?r|Evasion)(?: \\(multiplies\\))?$", (m) => [c(defenseKey[lower(m[2])], "additional", +m[1])]),
   rule("^NUM% Defense$", (m) => [c("defense", "increased", +m[1])]),
+  // "Your Max Energy Shield is fixed at 0" (No Loose Ends; game affix 103360004: node 336 sets attribute 1601 Max Energy Shield to p0):
+  // the pool reads the fixed value whatever its lines add (src/effective-hp.js pool; 2026-11-05).
+  rule("^Your Max Energy Shield is fixed at NUM$", (m) => [c("maxEnergyShield", "fixed", +m[1])]),
+  // "Your Max Life is set to 100" (Magister core Shell, the Unwavering Fortress prism; game affix 103360006: the same node 336, on
+  // attribute 1001 Max Life): the fixed value (10 T claim audit G3a, 2026-11-09; the town panel reads Total Life 100).
+  rule("^Your Max Life is set to NUM$", (m) => [c("maxLife", "fixed", +m[1])]),
   rule("^NUM% Energy Shield Charge Speed$", (m) => [c("energyShieldChargeSpeed", "increased", +m[1])]),
   rule("^NUM% additional Energy Shield Charge Interval$", (m) => [c("energyShieldChargeInterval", "additional", +m[1])]),
   rule("^NUM% (Attack and Spell|Attack|Spell) Block Chance$", (m) => (/and/i.test(m[2]) ? ["attack", "spell"] : [lower(m[2])]).map((kind) => c(`${kind}BlockChance`, "increased", +m[1]))),
@@ -173,7 +185,9 @@ const RULES = [
   rule("^NUM% (?:(Attack and Spell|Attack|Spell) )?Critical Strike Damage$", (m) => [c(scoped(m[2], "criticalStrikeDamage"), "increased", +m[1])]),
   rule("^NUM Affliction inflicted per second$", (m) => [c("afflictionPerSecond", "flat", +m[1])]),
   rule("^NUM% (additional )?(Affliction|Aura|Curse|Blur|Focus Buff) Effect$", (m) => [c(`${camel(m[3])}Effect`, m[2] ? "additional" : "increased", +m[1])]),
-  rule("^NUM% Movement Speed$", (m) => [c("movementSpeed", "increased", +m[1])]),
+  // "+X% additional Movement Speed" (attr 4 mod 4) is its own factor (panel row 60101 [A4E]; 2026-11-10): the town % row keeps the increased
+  // sum, the player's movement speed (src/dummy-target.js playerMoveSpeed) reads the product.
+  rule("^NUM% (additional )?Movement Speed$", (m) => [c("movementSpeed", m[2] ? "additional" : "increased", +m[1])]),
   rule("^NUM% (?:(Ignite|Wilt|Trauma|Frostbite|Shock|Numbed) )?Reaping Duration$", (m) => [c(m[2] ? `reapingDuration:${title(m[2])}` : "reapingDuration", "increased", +m[1])]),
   rule("^NUM% (additional )?Reaping Recovery Speed$", (m) => [c("reapingRecoverySpeed", m[2] ? "additional" : "increased", +m[1])]),
   rule("^NUM to All Skills['’] Levels?$", (m) => [c("skillLevel:All", "flat", +m[1])]),
@@ -349,6 +363,103 @@ export function heroTraitStatLines(state = {}, baseTraitLevel = 1, levelBonus = 
   return lines;
 }
 
+function noEnergyShieldContributions(line, planner) {
+  const text = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim();
+  if (!NO_ENERGY_SHIELD_COMPENSATION.test(text)) return null;
+  const entry = (planner?.aura?.pageSealedManaCompensation?.gated || []).find((item) => item.active && normalizePercentageText(String(item.text ?? "")).replace(/\s+/g, " ").trim() === text);
+  return entry ? [c("sealedManaCompensation", "increased", entry.percent / (Number.isFinite(line.multiplier) ? line.multiplier : 1))] : [];
+}
+
+// Conditional lines whose condition the planner holds (2026-11-09, user-approved; research/build-7t-panel-compare-2026-11-09.md §8).
+// The line resolver (src/line-effects.js) settles each conditional line's condition; a held line's bodies are its scaled
+// `derivedText`. Bodies a damage reader takes became derived lines (planner.modifierTexts, `lineEffect.conditional`), which these
+// totals leave out; a body with no reader (Movement Speed, Regain, …) became none. So each body is counted once, from the entry.
+//
+// Town (the stat sheet, a mirror of the in-game character panel, which is a town sheet): only conditions the town panel meets.
+// - A buff held by a plain "Has <Buff>" line: the game grants the state permanently (Has Hasten: record 250923184, node 325) and the
+//   line's write is gated on it (Ranger's Dirty Boots "+8% Attack Speed, Cast Speed, and Movement Speed when having Hasten": record
+//   30030214 row 1, node 101 on attrs 4 / 6001 / 6002 mod 3, state 4015365 on the owner). The 7 T Rehan town panel shows it: Movement
+//   Speed 30 = 22 + 8, the Gear Attack Speed +69 with the boots' +8.
+// - Standing still and the weapon held (dual wielding, a Shield): met in town (scripts/panel-breakdown-compare.mjs TOWN_CONDITIONS /
+//   TOWN_LINE_CONDITIONS; the Rosa town panel 2026-11-05).
+// Any other held condition (combat buffs, Blessings, enemies, resources spent) is combat-only: it reaches the combat figures through
+// its readers, and Movement Speed through `conditionalMovementSpeed` below, not the town sheet.
+const staticBuffHolder = (modifierTexts, buff) => modifierTexts.some((line) => line.origin !== "buff" && line.origin !== "derived" && !line.lineEffect
+  && normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().toLowerCase() === `has ${String(buff).toLowerCase()}`);
+const TOWN_HELD_CONDITIONS = {
+  buffActive: (entry, modifierTexts) => Boolean(entry.params?.buff) && staticBuffHolder(modifierTexts, entry.params.buff),
+  standingStill: () => true,
+  dualWielding: () => true,
+  shield: () => true
+};
+
+function heldEntryBodies(entry) {
+  if (!entry?.active || !Array.isArray(entry.bodies)) return [];
+  return entry.bodies.filter((item) => item?.derivedText).map((item) => ({ item, contributions: parseCharacterStatClause(item.derivedText) })).filter(({ contributions }) => contributions.length);
+}
+
+/** Stat lines for the held conditional lines the town panel shows (see above), from planner.lineEffects. */
+export function heldConditionalStatLines(planner) {
+  const modifierTexts = planner?.modifierTexts || [];
+  const lines = [];
+  for (const entry of planner?.lineEffects?.lines || []) {
+    const town = TOWN_HELD_CONDITIONS[entry?.condition];
+    if (!town || !entry.active || !town(entry, modifierTexts)) continue;
+    for (const { item, contributions } of heldEntryBodies(entry)) {
+      lines.push({ text: item.derivedText, source: `${entry.source} (${entry.text}: ${entry.conditionText})`, origin: entry.origin, multiplier: 1, contributions, heldCondition: entry.condition });
+    }
+  }
+  return lines;
+}
+
+/**
+ * Combat: the increased Movement Speed of every held conditional line (src/line-effects.js), town or combat: the bodies with no
+ * reader (no derived line) and the derived conditional lines (combat states, the follower, hero modules; a part-time one at its
+ * time average). The stat sheet's own lines are not in it. `additionalFactor`: the product of their "+X% additional Movement Speed"
+ * bodies (one factor each; 2026-11-10, read by the player's movement speed only).
+ */
+export function conditionalMovementSpeed(lineEffects) {
+  const sources = [];
+  let additionalFactor = 1;
+  const add = (source, text, contributions) => {
+    const value = contributions.filter((item) => item.stat === "movementSpeed" && (item.bucket === "increased" || item.bucket === "flat")).reduce((sum, item) => sum + item.value, 0);
+    if (value) sources.push({ source, text, value });
+    for (const item of contributions) if (item.stat === "movementSpeed" && item.bucket === "additional" && item.value) { additionalFactor *= 1 + item.value / 100; sources.push({ source, text, value: item.value, additional: true }); }
+  };
+  for (const entry of lineEffects?.lines || []) for (const { item, contributions } of heldEntryBodies(entry)) if (!item.readers?.length) add(entry.source, `${item.derivedText} (${entry.text})`, contributions);
+  for (const line of lineEffects?.derived || []) if (line?.lineEffect?.conditional) add(line.source, line.text, parseCharacterStatClause(line.text));
+  return { percent: round(sources.filter((item) => !item.additional).reduce((sum, item) => sum + item.value, 0)), additionalFactor, sources };
+}
+
+/**
+ * Combat: one pool's contributions (`statKey`, "maxEnergyShield" for one) from the held conditional lines, as
+ * conditionalMovementSpeed reads Movement Speed: the bodies no engine reads and the derived conditional lines. In the shape of
+ * src/effective-hp.js pool's `extra` (10 T claim audit G3d, 2026-11-09: the boots' "+16% additional Max Energy Shield while moving").
+ * @returns {{ flat: object[], increased: object[], additional: object[] }}
+ */
+export function heldConditionalPoolExtra(lineEffects, statKey, { skipTownHeld = false, modifierTexts = [] } = {}) {
+  const out = { flat: [], increased: [], additional: [] };
+  // A pool built on characterStatTotals(planner) already holds the town-held entries (heldConditionalStatLines): skip them there.
+  const townHeld = (entry) => { const town = TOWN_HELD_CONDITIONS[entry?.condition]; return Boolean(town && entry.active && town(entry, modifierTexts)); };
+  const add = (source, text, contributions) => {
+    for (const item of contributions) {
+      if (item.stat !== statKey || !Number.isFinite(item.value) || !item.value) continue;
+      const bucket = item.bucket === "additional" ? "additional" : item.bucket === "increased" ? "increased" : item.bucket === "flat" ? "flat" : null;
+      if (bucket) out[bucket].push({ source, text, value: item.value });
+    }
+  };
+  for (const entry of lineEffects?.lines || []) { if (skipTownHeld && townHeld(entry)) continue; for (const { item, contributions } of heldEntryBodies(entry)) if (!item.readers?.length) add(entry.source, `${item.derivedText} (${entry.text})`, contributions); }
+  for (const line of lineEffects?.derived || []) if (line?.lineEffect?.conditional) add(line.source, line.text, parseCharacterStatClause(line.text));
+  return out;
+}
+
+const CHEST_DEFENSE = /^\+?(\d+(?:\.\d+)?)% (additional )?Defense gained from Chest Armou?r$/i;
+// "+X% Chest Armor Defense" / "-X% Helmet Defense" (Dual Kismet: Headless, set 100350725; the set's rows are not in the extracted
+// tables): an increase on that item's own Armor, Evasion and Energy Shield, in the same pool as its local "+X% gear" lines and
+// "Defense gained from Chest Armor" (10 T claim audit G3c, 2026-11-09: the town panel's Energy Shield 40,093 needs the chest's
+// 501 × (1 + 48% + 100% + 100%); inferred from that fit).
+const SLOT_DEFENSE = /^([+-]\d+(?:\.\d+)?)% (Chest Armou?r|Helmet) Defense$/i;
+const SLOT_DEFENSE_SLOTS = { "chest armor": "chest", "chest armour": "chest", helmet: "helmet" };
 const emptyTotal = (key) => ({ ...describeStat(key), flat: 0, increased: 0, additional: 1, gearFlat: 0, gearIncreased: 0, base: 0, sources: [], gearItems: new Map() });
 
 // Totals for the planner's build. `planner.modifierTexts` already holds gear (implicits, base
@@ -357,9 +468,11 @@ const emptyTotal = (key) => ({ ...describeStat(key), flat: 0, increased: 0, addi
 // Focus Buff damage written by build-mechanics) are damage restatements and are skipped.
 export function characterStatTotals(planner, options = {}) {
   const lines = [
-    // Conditional lines the line-effects resolver made active (src/line-effects.js) are combat states, not panel stats.
+    // The derived lines of conditional lines (src/line-effects.js) are left out: a held condition the town panel meets is read from
+    // its resolver entry instead (heldConditionalStatLines, every body once); the others are combat states, not panel stats.
     // Trait lines come from heroTraitStatLines below (planner.modifierTexts carries the same lines since talent batch chunk 4).
     ...(planner?.modifierTexts || []).filter((line) => line.origin !== "derived" && line.origin !== "trait" && !line.lineEffect?.conditional),
+    ...heldConditionalStatLines(planner),
     ...heroTraitStatLines(planner?.state, planner?.heroMemories?.baseTraitLevel, undefined, { artificialMoon: planner?.heroMemories?.artificialMoon }),
     // An active Aura's added Attack and Cast Speed (Pantheon's Elegy on Precise: Swiftness; src/aura-gained-effects.js), scaled by its Aura Effect.
     ...auraSpeedStatLines(planner?.aura?.entries || []),
@@ -376,12 +489,25 @@ export function characterStatTotals(planner, options = {}) {
   const recipe = { mode: gameMode ? "recipe" : "text", verdicts: {}, differences: [], recipeOnly: [] };
   // A Dual Kismet's effects apply once even with both copies on the pact page.
   const dualSeen = new Set();
+  const chestDefense = [];
   for (const line of lines) {
+    // "+X% (additional) Defense gained from Chest Armor" (The Brave (3,4); game affixes 810999 / 200000244: node 321 on the item's
+    // attributes 4001 / 4002 / 1601, mod 3 / 4, condition 221 slot 4): the chest's own Armor, Evasion and Energy Shield, like that item's
+    // own "+X% gear Armor" lines (2026-11-09, 25 T gap 3: the town panel's Total Armor 223,851 needs the Rag's 5,328 × 1.4).
     const dual = line.origin === "kismet" && String(line.source).match(/Dual Kismet: (.+)$/)?.[1];
     if (dual) { const key = `${dual}|${line.text}`; if (dualSeen.has(key)) continue; dualSeen.add(key); }
+    const clean = String(line.text || "").replace(/\s+/g, " ").trim();
+    const lineMultiplier = Number.isFinite(line.multiplier) ? line.multiplier : 1;
+    const chest = clean.match(CHEST_DEFENSE);
+    if (chest) { chestDefense.push({ line, slot: "chest", value: Number(chest[1]) * lineMultiplier, additional: Boolean(chest[2]) }); continue; }
+    const slotDefense = clean.match(SLOT_DEFENSE);
+    if (slotDefense) { chestDefense.push({ line, slot: SLOT_DEFENSE_SLOTS[slotDefense[2].toLowerCase()], value: Number(slotDefense[1]) * lineMultiplier, additional: false }); continue; }
     // A panel-state line states its own contribution (the conditional "+X% additional Elixir Skill Effect": src/elixir-model.js).
-    const textContributions = line.contributions || parseCharacterStatClause(line.text);
-    const choice = gameMode && !line.contributions ? chooseStatReading(line, textContributions, unitOf) : { contributions: textContributions, verdict: textContributions.length ? "text" : "none" };
+    // Dual Kismet: Hatch Out's "+30% Sealed Mana Compensation when you have no Energy Shield" (game affix 916287744): the planner's gate
+    // (src/sealed-mana-compensation.js, planner.aura.pageSealedManaCompensation) settles it; its Aura levels are not a panel stat.
+    const gated = noEnergyShieldContributions(line, planner);
+    const textContributions = line.contributions || gated || parseCharacterStatClause(line.text);
+    const choice = gameMode && !line.contributions && !gated ? chooseStatReading(line, textContributions, unitOf) : { contributions: textContributions, verdict: textContributions.length ? "text" : "none" };
     recipe.verdicts[choice.verdict] = (recipe.verdicts[choice.verdict] || 0) + 1;
     if (choice.verdict.startsWith("differ")) recipe.differences.push({ source: line.source, text: line.text, verdict: choice.verdict, affix: choice.recipe?.id, textReading: textContributions, recipeReading: choice.recipe?.contributions });
     if (choice.verdict === "recipe-only") recipe.recipeOnly.push({ source: line.source, text: line.text, affix: choice.recipe?.id, reading: choice.contributions });
@@ -393,6 +519,8 @@ export function characterStatTotals(planner, options = {}) {
       const total = totals.get(item.stat);
       const value = item.value * multiplier;
       if (item.bucket === "additional") total.additional *= 1 + value / 100;
+      // A fixed value (node 336) replaces the pool; two fixes keep the lower (none of the catalogs has two on one attribute).
+      else if (item.bucket === "fixed") total.fixed = Math.min(Number.isFinite(total.fixed) ? total.fixed : Infinity, item.value);
       else total[item.bucket] += value;
       if (item.bucket === "gearFlat" || item.bucket === "gearIncreased") {
         const gear = total.gearItems.get(line.source) || { flat: 0, increased: 0 };
@@ -401,6 +529,22 @@ export function characterStatTotals(planner, options = {}) {
       }
       total.sources.push({ source: line.source, origin: line.origin, text: line.text, bucket: item.bucket, value });
     }
+  }
+  // The chest's own defences take the "Defense gained from Chest Armor" lines (above), as that item's local %; a slot-named Defense line
+  // ("+100% Chest Armor Defense", "-50% Helmet Defense") its item's.
+  const slotItem = (slot) => (planner?.equipment?.candidateItems || []).find((item) => item.slot === slot && !(planner?.state?.disabledEquipmentSlots || []).includes(slot));
+  for (const { line, slot, value, additional } of chestDefense) {
+    let applied = false;
+    const chestItem = slotItem(slot);
+    for (const key of ["armor", "evasion", "maxEnergyShield"]) {
+      const total = totals.get(key);
+      const gear = chestItem && total?.gearItems.get(chestItem.name);
+      if (!gear?.flat) continue;
+      if (additional) gear.additional = (gear.additional ?? 1) * (1 + value / 100); else gear.increased += value;
+      total.sources.push({ source: line.source, origin: line.origin, text: line.text, bucket: additional ? "gearAdditional" : "gearIncreased", value, item: chestItem.name });
+      applied = true;
+    }
+    if (!applied) unmatched.push(line);
   }
   for (const total of totals.values()) finalize(total, planner);
   const stats = [...totals.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.label.localeCompare(b.label));
@@ -411,7 +555,7 @@ const rank = (key) => { const index = ORDER.indexOf(key); return index < 0 ? ORD
 const round = (value) => Math.round(value * 1000) / 1000;
 
 function finalize(total, planner) {
-  total.gearTotal = round([...total.gearItems.values()].reduce((sum, gear) => sum + gear.flat * (1 + gear.increased / 100), 0));
+  total.gearTotal = round([...total.gearItems.values()].reduce((sum, gear) => sum + gear.flat * (1 + gear.increased / 100) * (gear.additional ?? 1), 0));
   delete total.gearItems;
   total.flat = round(total.flat);
   total.increased = round(total.increased);
@@ -445,7 +589,7 @@ function finalize(total, planner) {
 
 // Display rows grouped for the stat sheet. Each row carries a breakdown for its hover text.
 const signedText = (value, unit = "") => `${value > 0 ? "+" : ""}${Math.round(value * 100) / 100}${unit}`;
-const BUCKET_LABEL = { flat: "flat", increased: "increased", additional: "additional", gearFlat: "gear flat", gearIncreased: "gear % (this item)", base: "weapon base" };
+const BUCKET_LABEL = { flat: "flat", increased: "increased", additional: "additional", gearFlat: "gear flat", gearIncreased: "gear % (this item)", gearAdditional: "gear additional (this item)", base: "weapon base", fixed: "fixed value" };
 export function characterStatRows(totals, format = (value) => String(Math.round(value * 100) / 100)) {
   const groups = Object.fromEntries(characterStatGroups.map((group) => [group, []]));
   for (const stat of totals.stats) {
@@ -454,6 +598,7 @@ export function characterStatRows(totals, format = (value) => String(Math.round(
     if (stat.additional !== 1) extras.push(`×${stat.additional} additional`);
     let value;
     if (stat.base) value = stat.sources.filter((item) => item.bucket === "base").map((item) => format(item.value)).join(" / ");
+    else if (stat.value === null && Number.isFinite(stat.fixed)) value = `fixed at ${format(stat.fixed)}`;
     else if (stat.value === null) value = [
       stat.flat ? `${signedText(stat.flat)} flat` : null,
       stat.gearFlat ? `gear ${format(stat.gearFlat)}${stat.gearIncreased ? ` → ${format(stat.gearTotal)}` : ""}` : null,

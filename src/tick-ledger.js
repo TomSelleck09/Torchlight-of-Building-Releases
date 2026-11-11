@@ -17,7 +17,8 @@
 // triggerBusLayer, placeHitGains, paralysisLayer, frostbiteLayer; the timed corrections on the DoT, beam and Minion paths).
 import { TICK_LAYERS, TICK_LAYER_KEYS, compileYougaProgram, yougaCoreHit } from "./tick-youga-layers.js";
 import { GENERAL_LAYERS, GENERAL_ORDER, addTarget, createLayerContext, finishTarget, generalHeldLayers, minionTypeModifiers } from "./tick-layers.js";
-import { compilePlainProgram, plainUseKind, timerField } from "./tick-plain-skills.js";
+import { compilePlainProgram, plainUseKind, repeatEffects, timerField } from "./tick-plain-skills.js";
+import { usesPerPlacement } from "./tick-engine.js";
 import { compileAilmentProgram } from "./tick-ailments.js";
 import { compileMinionProgram } from "./tick-minions.js";
 
@@ -127,10 +128,12 @@ function hitActions(hit) {
   const first = !rate.rateComponents?.length && Number.isFinite(rate.firstUseSeconds) && rate.firstUseSeconds >= 0 ? { firstUseSeconds: rate.firstUseSeconds } : {};
   return components.filter((component) => component.usesPerSecond > 0).flatMap((component) => {
     const streams = Math.max(1, Math.round(component.perInterval || 1));
-    const useSeconds = streams / component.usesPerSecond;
+    // Faster than one use per frame: k uses per placed action, k × the interval apart (src/tick-engine.js usesPerPlacement).
+    const every = streams / component.usesPerSecond, batch = usesPerPlacement(every), useSeconds = every * batch;
+    const firstUse = batch > 1 && first.firstUseSeconds !== undefined ? { firstUseSeconds: first.firstUseSeconds + (batch - 1) * every } : first;
     return Array.from({ length: streams }, (_, index) => {
       const label = streams > 1 ? `${component.label} ${index + 1} of ${streams}` : component.label;
-      return { key: `${hit.key}:${component.key}:${index + 1}`, label, useSeconds, ...first, effects: [{ kind: "hit", path: hit.key }] };
+      return { key: `${hit.key}:${component.key}:${index + 1}`, label, useSeconds, ...firstUse, effects: repeatEffects([{ kind: "hit", path: hit.key }], batch) };
     });
   });
 }

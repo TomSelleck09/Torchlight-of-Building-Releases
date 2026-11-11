@@ -180,7 +180,7 @@ const MINION_READINGS = {
   stageEnhancedChance: ["In calc", "+X% Enhanced-skill chance at the Stage threshold"],
   stageEmpowerDuration: ["In calc", "the Empower Skill's buff lasts longer at the Stage threshold"],
   stageEmpoweredAdditional: ["In calc", "joins the Empower Skill's buff at the Stage threshold"],
-  stageEmpoweredProjectile: ["Provisional", "+1 projectile on the Enhanced Skill while Empowered at the Stage threshold (its projectiles hit the same enemy at the 70% falloff, +5% per +1 Projectile Quantity)"],
+  stageEmpoweredProjectile: ["Provisional", "+1 projectile on the Enhanced Skill while Empowered at the Stage threshold (its projectiles hit the same enemy, each later one keeping 30% (the text's 70% falloff is the share lost), +5% per +1 Projectile Quantity)"],
   enhancedExplosions: ["Provisional", "the Enhanced Skill's extra explosions hit the dummy"],
   doubleCastEnhanced: ["Provisional", "Enhanced Skill double casting: 2 explosions (3 on a triple cast) at the chance"],
   tripleCast: ["Provisional", "a double cast becomes a triple cast at this chance"],
@@ -792,10 +792,11 @@ export function applyBatch6SkillMechanics({ plan, profile, entries: rawEntries =
     const share = Math.min(1, clause.darkGateCastsPerSecond / Math.max(1e-9, rates.usesPerSecond(clause.skill)));
     extra(skill, clause.value * share, clause.source, `${clean(clause.text)}: × ${round(share)} of its uses follow a Dark Gate cast (Dark Gate every ${round(1 / clause.darkGateCastsPerSecond)} s; game recipe ${clause.recipe}; provisional)`);
   }
-  // Heavy Arrow (Stage 5, while Empowered): Thunderlight Arrow +1 base projectile on the dummy at the 70% falloff, +5% per +1 Projectile Quantity.
+  // Heavy Arrow (Stage 5, while Empowered): Thunderlight Arrow +1 base projectile on the dummy keeping 30% (the 70% falloff is the share lost;
+  // client repeat multiplier, user decision 2026-11-05), +5% per +1 Projectile Quantity.
   if (plan.heavyArrow) {
     const empower = find(EMPOWER_SKILL_OF[profile.key]);
-    if (empower?.selfBuff) empower.selfBuff = { ...empower.selfBuff, enhancedExtraHits: (empower.selfBuff.enhancedExtraHits || 0) + 0.7 * plan.heavyArrow.value, enhancedAdditionalPercent: (empower.selfBuff.enhancedAdditionalPercent || 0) + 5 * plan.heavyArrow.value };
+    if (empower?.selfBuff) empower.selfBuff = { ...empower.selfBuff, enhancedExtraHits: (empower.selfBuff.enhancedExtraHits || 0) + 0.3 * plan.heavyArrow.value, enhancedAdditionalPercent: (empower.selfBuff.enhancedAdditionalPercent || 0) + 5 * plan.heavyArrow.value };
   }
   return out;
 }

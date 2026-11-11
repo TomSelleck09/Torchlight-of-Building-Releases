@@ -1,4 +1,5 @@
 import { MODULE_AFFIXES, MODULE_ITEMS, MODULE_POOL_SLOTS } from "./data/skills/module-affixes-ss14.generated.js";
+import { auraValuesAtLevel } from "./data/skills/aura-scaling-ss13.js";
 
 // Module skill affixes (2026-10-28, user report "I don't have the affix selectors for module skills"; the in-game Module: Ratlin
 // Stormer Captain tooltip lists "Resistance Protocol" and "Haste Protocol" as orange-diamond lines).
@@ -24,6 +25,16 @@ import { MODULE_AFFIXES, MODULE_ITEMS, MODULE_POOL_SLOTS } from "./data/skills/m
 //     Damage taken) when this module's Minions deal that damage type (after the module's conversion); read through the existing
 //     "When Minions deal damage, inflicts X Infiltration" rule (src/combat-states.js; uptime 1, one Infiltration whoever inflicts it).
 //   Ailment Protocol: +3% additional damage per type of Ailment on the dummy (one write per ailment state, multiplies): (1.03)^types.
+//   Aura Overwrite (2026-11-09, 25 T gap 6): "Minions summoned by this skill grant a Lv. N <Aura> to you and allies" puts the Aura's own
+//     buff (Weapon Amplification 15023, Charged Flames 15153, …; to [allies, minion]) on you and every Minion while the module's Minion
+//     is out. Its typed "+X% additional <Type> Damage" (Weapon Amplification affix 200000399: attr 5002 mod 4, "p0 scale *") is read at
+//     the Aura record's Lv. N value (src/data/skills/aura-scaling-ss13.js; Lv1 21%) as an ally-buff line, not scaled by your Aura Effect.
+//     Client (SS14, static; research/build-25t-open-items-2026-11-09.md Q6): a buff's scale is the caster's attr 3401 for the buff's tags ×
+//     the holder's attr 3410 (0x141d22dd0); node 374 without sourceAsAffixSource makes the module's Minion the caster, and a module Minion
+//     reads only its own attributes (config_minion link field 0), so your Aura Effect lines never reach it; no line writes either attribute
+//     here (two links inferred: the request's caster field, the context's holder id). The same Aura active on your board is the same buff
+//     (15023: one key for every caster, cap 1, the higher level kept): one buff, the board copy kept. Its other stats (Armor, Evasion,
+//     Energy Shield, resistance, Movement Speed) stay unread.
 
 const FAMILY_ORDER = ["Program", "Protocol", "Aura Overwrite", "Source Code"];
 export const MODULE_AFFIX_SLOT_COUNT = Math.max(...Object.values(MODULE_POOL_SLOTS));
@@ -217,13 +228,40 @@ export function moduleAffixReading(record, context = {}) {
     case 2043: case 2045:
       reading.parts.push(part(record.text[0], "Not on dummy", "the training dummy is never defeated"));
       break;
-    default:
-      reading.parts.push(...record.text.map((text) => part(text, "Not modeled", record.family === "Aura Overwrite" ? "an Aura granted by a Minion is not modeled" : `${record.family} affixes are not modeled`)));
+    default: {
+      const overwrite = record.family === "Aura Overwrite" ? auraOverwrite(record, context) : null;
+      if (overwrite) {
+        for (const line of overwrite.player) player(line.text, line.buff);
+        reading.allMinions.push(...overwrite.allMinions);
+        reading.parts.push(overwrite.part);
+        break;
+      }
+      reading.parts.push(...record.text.map((text) => part(text, "Not modeled", record.family === "Aura Overwrite" ? "an Aura granted by a Minion is not modeled (only its typed additional damage is read)" : `${record.family} affixes are not modeled`)));
+    }
   }
   reading.provisional = reading.parts.some((entry) => entry.provisional);
   reading.status = moduleAffixStatus(reading.parts);
   reading.reason = reading.parts.map((entry) => `${entry.status}: ${entry.reason}`).join(" · ");
   return reading;
+}
+
+const AURA_OVERWRITE = /grant a Lv\. (\d+) (.+?) to you and allies$/;
+const TYPED_AURA_STAT = /^additional(Physical|Fire|Cold|Lightning|Erosion)DamagePercent$/;
+/** An Aura Overwrite's typed additional damage (see the header), or null when its Aura has none. */
+function auraOverwrite(record, context = {}) {
+  const match = String(record.text?.[0] || "").match(AURA_OVERWRITE);
+  if (!match) return null;
+  const [, level, aura] = match;
+  const typed = Object.entries(auraValuesAtLevel(aura, Number(level)) || {}).map(([stat, value]) => [stat.match(TYPED_AURA_STAT)?.[1], value]).filter(([type, value]) => type && Number(value));
+  if (!typed.length) return null;
+  const buff = record.buffs.find((item) => item.to.includes("allies") && item.affixes.length)?.buff ?? null;
+  if (new Set(context.boardAuras || []).has(aura)) return { player: [], allMinions: [], part: part(record.text[0], "Inactive", `${aura} is active on your skill board: the same buff (${buff}), one buff, the board copy kept`) };
+  const lines = typed.map(([type, value]) => ({ type, value: round(value) }));
+  return {
+    player: lines.map((line) => ({ text: `+${line.value}% additional ${line.type} Damage`, buff })),
+    allMinions: lines.map((line) => ({ text: `+${line.value}% additional ${line.type} Damage for Minions`, buff })),
+    part: part(record.text[0], "In calc", `game buff ${buff} on you and allies: ${lines.map((line) => `+${line.value}% additional ${line.type} Damage`).join(", ")} (Lv. ${level} ${aura}, its record's value; not scaled by your Aura Effect: client, the caster's attr 3401, the Minion's)`)
+  };
 }
 
 /** One badge for several parts: In calc if any part is, Partly modeled when another part is Not modeled, else the most relevant. */
@@ -245,13 +283,13 @@ export function moduleMinionContext(profile) {
  * parts, provisional }] }], playerLines (modifier lines, once per buff), infiltrationLines }. `setups` carry `moduleAffixes` (the
  * planner sets them); `isActive(setup)` says whether the module's Minion is out; `profileOf(setup)` its Minion profile.
  */
-export function resolveModuleProtocols({ setups = [], isActive = () => true, profileOf = () => null } = {}) {
+export function resolveModuleProtocols({ setups = [], isActive = () => true, profileOf = () => null, boardAuras = [] } = {}) {
   const modules = [], playerLines = [], infiltrationLines = [], buffsSeen = new Set(), infiltrationSeen = new Set();
   for (const setup of setups) {
     const records = setup.moduleAffixes || [];
     if (!records.length) continue;
     const active = setup.enabled !== false && isActive(setup);
-    const context = moduleMinionContext(profileOf(setup));
+    const context = { ...moduleMinionContext(profileOf(setup)), boardAuras };
     const affixes = records.map((record) => {
       const reading = moduleAffixReading(record, context);
       const parts = active ? reading.parts : reading.parts.map((entry) => ({ ...entry, status: "Inactive", reason: "the module is not on the skill board, switched off or its Minion is not modeled" }));

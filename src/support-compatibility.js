@@ -1,5 +1,6 @@
 import { CATALOG_TAG_GAME_IDS, GAME_SKILL_TAG_NAMES, skillGameTagsSs13 as linkedStoneTagsSs13, supportEligibilitySs13 } from "./data/skills/support-eligibility-ss13.generated.js";
 import { minionSkillOwnersSs13 } from "./data/skills/minion-skill-owners-ss13.generated.js";
+import { summonNpcSkillTagsSs14 } from "./data/skills/summon-npc-skill-tags-ss14.generated.js";
 import { ITEM_GRANTED_SKILLS_SS14 } from "./data/skills/item-granted-skills-ss14.js";
 
 // The skills' own stone tags: the support-eligibility link (by icon and visible tags) plus the module summons ("Module: Goblin
@@ -68,9 +69,17 @@ const GAME_TAG = { active: 6000200, passive: 6000201, hit: 6001060, damageOverTi
 // name; no Minion skill carries one of the four duplicated names). The Spirit Magus role tags (Base Skill, Enhanced Skill, Ultimate) have
 // no skill_tag id and add nothing.
 const TAG_ID_BY_NAME = (() => { const map = new Map(); for (const [id, name] of Object.entries(GAME_SKILL_TAG_NAMES)) if (!map.has(name)) map.set(name, Number(id)); return map; })();
-const SUMMON_MINION_TAGS = new Map(minionSkillOwnersSs13.map((owner) => [owner.owner, Object.freeze([...new Set(owner.skills.flatMap((skill) => (skill.gameTags || []).map((name) => TAG_ID_BY_NAME.get(name)).filter(Boolean)))])]));
+// The summoned NPC's whole skill-stone list (src/data/skills/summon-npc-skill-tags-ss14.generated.js, config_npc SS14) joins them: the
+// client's install filter reads "every tag of its summoned NPC's skills" (SkillFilterMgr, encrypted-scripts full pass 2026-11-03 finding
+// 2), and that list also holds the birth skill and, on every Synthetic Troop NPC, stones 402031 (tag 6400000) and 402030. Tag 6400000 is
+// an include group of most Activation Mediums, so the game lets Activation Medium: Spell Burst / Boss / … support a module or a
+// Synthetic Troop summon (user report 2026-11-09, in game: Module: Trog 2nd General with Activation Medium: Spell Burst in socket 1).
+const SUMMON_MINION_TAGS = new Map(minionSkillOwnersSs13.map((owner) => [owner.owner, Object.freeze([...new Set([
+  ...owner.skills.flatMap((skill) => (skill.gameTags || []).map((name) => TAG_ID_BY_NAME.get(name)).filter(Boolean)),
+  ...(summonNpcSkillTagsSs14[owner.owner]?.tagIds || [])
+])])]));
 
-/** The game tag ids of the Minion skills a summon owns (src/minion-skill-owners.js), or null for a skill that owns none. */
+/** The game tag ids of the Minion skills a summon owns and of its summoned NPC's skill stones, or null for a skill that owns none. */
 export function summonMinionSkillTagIds(name) {
   return SUMMON_MINION_TAGS.get(name) || null;
 }

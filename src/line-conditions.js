@@ -358,6 +358,11 @@ const LINE_RULES = [
   [/^If you have recently moved more than (\d+) ?m, (.+)$/, (m) => ({ body: m[2].replace(/^Spirit Magi \+(\d+(?:\.\d+)?) initial Growth$/i, "+$1 initial Growth for Spirit Magi"), key: "movedRecently", params: { meters: num(m[1]) } })],
   // "+20% Sentry Damage when moving" (Artisan [3,4]; chunk 4): the movement group.
   [/^(.+?) when moving$/, (m) => ({ body: m[1], key: "moving" })],
+  // "+16% additional Max Energy Shield while moving" (Long Night Sorcerer's Boots): the same Movement group (10 T claim audit G3d,
+  // 2026-11-09, user-approved best case; the Config tab's Movement choice turns it off). Its body, which no engine reads, reaches the one
+  // Max Energy Shield pool through src/character-stats.js heldConditionalPoolExtra. Only Max Energy Shield bodies: the other "… while
+  // moving" defence lines (Armor, Evasion, Max Resistance, regeneration) keep their reading.
+  [/^([+-][\d.]+% (?:additional )?Max Energy Shield) while moving$/, (m) => ({ body: m[1], key: "moving" })],
   [new RegExp(`^When you have Hasten, \\+${N}% Attack Speed and Cast Speed for every (\\d+) ?m of movement made recently\\. Stacks up to (\\d+) time\\(s\\)$`), (m) => ({ bodies: [`+${round(num(m[1]) * num(m[3]))}% Attack Speed`, `+${round(num(m[1]) * num(m[3]))}% Cast Speed`], key: "hastenMoving", params: { stacks: num(m[3]) } })],
   [/^(.+?) when not at Low Life$/, (m) => ({ body: m[1], key: "notLowLife" })],
   // Minion Damage revived memory family (reference data Memory Revival; game affix 11705637): "+X% additional Minion Damage when Life or Energy
@@ -610,7 +615,9 @@ const LINE_RULES = [
   [new RegExp(`^(.+?) if you have consumed more than \\+?${N}% (?:of )?(?:Max )?(Mana|Life) recently$`), (m) => ({ bodies: consumedBodies(m[1]), key: "resourceConsumedAbove", params: { resource: cap1(m[3]), percent: num(m[2]) } })],
   [new RegExp(`^(.+?) for every ${N}(%)? (?:of )?(?:Max )?(Mana|Life) consumed recently(?:, up to \\+?${N}%?|\\. Stacks up to ${N} time\\(s\\))?$`), (m) => {
     const per = Math.abs(num(String(m[1]).match(/^(?:Adds )?([+-]?\d+(?:\.\d+)?)/)?.[1] ?? NaN));
-    const capStacks = m[6] != null ? num(m[6]) : m[5] != null && per > 0 ? num(m[5]) / per : null;
+    // "…, up to C%": the record's count is whole stacks, GetFloorInt(C ÷ X) (Compensatory Life 453993: node 306 mode 3, count
+    // floor(216 ÷ 5) = 43 stacks of 5% = 215%, 2026-11-05; research/build-15t-claim-audit-2026-11-05.md §7.3), not C ÷ X.
+    const capStacks = m[6] != null ? num(m[6]) : m[5] != null && per > 0 ? Math.floor(num(m[5]) / per + 1e-9) : null;
     return { bodies: consumedBodies(m[1]), key: "resourceConsumed", params: { resource: cap1(m[4]), every: num(m[2]), percentOfMax: Boolean(m[3]), capStacks } };
   }],
   // Census #6 (2026-10-27): damage lines that read No DPS effect before.
@@ -950,7 +957,7 @@ function resolveKey(condition, state) {
       const unit = percentOfMax ? `% of Max ${resource}` : ` ${resource}`;
       if (!held) return off(`${resource} consumed recently: ${state.resourceConsumption?.reason || "no consumption model in this context"}`, { provisional: true, ...(condition.value !== undefined ? { appliedValue: 0 } : {}) });
       const perSecond = /^mana$/i.test(resource) ? state.resourceConsumption.manaPerSecond : state.resourceConsumption.lifePerSecond;
-      const working = `${round(held.amount)}${unit} consumed in the last ${RESOURCE_RECENT_SECONDS} s (${round(perSecond)} ${resource}/s from the build's player-cast skill costs; game recipe: 4 s stacks) ÷ ${every} = ${held.raw}${capStacks != null && held.raw > capStacks ? `, capped at ${round(capStacks)}` : ""} (provisional: resource-consumption-rate)`;
+      const working = `${round(held.amount)}${unit} consumed in the last ${RESOURCE_RECENT_SECONDS} s (${round(perSecond)} ${resource}/s from the build's player-cast skill costs${state.resourceConsumption?.attackConsume?.lifePerSecond > 0 && /^life$/i.test(resource) ? " and the Attack Life consume copies" : ""}; game recipe: 4 s stacks) ÷ ${every} = ${held.raw}${capStacks != null && held.raw > capStacks ? `, capped at ${round(capStacks)}` : ""} (provisional: resource-consumption-rate)`;
       if (!(held.stacks > 0)) return off(`no ${resource} consumed: ${working}`, { provisional: true, ...(condition.value !== undefined ? { appliedValue: 0 } : {}) });
       if (condition.value !== undefined) return on(working, { appliedValue: round(condition.multiplies ? ((1 + condition.value / 100) ** held.stacks - 1) * 100 : condition.value * held.stacks), provisional: true });
       return on(working, { factor: held.stacks, provisional: true });
@@ -958,7 +965,7 @@ function resolveKey(condition, state) {
     case "resourceConsumedAbove": {
       const share = consumedRecently(state, params.resource, { percentOfMax: true });
       if (share === null) return off(`${params.resource} consumed recently: ${state.resourceConsumption?.reason || "no consumption model in this context"}`, { provisional: true });
-      const text = `${round(share)}% of Max ${params.resource} consumed in the last ${RESOURCE_RECENT_SECONDS} s (game gate 610, 4 s; rate from the build's player-cast skill costs: provisional, resource-consumption-rate)`;
+      const text = `${round(share)}% of Max ${params.resource} consumed in the last ${RESOURCE_RECENT_SECONDS} s (game gate 610, 4 s; rate from the build's player-cast skill costs${state.resourceConsumption?.attackConsume?.lifePerSecond > 0 && /^life$/i.test(params.resource) ? ` and the Attack Life consume copies, ${round(state.resourceConsumption.attackConsume.usesPerSecond)} Attack uses/s × ${round(state.resourceConsumption.attackConsume.percent)}% of ${round(state.resourceConsumption.attackConsume.currentLife)} current Life (record 200000005, its links proven: research/attack-life-consume-2026-11-09.md)` : ""}: provisional, resource-consumption-rate)`;
       return share > params.percent ? on(`${text} > ${params.percent}%`, { provisional: true }) : off(`${text}, not more than ${params.percent}%`, { provisional: true });
     }
     case "perArmor": {

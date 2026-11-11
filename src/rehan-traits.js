@@ -266,7 +266,7 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   const fact = (key) => Math.max(0, Number(facts?.[key]) || 0);
   const ratesAt = (level) => {
     const k = asFactor(level), attackExtra = fact("attackUses") * (k - 1);
-    return { melee: fact("meleeCasts") * k, stacks: fact("channelStacks") * k, ranged: fact("rangedUses") * k, attack: fact("attackUses") * k, attackCrit: fact("attackCritUses") * k, main: fact("mainUses") * k, skill: fact("skillUses") + attackExtra, hits: fact("hitUses") + attackExtra };
+    return { melee: fact("meleeCasts") * k, stacks: fact("channelStacks") * k, ranged: fact("rangedUses") * k, attack: fact("attackUses") * k, attackCrit: fact("attackCritUses") * k, main: fact("mainUses") * k, skill: fact("skillUses") + attackExtra, hits: fact("hitUses") + attackExtra, attackSteps: fact("attackSteps") * k };
   };
   const out = ratesAt(outLevel), inside = ratesAt(berserkLevel);
 
@@ -276,9 +276,8 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   const hiddenChannel = heroId === SEETHING && enters;
   const perMelee = melee ? Number(melee.match[1]) : 0, perStack = channel ? Number(channel.match[1]) : hiddenChannel ? SEETHING_HIDDEN.channelStackRage : 0, perRanged = starfallRage ? Number(starfallRage.match[1]) : 0;
   const outParts = { melee: G * perMelee * (resource ? out.skill : out.melee), channel: G * perStack * out.stacks, ranged: G * perRanged * out.ranged };
-  const outGain = outParts.melee + outParts.channel + outParts.ranged;
-  // Outside Berserk the Rage fills linearly from 0 (its bonuses read Max ÷ 2); with no Rage gained it stays at 0.
-  const outBonusLevel = outGain > EPS || !measured ? maxRage / 2 : 0;
+  const outGainBase = outParts.melee + outParts.channel + outParts.ranged;
+  // Hysteria's Life-consumed Rage outside Berserk joins it (below); the level reads whether any Rage is gained.
 
   // ---- Seething Spirit: its casts in Berserk (for Growing Anger / Hysteria) ----
   const ritual = has("ritualSpirit"), onslaught = one("onslaughtSpirit"), starfall = has("starfallRanged");
@@ -327,24 +326,40 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   const lifeShare = maxLife > 0 ? maxLife / (maxLife + maxEnergyShield) : 0;
   const takenRate = selfDamage && hysteriaTaken ? G * Number(hysteriaTaken.match[1]) * (Number(selfDamage.match[1]) / Number(selfDamage.match[2])) / Number(hysteriaTaken.match[2]) * lifeShare : 0;
   const consumed = one("hysteriaConsumed"), hate = one("hateConsume");
-  const consumedRate = consumed && hate ? G * Number(consumed.match[1]) * spiritUsesIn * Number(hate.match[1]) / Number(consumed.match[2]) : 0;
-  // Field 2300106 per Melee Attack cast (halved by Fury's Onslaught's -5); hidden 121000007: 5 per channeled stack, not halved.
+  // Hysteria's "Generate 1 Rage for every 3% Max Life consumed" (record 698202: node 612 on 10000001, activeAffixType 2; node 2100 op 0, so
+  // × (1 + Rage gained)) reads every Life consumed (2026-11-08 build audit gap 5): Ancestral Hate's Spirit casts (current Life read as Max
+  // Life: an upper bound), the "Consumes X% of current Life when you use Attack Skills" copies on your Attack uses (each Combo step one
+  // use) and the Spirit's Attack Main Skill casts, and the skill costs paid in Life (src/resource-consumption.js; inputs.lifeConsume).
+  const lifeConsume = inputs.lifeConsume || {};
+  const perUsePercent = Math.max(0, Number(lifeConsume.percentOfMaxPerAttackUse) || 0), otherPercent = Math.max(0, Number(lifeConsume.otherPercentPerSecond) || 0);
+  const mainSteps = Math.max(1, Number(facts?.mainStepsPerUse) || 1), spiritAttacks = Boolean(facts?.mainIsAttack);
+  const perRagePercent = consumed ? Number(consumed.match[2]) / Number(consumed.match[1]) : Infinity;
+  const consumedRate = consumed ? G * ((hate ? spiritUsesIn * Number(hate.match[1]) : 0) + (spiritAttacks ? perUsePercent * spiritUsesIn * mainSteps : 0) + otherPercent) / perRagePercent : 0;
+  // Your own Attack uses: while you attack (Berserk's attacking phase, and outside Berserk).
+  const playerConsumedIn = consumed ? G * perUsePercent * inside.attackSteps / perRagePercent : 0;
+  const playerConsumedOut = consumed ? G * (perUsePercent * out.attackSteps + otherPercent) / perRagePercent : 0;
+  // Field 2300106 per Melee Attack cast (halved by Fury's Onslaught's -5); hidden 121000007: 5 per channeled stack, not halved. Each Combo
+  // step is its own cast (meleeCasts counts the steps; the Spirit's Combo casts × the Main Skill's steps; 2026-11-08 build audit gap 5).
   const castCostPerUse = castCost ? Number(castCost.match[1]) * (onslaughtRage ? 0.5 : 1) : 0;
   const channelCostRate = hiddenChannel ? SEETHING_HIDDEN.channelStackCost * inside.stacks : 0;
   const castCostRate = castCostPerUse * inside.melee + channelCostRate;
   const rangedRateIn = G * perRanged * inside.ranged;
   // The Spirit's casts: its Melee Attack casts pay the same cost, its Ranged casts give Starfall's Rage (no notMine on either row).
-  const spiritCostRate = starfall ? 0 : castCostPerUse * spiritUsesIn;
+  const spiritCostRate = starfall ? 0 : castCostPerUse * spiritUsesIn * mainSteps;
   const spiritRangedRate = starfall ? G * perRanged * spiritUsesIn : 0;
+  outParts.consumed = playerConsumedOut;
+  const outGain = outGainBase + playerConsumedOut;
+  // Outside Berserk the Rage fills linearly from 0 (its bonuses read Max ÷ 2); with no Rage gained it stays at 0.
+  const outBonusLevel = outGain > EPS || !measured ? maxRage / 2 : 0;
   // The Rage cycle for a set of rates (the build's, or one clause left out: the badges' leave-one-out reading). Phase A: until
   // `split` (the Disarm's end, Rage Infusion's 5 s; all of Berserk with Ritual alone), phase B after it (the gains × `late`).
   const infusion = one("infusion");
   const stacksFor = (gainRate) => infusion ? Math.min(Number(infusion.match[3]), gainRate * INFUSION_RECENT_SECONDS / Number(infusion.match[2])) : 0;
-  const cycleFor = ({ out = outGain, nat = natural, cost = furyCostRate, frenzyGain = frenzyRate, grow = growingRate, taken = takenRate, consumedGain = consumedRate, cast = castCostRate, ranged = rangedRateIn, spiritCost = spiritCostRate, spiritRanged = spiritRangedRate, disarmFor = disarmSeconds, late = lateFactor } = {}) => {
+  const cycleFor = ({ out = outGain, nat = natural, cost = furyCostRate, frenzyGain = frenzyRate, grow = growingRate, taken = takenRate, consumedGain = consumedRate, playerConsumed = playerConsumedIn, cast = castCostRate, ranged = rangedRateIn, spiritCost = spiritCostRate, spiritRanged = spiritRangedRate, disarmFor = disarmSeconds, late = lateFactor } = {}) => {
     const attacksInA = !(disarmFor > 0);
     const shared = Math.max(0, nat) + frenzyGain + grow + taken + consumedGain + spiritRanged;
     const loss = Math.max(0, -nat) + cost + spiritCost;
-    const gainsA = shared + (attacksInA ? ranged : 0), gainsB = late * (shared + ranged);
+    const gainsA = shared + (attacksInA ? ranged + playerConsumed : 0), gainsB = late * (shared + ranged + playerConsumed);
     const netA = gainsA - loss - (attacksInA ? cast : 0), netB = gainsB - loss - cast;
     const fill = out > EPS ? maxRage / out : Infinity;
     const split = disarmFor === Infinity ? Infinity : Math.max(disarmFor, infusionAfterSeconds);
@@ -370,10 +385,10 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   // Whether leaving a rate out changes the cycle (the uptime, the Disarm share or the Rage Infusion stacks).
   const changes = (patch) => { const other = cycleFor(patch); return Math.abs(other.uptime - uptime) > EPS || Math.abs(other.disarm - disarmShare) > EPS || Math.abs(other.stacks.out - infusionStacks.out) > EPS || Math.abs(other.stacks.in - infusionStacks.in) > EPS; };
   // The Rage-gained multiplier left out (Split Form's or Rage Infusion's share): every gain scales by k.
-  const scaled = (percent) => { const k = Math.max(0, 1 + (gainedPercent - percent) / 100) / Math.max(EPS, G); return { out: outGain * k, nat: furyGen ? natural * k : natural, frenzyGain: frenzyRate * k, grow: growingRate * k, taken: takenRate * k, consumedGain: consumedRate * k, ranged: rangedRateIn * k, spiritRanged: spiritRangedRate * k }; };
+  const scaled = (percent) => { const k = Math.max(0, 1 + (gainedPercent - percent) / 100) / Math.max(EPS, G); return { out: outGain * k, nat: furyGen ? natural * k : natural, frenzyGain: frenzyRate * k, grow: growingRate * k, taken: takenRate * k, consumedGain: consumedRate * k, playerConsumed: playerConsumedIn * k, ranged: rangedRateIn * k, spiritRanged: spiritRangedRate * k }; };
   const matters = {
     melee: changes({ out: outGain - outParts.melee }), channel: changes({ out: outGain - outParts.channel }), ranged: changes({ out: outGain - outParts.ranged, ranged: 0, spiritRanged: 0 }),
-    furyCost: changes({ cost: 0 }), frenzy: changes({ frenzyGain: 0 }), cast: changes({ cast: 0, spiritCost: 0 }), growing: changes({ grow: 0 }), taken: changes({ taken: 0 }), consumed: changes({ consumedGain: 0 }),
+    furyCost: changes({ cost: 0 }), frenzy: changes({ frenzyGain: 0 }), cast: changes({ cast: 0, spiritCost: 0 }), growing: changes({ grow: 0 }), taken: changes({ taken: 0 }), consumed: changes({ consumedGain: 0, playerConsumed: 0, out: outGain - playerConsumedOut }),
     split: splitPercent > 0 && changes(scaled(splitPercent)), infusionGained: infusionGained > 0 && changes({ late: 1 }),
     // Hero's Resourcefulness: Rage from every skill use instead of the Melee Attack uses only; Rage Infusion's end of the Disarm.
     resource: resource && changes({ out: outGain - G * perMelee * Math.max(0, out.skill - out.melee) }), disarmEnd: disarmLine && Boolean(infusionDisarm) && changes({ disarmFor: Infinity })
@@ -384,8 +399,8 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
 
   const weights = { average: { out: 1 - uptime, in: uptime }, berserk: { out: 0, in: 1 }, player: playerShare > EPS ? { out: playerOut / playerShare, in: playerIn / playerShare } : { out: 1 - uptime, in: uptime } };
   const rage = { maxRage, enters, doubled, berserkLevel, outLevel: outBonusLevel, gainedPercent, splitPercent, infusionGained, infusionAfterSeconds, lateFactor: round(lateFactor), plainGained, G: round(G), resource,
-    outParts: { melee: round(outParts.melee), channel: round(outParts.channel), ranged: round(outParts.ranged) }, outGain: round(outGain), fillSeconds: Number.isFinite(fillSeconds) ? round(fillSeconds) : Infinity,
-    natural: round(natural), furyGen: Boolean(furyGen), noNaturalDrain: Boolean(onslaughtRage), furyCostRate: round(furyCostRate), frenzyRate: round(frenzyRate), growingRate: round(growingRate), takenRate: round(takenRate), consumedRate: round(consumedRate),
+    outParts: { melee: round(outParts.melee), channel: round(outParts.channel), ranged: round(outParts.ranged), consumed: round(outParts.consumed) }, outGain: round(outGain), fillSeconds: Number.isFinite(fillSeconds) ? round(fillSeconds) : Infinity,
+    natural: round(natural), furyGen: Boolean(furyGen), noNaturalDrain: Boolean(onslaughtRage), furyCostRate: round(furyCostRate), frenzyRate: round(frenzyRate), growingRate: round(growingRate), takenRate: round(takenRate), consumedRate: round(consumedRate), playerConsumedRate: round(playerConsumedIn), playerConsumedOutRate: round(playerConsumedOut),
     castCostRate: round(castCostRate), channelCostRate: round(channelCostRate), spiritCostRate: round(spiritCostRate), rangedRateIn: round(rangedRateIn), spiritRangedRate: round(spiritRangedRate), netA: round(netA), netB: round(netB), disarmSeconds, berserkSeconds: Number.isFinite(berserkSeconds) ? round(berserkSeconds) : Infinity,
     uptime: round(uptime), disarmShare: round(disarmShare), playerShare: round(playerShare), infusionStacks: { out: round(infusionStacks.out), in: round(infusionStacks.in) }, measured, prebuilt,
     // Leave-one-out readings for the badges: does leaving the clause's rate out change the cycle?
@@ -631,8 +646,8 @@ function lineRead(key, text, state) {
       if (!(rage.takenRate > EPS)) return L("Inactive", "the dummy never attacks, and no self-damage source (Ritual of Offering) is in the build");
       return rage.matters.taken ? L("In calc", `${fmt(rage.takenRate)} Rage/s in Berserk from Ritual of Offering's self-damage (current Life read as Max Life: an upper bound, provisional)`) : L("No DPS effect", "Berserk never ends without it");
     case "hysteriaConsumed":
-      if (!(rage.consumedRate > EPS)) return L("Inactive", "no Life is consumed (Ancestral Hate with an active Seething Spirit)");
-      return rage.matters.consumed ? L("In calc", `${fmt(rage.consumedRate)} Rage/s in Berserk from the Life Ancestral Hate's Spirit consumes (current Life read as Max Life: an upper bound, provisional)`) : L("No DPS effect", "Berserk never ends without it");
+      if (!(rage.consumedRate + rage.playerConsumedRate + rage.playerConsumedOutRate > EPS)) return L("Inactive", "no Life is consumed (Ancestral Hate with an active Seething Spirit, a Life consume line on your Attack uses, or a skill cost paid in Life)");
+      return rage.matters.consumed ? L("In calc", `${fmt(rage.consumedRate + rage.playerConsumedRate)} Rage/s in Berserk (${fmt(rage.playerConsumedOutRate)} outside) from the Life consumed: Ancestral Hate's Spirit (current Life read as Max Life: an upper bound), the Attack Life consume copies on your and the Spirit's Attack uses, Life costs (record 698202; provisional)`) : L("No DPS effect", "Berserk never ends without it");
     case "ritualSelfDamage":
       return rage.takenRate > EPS && rage.matters.taken ? L("In calc", `Hysteria: the self-damage generates ${fmt(rage.takenRate)} Rage/s in Berserk (provisional)`) : L("No DPS effect", rage.takenRate > EPS ? "self-damage: Berserk never ends without its Rage" : "self-damage (Hysteria would turn it into Rage)");
     // ---- Rage bonuses (time-averaged over the cycle) ----

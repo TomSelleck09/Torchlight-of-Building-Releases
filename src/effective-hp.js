@@ -1,7 +1,7 @@
 import { escapeHtml } from "./html.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { barrierShieldBonus, barrierShieldValue } from "./barrier-sources.js";
-import { characterStatTotals } from "./character-stats.js";
+import { characterStatTotals, heldConditionalPoolExtra } from "./character-stats.js";
 import { formatRecountInteger, toggleNumberMarkup } from "./dummy-recount-panel.js";
 import { blockWithAegisOfFire } from "./block-model.js";
 import { aegisOfFireState } from "./aegis-of-fire.js";
@@ -82,23 +82,26 @@ const emptyStat = { flat: 0, increased: 0, additional: 1, gearTotal: 0, sources:
 /** A resource pool (Max Life / Mana / …) from the stat-sheet totals: (base + flat + gear) × (1 + increased) × additional. */
 export function resourcePool(totals, key, base, options = {}) { return pool(totals, key, base, options); }
 // `extra` adds defence-view contributions that are not plain stat lines: flat (per-attribute lines, Aura buffs, a skill's
-// "+N Armor while the skill lasts") and additional factors (Aura "additional" lines), each with its source text.
+// "+N Armor while the skill lasts"), increased (a per-Blessing-stack "+X% Armor") and additional factors (Aura "additional" lines),
+// each with its source text.
 function pool(totals, key, base, { defense = false, baseLabel = "", extra = null } = {}) {
   const stat = totals.byKey[key] || emptyStat;
   const defenseStat = defense ? totals.byKey.defense || emptyStat : emptyStat;
-  const increased = stat.increased + defenseStat.increased;
+  const increased = stat.increased + defenseStat.increased + (extra?.increased || []).reduce((sum, item) => sum + item.value, 0);
   const extraFlat = (extra?.flat || []).reduce((sum, item) => sum + item.value, 0);
   const extraAdditional = (extra?.additional || []).reduce((product, item) => product * (1 + item.value / 100), 1);
   const flat = stat.flat + extraFlat;
   const additional = stat.additional * extraAdditional;
-  const value = Math.max(0, (base + flat + stat.gearTotal) * (1 + increased / 100) * additional);
+  // "Your Max Energy Shield is fixed at 0" (game affix 103360004, node 336 on attribute 1601): the fixed value, whatever the lines add.
+  const fixed = Number.isFinite(stat.fixed) ? stat.fixed : null;
+  const value = fixed !== null ? Math.max(0, fixed) : Math.max(0, (base + flat + stat.gearTotal) * (1 + increased / 100) * additional);
   const sources = [
     ...(base ? [{ source: baseLabel, text: `${base} base`, value: base }] : []),
     ...stat.sources.map((item) => ({ source: item.source, text: item.text })),
-    ...[...(extra?.flat || []), ...(extra?.additional || [])].map((item) => ({ source: item.source, text: item.text })),
+    ...[...(extra?.flat || []), ...(extra?.increased || []), ...(extra?.additional || [])].map((item) => ({ source: item.source, text: item.text })),
     ...defenseStat.sources.map((item) => ({ source: item.source, text: `${item.text} (Defense: Armor, Evasion and Energy Shield)` }))
   ];
-  return { key, base, flat: round(flat), gear: round(stat.gearTotal), increased: round(increased), additional: round(additional), value: round(value), sources };
+  return { key, base, flat: round(flat), gear: round(stat.gearTotal), increased: round(increased), additional: round(additional), value: round(value), ...(fixed !== null ? { fixed } : {}), sources };
 }
 
 // All In (support, reference data 2026-10-14; Lv1 20% … Lv20 29.5% … Lv40 35.7%): "When casting the supported skill, gains the buff: X%
@@ -131,7 +134,7 @@ export function decayingEvasionLayers(planner) {
 // Energy Shield, p1 per p0, no step and no limit), so it is linear. The same shape for Life / Mana and the other attributes.
 const PER_ATTRIBUTE = /^\+?(\d+(?:\.\d+)?) Max (Life|Energy Shield|Mana) per (\d+(?:\.\d+)?) (Strength|Dexterity|Intelligence)$/i;
 const POOL_KEY = { life: "maxLife", "energy shield": "maxEnergyShield", mana: "maxMana" };
-function perAttributePoolLines(modifierTexts, totals) {
+export function perAttributePoolLines(modifierTexts, totals) {
   const out = { maxLife: [], maxEnergyShield: [], maxMana: [] };
   for (const line of modifierTexts) {
     if (line.origin === "derived") continue;
@@ -172,6 +175,23 @@ function auraDefense(planner) {
     }
   }
   return { taken, checklistLines, pools };
+}
+
+/**
+ * The Max Energy Shield pool's contributions beyond its stat lines: the per-attribute lines ("+2 Max Energy Shield per 5 Intelligence",
+ * game affix 101140081, node 114, linear) and the active Auras' held Energy Shield buffs (Precise: Energy Fortress's flat and additional
+ * Max Energy Shield, at their Aura Effect). One pool for every reader: the defence view below and the planner's combat stats (Barrier
+ * Burst's Shield, the Sage and Rehan inputs; 10 T claim audit G3b, 2026-11-09: the town panel's Energy Shield 40,093 needs both).
+ * With `lineEffects` (the line resolver's result) it also holds the held conditional Max Energy Shield lines no engine reads, such as
+ * "+16% additional Max Energy Shield while moving" under the Movement group (src/character-stats.js heldConditionalPoolExtra; G3d,
+ * 2026-11-09); `skipTownHeld` leaves out the town-held ones a pool built on characterStatTotals(planner) already counts.
+ * @param {{ modifierTexts?: object[], totals: object, auraEntries?: object[], lineEffects?: object, skipTownHeld?: boolean }} input
+ * @returns {{ flat: { source, text, value }[], increased: { source, text, value }[], additional: { source, text, value }[] }} the pool's `extra`
+ */
+export function energyShieldPoolExtra({ modifierTexts = [], totals, auraEntries = [], lineEffects = null, skipTownHeld = false } = {}) {
+  const aura = auraDefense({ aura: { entries: auraEntries } });
+  const held = lineEffects ? heldConditionalPoolExtra(lineEffects, "maxEnergyShield", { skipTownHeld, modifierTexts }) : { flat: [], increased: [], additional: [] };
+  return { flat: [...perAttributePoolLines(modifierTexts, totals).maxEnergyShield, ...aura.pools.maxEnergyShield.flat, ...held.flat], increased: held.increased, additional: [...aura.pools.maxEnergyShield.additional, ...held.additional] };
 }
 
 // "+X% Barrier Shield" lines and the Shield value: src/barrier-sources.js (shared with Barrier Burst, 2026-10-26).
@@ -510,7 +530,7 @@ export function effectiveHpModel(planner, options = {}) {
   const nonPhysicalArmorRate = 0.6 + (aegis.active && aegis.armor ? aegis.armor.nonPhysicalArmorRatePercent / 100 : 0);
 
   const life = pool(totals, "maxLife", baseLife(characterLevel), { baseLabel: `Base Life · level ${characterLevel}`, extra: { flat: perAttribute.maxLife } });
-  const energyShield = pool(totals, "maxEnergyShield", 0, { defense: true, extra: { flat: [...perAttribute.maxEnergyShield, ...aura.pools.maxEnergyShield.flat], additional: aura.pools.maxEnergyShield.additional } });
+  const energyShield = pool(totals, "maxEnergyShield", 0, { defense: true, extra: energyShieldPoolExtra({ modifierTexts, totals, auraEntries: planner.aura?.entries || [], lineEffects: planner.lineEffects, skipTownHeld: true }) });
   const mana = pool(totals, "maxMana", baseMana(characterLevel), { baseLabel: `Base Mana · level ${characterLevel}`, extra: { flat: perAttribute.maxMana } });
   const armor = pool(totals, "armor", 0, { defense: true, extra: { flat: [...fortification, ...aura.pools.armor.flat], additional: aura.pools.armor.additional } });
   const decayingEvasion = decayingEvasionLayers(planner);

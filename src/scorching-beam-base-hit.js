@@ -48,20 +48,27 @@ export function scorchingBeamBaseHits({ effectiveLevel = 20, levelFactor = 1 } =
 
 // Extra Beams on one target (Scattershot Beam "+2 additional Beams", "+N Beams" lines). Game manual 1001011621: additional
 // Beams share the original Beam's origin and spread at an angle. Skill text 16204: the beams fired and the explosions
-// caused by the skill can hit the same enemy, Shotgun Effect falloff coefficient 70%. Shotgun Effect (hyperlink 642): the
-// first effect hit deals 100%, "Most skills' subsequent on hit damage is 70%", read as every hit after the first at
-// ×0.7 (1 + 0.7 × extra), for the beam ticks and for the explosions alike (each Beam explodes at its end). The in-game
-// Scattershot run (2026-10-12) shows all three Beams reaching the dummy.
+// caused by the skill can hit the same enemy, Shotgun Effect falloff coefficient 70%. By the client's repeat multiplier (user
+// decision 2026-11-05; src/shotgun-effect.js) that 70% is the share lost: each hit after the first keeps the hit rule's table
+// value, 30 (the text's 100 − 70), so 1 + 0.3 × extra, for the beam ticks and for the explosions alike (each Beam explodes at
+// its end). The in-game Scattershot run (2026-10-12) shows all three Beams reaching the dummy. Before 2026-11-05: 1 + 0.7 × extra.
+// Split 681194 (client, 2026-11-08): the first Beam's rule has an empty table, so it deals 100% on every hit; the extra Beams are
+// the "multiple ray" component (count from field 2012061, Additional Beams) with a rule in the same brother group 1, table 30, so
+// an extra Beam keeps 30% once the first Beam or the other extra Beam of its skill instance has hit the dummy (100% only on a hit
+// that lands first; whether a channel use is one instance and the frame order are not traced). The explosions' rule is group 2,
+// table 30, with seperateBrotherGroupEachRepeatOrLoop: siblings only within one repeat / loop sub-key, and whether the three
+// Beams' explosions share one is not traced (open question shotgun-brother-group-none).
 export function scorchingBeamShotgunFactor(beams = 1, coefficientPercent = scorchingBeamSs13.rules.shotgunFalloffCoefficientPercent) {
   const extra = Math.max(0, Math.trunc(Number(beams) || 1) - 1);
-  return 1 + extra * (Number(coefficientPercent) || 0) / 100;
+  const kept = Math.max(0, 100 - (Number(coefficientPercent) || 0)) / 100;
+  return 1 + extra * kept;
 }
 
 // The stripped Guard level-20 panel reports 76.44–141.61 Fire Spell Damage.
 // Guard adds 25%, so its source range divides by 1.25. The bare Iris panel
 // independently has that same 76.44–141.61 range. Both bounds yield 49% of
 // the SS13 156–289 tooltip packet. This is an observed town-panel ratio, NOT
-// the skill's 70% Shotgun Effect falloff: shotgun only reduces later overlaps.
+// the skill's Shotgun Effect falloff (70% lost, 30% kept): shotgun only reduces later overlaps.
 const guardControl = selenaScorchingBeamStrippedValidations.find((entry) => entry.id === "guard-level-20");
 const panelRange = guardControl.damage.fireSpellDamage;
 const tooltipBeam = parsePacket("Fire Beam");

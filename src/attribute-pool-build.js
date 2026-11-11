@@ -23,12 +23,20 @@ const MOD_NUMBER = Object.freeze(Object.fromEntries(Object.entries(MOD_BUCKET).m
 const SYNTHETIC = new Set(["derived", "follower", "buff"]);
 const UNIT_OF = { self: "player", enemy: "dummy", minion: "minion" };
 export const GALE_LINE = /^\d+(?:\.\d+)?% of the Projectile Speed bonus is also applied to (?:the additional bonus for )?Projectile Damage$/i;
-// Stat-sheet totals as the attribute ids conversions read (fromMod 5 / 1 on the whole attribute).
-const STAT_ATTRS = Object.freeze({ strength: 1, dexterity: 2, intelligence: 3, maxLife: 1001, maxMana: 1301, maxEnergyShield: 1601, evasion: 4002 });
+// Stat-sheet totals as the attribute ids conversions read (fromMod 5 / 1 on the whole attribute). Armor is the combat Armor
+// (src/combat-armor.js: the stat sheet's lines, the Auras' and other combat Armor buffs; 2026-11-09), so a conversion reading Armor and the
+// text per-Armor readers take one value (before, the pool rebuilt Armor from its record writes and missed node 321's chest Defense).
+const STAT_ATTRS = Object.freeze({ strength: 1, dexterity: 2, intelligence: 3, maxLife: 1001, maxMana: 1301, maxEnergyShield: 1601, evasion: 4002, armor: 4001 });
 // Text readings of planner-made lines, for the sources the hit path's conversions read (Projectile Speed: the Gale converters).
 const TEXT_WRITES = Object.freeze([
   { pattern: /^([+-]?\d+(?:\.\d+)?)% Projectile Speed$/i, attr: 6005, mod: 3 },
-  { pattern: /^([+-]?\d+(?:\.\d+)?)% additional Projectile Speed$/i, attr: 6005, mod: 4 }
+  { pattern: /^([+-]?\d+(?:\.\d+)?)% additional Projectile Speed$/i, attr: 6005, mod: 4 },
+  // Max Spell Burst a held buff or a trait module adds (bing2 F2, 2026-11-10, user-approved): Squidnova's "+1 Max Spell Burst" (record
+  // 815729280, attr 6361 flat, gated on its own state) and Multi-Coupling Equation's stacks (53529464, attr 6361 flat from a held-buff count)
+  // arrive as planner-made lines; their source lines leave no static write here, so each is written once, from its derived line. Record
+  // 812952064 (Vorax Neck) reads attr 6361's final value through node 114 (fromMod 5), so the neck's "per stack of Max Spell Burst" lines
+  // read the combat Max Spell Burst. (A part-time Multi-Coupling stack, src/bing-traits.js coupling.partial, has no line: the whole stacks.)
+  { pattern: /^\+(\d+(?:\.\d+)?) Max Spell Burst$/i, attr: 6361, mod: 1 }
 ]);
 
 // One line's recipe reading, once per line object and text.
@@ -63,6 +71,17 @@ export function buildAttributePool({ modifierTexts = [], playerBuffs = null, sta
   const pool = new AttributePool({ conversions });
   const derivedFrom = new Set(modifierTexts.filter((line) => line?.derivedFrom).map((line) => lineKeyOf(line.source, line.derivedFrom)));
   const convertedLines = new Map();
+  const heldWrites = heldBuffWrites(playerBuffs);
+  // A held buff the pool writes from its record (below) also has a planner-made copy of its stat as a line (an Elixir's "+179.15% Projectile
+  // Speed", source "Scorpion Stinger Distillate (Elixir Effect × …)"): the copy is not written again, or a conversion reading that
+  // attribute counts the buff twice (2026-11-09, 25 T gap 2: Gale read 477.8% Projectile Speed for the town panel's 256% read once).
+  const heldAttrs = new Map();
+  for (const item of heldWrites) for (const write of item.writes) if (item.name && write.value !== null && !write.trigger && !write.gates) heldAttrs.set(`${item.name}|${write.attr}|${write.mod}`, true);
+  const heldCopy = (line, rule) => [...heldAttrs.keys()].some((key) => { const [name, attr, mod] = key.split("|"); return Number(attr) === rule.attr && Number(mod) === rule.mod && (line.source === name || String(line.source ?? "").startsWith(`${name} (`)); });
+  // A derived line of a conversion the traced pool reads at the hit (Law of Greed's "+X% Projectile Speed per stack of Max Spell Burst",
+  // record 125797304: node 114 from Max Spell Burst to attr 6005) is that record's value: writing its text too would count it twice
+  // (2026-11-09). The legacy pool keeps the text write (the record is not evaluated there). The derived lines follow their parent line.
+  const tracedParent = (line) => conversions === "traced" && Boolean(line.derivedFrom) && convertedLines.has(lineKeyOf(line.source, line.derivedFrom));
   modifierTexts.forEach((line, lineIndex) => {
     if (!line) return;
     const lineKey = lineKeyOf(line.source, line.text);
@@ -72,7 +91,7 @@ export function buildAttributePool({ modifierTexts = [], playerBuffs = null, sta
     if (line.lineEffect || SYNTHETIC.has(line.origin)) {
       for (const rule of TEXT_WRITES) {
         const match = squash(line.text).match(rule.pattern);
-        if (match) pool.add({ unit: "player", attr: rule.attr, mod: rule.mod, value: Number(match[1]) * scale, requirement: null, layer: "record", source: { kind: "text", origin: line.origin ?? null, line: line.text, lineSource: line.source, lineKey } });
+        if (match && !heldCopy(line, rule) && !tracedParent(line)) pool.add({ unit: "player", attr: rule.attr, mod: rule.mod, value: Number(match[1]) * scale, requirement: null, layer: "record", source: { kind: "text", origin: line.origin ?? null, line: line.text, lineSource: line.source, lineKey } });
       }
       return;
     }
@@ -103,7 +122,7 @@ export function buildAttributePool({ modifierTexts = [], playerBuffs = null, sta
     });
   });
   // Your held buffs' record writes.
-  for (const item of heldBuffWrites(playerBuffs)) {
+  for (const item of heldWrites) {
     // A board Empower held at share 1 (own buffs pre-built) still lapses when its cooldown outlasts it: its steady uptime (W9 step 4,
     // Bull's Rage 0.8986 on Erika, as src/empower-effects.js reads it).
     const uptime = Number.isFinite(item.uptime) && item.uptime < 1 ? item.uptime : 1;

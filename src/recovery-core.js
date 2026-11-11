@@ -1,6 +1,8 @@
 // Storage-only helpers for the boot guard, the Recovery screen and build
 // backups. This module must not import the calculator or the planner modules:
 // the Recovery screen has to work even when those fail to load or freeze.
+// library-storage-codec.js imports nothing: the compact library format (2026-11-09) is read here too.
+import { UNSAVED_COPY_KEY, UNSAVED_COPY_LOCAL_PREFIX, decodeStoredLibrary, decodeUnsavedCopy, isCompactLibraryText, parseStoredLibrary } from "./library-storage-codec.js";
 
 // Library data (never cleared by any recovery action).
 export const LIBRARY_KEY = "tli-builder:build-library:v1";
@@ -9,7 +11,9 @@ export const LEGACY_STATE_KEY = "tli-builder:selena-candidate:v1";
 export const LIBRARY_KEYS = Object.freeze([LIBRARY_KEY, LEGACY_STATE_KEY]);
 // Unreadable library values kept aside by planner-state.js (never cleared here).
 export const QUARANTINE_PREFIX = `${LIBRARY_KEY}:unreadable:`;
-export const isLibraryKey = (key) => LIBRARY_KEYS.includes(key) || String(key).startsWith(QUARANTINE_PREFIX);
+// Copies of the open build kept when a library write failed (planner-state.js keepUnsavedCopy; never cleared here).
+export { UNSAVED_COPY_KEY, UNSAVED_COPY_LOCAL_PREFIX };
+export const isLibraryKey = (key) => LIBRARY_KEYS.includes(key) || String(key).startsWith(QUARANTINE_PREFIX) || String(key).startsWith(UNSAVED_COPY_LOCAL_PREFIX);
 
 // Session flags.
 export const BOOT_FLAG_KEY = "tli-builder:booting";
@@ -80,17 +84,33 @@ export function setSafeMode(session, enabled) {
 // ---- Backup --------------------------------------------------------------
 
 // Builds the backup object from raw storage. Parsed JSON is kept as-is (all
-// builds, revisions and share history, unnormalized); a value that is not
-// valid JSON is kept as its raw string under `raw` so nothing is lost.
-export function createBackup(storage, now = new Date()) {
+// builds, revisions and share history, unnormalized); the compact library
+// (library-storage-codec.js) is written out in that same plain form, every
+// revision whole. A value that cannot be read is kept as its raw string under
+// `raw` so nothing is lost. Copies of a build that could not be saved
+// (session: this tab's sessionStorage) go under `unsavedBuilds`.
+export function createBackup(storage, now = new Date(), { session = null } = {}) {
   const backup = { format: BACKUP_FORMAT, version: BACKUP_VERSION, exportedAt: now.toISOString(), library: null, legacyState: null };
   const raw = {}, errors = {};
   for (const [key, field] of [[LIBRARY_KEY, "library"], [LEGACY_STATE_KEY, "legacyState"]]) {
     const text = safeGet(storage, key);
     if (text === null) continue;
-    try { backup[field] = JSON.parse(text); }
+    try {
+      backup[field] = key === LIBRARY_KEY ? decodeStoredLibrary(text) : JSON.parse(text);
+      // A compact build record that could not be decoded stays compact in the library; keep the stored text too.
+      if (key === LIBRARY_KEY && isCompactLibraryText(text) && backup.library?.builds?.some((build) => typeof build?.z === "string")) raw[key] = text;
+    }
     catch (error) { raw[key] = text; errors[key] = String(error?.message || error); }
   }
+  // Only copies the stored library does not already hold (a later save of the same build supersedes its copy).
+  const storedBuilds = Array.isArray(backup.library?.builds) ? backup.library.builds : [];
+  const unsaved = unsavedCopies(storage, session).filter((copy) => {
+    const stored = storedBuilds.find((build) => build?.id === copy.build.id);
+    if (!stored) return true;
+    if (copy.savedAt < String(stored.updatedAt || "")) return false;
+    try { return JSON.stringify(stored.state) !== JSON.stringify(copy.build.state); } catch { return true; }
+  });
+  if (unsaved.length) backup.unsavedBuilds = unsaved;
   if (Object.keys(raw).length) { backup.raw = raw; backup.errors = errors; }
   const quarantine = {};
   for (const key of quarantineKeys(storage)) { const text = safeGet(storage, key); if (text !== null) quarantine[key] = text; }
@@ -101,19 +121,22 @@ export function backupFileName(now = new Date()) {
   const pad = (value) => String(value).padStart(2, "0");
   return `tli-builder-backup-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.json`;
 }
-export function serializeBackup(storage, now = new Date()) {
-  try { return JSON.stringify(createBackup(storage, now), null, 2); }
+export function serializeBackup(storage, now = new Date(), options = {}) {
+  try { return JSON.stringify(createBackup(storage, now, options), null, 2); }
   catch {
     // Last resort: the raw strings only (always serializable).
     const raw = {};
     for (const key of [...LIBRARY_KEYS, ...quarantineKeys(storage)]) { const text = safeGet(storage, key); if (text !== null) raw[key] = text; }
+    const sessionCopy = safeGet(options.session, UNSAVED_COPY_KEY);
+    if (sessionCopy !== null) raw[UNSAVED_COPY_KEY] = sessionCopy;
     return JSON.stringify({ format: BACKUP_FORMAT, version: BACKUP_VERSION, exportedAt: now.toISOString(), library: null, legacyState: null, raw });
   }
 }
+function sessionStorageOrNull() { try { return globalThis.sessionStorage || null; } catch { return null; } }
 // Browser download of the backup file. Returns the file name.
-export function downloadBackup(storage = globalThis.localStorage, doc = globalThis.document, now = new Date()) {
+export function downloadBackup(storage = globalThis.localStorage, doc = globalThis.document, now = new Date(), session = sessionStorageOrNull()) {
   const name = backupFileName(now);
-  const blob = new Blob([serializeBackup(storage, now)], { type: "application/json" });
+  const blob = new Blob([serializeBackup(storage, now, { session })], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = doc.createElement("a");
   link.href = url; link.download = name; link.style.display = "none";
@@ -122,16 +145,33 @@ export function downloadBackup(storage = globalThis.localStorage, doc = globalTh
   return name;
 }
 
+// Every readable unsaved copy (localStorage keys and this tab's session copy) as
+// { savedAt, reason, build } with the build's state.
+export function unsavedCopies(storage, session = null) {
+  const copies = [];
+  const keys = [];
+  try { for (let index = 0; index < storage.length; index++) { const key = storage.key(index); if (typeof key === "string" && key.startsWith(UNSAVED_COPY_LOCAL_PREFIX)) keys.push(key); } } catch {}
+  for (const text of [safeGet(session, UNSAVED_COPY_KEY), ...keys.sort().map((key) => safeGet(storage, key))]) {
+    const copy = text === null ? null : decodeUnsavedCopy(text);
+    if (copy) copies.push(copy);
+  }
+  return copies;
+}
+
 // Returns the library object stored in a backup (or a bare exported library),
-// or null. Falls back to parsing the raw string when the library failed to
-// parse at backup time.
+// or null. Falls back to reading the raw string when the library failed to
+// parse at backup time. Unsaved build copies in the backup join its builds
+// (restoreBuildsFromBackup adds one whose id is taken as "(restored)").
 export function libraryFromBackup(backup) {
   if (!backup || typeof backup !== "object") return null;
   if (Array.isArray(backup.builds)) return backup;
-  if (backup.library && Array.isArray(backup.library.builds)) return backup.library;
+  let library = null;
+  if (backup.library && Array.isArray(backup.library.builds)) library = backup.library;
   const raw = backup.raw?.[LIBRARY_KEY];
-  if (typeof raw === "string") { try { const parsed = JSON.parse(raw); if (parsed && Array.isArray(parsed.builds)) return parsed; } catch {} }
-  return null;
+  if (!library && typeof raw === "string") { try { const parsed = decodeStoredLibrary(raw); if (parsed && Array.isArray(parsed.builds)) library = parsed; } catch {} }
+  const unsaved = Array.isArray(backup.unsavedBuilds) ? backup.unsavedBuilds.map((copy) => copy?.build).filter((build) => build && typeof build === "object" && build.state) : [];
+  if (!unsaved.length) return library;
+  return { ...(library || { schemaVersion: 1 }), builds: [...(library?.builds || []), ...unsaved.map((build) => ({ ...build, revisions: [] }))] };
 }
 
 // ---- Reset view settings -------------------------------------------------
@@ -153,9 +193,10 @@ export function rawBuildSummary(storage) {
   const quarantine = quarantineKeys(storage);
   if (text === null) return { ok: true, builds: [], quarantinedBuilds: 0, quarantine };
   try {
-    const library = JSON.parse(text);
+    const library = parseStoredLibrary(text);
     if (!library || typeof library !== "object" || Array.isArray(library) || (library.builds !== undefined && !Array.isArray(library.builds))) throw new TypeError("unexpected shape");
     const builds = Array.isArray(library.builds) ? library.builds : [];
-    return { ok: true, builds: builds.map((build, index) => ({ id: String(build?.id ?? ""), name: String(build?.name || `Build ${index + 1}`), revisions: Array.isArray(build?.revisions) ? build.revisions.length : 0 })), quarantinedBuilds: Array.isArray(library.quarantinedBuilds) ? library.quarantinedBuilds.length : 0, quarantine };
+    const revisionCount = (build) => Array.isArray(build?.revisions) ? build.revisions.length : Number.isInteger(build?.rv) ? build.rv : 0;
+    return { ok: true, builds: builds.map((build, index) => ({ id: String(build?.id ?? ""), name: String(build?.name || `Build ${index + 1}`), revisions: revisionCount(build) })), quarantinedBuilds: Array.isArray(library.quarantinedBuilds) ? library.quarantinedBuilds.length : 0, quarantine };
   } catch (error) { return { ok: false, builds: [], error: String(error?.message || error), size: text.length, quarantinedBuilds: 0, quarantine }; }
 }

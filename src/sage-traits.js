@@ -19,7 +19,7 @@
 //   Nectar 1800031 (219998960 [180, 70]: convert 10011 Max Life bonus → 23040022 Elixir Skill Effect, and 13011 Max Mana bonus).
 // - The Elixir Skills (reference data): 3 s Elixir Effects; Tonics "Restore X% Max Life / Mana within 2 s … also affected by Elixir Effect
 //   and Duration"; 15 Charging Progress per charge; the dummy is never defeated (src/elixir-model.js).
-// - The planner's movement placeholder, 6 m/s (src/dummy-target.js ASSUMED_MOVEMENT_METERS_PER_SECOND, unsourced).
+// - The player's movement speed, 6.5 m/s base × the build's Movement Speed (src/dummy-target.js playerMoveSpeed; user decision 2026-11-10).
 //
 // Read from the game files (chunk 1, research/hero-sage-chunk1-2026-10-31.md; rows by the index's own row numbers):
 // - Every bottle recipe addresses the skill in an Active slot by position (filter 114 / node 1005 skillPos 2 tag 6300052, skillPos 3 tag
@@ -62,7 +62,7 @@
 //   timers are not settled). Defense Ingredients change no dummy figure.
 // - Functional Ingredients (Pungent Stimulant Salt): Husk gains its progress per player Critical Strike at most once per 0.5 s
 //   (the measured crit hits per second; before the hit pass, one per interval when the build hits); Sword Lily Leaf per Reap at most
-//   once per 0.5 s; Tumbleweed Seed per 6 m moved at 6 m/s while the Movement group is Moving.
+//   once per 0.5 s; Tumbleweed Seed per 6 m moved at the player's movement speed while the Movement group is Moving.
 // - Omni-Elixir Side Effect: the unselected Ingredients of each kind apply instead of the selected one (an empty slot: all three of
 //   that kind); its "-50% Elixir Skill Effect" is read by the Elixir engine like any Elixir Skill Effect line.
 // - Pungent Stimulant Salt's prepared Empower / Curse: the boost is held for the share of time the Basic bottle's Elixir is active,
@@ -74,7 +74,7 @@
 
 import { normalizePercentageText } from "./percentage-text.js";
 import { resolveElixirs, BOTTLE_ADDITIONAL_EFFECT_LINE } from "./elixir-model.js";
-import { ASSUMED_MOVEMENT_METERS_PER_SECOND } from "./dummy-target.js";
+import { BASE_PLAYER_MOVE_SPEED } from "./dummy-target.js";
 
 export const SAGE = "sage-licorice-note";
 export const BASIC_BOTTLE_KEY = "sage:basicScentBottle";
@@ -162,7 +162,7 @@ const elixirLines = (modifierTexts) => modifierTexts.filter((line) => line && li
  * @param {object} p.facts { anyHit, minionsCrit, critHitsPerSecond (null before the hit pass), reapsPerSecond (null), hasReaping }
  * @param {object} p.inputs { maxLifeIncreasedPercent, maxManaIncreasedPercent, maxEnergyShield, skillEffectDurationPercent, empowerSkills: [names], curseSkills: [names], activeSlotElixirs: { 2: name, 3: name } }
  */
-export function sageState({ heroId = "", hero = {}, modifierTexts = [], boardElixirs = [], bottleElixirLevel, requestedConditions = {}, moving = false, facts = {}, inputs = {} } = {}) {
+export function sageState({ heroId = "", hero = {}, modifierTexts = [], boardElixirs = [], bottleElixirLevel, requestedConditions = {}, moving = false, facts = {}, inputs = {}, moveSpeed = BASE_PLAYER_MOVE_SPEED } = {}) {
   if (heroId !== SAGE) return null;
   const lines = linesOf(modifierTexts);
   // A Reaping source: a Reaping line, or Reaps the hit pass measured (a skill's built-in Reap, e.g. Wilting Beam's).
@@ -205,8 +205,8 @@ export function sageState({ heroId = "", hero = {}, modifierTexts = [], boardEli
       reason = measured === null ? (hasReaping ? `one Reap per ${interval} s assumed before the hit pass` : "the build has no Reaping source") : `${round(measured)} Reaps/s (measured), at most one per ${interval} s`;
     } else {
       const metres = value(name, 1) || 6;
-      rate = moving ? Math.min(maxRate, ASSUMED_MOVEMENT_METERS_PER_SECOND / metres) : 0;
-      reason = moving ? `moving at the assumed ${ASSUMED_MOVEMENT_METERS_PER_SECOND} m/s (the planner's movement placeholder, unsourced): one per ${metres} m, at most one per ${interval} s` : "the Movement group is Standing still";
+      rate = moving ? Math.min(maxRate, moveSpeed.metersPerSecond / metres) : 0;
+      reason = moving ? `moving at ${moveSpeed.text}: one per ${metres} m, at most one per ${interval} s` : "the Movement group is Standing still";
     }
     const progressPerSecond = round(amount * factor * rate);
     return { name, elixir, amount, rate: round(rate), progressPerSecond, reason: `${name}: ${amount}${factor !== 1 ? ` × ${round(factor)} Ingredient Effect` : ""} Charging Progress × ${round(rate)}/s = ${progressPerSecond}/s (${reason})` };

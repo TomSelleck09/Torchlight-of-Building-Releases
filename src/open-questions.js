@@ -403,7 +403,7 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "minion-hit-counts",
     title: "How many hits of a Minion's multi-part skill reach one dummy?",
-    question: "The Splits give each skill's repeats, positions and hit rules, not where the dummy stands among them. Do these counts hold: Thunderfall 5.75 (6 repeats 2.5 m apart, 3 bolts of 2 m radius each, read as two positions in reach, 95% coefficient), Spikeburst 2.28 (5 projectiles, the fan rule, 64%), Burst Hammer 1.64 (repeats 4 m apart, 3 m radius, 64%), and one hit each on Rootsurge (5 separate shots), Impaling Thrust (a charge bump and a strike), High Court Covenant (a bump and a shot), Lightning Surge (a shot and a chain with bHitParent 1)?",
+    question: "The Splits give each skill's repeats, positions and hit rules, not where the dummy stands among them. Do these counts hold (each later hit keeping the hit rule's table, client repeat multiplier, user decision 2026-11-05): Thunderfall 1.25 (6 repeats 2.5 m apart, 3 bolts of 2 m radius each, read as two positions in reach, 6 bolts each after the first keeping 5%), Spikeburst 2.44 (5 projectiles, all land close, 36% kept), Burst Hammer 1.36 (repeats 4 m apart, 3 m radius, 36% kept), and one hit each on Rootsurge (5 separate shots), Impaling Thrust (a charge bump and a strike), High Court Covenant (a bump and a shot), Lightning Surge (a shot and a chain with bHitParent 1)?",
     evidence: "game data (partial)",
     current: "Provisional (chunk 10, 2026-11-01; research/minions-chunk10-2026-11-01.md §5): src/minion-profiles.js hitsPerUse. Twinstrike's 2 hits are proven (reaction_attack2, bHitParent 1).",
     alternatives: [{ reading: "One Thunderfall position reaches the dummy", effect: "3 bolts: 2.9 hits, ×0.504" }, { reading: "All 5 Spikeburst projectiles land", effect: "3.56 hits, ×1.49 on the Aember Winged Beast" }, { reading: "Each of the separate parts lands", effect: "Rootsurge up to ×5, Impaling Thrust and High Court Covenant ×2, on those skills" }],
@@ -848,20 +848,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "Watch a Spirit Magus's Stage inside and outside the Nourishment area.",
     source: "src/empower-buffs.js (Nourishment of Life)",
     appliesWhen: (ctx) => ctx.setupNames.has("Nourishment of Life")
-  },
-  {
-    id: "shotgun-fan-count",
-    title: "How many projectiles of a fan reach the dummy?",
-    question: "Standing close, how many projectiles of this skill's fan hit the dummy? Only Chromatic Shot was measured.",
-    evidence: "provisional",
-    current: "Provisional: about half land standing close, ceil(n / 2), and one at range (observed for Chromatic Shot only).",
-    alternatives: [
-      { reading: "All projectiles land when close", effect: "more Shotgun hits, each at the falloff coefficient" },
-      { reading: "Only one lands", effect: "a single hit per cast" }
-    ],
-    test: "Within 6 m, count the damage numbers per cast on the dummy, with and without Multiple Projectiles.",
-    source: "CLAUDE.md (Shotgun Effect); src/shotgun-effect.js",
-    appliesWhen: (ctx) => ctx.components.some(({ hit, component }) => hit.name !== "Chromatic Shot" && ["fan", "half"].includes(component.shotgun?.reach) && (component.shotgun?.count || 0) > 1)
   },
   // Chunk 9 (2026-11-01, research/buff-skills-chunk9-2026-11-01.md). `named-aura-effect-precise-version` closed: all 20 Aura pairs carry the same family tag in their buff records.
   {
@@ -1725,9 +1711,9 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "press-rotation",
     title: "Other active skills pressed: how often, and how long a press takes",
-    question: "With \"Cast other active skills on the dummy\" on (Config, default on), the other skills you press take casting time from your Main Skill. The planner infers when each is pressed from its type: a proc skill once per Demolisher Charge (Groundshaker beside Berserking Blade), a curse when it lapses (5 s by its Split, unless Terrain of Malice holds it), a buff skill (Empower, Warcry, Aim, Elixir) when its buff would lapse, every max(cooldown, duration), a damage skill with a cooldown on its cooldown, a Mobility skill only when a line needs it (every max(cooldown, the line's window or Periodic Burst's 6 s)). Is that how they are pressed in a dummy run, and does each press cost its Split use time?",
+    question: "With \"Cast other active skills on the dummy\" on (Config, default on), the other skills you press take casting time from your Main Skill. The planner infers when each is pressed from its type: a proc skill once per Demolisher Charge (Groundshaker beside Berserking Blade), a curse when it lapses (5 s by its Split, unless Terrain of Malice holds it), a buff skill (Empower, Warcry, Aim, Elixir) when its buff would lapse, every max(cooldown, duration), a damage skill with a cooldown on its cooldown, a Mobility skill, a Mobility attack too, when a buff it feeds needs renewing (user decision 2026-11-08; how often: mobility-buff-cadence). Is that how they are pressed in a dummy run, and does each press cost its Split use time?",
     evidence: "provisional",
-    current: "Rotation estimate (src/press-schedule.js; research/rosa-build-followups-2026-11-05.md §3): each press costs the skill's use time (a hit model's effective use time, else the Split header's: 1 s \"fixed\" on the curses, Empowers, Speed Phantom and the Mobility skills, not scaled by Cast Speed; a leap's fixed time when longer), and the Main Skill keeps 1 − Σ press time ÷ interval of its action time (a channeled beam or DoT loses it from its channel; a cooldown- or Terra-bound Main Skill keeps its rate while its casts fit). A Main Skill you do not cast (Clockwork Core-, Tangle-, Wind Rhythm-, Activation Medium- or item-triggered) loses nothing. Triggered skills (an Activation Medium, Preparation, Clockwork Core, a Tangle) take no time; a summon, a Terrain of Malice curse and a buff with no timer take one press before the fight; a buff skill whose buff is inactive on the dummy (Speed Phantom beside a channel) is not pressed; a damage skill with no cooldown keeps its own rate beside the Main Skill (Erika's Spiral Strike); Vendetta keeps its own time model; a Mobility skill no line needs is not pressed. On the fixtures no figure moves: their pressed skills sit beside a Main Skill they cannot slow (Speed Phantom beside Frost Terra's Wind Rhythm / Silencing Severance recasts and Gemma's Tangle casts; Shadow Dash, Blink, Aim, Timid and Stasis Vault beside Youga's Clockwork Core) or are triggered. Off: every effect counts and nothing takes time (the Groundshaker rotation too).",
+    current: "Rotation estimate (src/press-schedule.js; research/rosa-build-followups-2026-11-05.md §3): each press costs the skill's use time (a hit model's effective use time, else the Split header's: 1 s \"fixed\" on the curses, Empowers, Speed Phantom and the Mobility skills, not scaled by Cast Speed; a leap's fixed time when longer), and the Main Skill keeps 1 − Σ press time ÷ interval of its action time (a channeled beam or DoT loses it from its channel; a cooldown- or Terra-bound Main Skill keeps its rate while its casts fit). A Main Skill you do not cast (Clockwork Core-, Tangle-, Wind Rhythm-, Activation Medium- or item-triggered) loses nothing. Triggered skills (an Activation Medium, Preparation, Clockwork Core, a Tangle) take no time; a summon, a Terrain of Malice curse and a buff with no timer take one press before the fight; a buff skill whose buff is inactive on the dummy (Speed Phantom beside a channel) is not pressed; a damage skill with no cooldown keeps its own rate beside the Main Skill, unless it is a Mobility skill that feeds a buff window (Spiral Strike is pressed every 2 s for its buffs: user decision 2026-11-08); Vendetta keeps its own time model; a Mobility skill no line needs is not pressed. On the fixtures, besides the Groundshaker rotation, Spiral Strike's presses move a figure (2.8% of Frost Spike's and Thunder Slash's time on the 15 T and Erika builds); the other pressed skills sit beside a Main Skill they cannot slow (Speed Phantom beside Frost Terra's Wind Rhythm / Silencing Severance recasts and Gemma's Tangle casts; Shadow Dash, Blink, Aim, Timid and Stasis Vault beside Youga's Clockwork Core) or are triggered. Off: every effect counts and nothing takes time (the Groundshaker rotation too).",
     alternatives: [
       { reading: "A press of a Persistent skill (curse, Empower, Mobility) is near-instant, not its 1 s header time", effect: "a manually pressed curse or Empower costs almost nothing: a probe Ice Lances beside Arcane Circle ×0.9 → ×1.0, a Wilting Beam or Scorching Beam beside a plain Timid ×0.8 → ×1.0" },
       { reading: "The proc skill pressed every 6.67 s (Pure Heart only)", effect: "Rosa build: the Main Skill keeps 93.9% of its time instead of 86.5%" },
@@ -1826,10 +1812,10 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Pungent Stimulant Salt: how fast does the Functional Ingredient charge the bottle?",
     question: "Husk gains Charging Progress on Critical Strike, Sword Lily Leaf on Reaping, Tumbleweed Seed per 6 m moved, each behind a 0.5 s gate. On the dummy, how much Charging Progress per second does each give?",
     evidence: "game data (partial)",
-    current: "Game files (research/hero-sage-chunk1-2026-10-31.md): triggers 1000030 on tag 5001010 (your crit damage; Minion crits use another trigger) and 1000032 (Reaps), gate 206, progress to the Elixir in the slot, × Ingredient Effect, not × Elixir Skill Effect. Provisional: Husk: its progress × min(2, your Critical Strike hits per second, measured by the hit pass); Sword Lily Leaf: × min(2, Reaps per second); Tumbleweed Seed: × min(2, 6 m/s ÷ 6 m) while the Movement group is Moving (6 m/s is the planner's unsourced movement placeholder; the recipe grants the steps its collector counted, so the gate may not cap it). A gate after a random event waits for the next one, so min() is an upper bound: chunk 15.",
+    current: "Game files (research/hero-sage-chunk1-2026-10-31.md): triggers 1000030 on tag 5001010 (your crit damage; Minion crits use another trigger) and 1000032 (Reaps), gate 206, progress to the Elixir in the slot, × Ingredient Effect, not × Elixir Skill Effect. Provisional: Husk: its progress × min(2, your Critical Strike hits per second, measured by the hit pass); Sword Lily Leaf: × min(2, Reaps per second); Tumbleweed Seed: × min(2, the player's m/s ÷ 6 m) while the Movement group is Moving (at the player's movement speed, 6.5 m/s base × the build's Movement Speed, open question player-base-move-speed; the recipe grants the steps its collector counted, so the gate may not cap it). A gate after a random event waits for the next one, so min() is an upper bound: chunk 15.",
     alternatives: [
       { reading: "Each gate waits for the next event: 1 ÷ (0.5 s + 1 ÷ events/s)", effect: "×0.5 at 2 crits/s, ×0.91 at 20 crits/s" },
-      { reading: "The real movement speed differs from 6 m/s", effect: "Tumbleweed Seed charges at a different rate" }
+      { reading: "The player's real movement speed differs from 6.5 m/s × the build's Movement Speed", effect: "Tumbleweed Seed charges at a different rate" }
     ],
     test: "With Sage and one Functional Ingredient, time the bottle Elixir's charges on the dummy over 30 s.",
     source: "research/hero-sage-chunk1-2026-10-31.md (§3); game recipes 11278629, 6807685, 5136013",
@@ -2004,7 +1990,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Lethal Flash: having Deflection on the dummy",
     question: "Born in the Breeze and Into the Night need Deflection. On the dummy, which never attacks, is Deflection held as long as a source grants it (movement, Reaping), and does Into the Night's 3 s duration break it between gains?",
     evidence: "provisional",
-    current: "Provisional (hero trait audit B9): Deflection is held while a gain source holds (movement while moving at the planner's 6 m/s placeholder, Reaping, hit recently, not hit recently); it is never consumed (best-case switch \"Deflection held\"). With Into the Night a source must regain it within 3 s.",
+    current: "Provisional (hero trait audit B9): Deflection is held while a gain source holds (movement while moving at the player's movement speed, 6.5 m/s base × the build's Movement Speed, Reaping, hit recently, not hit recently); it is never consumed (best-case switch \"Deflection held\"). With Into the Night a source must regain it within 3 s.",
     alternatives: [
       { reading: "Being hit recently (the best-case switch) consumes Deflection", effect: "the \"while having Deflection\" lines would drop with Hit or blocked recently on" }
     ],
@@ -2110,6 +2096,20 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "With Creative Genius and a Spell on the dummy, read Whimsy Signal's timer and the explosion's damage numbers over 20 s.",
     source: `${HERO_TRAIT_AUDIT} (§5 B12); keywords Whimsy Explosion, Whimsy Signal`,
     appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.explosionsOn)
+  },
+  {
+    id: "bing-spell-burst-walk",
+    title: "Creative Genius: the Whimsy / Ingenuity / Spell Burst walk",
+    question: "In game, when Ingenuity Overload fires, does the Spell Burst charge bar drop to empty, and how often does Flash of Brilliance fire when an activation casts several automatic casts at once?",
+    evidence: "provisional",
+    current: "Since 2026-11-10 (research/bing2-damage-gap-2026-11-10.md; src/bing-traits.js whimsyCadence) the cadence is a 30 Hz walk of the records' loop. Proven: every activation sets the Spell Burst Charge to 0, an Overload's too (client 0x142067f90 → 0x14207caf0), Whimsy above 100 is lost (407086400, 117038480), Inspiration Overflow's 1 s gate drops the gains inside it (583758080). Provisional: regular activations every 1 ÷ the hit pass's activations (no wait for the next cast), Flash of Brilliance as an expected-value accumulator over the casts (an activation's automatic casts on its frame), Law of Ingenuity as its expected consumption, Ingenuity carried above 100, Whimsy Essence Recovery Speed shortening the 0.5 s tick, and the Focus Blessing gained on consuming Spell Burst renewed on the loop at the activations' mean rate.",
+    alternatives: [
+      { reading: "Flash of Brilliance rolls each cast at random (a geometric wait)", effect: "Overloads land less often just after an activation: more charge lost (not sized)" },
+      { reading: "an activation waits for the next cast once the charge is full", effect: "fewer regular activations" }
+    ],
+    test: "On a Creative Genius build, watch the Spell Burst charge bar at an Ingenuity Overload, and count Flash of Brilliance's free explosions over 60 s.",
+    source: "research/bing2-damage-gap-2026-11-10.md §4, §6 (C1 to C3)",
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && Boolean(ctx.lineState.bing?.creative?.overload?.on)
   },
   {
     id: "bing-mind-domain",
@@ -2390,7 +2390,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Hysteria: Rage from self-damage and Life consumed",
     question: "Hysteria's Rage from damage taken and from Life consumed reads Ritual of Offering's self-damage (1% of current Life every 0.2 s) and Ancestral Hate's Life cost (30% of current Life per Spirit skill). What is current Life during Berserk?",
     evidence: "provisional",
-    current: "Provisional (hero trait audit B10): current Life is read as Max Life (an upper bound), so Ritual's self-damage gives 5% ÷ 3% × Life share Rage per second and each Spirit skill with Ancestral Hate 30% ÷ 3% = 10 Rage. The dummy never attacks, so nothing else is taken.",
+    current: "Provisional (hero trait audit B10): current Life is read as Max Life (an upper bound), so Ritual's self-damage gives 5% ÷ 3% × Life share Rage per second and each Spirit skill with Ancestral Hate 30% ÷ 3% = 10 Rage. The dummy never attacks, so nothing else is taken. Since 2026-11-08 (research/build-7t-claim-audit-2026-11-08.md gap 5) the Life-consumed part reads every Life consumed: also the \"Consumes X% of current Life when you use Attack Skills\" copies on your Attack uses (while you attack, in and out of Berserk) and on the Spirit's Attack Main Skill casts, at the planner's current Life (35% of Max Life under Low Life), and Life costs; each Combo step is one Melee cast for the per-cast Rage drain (its links proven from the client: research/attack-life-consume-2026-11-09.md).",
     alternatives: [
       { reading: "Current Life settles low (repeated % costs)", effect: "much less Rage from Hysteria" }
     ],
@@ -2553,16 +2553,17 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "slate-banishment-adjacency",
-    title: "Banishment: what counts as an adjacent and a non-adjacent slate?",
-    question: "Banishment's Bonus Effect needs \"at least 3\" adjacent and non-adjacent Divinity Slates, and its Ultimate nodes give a bonus \"for every 1 adjacent / non-adjacent Divinity Slate\". Is a slate adjacent when it shares an edge with any of Banishment's three cells, and is every other equipped slate non-adjacent? Does \"When Banishment is active\" mean the Authority (three Brands) or the Bonus Effect's threshold?",
-    evidence: "provisional",
-    current: "Provisional: adjacent = sharing an edge with one of its cells; non-adjacent = every other equipped, placed Divinity Slate; \"When Banishment is active\" = its three Brand slots filled (the counts then scale those lines); the Bonus Effect also needs 3 of each.",
+    title: "Banishment: when do its per-slate gains apply?",
+    question: "Banishment's Ultimate nodes give a bonus \"for every 1 adjacent / non-adjacent Divinity Slate\", and its Bonus Effect needs \"at least 3\" of each. The client counts a slate as adjacent when it shares an edge with a grown cell of a brand-full Banishment. Does the server count adjacency on that rule (edge contact with a grown cell, copies included), and does a Banishment with fewer Offspring count as brand-full? The 25 T build's Hero Ranking panel shows none of the gains, but the user stated 2026-11-09 that Hero Ranking does not show the Nether King affixes' effects on the slates, so that panel is no evidence either way; its slate page shows the Authority Activated on the exported board (4 adjacent, 5 non-adjacent).",
+    evidence: "game data (partial)",
+    current: "Client (decrypted scripts, read 2026-11-09; research/build-25t-open-items-2026-11-09.md \"Follow-up\"): TalentBlockItem draws the Light outline on each equipped slate that shares an edge (X ± 1 or Y ± 1, no corners) with a grown cell of a brand-full Banishment (shape groups 3 and 6), the Dark outline on the others; \"Activated\" is ItemMgr:IsDevilBlockBrandFull, every Brand slot (one per grown cell) filled. \"Proliferation Direction\" (Diagonal for every Banishment, Clockwise for Judgment, Both Ends for Contamination: config_devil_block_attribute_s15 GrowDes) is the direction the Offspring cells grow from the Source (config_devil_block_shape_s15 by Source position and GrowCount), not an adjacency rule. The gains are server affixes 10051 / 10052 with ungated payloads (151300002 Sealed Mana Compensation; 151300101-103 additional Armor, Evasion, Max Energy Shield; 151300104 Max Elemental Resistance), sent as DevilPressureModifier rows the town panel is built from. The 25 T Hero Ranking panel's missing gains (Sealed Mana Compensation 53, Aura Effect 111, Additional Armor 70, Attack Speed Bonus 310, Projectile Speed 256) are explained by the user's statement (2026-11-09): Hero Ranking omits the Nether King affixes' effects on slates. Provisional: the planner counts adjacency on the drawn (fully grown) cells (edge contact; whether copies and corner contact count is untested in game), reads \"active\" as three Brands, applies the gains in town and combat, and the Bonus Effect at 3 of each.",
     alternatives: [
-      { reading: "Corner contact counts as adjacent", effect: "more adjacent, fewer non-adjacent slates" },
-      { reading: "The Ultimate nodes also need the 3 / 3 threshold", effect: "no bonus below it" }
+      { reading: "The server grants nothing on this board, or only inside a map (no longer supported by the Hero Ranking panel, which omits Nether King slate effects)", effect: "25 T fixture 33.34 T → 5.15 T (no Sealed Mana Compensation, Projection or Armor lines)" },
+      { reading: "Corner contact counts too, or only corner contact", effect: "25 T: 6 / 3 or 3 / 6 adjacent / non-adjacent instead of 4 / 5; the gate still holds" },
+      { reading: "A Banishment with fewer Offspring (GrowCount 0 or 1) is brand-full with one or two Brands", effect: "fewer cells and fewer Brands than the planner draws; no fixture has one" }
     ],
-    test: "Equip Banishment with a Bonus Effect and move one slate from a corner contact to an edge contact; watch whether the effect switches on.",
-    source: "research/slates-nether-king-audit-2026-10-22.md",
+    test: "On your own character (not Hero Ranking, which omits Nether King slate effects) with a brand-full Banishment holding \"+3% Sealed Mana Compensation per adjacent Divinity Slate\", read the character panel's Sealed Mana Compensation hover in town and then in a map, and again with one slate touching a grown cell only at a corner.",
+    source: "research/build-25t-open-items-2026-11-09.md; research/slates-nether-king-audit-2026-10-22.md",
     appliesWhen: (ctx) => Boolean(ctx.planner.netherKingAuthority?.banishment)
   },
   {
@@ -2857,21 +2858,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.hasText(/Aggression when Minions land a (?:Spell )?Critical Strike$/i)
   },
   {
-    id: "gear-shadows",
-    title: "Shadow Quantity and \"+X% additional Shadow Damage\" on one dummy",
-    question: "With N Shadows and a single target, does every Shadow strike the dummy with the full attack, each after the first at the 70% Shotgun falloff (1 + 0.7 × (N − 1) Shadow hits per use), and does Wilt Spike's \"Shadow Quantity +1 when buff reaches max stacks\" hold while it keeps hitting?",
-    evidence: "provisional",
-    current: "Provisional: each use adds the use's hits × (1 + 0.7 × (N − 1)) as the Shadows' own hits (game manual 1001010820 / 1001010821; reference data Phantom: \"If no other targets are present, it will strike the character's target\", falloff 70%), with the player's layers plus the Shadow-only lines; Wilt Spike's own +1 is held with its 5 buff stacks (own buffs pre-built). The game files disagree on the 70% (2026-11-03): the Phantom hover (config_hyperlink 136) fills \"Shotgun Effect falloff coefficient is {%s:1}%\" with 70 (each further Shadow deals 70%, the meaning Chromatic Shot's in-game runs proved for its coefficient), while manual rule 1001010821's parameter in the client's encrypted table is −70 (\"will additionally −70%\": each further Shadow deals 30%, 1 + 0.3 × (N − 1)). No Split carries a Shadow hit rule (no readable hit rule has repeatDmgDecPercent 70; the Shadows reuse the player's skill), so the records do not settle it and 70% is kept.",
-    alternatives: [
-      { reading: "Each Shadow after the first deals 30% (the manual's additional −70%)", effect: "Shadow hits ×0.85 at N = 2 with the player's hit, ×0.76 at N = 3, ×0.67 at N = 5" },
-      { reading: "Shadows prefer other targets and only some reach a lone dummy", effect: "fewer Shadow hits" },
-      { reading: "The falloff applies to the player's hit too", effect: "a lower total per use" }
-    ],
-    test: "Use a Shadow Strike skill on the dummy for 20 s with 0, 1 and 2 Shadow Quantity (one change at a time) and compare the averages.",
-    source: "research/gear-affixes-audit-2026-10-22.md §8; research/encrypted-scripts-full-pass-2026-11-03.md finding 1; game manual 1001010820 / 1001010821; reference data Phantom (game hyperlink 136)",
-    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.shadows?.count > 0)
-  },
-  {
     id: "gear-barrage-waves",
     title: "Barrage: \"+X% chance to +1 to Barrage Skill Total Waves\" and \"+X% damage increase per wave\"",
     question: "Is the extra-wave chance one summed roll per cast (at most +1 wave above 100%), and does \"damage increase per wave\" add X% per earlier wave (wave k deals 1 + k × X%) or compound?",
@@ -2888,13 +2874,13 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "gear-combo-points-per-starter",
     title: "\"+N Combo Points gained from Combo Starters\"",
-    question: "Does each Combo Starter then give 1 + N points, so the Finisher consumes 2 × (1 + N) (capped at the skill's max, 4) and gains one hit / Clone and one Amplification step per point?",
+    question: "Does each Combo Starter then give 1 + N points, so the Finisher consumes 2 × (1 + N) and gains one Amplification step per point and one hit / Clone per point up to the text's 4?",
     evidence: "provisional",
-    current: "Provisional: points per Starter = 1 (observed on Crescent Slash) + ΣN (game field 2012116, gear and support lines); the Finisher consumes min(4, 2 × points), which sets its Amplification and Crescent Slash's hits / Spectral Slash's Clones.",
+    current: "Provisional: points per Starter = 1 (observed on Crescent Slash) + ΣN (game field 2012116, gear and support lines); the Finisher consumes 2 × points, uncapped (Max Combo Points, field 2012115, defaults to 99999 and no record writes it; 2026-11-08), which sets its Amplification and, up to 4 (\"up to 4 additional hit(s)\" / \"up to 4 Clone(s)\"), Crescent Slash's hits / Spectral Slash's Clones.",
     alternatives: [
       { reading: "The cap is reached earlier and the Finisher fires after one Starter", effect: "a shorter cycle instead of a stronger Finisher" }
     ],
-    test: "Use Crescent Slash with the affix and read the Combo Point counter before the Finisher (2 with no affix).",
+    test: "Use Crescent Slash with the affix and read the Combo Point counter before the Finisher (2 with no affix); with three sources (Spectral Slash, 4 per Starter) check that the counter passes 4.",
     source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 709372224; manual 1001013023",
     appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.comboPoints?.sources?.length)
   },
@@ -3127,6 +3113,144 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.hasText(/(?:Mana|Life) consumed recently|consumed more than [+\d.]+ ?% (?:of )?(?:Max )?(?:Mana|Life) recently/i)
   },
   {
+    id: "sealed-life-over-100-levels",
+    title: "Life sealed past 100%: how many levels a \"per N% Life sealed\" line gives",
+    question: "When the Auras seal more than 100% of Max Life, does a \"+1 Main Skill level per N% Life sealed\" line read the full seal or at most 100%? (The 15 T build read 113% and 7 levels at 16% until Dual Kismet: Hatch Out's +30% Sealed Mana Compensation was read on 2026-11-05: it seals 98.4%, 6 levels.)",
+    evidence: "provisional",
+    current: "Provisional (2026-11-05 build audit gap 10): the planner reads the summed seal (113%), as resource limits never remove anything (user decision 2026-10-21). Capping the read at 100% would be a different rule and needs the user.",
+    alternatives: [
+      { reading: "The seal read stops at 100%", effect: "fewer levels on a build sealing past 100% (×0.926 a level past Lv30)" }
+    ],
+    test: "Read the Main Skill's level in its tooltip and the Life seal shown in game with all three Auras on.",
+    source: "src/engine.js (seal arithmetic); research/build-15t-claim-audit-2026-11-05.md gap 10",
+    appliesWhen: (ctx) => (Number(ctx.planner?.aura?.lifeReservedPercent) || 0) > 100 && ctx.hasText(/Life (?:is )?sealed|sealed Life/i)
+  },
+  {
+    id: "am-energy-shield-zero-max",
+    title: "Activation Medium: Energy Shield with Max Energy Shield 0",
+    question: "With Max Energy Shield fixed at 0 (No Loose Ends), does \"Always attempts to trigger the supported skill when Energy Shield is lower than X%\" fire whenever the skill is ready?",
+    evidence: "user-supplied",
+    current: "User statement 2026-11-05: the setups trigger on cooldown. Game affix 331003744: gate 206 (0.1 s), gate 253 (the skill ready), Not gate 218 (resource type 3 at least p0%). The planner reads it as an \"Always attempts to trigger … Interval: 0.1s\" medium, every max(0.1 s, effective cooldown), ready at engagement (src/support-effects.js resolveSupportEffects). Inferred link: 0 of 0 Energy Shield compares below the threshold. With any Max Energy Shield the dummy never breaks it, so the trigger stays Not on dummy.",
+    alternatives: [
+      { reading: "0 of 0 reads as full: the trigger never fires", effect: "the three Activation Medium: Energy Shield setups of the 15 T build are never cast (Bull's Rage's Euphoria and Timid's +40% Hit Damage taken out)" }
+    ],
+    test: "With No Loose Ends equipped, watch Bull's Rage's buff and Timid on the dummy without pressing them.",
+    source: "src/support-effects.js; game affixes 331003744, 103360004",
+    appliesWhen: (ctx) => (ctx.planner?.activation?.setups || []).some((setup) => (setup.supportEffects?.clauses || []).some((clause) => clause.esZero))
+  },
+  {
+    id: "aura-seal-support-mana-multiplier",
+    title: "An Aura's seal and its supports' own Mana Multipliers",
+    question: "Does a support's own Mana Multiplier (Increased Area 110% on its stone) multiply the Sealed Mana of the Aura it supports, as a fixed multiplier (Off The Beaten Track's 95%) does in the planner?",
+    evidence: "provisional",
+    current: "Provisional (2026-11-05 seal audit, research/build-15t-claim-audit-2026-11-05.md §8): the reservation multiplies the base seal by the fixed Support Mana Multiplier once per support (game affix 101070116 sets field 2010063) and by 100% per support otherwise, so a support's own multiplier (config_skill_stone mana: 110 on Increased Area, 100 on the Aura supports) never reaches an Aura's seal. No catalog fixture has a 110% support on an Aura without a fixed value.",
+    alternatives: [
+      { reading: "Each support's own Mana Multiplier multiplies the seal", effect: "×1.10 seal per Increased Area-type support on an Aura without a fixed multiplier" }
+    ],
+    test: "Without Off The Beaten Track, read an Aura's sealed Mana in its tooltip with and without Increased Area installed.",
+    source: "src/engine.js calculateAuraReservation; src/data/game/skill-game-values.generated.js (stone mana field)",
+    appliesWhen: (ctx) => (ctx.planner?.aura?.entries || []).some((entry) => !entry.reservation?.granted && entry.reservation?.fixedSupportMultiplierPercent === 100 && (ctx.planner?.activation?.setups || []).some((setup) => setup.name === entry.name && (setup.supports || []).some((support) => support.enabled !== false && (support.manaCostMultiplierPercent ?? 100) !== 100)))
+  },
+  {
+    id: "hatch-out-energy-shield-gate",
+    title: "Dual Kismet: Hatch Out: when does \"you have no Energy Shield\" hold?",
+    question: "Hatch Out's -5 Aura Skill Level and +30% Sealed Mana Compensation sit behind gate 217 Not (\"Energy Shield is above 0\"). Does the gate hold only at Max Energy Shield 0, and does an Aura's Energy Shield (Energy Fortress) count?",
+    evidence: "game data (partial)",
+    current: "Game record 916287744 (2026-11-05): gate 217 Not, then attr 1304 mod 3 = p1 and field 2006400 = p0 on the Aura tag. The dummy never attacks, so a build with any Max Energy Shield keeps it full and the gate never holds; it holds at Max Energy Shield 0 (No Loose Ends' \"Your Max Energy Shield is fixed at 0\", record 103360004, or no Energy Shield line). The planner reads the stat lines and the per-attribute conversions, not an Aura's Energy Shield (the Aura ledger runs after the Sealed Mana Compensation it needs); no catalog build has both.",
+    alternatives: [
+      { reading: "An Aura's Energy Shield closes the gate", effect: "a Hatch Out build whose only Energy Shield is an Aura loses the +30% and the -5 Aura levels" }
+    ],
+    test: "With Hatch Out on the pact page and Max Energy Shield fixed at 0, read the Sealed Mana Compensation panel row (+30%) and an Aura's level; then with an Energy Shield source.",
+    source: "src/sealed-mana-compensation.js; game affixes 916287744, 103360004",
+    appliesWhen: (ctx) => ctx.hasText(/Sealed Mana Compensation when you have no Energy Shield/i)
+  },
+  {
+    id: "spectral-slash-mark",
+    title: "Spectral Slash: which hits its own Mark reaches on one dummy",
+    question: "Spectral Slash's Mark (buff 11340, +30% additional damage taken from this skill) is applied by Combo Starter 1's hit and removed after the sequence's last Finisher. On one dummy, is Starter 1's own hit unmarked and every later step (Starter 2, each Finisher's slash and Clones) Marked, and does the Mark stay on the dummy between sequences?",
+    evidence: "provisional",
+    current: "Records (sourced): Starter 1's Split 482940 adds buff 11340 on hit (5 s); its affix 817163584 is attribute 5720 mod 4 (additional damage taken, its own factor) = 30 × GetEffectScale on the attacker's own skill (tag 5000002); the record's only tag is 5100310 and no Effect writer reaches it, so +30% flat, and it is not the Mark keyword (no Marked state, no tag 5100207), so Mark Effect and the build's Mark lines do not touch it. Each Finisher adds the counter buff 11341 after its last Clone; affix 4150517 removes the Mark when the counter's stacks + 1 reach field 2012108 (Combo Finisher charges). Provisional (src/skill-hit-model.js ownMark): in sequence order, Starter 1's own hit unmarked, Starter 2 and every Finisher's slash and Clones Marked (the counter's '+1' read as the stack being added, so the Mark ends after the last Finisher); the skill's own ailments take it (their DoT records keep the skill's id) for the share of the cycle from Starter 1's hit to its end (82% on the 7 T fixture), the last Finisher's Clones after its action not counted.",
+    alternatives: [
+      { reading: "the previous sequence's Mark is still on the dummy when the next Starter 1 lands (the last Finisher's Clones still attacking)", effect: "Starter 1 Marked too: about ×1.009 on the 7 T fixture" },
+      { reading: "the counter already counts the new stack, so the Mark ends after the first Finisher", effect: "the second Finisher unmarked: about ×0.961 on the 7 T fixture" }
+    ],
+    test: "Spectral Slash on the dummy, no Heart of Animitta: Starter 1 and Starter 2 both deal 406% Weapon Attack Damage, so Starter 2's floating number reads ×1.3 Starter 1's if the Mark reaches it; with Heart of Animitta, compare the two Finishers' Clone numbers.",
+    source: "config_char_buff 11340 / 11341; game affixes 817163584, 13489181, 4150517; SkillEditor Splits 482940, 567510, 626480; src/attack-hit-profiles.js; src/skill-hit-model.js",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.name === "Spectral Slash" && hit.modeled)
+  },
+  {
+    id: "build-7t-export-data",
+    title: "The shared 7 T Rehan build: data its export does not carry",
+    question: "The export stores no level for the Red Umbrella and Azure Gunslinger pact spirits (Lv1 assumed, planner warning), and its three Epic 40 memories give Fury's Onslaught, Hysteria and Split Form LV2 with an empty base slot (base trait LV1). What are the owner's pact spirit levels and trait levels?",
+    evidence: "provisional",
+    current: "Provisional (2026-11-08 build audit gaps 7 and 8): the planner reads the export as saved: those pact spirits at Lv1, the traits at LV2 and the base trait at LV1.",
+    alternatives: [
+      { reading: "Both pact spirits at Lv6", effect: "about ×1.26 (measured on the audit's patched copy)" },
+      { reading: "Every trait at LV5 (Fury +68%, Hysteria 0.7% per 1%, base +34%, Split Form +2% Rage gained per 40 Max Life)", effect: "up to ×1.6 (estimate)" }
+    ],
+    test: "Ask the build's owner for the pact spirit levels and the hero memories (rarity, enhancement, base slot).",
+    source: "tests/fixtures/build-7t-claim-2026-11-08.txt; research/build-7t-claim-audit-2026-11-08.md gaps 7, 8",
+    appliesWhen: (ctx) => ctx.heroId === "rehan-seething-silhouette" && ctx.skillHits.some((hit) => hit.name === "Spectral Slash" && hit.modeled)
+  },
+  {
+    id: "build-15t-export-data",
+    title: "The shared 15 T build: data its export does not carry",
+    question: "Frost Spike: Ice Fission (Noble) has no stars or roll in the shared export (its star bonus reads +0%), and the base trait slot's memory has no \"+2 Hero Trait Level\" (base trait LV3, Artificial Moon off). What are the owner's actual stars, roll and base trait level?",
+    evidence: "provisional",
+    current: "Provisional (2026-11-05 build audit gaps 8 and 12): the planner reads the export as saved: Ice Fission +0% star bonus, base trait LV3.",
+    alternatives: [
+      { reading: "Ice Fission at 5 stars", effect: "×1.143" },
+      { reading: "Base trait LV5 (Artificial Moon on)", effect: "about ×1.18 (estimate)" }
+    ],
+    test: "Ask the build's owner for Ice Fission's stars and roll and the base trait's level.",
+    source: "tests/fixtures/build-15t-claim-2026-11-05.txt; research/build-15t-claim-audit-2026-11-05.md gaps 8, 12",
+    appliesWhen: (ctx) => ctx.supports.has("Frost Spike: Ice Fission (Noble)") && ctx.heroId === "rosa-unsullied-blade"
+  },
+  {
+    id: "frost-spike-projectile-quantity-damage",
+    title: "Frost Spike: \"+8% additional Damage for every +1 Projectile Quantity of this skill\"",
+    question: "Does Frost Spike's \"+8% additional Damage for every +1 Projectile Quantity of this skill\" (record 300821: node 114 from field 20061082, Projectile Quantity, to attr 57191 mod 4) count the skill's own \"+1 Projectile Quantity when this skill hits an enemy with at least 60 Frostbite Rating\", and its base 2 projectiles?",
+    evidence: "provisional",
+    current: "Provisional (2026-11-05 build audit gap 11): it reads 0: the skill's Projectile Quantity is not affected by bonuses and the +1 row is not in the recipe table, so no Projectile Quantity above the base is counted.",
+    alternatives: [
+      { reading: "The +1 at 60 Frostbite Rating counts", effect: "×1.08 on Frost Spike while the dummy holds 60 rating" },
+      { reading: "The base 2 projectiles count too", effect: "×1.24" }
+    ],
+    test: "Hover Frost Spike's damage with and without 60 Frostbite Rating on the target, or compare dummy hits.",
+    source: "game record 300821; src/attack-hit-profiles.js Frost Spike; research/build-15t-claim-audit-2026-11-05.md gap 11",
+    appliesWhen: (ctx) => ctx.setupNames.has("Frost Spike")
+  },
+  {
+    id: "mobility-buff-cadence",
+    title: "A Mobility skill pressed for its buffs: how often",
+    question: "A Mobility skill that is not the Main Skill is pressed for the buffs it feeds, not nonstop (user decision 2026-11-08). The planner reads each buff's window as the longest gap that keeps it held: an \"after using Mobility Skills\" line its N s, a Blessing or Pure Heart gained on the use its duration × stacks per use ÷ max stacks (Agility 10 s × 1 ÷ 4 = 2.5 s, Pure Heart 10 s × 1.5 ÷ 5 = 3 s, the 50% extra stack counted as half a stack), Periodic Burst its 6 s period; then the fewest presses that renew all of them, so with Periodic Burst three presses per 6 s (every 2 s) rather than every 2.5 s, which would give its stack every 7.5 s. Each press costs the skill's attack-speed-scaled use time (Spiral Strike about 0.057 s). Is that how often it is pressed, and what does one press cost?",
+    evidence: "provisional",
+    current: "Provisional (src/press-schedule.js mobilityWindows / mobilityPressInterval; replaces mobility-attack-full-rate, answered by the user decision 2026-11-08): Spiral Strike on the 15 T and Erika builds every 2 s (0.5 uses/s for 21.2 / 17.4), 2.8% of the Main Skill's time; its own hits ×0.024 / ×0.029. A Mobility skill that feeds no window keeps the press rules it had (on its cooldown, or its own rate beside the Main Skill); a Demolisher proc keeps its Charge rule. The buffs it feeds stay held (user rule 2026-10-14) and are not timed to its presses on the loop.",
+    alternatives: [
+      { reading: "Pressed at the shortest window (2.5 s), Periodic Burst's stack then waiting for the press after its 6 s", effect: "the Main Skill keeps 97.7% of its time for 97.2% (about ×1.006 on Frost Spike and Thunder Slash), Periodic Burst up 2 s of 7.5 s for 2 s of 6 s (not modeled)" },
+      { reading: "A press costs the dash's 0.667 s fixed time (see spiral-strike-damage-count), not its attack-speed-scaled use time", effect: "the Main Skill keeps 66.7% of its time: about ×0.69 on the 15 T and Erika builds" },
+      { reading: "The skill pressed nonstop at its full rate (before 2026-11-08; the castOtherSkills switch off)", effect: "15 T build ×1.040, Erika ×1.031 (sustained)" }
+    ],
+    test: "Play the build as its owner does and count the Mobility skill's presses per minute; time one press of Spiral Strike.",
+    source: "src/press-schedule.js; research/build-15t-claim-audit-2026-11-05.md gap 9",
+    appliesWhen: (ctx) => Boolean(ctx.planner?.hitRateFacts?.pressInputs?.skills?.some((item) => item.cadence || /presses per|Blessing held at|Pure Heart held at/.test(item.reason || "")))
+  },
+  {
+    id: "spiral-strike-damage-count",
+    title: "Spiral Strike: hits per dash",
+    question: "Spiral Strike's Split (456215) sets its hits per bump by an expression of its Attack Speed: 6 − 12 ÷ (Attack Speed + 2), hits 0.05 s apart. Is the result cut to a whole number (floor), rounded, or kept as a fraction, is the Attack Speed operand the speed factor over the 1 s base use time, and does the 0.667 s fixed time in the Split header (or the 0.2 s dash charge) bound how often it can be used?",
+    evidence: "provisional",
+    current: "Provisional (2026-11-05, decoded from the Split data: damage-timing struct 254911, calculator 395925; opcodes 0 +, 1 −, 2 ×, 3 ÷ from the SS14 expression corpus, e.g. Homing Frost Bolt's casts per second ÷ 1.53): floor(6 − 12 ÷ (factor + 2)) hits per use (2 at 1 attack/s, 3 at 2, 5 from 10 up, never 6), one bump per use (hit rule hitTimeLimit 1 s), at the header's attack-speed-scaled 1 s use time with no floor. Replaces 2.67 × factor hits per use (a 0.667 s dash hitting every 0.25 ÷ factor s), which counted Attack Speed twice: 15 T build Spiral Strike ×0.089, Erika ×0.108.",
+    alternatives: [
+      { reading: "The count kept as a fraction", effect: "×1.097 on Spiral Strike's hits on the 15 T build (5.48 for 5), ×1.076 on Erika (5.38)" },
+      { reading: "The count rounded to nearest", effect: "×1 on both fixtures (5.48 and 5.38 round to 5); ×1.5 at 1.5 attacks/s (2.57: 3 for 2)" },
+      { reading: "One use per 0.667 s at most (the header's fixed time bounds the dash)", effect: "about ×0.07 on Spiral Strike on the 15 T build (1.5 uses/s for 21.2)" }
+    ],
+    test: "Lv16 Spiral Strike, no gear: count the damage numbers per dash at about 1 and 2 attacks per second (2 and 3 by this reading; the old one gave 2.7 and 5.3), and count dashes in 10 s at high Attack Speed.",
+    source: "src/attack-hit-profiles.js Spiral Strike; tools/bin/reverse-engineering/gamedata-2026-10-31/SkillEditor/Split/config_skill_data_456215.bin; master checklist §6 test 110",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.name === "Spiral Strike")
+  },
+  {
     id: "evaded-recently-stacks",
     title: "Evasion-count damage lines on the training dummy",
     question: "Rat King's Escape Show (\"For every 1 Evasion(s) in the last 10s, +X% additional damage (multiplies). Stacks up to 5 times\") and Illusory Chimera's 60 s variant: are the stacks one additional term (X × stacks) or one factor per stack, and should the being-hit best case hold all 5 stacks?",
@@ -3265,11 +3389,39 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.hasText(/Affliction gains an additional effect: ?\+ ?[\d.]+ ?% additional Hit Fire Damage taken|also applied to your Fire Hit Damage/i)
   },
   {
+    id: "bing-multi-coupling-alternating-defensive",
+    title: "Multi-Coupling Equation: Twin Cities' alternating Defensive buffs",
+    question: "Do Dual Kismet: Twin Cities' Frost Shield and Delayed Pain buffs count toward Multi-Coupling Equation, one held always and both 1 s in every 4 s, so a second stack 25% of the time?",
+    evidence: "provisional",
+    current: "User-approved 2026-11-09 (\"if the game files suggest that, yes\"; 10 T claim audit H1): record 53529464 counts held buffs by the Empower (5100311) and Defensive (5100304) tags, and buffs 10140 (Frost Shield) and 10430 (Delayed Pain) carry 5100304. The kismet's text (\"Every 4s, alternate between gaining Lv. 12 Delayed Pain and Frost Shield for 5s\") gives the timing: floor(5 ÷ 4) = 1 held always, 2 for 25% of the time (src/bing-traits.js heldDefensiveBuffs). With the board's two Empower buffs held (best case), Multi-Coupling holds 1 stack always and a second 25% of the time: Max Spell Burst 5.25 on average, taken as an average by the Spell Burst model. The Twin Cities set's own rows are not in the extracted tables.",
+    alternatives: [
+      { reading: "The set's rows give another timing (both buffs always, or never overlapping)", effect: "a second stack always, or never" },
+      { reading: "The Empower buffs count only while up (67% and 83% on the 10 T build)", effect: "fewer stacks" }
+    ],
+    test: "With Multi-Coupling Equation, two Empower skills and Twin Cities, watch Max Spell Burst on the character panel over a few seconds of combat: it should reach the next stack 1 s in every 4 s.",
+    source: "research/build-10t-claim-audit-2026-11-09.md §9 H1, §10; src/bing-traits.js heldDefensiveBuffs; game records 53529464, buffs 10140, 10430",
+    appliesWhen: (ctx) => ctx.heroId === "bing-creative-genius" && ctx.hasText(/Empower or Defensive Skill\(s\) affecting you/i) && ctx.hasText(/alternate between gaining/i)
+  },
+  {
+    id: "player-base-move-speed",
+    title: "The player's base movement speed: 650 units/s (6.5 m/s)?",
+    question: "Per-metre lines (\"for every 5 m you move\", Hunting Tempo, Thunder Focus's Focus Pts, Carino's movement Deflection, Sage's Tumbleweed Seed) read how far you move. Is the player's base walking speed 6.5 m/s, raised by Movement Speed as base × (1 + increased) × additional, while moving all the time?",
+    evidence: "game data (partial)",
+    current: "Provisional (user decision 2026-11-10; research/ring-barrier-movement-2026-11-10.md): 100 game units are 1 m (record 308512 counts P1 × 100 for \"every P1 m\"); records 271919904 and 350901824 compare the final Movement Speed (attribute 4) against \"P1% of the base value\" as p0 × 13/2, so the base is read as 650 units/s; the player's own base write was not found (probably server-side). Speed = 6.5 m/s × (1 + Σ increased Movement Speed %) × Π(1 + additional Movement Speed %), the held conditional lines included (src/dummy-target.js playerMoveSpeed); Carino's Deflection and Sage's Tumbleweed Seed read the stat sheet's figure. Super Sonic Protocol's decaying +70% is not read. It replaces the unsourced 6 m/s placeholder.",
+    alternatives: [
+      { reading: "The player's base speed is another figure", effect: "every per-metre line scales with it (the 10 T build's ring Barrier: ×1.0033 sustained from 6 to 8.97 m/s)" },
+      { reading: "Super Sonic Protocol's +70% (decaying 3.5 per 0.2 s) is read at its time average", effect: "about +23% more speed on the 10 T build (Barrier Burst casts barely move: 2.188 → about 2.19/s)" }
+    ],
+    test: "With no Movement Speed lines, walk a measured distance (for example between two map markers) and time it; or count the Barriers a \"for every 5 m you move\" ring gives over 10 s of walking.",
+    source: "research/ring-barrier-movement-2026-11-10.md; game records 308512, 271919904, 350901824, 554399232; src/dummy-target.js playerMoveSpeed",
+    appliesWhen: (ctx) => ctx.state?.combat?.conditions?.moving !== false && (ctx.hasText(/for every [\d.]+ ?m (?:you )?move|per [\d.]+ ?m moved|for every [\d.]+ ?m moved/i) || ctx.setupNames.has("Thunder Focus") || ctx.setupNames.has("Precise: Thunder Focus") || ctx.supports.has("Hunting Tempo"))
+  },
+  {
     id: "barrier-burst-rate",
     title: "Barrier Burst: cast rate and damage",
     question: "With the being-hit best case, is Barrier Burst cast once per Barrier gained (capped by its 0.4 s cooldown)? Is its damage 75% of the full Barrier Shield at the moment the Barrier is gained (fight resource 23)?",
     evidence: "provisional",
-    current: "Provisional (orchestrator decision 2026-10-26; research §1.3–§1.4): Necklace of Firebird casts it on taking damage with a Barrier (being-hit best case) and removes the Barrier, so casts = the build's Barrier gain rate (Guard: 1 per 5 uses of its channeled skill; movement Barrier lines at the 6 m/s placeholder; \"when taking damage. Interval: N s\" lines: 1 per N s), at most 1 per 0.4 s; 0 without a Barrier source. Per cast 75% × 20% × (Max Life + Max Energy Shield) × Barrier Shield bonuses. A Guard on the replaced Main Skill gives no Barrier (the skill is gone).",
+    current: "Provisional (orchestrator decision 2026-10-26; research §1.3–§1.4): Necklace of Firebird casts it on taking damage with a Barrier (being-hit best case) and removes the Barrier, so casts = the build's Barrier gain rate (Guard: 1 per 5 uses of its channeled skill; movement Barrier lines at the player's movement speed, 6.5 m/s base × the build's Movement Speed (user decision 2026-11-10; open question player-base-move-speed); \"when taking damage. Interval: N s\" lines: 1 per N s; \"Gains Barrier every N s\" (Shrink Back, record 464003424): 1 per N s, 2026-11-09), at most 1 per 0.4 s ÷ Cooldown Recovery Speed; a gain is lost while a Barrier is held, waiting for damage taken (a \"Takes N True Damage every X s\" line, else every frame), the cooldown or its removal 0.1 s after the cast (game text: no new Barrier while one is held; src/barrier-sources.js barrierBurstCastRate on 30 Hz frames, 2026-11-09: the 10 T build's 2.794 gains/s at 8.97 m/s give 2.188 casts/s); 0 without a Barrier source. Per cast 75% × 20% × (Max Life + Max Energy Shield) × Barrier Shield bonuses. A Guard on the replaced Main Skill gives no Barrier (the skill is gone).",
     alternatives: [
       { reading: "The damage reads the remaining Barrier when hit", effect: "less damage per cast" },
       { reading: "Barrier is regained less often than the sources allow", effect: "fewer casts" }
@@ -3365,13 +3517,24 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "combo-cycle-extras",
     title: "Combo cycle extras: Finisher charges, points on crit, Finisher ailments",
-    question: "With +1 Combo Finisher charge, does the cycle run Starter 1, Starter 2, Finisher, Finisher with each Finisher consuming the Starters' points? Do the points gained on a Finisher crit carry into the next Finisher? Does Shockwave Warcry's Ailment Damage for Combo Finishers reach the ailments in proportion to the Finisher's hits?",
+    question: "With +1 Combo Finisher charge, does a Finisher's \"Gains N Combo Point(s) on Critical Strike\" gain land before the next Finisher of the sequence is created, so that Finisher consumes it? Does Shockwave Warcry's Ailment Damage for Combo Finishers reach the ailments in proportion to the Finisher's hits?",
     evidence: "provisional",
-    current: "Provisional (census #9, 2026-10-27; src/combo-points.js comboExtraState): field 2012108 adds Finishers to the sequence, each consuming the Starters' points (manual 1001013029); \"Gains N Combo Point(s) on Critical Strike from Combo Finishers\" adds N × P(the Finisher cast crits: 1 − (1 − c)^hits) to the next Finisher's consumed points, capped at 4; Shockwave Warcry's Ailment Damage part scales a Combo skill's ailments by 1 + X × (Finisher hits ÷ all its hits). The Starter / Finisher speed, Finisher crit damage, per-point crit damage and Double Damage lines follow their recipes (sourced).",
-    alternatives: [{ reading: "the extra Finisher consumes no points (the counter is already 0)", effect: "the second Finisher loses its Amplification and per-point bonuses" }, { reading: "the ailment held is always a Finisher's (strongest stack)", effect: "Shockwave's full value on Trauma / Ignite" }],
-    test: "Crescent Slash with Heart of Animitta: the Combo counter and the Finisher hit count over a 20 s dummy run.",
-    source: "src/combo-points.js; src/skill-hit-model.js; src/ailment-applications.js; game recipes 440107424, 313241984, 127872560",
+    current: "Field 2012108 adds Finishers to the sequence, and each Finisher consumes the Combo Points held when it is created (SS14 client, static: 0x141defa80 stamps field 2012104 on every step's instance from fight resource 22, then a Finisher changes it by -100%; the step chooser 0x142048020 repeats the Finisher while its count is below 2012108): the first the Starters' points, each later one only the points gained since (src/combo-points.js finisherConsumedPoints; manual 1001013028 / 1001013029's \"the additional finishers inherit the Starters' points\" is not what the client does). Provisional: \"Gains N Combo Point(s) on Critical Strike from Combo Finishers\" (313241984, once per cast) is read as landing on the cast's first crit hit, before the next step's instance (the Finisher's first hit is inside its own action; inferred), so a later Finisher consumes N on P(the previous cast crits) = 1 - (1 - c)^hits and 0 otherwise (each outcome its own component), and the last Finisher's gain carries into the next sequence's first. Shockwave Warcry's Ailment Damage part scales a Combo skill's ailments by 1 + X × (Finisher hits ÷ all its hits). The Starter / Finisher speed, Finisher crit damage, per-point crit damage and Double Damage lines follow their recipes (sourced), each Finisher at its own points.",
+    alternatives: [{ reading: "a Finisher's crit points land after the next Finisher starts (a Clone's crit, not the first hit)", effect: "the next Finisher consumes 0 and the points skip to the one after (on the 7 T fixture the first Finisher then holds 11.8, the second 0: about ×1.01, estimate)" }, { reading: "every Finisher inherits the Starters' points (manual 1001013028 / 1001013029)", effect: "the reading before 2026-11-09: 7 T fixture ×1.63" }, { reading: "the ailment held is always a Finisher's (strongest stack)", effect: "Shockwave's full value on Trauma / Ignite" }],
+    test: "Spectral Slash or Crescent Slash with Heart of Animitta: read the Combo counter between the two Finishers (the second Finisher's Clone / hit count) over a 20 s dummy run.",
+    source: "SS14 client 0x141df2c00 / 0x141defa80 / 0x142048020 (static, private copy); src/combo-points.js; src/skill-hit-model.js; src/ailment-applications.js; game recipes 440107424, 313241984, 127872560; manual 1001013028 / 1001013029",
     appliesWhen: (ctx) => ctx.hasText(/Combo Finisher charge|Combo Points? on Critical Strike from Combo Finishers|Ailment Damage dealt by Combo Finishers|Shockwave Warcry/i)
+  },
+  {
+    id: "blazing-sun-steep-chance",
+    title: "Blazing Sun: which Steep Strike chance it reads",
+    question: "Does Blazing Sun's \"+1% additional Steep Strike Damage per 6% Steep Strike chance\" read the attacking skill's own Steep Strike chance (its skill text and supports included), the uncapped figure?",
+    evidence: "provisional",
+    current: "Provisional (2026-11-09, research/build-25t-claim-audit-2026-11-09.md gap 5): Dual Kismet: Sun Slash's record 576525120 holds buff 35090, whose affix 882869952 (args 6, 1, 1) is two node 114 conversions from field 2011002 (Steep Strike chance, base) ÷ 6: +1% Skill Area for Slash-Strike skills and +1% additional damage on the Steep Strike tag 5006010 (attr 5719 mod 4). Linear, no cap. The planner reads the field at the hit skill's own Steep Strike chance, as the panel row shows it (98% on the 25 T Whirlwind: +16.33%), on that skill's Steep Strike hits only (src/skill-hit-model.js). The field's query (whether a skill's own chance lines are in it) is not traced in the client.",
+    alternatives: [{ reading: "only the character's build-wide Steep Strike chance (no skill text or support lines)", effect: "on the 25 T Whirlwind 78% → +13% (×0.97)" }],
+    test: "With Dual Kismet: Sun Slash, a Slash-Strike skill on the dummy at two Steep Strike chances (one gear line on and off): compare the Steep Strike hits.",
+    source: "config_char_buff 35090; config_affix_effect 882869952; src/skill-hit-model.js",
+    appliesWhen: (ctx) => (ctx.planner.modifierTexts || []).some((line) => /^Gains Blazing Sun$/i.test(String(line.text ?? "").trim())) && ctx.skillHits.some((hit) => hit.modeled && hit.steepStrike?.chancePercent > 0)
   },
   {
     id: "whirlwind-blade-cycle",
@@ -4072,12 +4235,42 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => [...ctx.supports].some((name) => /Blazing Bullet: Ignition Point|Berserking Blade: Rampage|Split Shot: (?:Collaboration|Rapid Advance)|Mind Control: Concentrate|Moon Strike: Lunar Eclipse|Gale Slash: Brutality|Summon Grim Phantom: Glare|Inexhaustible Barrage: Bombard|Crescent Slash: Rising/.test(name))
   },
   {
+    id: "shotgun-brother-group-none",
+    title: "Shotgun Effect by brother group: Scorching Beam's extra Beams and explosions, Hammer of Ash's Demolisher Explosions",
+    question: "The client settles that a hit rule with an empty table, or in brother group −1, takes no falloff (below). Two pairs stay open. (1) Scorching Beam (Split 681194): the first Beam's rule has an empty table (100% on every hit), and the extra Beams (the \"multiple ray\" component, field 2012061 Additional Beams) have a rule in the same brother group 1 with table 30, so an extra Beam keeps 30% once a sibling Beam of its skill instance has hit the dummy and 100% only on a hit that lands first. Is a channel use one skill instance, and does an extra Beam land before the first Beam? The explosions' rule (group 2, table 30) separates its brother group per repeat or loop: do the three Beams' explosions share one sub-group (1 + 0.3 × 2) or not (each 100%)? (2) Hammer of Ash (Split 758458): a plain attack has no Explosion (the Pummel, group −1, no table, and the Ember Projectiles, row 12, group 2 with bHitBrother 0: at most one per target); only an attack that consumes a Demolisher Charge fires the Explosions (row 11: one on the bullet's hit and three repeats), all in brother group 1 with its Pummel, table 30. How many of them land on one dummy, and do they take the +215% of the charge-consuming attack?",
+    evidence: "game data (partial)",
+    current: "Client (SS14, 2026-11-08; repeat multiplier 0x1423e3d40, group id 0x1424140b0 per skill instance and sub-key, a new hit state at group −1 in 0x1423d02e0): an empty table returns 1.0, and a group −1 rule without bCalcPercentOnSameEntity counts no earlier hit (1.0 under its first key 1) and is never counted by another state. Applied: Icebound Beam's blades 100% each (×1.48 on the volley), Chilling Spike's large blades 1 + 0.35 × 3 (their own group 2), Icy Blade's Explosion 100% (×3.33; the Steep Strike's rule is group −1), Blazing Bullet's projectile coefficient 1 (badge only). Sweep of every group −1 or key-0 table rule (2026-11-08, tests/shotgun-group-sweep.test.js): Sparkle: Magnetic Field's fan 100% per projectile (Split 564131's moving shots are group −1; was 36% − 20%), its −20% field reaching no modeled hit; Hound's Fangs: Volley's 10 Small Fangs 100% each (Split 679413: group −1, empty table; was 1 + 0.3 × 9); Frost Spike: Glaciate's 2 Icy Blades 1 + 0.3 (Split 173720: group 2, the Thrust group −1; was 2 × 0.3); Ice Lances' share 1 (badge only). Burning Shot, Ice Shot, Focused Shot, Blink Arrow and Frost Core's release already read one hit at 100%; Split Shot's 303830 (Rapid Advance's channel, normal shot group −1) is not modeled; the key-0 Split 619834 ([(0, 10)]) is a monster self-destruct, and the player's Self-Destruct Protocol Splits have empty tables (115% per explosion stands). No fixture or in-game reference moved. Kept, provisional: Scorching Beam 1 + 0.3 × extra Beams on the beam ticks and the explosions (run B ×0.63 of the game; the client's bounds are ×1.6 to ×2.56 for the 2.61 observed); Hammer of Ash Pummel + one Explosion keeping 30% per attack (529, −13.4% on run 1; the Split's structure reads 690, +12.9%, with 4 Explosions and the +215%, 519, −15.0%, without).",
+    alternatives: [
+      { reading: "Scorching Beam: an extra Beam lands first in each channel use and the three Beams' explosions are separate sub-groups", effect: "run B ×2.56 for ×1.6 (×0.98 of the game instead of ×0.63)" },
+      { reading: "Hammer of Ash by Split 758458: Explosions only on charge-consuming attacks, all 4 landing with the +215%", effect: "690 (+12.9% on run 1, +6.6% on run 2) instead of 529" },
+      { reading: "Hammer of Ash by Split 758458, the Explosions without the +215%", effect: "519 (−15.0% / −19.8%)" }
+    ],
+    test: "Scorching Beam with and without Scattershot Beam on the dummy for 20 s, standing close, nothing else changed, recording the floating numbers of the beam ticks and of the explosions apart (2026-10-12: ×2.61 for 3 Beams). Hammer of Ash Lv16 alone for 20 s: count the floating numbers on a charge-consuming attack (one every 3 s) and on a plain one.",
+    source: "research/oq-shadows-seal-client-2026-11-05.md §1; private notes oq-shotgun-group-2026-11-08 (0x1423e3d40, 0x1424140b0, 0x1423d02e0); SkillEditor Splits 681194, 758458 (scripts/skill-split-lib.mjs, now reading seperateBrotherGroupEachRepeatOrLoop and bCalcPercentOnSameEntity); tests/scorching-beam-dummy-reference.test.js, tests/hammer-of-ash-dummy-reference.test.js",
+    appliesWhen: (ctx) => ctx.setupNames.has("Hammer of Ash") || (ctx.setupNames.has("Scorching Beam") && (ctx.planner?.nativeHitCycle?.beams || 1) > 1)
+  },
+  {
+    id: "ice-lances-rebound-repeat-share",
+    title: "Ice Lances: Rebound: how much each return to the dummy deals",
+    question: "With Ice Lances: Rebound a lance comes back to the dummy: 1 + floor(Jumps ÷ 2) hits per lance (a ground Jump and a Jump back each; 5 Jumps: 3 hits). Does each return deal 20% of the first hit (and, with Ice Lances: Bounce, × 1.06² and × 1.06⁴ for its Jumps so far)?",
+    evidence: "game data (partial)",
+    current: "The hit count is proven in the SS14 client (labels 3001065 / 3001069 from Rebound, affix 506851424; the jump step 0x142255ca0 clears the already-hit set after a ground Jump; 3001066 \"ground Jumps are free\" is not granted). The 20% is the hit rule's table (Split 225028: group −1, table [(1, 20)], bCalcPercentOnSameEntity 1; the tooltip's \"Shotgun Effect falloff coefficient is 80%\" is the share lost) kept by the repeat multiplier 0x1423e3d40, and Rebound's text says the Shotgun Effect takes effect on the same enemy (inferred: the jump's clear acts on another object). Bounce's +6% per Jump (record 103560002, attr 5722) is read at the lance's Jump count when it hits (inferred). Per lance 1 + 0.2 × 1.06² + 0.2 × 1.06⁴ = ×1.4772 (src/ice-lances-rebound.js; user-approved 2026-11-10).",
+    alternatives: [
+      { reading: "only target Jumps count for Bounce (1 and 2 at the returns)", effect: "×1.4367 per lance for ×1.4772" },
+      { reading: "the clear also resets the repeat count: every return at 100%", effect: "×3.386 per lance" },
+      { reading: "the hit filter's hitCountLimit 1 / hitTimeLimit 0.25 s refuses the return", effect: "×1 (one hit per lance)" }
+    ],
+    test: "Ice Lances Lv16 with Ice Lances: Rebound and +N Jumps on the dummy, standing close, one cast at a time: the floating numbers of one cast. Expected 1 + floor(Jumps ÷ 2) numbers, the 2nd and 3rd about 1/5 of the 1st (with Bounce × 1.06² and × 1.06⁴ of that).",
+    source: "research/build-15t-claim-audit-2026-11-10.md §4.2 (G2); checklist §6 test 117",
+    appliesWhen: (ctx) => (ctx.planner?.skillHits || []).some((hit) => hit.modeled && hit.rebound)
+  },
+  {
     id: "hit-count-batch5-shotgun",
     title: "Census batch 5: Shotgun Effect gained and coefficients (Split Shot: Volley, Sparkle: Magnetic Field, Rain of Arrows: Tracking, Corrosion Focus: Splash, Chain Lightning: Merge, Frost Spike: Glaciate, Hound's Fangs: Volley)",
-    question: "Do these single-target counts match the game: (1) Split Shot: Volley: the 1 + 2 projectiles (+ Projectile Quantity) fly as a fan, ceil(n / 2) reach the dummy standing close, each after the first at 77% (its hit rule's repeatDmgDecPercent 23); (2) Sparkle: Magnetic Field: extra projectiles from Projectile Quantity form a fan at 70% − 20% = 50%; (3) Rain of Arrows: Tracking: all 15 arrows reach the dummy at 70% − 20% = 50% (was half at 70%); (4) Corrosion Focus: Splash: 1 Orb projectile per +2 Projectile Quantity (up to 2), all on the dummy at 55%; (5) Chain Lightning: Merge with Web of Lightning: 1 + 2 chains (2 base Jumps) on the dummy at 80%; (6) Frost Spike: Glaciate: both Icy Blades hit the Thrust's target, each at 30%; (7) Hound's Fangs: Volley: the 10 Small Fangs per 10 casts all hit the dummy at the 70% default coefficient?",
+    question: "Do these single-target counts match the game (the share each later hit keeps is settled by the client's repeat multiplier, user decision 2026-11-05: the hit rule's table + field 2006262, a text's falloff coefficient being the share lost; the counts stay open): (1) Split Shot: Volley: the 1 + 2 projectiles (+ Projectile Quantity) all reach the dummy standing close, each after the first keeping 23%; (2) Sparkle: Magnetic Field: extra projectiles from Projectile Quantity form a fan whose every projectile reaches the dummy standing close, each at 100% (its moving projectiles' hit rule, Split 564131, is in brother group −1, so no falloff and Magnetic Field's −20% never applies: client 2026-11-08); (3) Rain of Arrows: Tracking: all 15 arrows reach the dummy keeping 30% − 20% = 10% (was half at 30%); (4) Corrosion Focus: Splash: 1 Orb projectile per +2 Projectile Quantity (up to 2), all on the dummy, each later one keeping 100% − the clause's coefficient; (5) Chain Lightning: Merge with Web of Lightning: 1 + 2 chains (2 base Jumps) on the dummy, each later one keeping 100% − the clause's coefficient; (6) Frost Spike: Glaciate: both Icy Blades hit the Thrust's target, the first at 100% and the second at 30% (Split 173720: the blades share brother group 2, table 30, the Thrust's group −1 is not counted: client 2026-11-08; the Shadows' own Icy Blades, group 3, are not modeled); (7) Hound's Fangs: Volley: the 10 Small Fangs per 10 casts all hit the dummy at 100% each (Split 679413: 10 repeats that do not shrink to the targets found, a group −1 rule with an empty table: client 2026-11-08)?",
     evidence: "provisional",
-    current: "Provisional (2026-10-28): src/support-hit-count-batch5.js (shotgunGained, coefficientAdd, aimAll, splashProjectiles / coefficientSet, chainMerge, glaciate, fangVolley).",
-    alternatives: [{ reading: "Split Shot's volley lands every projectile (not a fan)", effect: "1 + 0.77 × 4 = ×4.08 with 5 projectiles instead of ×2.54" }, { reading: "Glaciate's Icy Blades take full damage (the Thrust is another effect)", effect: "+2 Icy Blade hits per use instead of +0.6" }, { reading: "Hound's Fangs: Volley's Small Fangs are fired over time without Shotgun falloff", effect: "+1 Small Fang per cast instead of +0.73" }],
+    current: "Provisional (2026-10-28; shares kept since 2026-11-05): src/support-hit-count-batch5.js (shotgunGained, coefficientAdd, aimAll, splashProjectiles / coefficientSet, chainMerge, glaciate, fangVolley).",
+    alternatives: [{ reading: "Glaciate's Icy Blades take full damage (each in its own group)", effect: "+2 Icy Blade hits per use instead of +1.3" }, { reading: "Glaciate's Icy Blades both keep 30% (each a repeat of the Thrust; the planner before 2026-11-08)", effect: "+0.6 Icy Blade hits per use instead of +1.3" }, { reading: "Hound's Fangs: Volley's Small Fangs keep the default 30% (the planner before 2026-11-08)", effect: "+0.37 Small Fang per cast instead of +1" }],
     test: "Floating numbers on the dummy with each support (standing close), one cast at a time; count the hits and their size.",
     source: "game recipes 483352160 / 770714432 / 858241472 / 917935744 / 156132704 / 493240160 / 240150160; reference data skill and support texts",
     appliesWhen: (ctx) => [...ctx.supports].some((name) => /Split Shot: Volley|Sparkle: Magnetic Field|Rain of Arrows: Tracking|Corrosion Focus: Splash|Chain Lightning: (?:Merge|Web of Lightning)|Frost Spike: Glaciate|Hound's Fangs: Volley/.test(name))
@@ -4096,9 +4289,9 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "hit-count-batch5-secondary",
     title: "Census batch 5: pulses, secondary explosions and extra hits (Psionic Missile: Emission / Convergence, Blazing Bullet: Dual Resonance, Blazing Meteor: Detonation, Icebound Beam: Chilling Spike, Fire Burst: Violent Blast / Converge, Sparkle: Static Electricity, Serpent Beam: Twin Blaze, Gale Slash: Soaring, Spectral Slash: Legion, Acuteness Focus: Dull Pain)",
-    question: "Do these readings match the game: (1) Emission's pulse is a full 150% of the explosion (no Shotgun falloff) and \"land dispersed\" lets ceil(n / 2) of a volley reach the dummy; (2) Convergence: each explosion after the first takes +15% × min(5, projectiles fired); (3) Dual Resonance's secondary explosions can chain (p ÷ (1 − p) per explosion) at the tier's coefficient; (4) Detonation: 1 + min(2, ⌊Projectile Quantity bonus ÷ 2⌋) Ash explosions per detonation; (5) Chilling Spike: 4 large blades per Icy Blade volley, all repeat hits at 65%, at 110%; (6) Violent Blast: one extra cast per critting cast, Converge 3 explosions on it; (7) Static Electricity: ×1.43 hits (no falloff); (8) Twin Blaze / Soaring: the Finisher's hits once more per cycle; (9) Legion: +1 Clone; (10) Dull Pain's Acute Smash uses the Acute Strike's row at +50%?",
+    question: "Do these readings match the game: (1) Emission's pulse is a full 150% of the explosion (no Shotgun falloff) and \"land dispersed\" lets ceil(n / 2) of a volley reach the dummy; (2) Convergence: each explosion after the first takes +15% × min(5, projectiles fired); (3) Dual Resonance's secondary explosions can chain (p ÷ (1 − p) per explosion) at the tier's coefficient; (4) Detonation: 1 + min(2, ⌊Projectile Quantity bonus ÷ 2⌋) Ash explosions per detonation; (5) Chilling Spike: 4 large blades per Icy Blade volley at 110%, the first at 100% and each later one keeping 35% (their hit rule, brother group 2, table 35: client 2026-11-08; the count stays open); (6) Violent Blast: one extra cast per critting cast, Converge 3 explosions on it; (7) Static Electricity: ×1.43 hits (no falloff); (8) Twin Blaze / Soaring: the Finisher's hits once more per cycle; (9) (settled 2026-11-08: Legion counts the Boss dummy as 5 enemies, record 506057920 calcCountByRarity, so +5 Clones); (10) Dull Pain's Acute Smash uses the Acute Strike's row at +50%?",
     evidence: "provisional",
-    current: "Provisional (2026-10-28): src/support-hit-count-batch5.js (pulse, dispersed, convergence, secondaryExplosion, ashCount, largeBlades, critRetrigger / converge, stationary, finisherRepeat, extraClone, smash).",
+    current: "Provisional (2026-10-28): src/support-hit-count-batch5.js (pulse, dispersed, convergence, secondaryExplosion, ashCount, largeBlades, critRetrigger / converge, stationary, finisherRepeat, extraClone, smash). Dual Resonance against Split 891259 (2026-11-08, listed, not applied): the secondary explosion (reaction_secondary_attack, brother group 2, table 36) is fired by the primary explosion's on-hit event, and the secondary carries no on-hit event of its own (inferred from the Split's layout: no chain), and its group is apart from the primary's group 1, so its one secondary per primary explosion keeps 100%: 1 + p per explosion against the planner's 1 + 0.36 × p ÷ (1 − p). Static Electricity's stationary projectiles are group 2, table 36: with Magnetic Field's fan, those after the first of a cast keep 36% − 20% (the planner counts them without falloff).",
     alternatives: [{ reading: "Dual Resonance's secondary explosions do not chain", effect: "+0.65 × c per explosion instead of +1.86 × c" }, { reading: "Emission's pulse is a repeat effect at Psionic Missile's 80% coefficient", effect: "×1.2 instead of ×1.5 per cast" }, { reading: "Convergence counts only the projectiles fired before each explosion", effect: "a smaller bonus on large volleys" }],
     test: "Floating numbers on the dummy, one cast at a time, with and without each support.",
     source: "game recipes 12079597 / 15168309 / 11568069 / 132511360 / 30121770 / 705496384 / 112674344 / 472151840 / 406323424 / 27436140 / 506057920",
@@ -4229,6 +4422,20 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.setups.some((setup) => /^Module: |^Summon (?:Machine Guard|Spider Tank|Grim Phantom|Fire Magus|Frost Magus|Thunder Magus|Rock Magus|Erosion Magus)$/.test(setup.name) && (setup.supports || []).some((support) => support && support.enabled !== false))
   },
   {
+    id: "summon-activation-medium-trigger",
+    title: "An Activation Medium on a module or Synthetic Troop summon: what does a triggered summon cast do?",
+    question: "The game lets the Activation Mediums support a module and the Synthetic Troop summons (user report 2026-11-09, in game: Module: Trog 2nd General with Activation Medium: Spell Burst in socket 1): the client's install filter reads every tag of the summoned NPC's skill stones, and every Synthetic Troop NPC carries stone 402031 with tag 6400000, one of the Activation Mediums' include groups. When the medium fires (another skill's Spell Burst, a Boss within range, every 0.2 s for Perpetual Motion, …), the summon is cast while its Minions are already out. Does that cast summon another Minion and replace one (restarting its birth skill and cycle), do nothing past the max, or only fire lines that trigger on casting the summon?",
+    evidence: "provisional",
+    current: "Eligibility from the game filter (src/support-compatibility.js supportFilterTagIds, the NPC stone list in src/data/skills/summon-npc-skill-tags-ss14.generated.js). The trigger itself reads Not modeled on a summon: the Minions are held at their max and their cycle is unchanged; no triggered summon cast is counted.",
+    alternatives: [
+      { reading: "A triggered cast past the max replaces the oldest Minion, which restarts with its birth skill", effect: "a frequent trigger (Perpetual Motion, a Spell Burst every 2 s) keeps resetting the Minions' cycles: lower Minion damage" },
+      { reading: "A triggered cast counts as a summon cast for \"when you cast a summon\" / Synthetic Troop cast lines", effect: "those lines would hold on a schedule (Command, Orders-style gains), more damage" }
+    ],
+    test: "Put Activation Medium: Perpetual Motion on a module with its Minions out on the dummy and watch whether they despawn / respawn every 0.2 s; compare a 20 s recount with and without the medium.",
+    source: "SkillFilterMgr (encrypted-scripts full pass 2026-11-03 finding 2: the NPC's Skill array); config_npc / config_skill_stone_summon_npc_index (gamedata-2026-10-31); config_skill_stone 71010 (Activation Medium: Spell Burst), 402031; user report 2026-11-09",
+    appliesWhen: (ctx) => ctx.setups.some((setup) => /^Module: |^Summon (?:Machine Guard|Spider Tank|Grim Phantom|Fire Magus|Frost Magus|Thunder Magus|Rock Magus|Erosion Magus)$/.test(setup.name) && (setup.supports || []).some((support) => support && support.enabled !== false && /^Activation Medium: (?!Minion$)/.test(support.name)))
+  },
+  {
     id: "module-protocols",
     title: "Module skill affixes (Programs / Protocols): ally buff range, Low Life, knockback and the Ultimate affixes",
     question: "Module skills carry 1, 2 or 3 random Module-Related Affixes (Programs and Protocols; Aura Overwrites and Source Codes only on the Ultimate module). The planner reads their game recipes, but some parts depend on game behaviour: do the ally buffs (Agile Protocol's +30% Attack and Cast Speed; Haste, Resistance and Ailment Protocol's buffs) reach you and every other Minion wherever they stand? Is a Minion ever at Low Life on the training dummy (Fury Program)? Is the dummy knocked back (Knockback Protocol's Paralysis)? How long does a Protocol's Infiltration last, and how do the Aura Overwrite ('Lv. 1 Precise: …') and Source Code affixes behave?",
@@ -4250,7 +4457,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     evidence: "game code (not tested)",
     current: "Game data (partial, 2026-11-02): the effect sets label 3001613 (Tangle entities attach to summons instead of enemies; affix 504296544), and the second line is affix 38919688: +1% additional damage per 80 Max Life of the nearest Synthetic Troop, continuous, up to +130%, on each Tangle Skill cast. A troop's Max Life is 5 × its Base Damage (config_minion_attr, every Synthetic Troop) × the Minion Max Life lines and the summon's Life supports. Game code (SS14 client, research/oq-r3-r4-rea-2026-11-04.md, 2026-11-04) settles the count: with label 3001613 a Tangle accepts only one of its owner's own summons as attach target (0x142278a50), within its attach range by priority then nearness; a summon takes at most field 2006281 Tangles, which \"You can apply N additional Tangle(s) to enemies\" (16113773) writes, so activated Tangles = min(Max Tangle Quantity, Minions × (1 + N)) as the planner reads it (src/tangle-model.js), the rest inactivated (Dormant Entanglement's per-inactivated bonus drops); summon-attached records fire each on its own timer from the Tangle's position, with no per-target cap. Still open (geometry, not code): user statement 2026-11-03: more of a projectile fan's shots land on the dummy from a Tangle on a Minion than when you cast, so a Tangle-fired cast lands every projectile of the fan (best case, count not given; Shotgun falloff 1 + c × (hits − 1) kept; your own casts keep ceil(n / 2) close, 1 at range); with no Minion the Tangle Skill fires nothing; every activated Tangle triggers the Spell at its casting interval, from Minions standing by the dummy; the nearest troop is the highest-Life one.",
     alternatives: [
-      { reading: "Fewer than all of a fan's projectiles land from a Tangle on a Minion (more than ceil(n / 2), user statement 2026-11-03)", effect: "fewer hits per cast on a fan skill than the best case read" },
+      { reading: "Fewer than all of a fan's projectiles land from a Tangle on a Minion (user statement 2026-11-03: more than from the player)", effect: "fewer hits per cast on a fan skill than the best case read" },
       { reading: "The nearest troop is a lower-Life one", effect: "a smaller per-80-Life bonus" }
     ],
     test: "Equip Banishment with the Tangle effect, 4 Synthetic Troop Minions and a Spell Tangle skill; on the dummy compare the hit count per second with 1, 2 and 4 Minions out, and read the Tangle bonus on the damage breakdown; count Chromatic Shot hits per Tangle cast on the dummy (all of the fan, or how many).",
@@ -4299,7 +4506,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Focus buffs: does Focus Buff Effect (and nothing else) scale their values?",
     question: "Every Focus buff (Acuteness, Corrosion, Flame, Ice, Thunder Focus and their Precise forms) is read from its game record: its additional damage and ailment chance multiply by the buff's effect scale, its base ailment does not. Is that scale exactly 1 + Focus Buff Effect, with Aura Effect and other Effect lines left out?",
     evidence: "game data (partial)",
-    current: "Read as 1 + the summed \"+X% Focus Buff Effect\" lines (attr 3401 on tag 5100306; W6c 2026-11-03, src/focus-buffs.js). The buff records (config_char_buff 10440–10481) carry tags 5100310, 5100306 and their family tag (5100314–5100318), never the Aura tag 5100305, so Aura Effect is left out; Flame Focus's Ignite chance took Aura Effect before (it was read as an Aura value). The link from the recipes' `scale` (GetEffectScale) to attr 3401 on the buff's own tags is inferred; the one in-game check is the trauma fixture's Precise: Acuteness Focus Buff, +25% additional Physical at +60% Focus Buff Effect. The conditional \"+X% Focus Buff Effect\" lines (Focus Skills in the Active / Passive Skill Slot) and \"+X% additional Focus Buff Effect\" are not read yet.",
+    current: "Read as 1 + the summed \"+X% Focus Buff Effect\" lines (attr 3401 on tag 5100306; W6c 2026-11-03, src/focus-buffs.js). The buff records (config_char_buff 10440–10481) carry tags 5100310, 5100306 and their family tag (5100314–5100318), never the Aura tag 5100305, so Aura Effect is left out; Flame Focus's Ignite chance took Aura Effect before (it was read as an Aura value). The link from the recipes' `scale` (GetEffectScale) to attr 3401 on the buff's own tags is inferred; the one in-game check is the trauma fixture's Precise: Acuteness Focus Buff, +25% additional Physical at +60% Focus Buff Effect. The conditional \"+X% Focus Buff Effect\" lines (Focus Skills in the Active / Passive Skill Slot) and \"+X% additional Focus Buff Effect\" are not read yet. The Focus Buff support's \"+X% buff effect for the supported skill\" (163793: attr 3401 mod 3 on [5100306, this skill]) is read since 2026-11-08: summed with the build's lines on the supported Focus skill's own buff only.",
     alternatives: [{ reading: "Aura Effect also scales a Focus buff (the Focus skills sit in Aura slots)", effect: "Flame Focus's Ignite chance and every Focus buff's additional damage × (1 + Aura Effect) as well" }],
     test: "Flame Focus on the board, then add a \"+X% Aura Effect\" line: does the character panel's Ignite chance or additional Fire Damage change? Then a \"+X% Focus Buff Effect\" line in its place.",
     source: "config_char_buff 10440–10481 (affix lists and tags); config_affix_effect 6779909, 101080071, 132023, 919705, 869686; affix 753654 (attr 3401 mod 3 on 5100306); src/focus-buffs.js; tests/focus-buff-records.test.js",
@@ -4327,9 +4534,8 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "How often does an \"on hit\" line fire (trigger 1000033)?",
     question: "Lines on trigger 1000033 (\"on hit\": a chance to Blind, Slow or Intimidate, Agility Blessing on Critical Strike) fire once per hit event, and the same hit raises 1000030 (\"when dealing damage\", \"for Non-Critical Strikes\"). The client raises one event per projectile, strike or area that lands on the dummy and passes its hit rule, and bTriggerOnceWithSameSourceEntity allows one success per frame per target. Does the planner land the same hits on the dummy (each Shotgun fan's reach, the Shadows, a Tangle's fan)?",
     evidence: "game code (not tested)",
-    current: "Game code (SS14 client, research/trigger-events-rea-2026-11-04.md §1–§2; not tested in game): the trigger bus raises one 1000033 event (and one 1000030) per hit that lands, each worth 1, not the falloff-weighted hits per use: the planner's Shotgun reach (a fan ceil(n / 2) close and one at range, all of a Tangle's fan, src/shotgun-effect.js), each Shadow, each Recall (src/skill-hit-model.js landingsPerUse); the falloff scales that event's damage only. A missed or evaded hit raises nothing (the dummy never evades). A flagged row (tr.once, on 1000030 / 1000033) succeeds at most once per frame on the dummy: a failed roll leaves the frame open, so k events of a frame succeed with 1 − Π(1 − p_e); a held debuff's share does not move, a Blessing gain or a gated row's sum is capped at one per frame. Still inferred: the landing counts themselves (the fan reach is observed for Chromatic Shot only; the Tangle fan is a user statement; a Barrage's per-wave volleys read their first wave's reach), and a crit-gated row's one determination per hit group (src/crit-cache.js, open question crit-cache-events).",
+    current: "Game code (SS14 client, research/trigger-events-rea-2026-11-04.md §1–§2; not tested in game): the trigger bus raises one 1000033 event (and one 1000030) per hit that lands, each worth 1, not the falloff-weighted hits per use: the planner's Shotgun reach (a fan all close and one at range, all of a Tangle's fan, src/shotgun-effect.js), each Shadow, each Recall (src/skill-hit-model.js landingsPerUse); the falloff scales that event's damage only. A missed or evaded hit raises nothing (the dummy never evades). A flagged row (tr.once, on 1000030 / 1000033) succeeds at most once per frame on the dummy: a failed roll leaves the frame open, so k events of a frame succeed with 1 − Π(1 − p_e); a held debuff's share does not move, a Blessing gain or a gated row's sum is capped at one per frame. Still inferred: the landing counts themselves (the fan reach is observed for Chromatic Shot only; the Tangle fan is a user statement; a Barrage's per-wave volleys read their first wave's reach), and a crit-gated row's one determination per hit group (src/crit-cache.js, open question crit-cache-events).",
     alternatives: [
-      { reading: "Every projectile of a fan lands on a close dummy (not ceil(n / 2))", effect: "more events per cast for chance-gated lines on fans the planner reads as half landing; no figure moves while the holds are saturated" },
       { reading: "The Shadows strike as one event between them, not one per Shadow", effect: "a Shadow Strike skill's on-hit lines hear fewer events (Erika's Thunder Spike: Blind, 2 events a use instead of the strike and 2 Shadows' 3)" }
     ],
     test: "One skill with several projectiles hitting the dummy and a low \"chance to inflict Slow on hit\" line: cast once at a time and count how often the dummy shows Slow per cast. About 1 − (1 − p)^(projectiles that land) = the planner's landing count.",
@@ -4466,6 +4672,21 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "Gemma's Chromatic Shot build: compare the first two seconds of damage on a fresh dummy (before the follower's first Lightning Storm) with the same span ten seconds in.",
     source: "src/tick-layers.js ailmentTypeLayer, minionTypeModifiers; src/line-conditions.js ailmentTypes, elementalAilmentTypes; src/tick-minions.js",
     appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.liveLayers || []).some((layer) => layer.key === "ailmentTypes")
+  },
+  // 2026-11-05 (src/tick-layers.js onTargetBlessing / placeHitGains): shown when the engine drives the figure and a Blessing gain needs a dummy state.
+  {
+    id: "tick-target-state-gains",
+    title: "On the dummy's first hits, when does a Blessing gain that needs a Frostbitten (or Ignited, or ailing) enemy start?",
+    question: "\"+X% chance to gain a stack of Focus Blessing upon inflicting damage to a Frostbitten enemy. Interval: 0.1s\" (Prophet), \"Gains 1 stack of Focus Blessing when hitting an enemy with Elemental Ailments\" and similar gains need the dummy in a state. The dummy starts clean: does a hit that inflicts the state also gain the stack, and is the state held between the inflicting hits?",
+    evidence: "game data (partial)",
+    current: "Game records (424329: trigger 1000030 on a target in state 4000112 with a 0.1 s gate 206; 2359509: trigger 1000033 on 4000570; 2793789: 1000030 on 4000130): the gain needs the dummy, so on the tick engine the Blessing starts at 0 and builds from the hits (the user decision of 2026-11-02 on Blessings gained only from the dummy), each gain a layer on its own timer, at most one gain per Interval. The state is the loop's: held from each inflicting hit of yours (or the follower's cast) for the ailment's duration on the loop, as the per-type line holds it; a hit reads the state the earlier hits left, not its own (as a hit reads its own Frail only from the next). Ignite, Trauma and Wilt are held on every hit of a skill that inflicts them, not by their chance. A state only your Minions keep is read as the planner's share. The sustained figure keeps the planner's held stacks.",
+    alternatives: [
+      { reading: "The inflicting hit also gains the stack", effect: "one hit earlier, under 0.05 s of ramp: no figure moves beyond the opening" },
+      { reading: "The Blessing pre-built at engagement (before 2026-11-05)", effect: "the shared build of 2026-11-05: Focus lapses after 13 s, 60 s ×0.83 (×0.82 with the bus)" }
+    ],
+    test: "With only this gain for Focus Blessing, attack a fresh dummy with a Cold skill and watch the Focus counter: it should start at 0 and climb by one about every 0.1 s from the first hit.",
+    source: "config_affix_effect 424329, 2359509, 2793789; src/tick-layers.js onTargetBlessing, placeHitGains, holdTargetStates; src/tick-engine.js rollAccumulator requiresAny",
+    appliesWhen: (ctx) => engineDrives(ctx) && ctx.hasText(/Blessing (?:upon|when) (?:dealing|inflicting) damage to |Blessing when hitting an? enem/i)
   },
   {
     id: "follower-inflictions-not-yours",

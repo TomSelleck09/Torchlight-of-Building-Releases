@@ -18,10 +18,35 @@ export const KEYWORD_RADII_METERS = Object.freeze({ nearby: 6, proximity: 4, dis
 // within 10 m, so "within 10 m" rules (Torturer's Touch's Reap, Elite within 10 m) hold in both.
 export const DISTANT_STANDING_METERS = KEYWORD_RADII_METERS.distant;
 
-// Movement rate while the Movement group is Moving, for per-metre support lines (Hunting Tempo, 2026-10-15 patch update). It is
-// the same unsourced 6 m/s placeholder as the Thunder Focus profile (src/attack-hit-profiles.js
-// THUNDER_FOCUS_ASSUMED_METERS_PER_SECOND; a test pins the two equal). No game figure fixes it.
-export const ASSUMED_MOVEMENT_METERS_PER_SECOND = 6;
+// The player's walking speed while the Movement group is Moving (user decision 2026-11-10; research/ring-barrier-movement-2026-11-10.md),
+// for every per-metre reader (the ring's movement Barrier, Hunting Tempo, Thunder Focus, Carino's movement Deflection, Sage's Tumbleweed
+// Seed). It replaces the unsourced 6 m/s placeholder of 2026-10-12. 100 game units are 1 m (proven: record 308512 counts P1 × 100 for
+// "every P1 m"). The base 650 units/s is inferred (records 271919904 / 350901824 compare GetAttr(4) against "P1% of the base value" as
+// p0 × 13/2; the player's own base write was not found, probably server-side: open question player-base-move-speed). Speed = base ×
+// (1 + Σ increased Movement Speed %) × Π(1 + additional Movement Speed %) (panel rows 60100 / 60101; the GetAttr rule), moving 100% of
+// the time (the Movement group's best case).
+export const UNITS_PER_METER = 100;
+export const PLAYER_BASE_MOVE_UNITS_PER_SECOND = 650;
+export const PLAYER_BASE_MOVE_METERS_PER_SECOND = PLAYER_BASE_MOVE_UNITS_PER_SECOND / UNITS_PER_METER;
+
+const roundSpeed = (value) => Math.round(value * 1000) / 1000;
+
+/**
+ * The player's movement speed in m/s from the combat Movement Speed (src/planner.js lineConditionState: the stat sheet's increased
+ * Movement Speed plus the held conditional lines, and the additional Movement Speed factor).
+ * @param {{ increasedPercent?: number, additionalFactor?: number }} p
+ * @returns {{ metersPerSecond: number, increasedPercent: number, additionalFactor: number, text: string }}
+ */
+export function playerMoveSpeed({ increasedPercent = 0, additionalFactor = 1 } = {}) {
+  const increased = Number(increasedPercent) || 0;
+  const additional = Number.isFinite(Number(additionalFactor)) ? Number(additionalFactor) : 1;
+  const metersPerSecond = Math.max(0, PLAYER_BASE_MOVE_METERS_PER_SECOND * (1 + increased / 100) * additional);
+  const text = `${roundSpeed(metersPerSecond)} m/s: ${PLAYER_BASE_MOVE_METERS_PER_SECOND} m/s base × (1 + ${roundSpeed(increased)}%)${additional !== 1 ? ` × ${roundSpeed(additional)} additional` : ""}`;
+  return { metersPerSecond, increasedPercent: increased, additionalFactor: additional, text };
+}
+
+/** The base speed (no Movement Speed lines), for a reader called without the planner's state. */
+export const BASE_PLAYER_MOVE_SPEED = Object.freeze(playerMoveSpeed());
 
 /** Does a line with an explicit radius ("within N m") hold at the chosen distance (near: point blank; else 6 m)? */
 export function explicitRadiusHolds(meters, nearTarget = true) {

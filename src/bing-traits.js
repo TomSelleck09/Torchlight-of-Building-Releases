@@ -57,6 +57,7 @@
 //   (triggered casts, no Spell Burst). Multi-Coupling Equation counts the enabled Empower / Defensive skills on the skill board.
 
 import { normalizePercentageText } from "./percentage-text.js";
+import { ownBuffRecordOf, OWN_STATUS_TAGS } from "./unit-buff-set.js";
 
 export const BLAST_NOVA = "bing-blast-nova";
 export const CREATIVE_GENIUS = "bing-creative-genius";
@@ -86,6 +87,29 @@ const EPS = 1e-9;
 const round = (value) => Math.round(value * 10000) / 10000;
 const pct = (value) => Math.round(value * 10000) / 100;
 const fmt = (value) => Number.isFinite(value) ? String(round(value)) : "∞";
+/**
+ * Defensive buffs an item alternates on you ("Every N s, alternate between gaining Lv. L <A> and <B> for D s": Dual Kismet: Twin Cities),
+ * for Multi-Coupling Equation's count (record 53529464 counts held buffs by tag). A gain every N s, each lasting D s, alternating two
+ * buffs: floor(D ÷ N) of them held, one more for frac(D ÷ N) of the time, at most the two (Twin Cities 4 s / 5 s: 1 always, 2 for 25%).
+ * Only buffs whose record carries the Defensive tag 5100304 count (Frost Shield 10140, Delayed Pain 10430). Provisional (10 T claim audit
+ * H1, user-approved 2026-11-09): the kismet's set rows are not extracted; the timing is its text.
+ * @returns {{ names: string[], counts: { count: number, share: number }[], text: string, source: string } | null}
+ */
+export function heldDefensiveBuffs(modifierTexts = [], isDefensive = defensiveTaggedName) {
+  for (const line of modifierTexts) {
+    if (line?.origin === "derived") continue;
+    const match = cleanBing(line?.text).match(/^Every ([\d.]+) ?s, alternate between gaining Lv\. \d+ (.+?) and (.+?) for ([\d.]+) ?s$/i);
+    if (!match) continue;
+    const period = Number(match[1]), duration = Number(match[4]), names = [match[2], match[3]].filter((name) => isDefensive(name));
+    if (!(period > 0) || !(duration > 0) || !names.length) continue;
+    const ratio = duration / period, low = Math.min(names.length, Math.floor(ratio + EPS)), extra = low < names.length ? Math.max(0, ratio - Math.floor(ratio + EPS)) : 0;
+    const counts = extra > EPS ? [{ count: low, share: 1 - extra }, { count: low + 1, share: extra }] : [{ count: low, share: 1 }];
+    return { names, counts, source: line.source, text: `${line.source}: ${names.join(" and ")} held, ${counts.map((item) => `${item.count} for ${Math.round(item.share * 100)}%`).join(", ")} of the time` };
+  }
+  return null;
+}
+const defensiveTaggedName = (name) => Boolean(ownBuffRecordOf(name)?.tags?.includes(OWN_STATUS_TAGS.defensive));
+
 export const cleanBing = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").replace(/(\d) %/g, "$1%").replace(/ ([,.:;])/g, "$1").replace(/^([+-]) (\d)/, "$1$2").trim();
 
 const N = "(\\d+(?:\\.\\d+)?)";
@@ -177,31 +201,82 @@ export function bombsReplaceMain(heroId, modifierTexts, main) {
   return heroId === BLAST_NOVA && modifierTexts.some((line) => line?.origin === "trait" && BING_PATTERNS.throwInstead.test(cleanBing(line.text))) && bombMainEligible(main).eligible;
 }
 
+// The cadence walk's length (30 Hz frames): its counts settle to about ±0.0003 per second over the measured span.
+export const CADENCE_WALK = Object.freeze({ seconds: 3600, warmSeconds: 60, frameSeconds: 1 / 30 });
+
 /**
- * The Whimsy / Ingenuity cadence (pure; exported for the tests). Iterates the loop Overload → Spell Burst activation → Inspiration
- * Overflow's Whimsy → explosions → Ingenuity → Overload to its fixed point.
- * @returns {{ whimsyPerSecond, essenceExplosions, flashExplosions, explosionsPerSecond, ingenuityPerSecond, overloadsPerSecond, overflowTriggersPerSecond }}
+ * The Whimsy / Ingenuity / Spell Burst cadence (pure; exported for the tests): a 30 Hz walk of the loop the records describe, averaged over
+ * CADENCE_WALK after its warm start (bing2 C1, 2026-11-10; research/bing2-damage-gap-2026-11-10.md §4):
+ * - Whimsy: N ÷ 2 every 0.5 s while below 100 (record 407086400 row 2; Whimsy Essence Recovery Speed shortens the tick, the old reading's
+ *   rate kept). An explosion at 100 takes 100 (117038480), on the frame Whimsy reaches 100 (the build deals Spell Damage far more often).
+ * - Ingenuity: 25 × (1 + Ingenious Chaos Principle × Max Spell Burst) per explosion, Flash of Brilliance's free ones too (Split 318305); an
+ *   Overload at 100 consumes 100 × (1 − Law of Ingenuity's chance) (its expected consumption; 724112704, 140751360).
+ * - Flash of Brilliance (226020080, trigger 1000069): each Main Skill cast instance rolls its chance while the gate is open, the gate starting
+ *   on a success; an expected-value accumulator over your casts at their rate and each activation's casts (an Overload's 1 + 3N) on the
+ *   activation's frame.
+ * - Regular Spell Burst activations every 1 ÷ the hit pass's activations per second (max(full charge, use interval), user-confirmed
+ *   2026-10-12), the Spell Burst Charge as the progress towards the next.
+ * - C1 (client 0x142067f90 → 0x14207caf0, proven): every activation sets the Spell Burst Charge to 0, Ingenuity Overload's too (its gate passes
+ *   on label 3001605 without a full charge, and its count is max(charge, Max Spell Burst read with the cast's tags), so the partial charge adds
+ *   no cast): the regular charge's progress is lost at each Overload and charging restarts. `resetOnOverload` false: the old reading.
+ * - Inspiration Overflow on every activation, an Overload's included: base + per2 × floor(stacks consumed ÷ 2) Whimsy (583758080 row 1).
+ *   C3 (583758080 row 1, node 206): its interval gate starts on a gain, and a gain inside it is dropped (an activation 0.76 s after the last
+ *   gain restores nothing). The old reading took the gate as a rate, each activation's gain × min(1, (1 ÷ interval) ÷ activations).
+ * - C2 (records 407086400 / 117038480, the trait's "upper limit of 100"): Whimsy above 100 is lost; an explosion takes the 100 and Whimsy
+ *   restarts at 0. `whimsyCap` false (the old reading) carries it past the explosion.
+ * @returns {{ whimsyPerSecond, whimsyLostPerSecond, essenceExplosions, flashExplosions, explosionsPerSecond, ingenuityPerSecond, overloadsPerSecond, overflowTriggersPerSecond, regularActivationsPerSecond }}
  */
 export function whimsyCadence({ whimsyBase = 20, recoveryPercent = 0, dealsSpell = true, flash = null, mainCastsPerSecond = 0, overflow = null, burstActivationsPerSecond = 0, burstStacks = 0, overloadStacks = 0,
-  overloadOn = false, maxSpellBurst = 0, chaosPercent = 0, lawChance = 0 } = {}) {
-  if (!dealsSpell) return { whimsyPerSecond: 0, essenceExplosions: 0, flashExplosions: 0, explosionsPerSecond: 0, ingenuityPerSecond: 0, overloadsPerSecond: 0, overflowTriggersPerSecond: 0 };
-  const flashExplosions = flash && mainCastsPerSecond > 0 && flash.chance > 0 ? 1 / (flash.intervalSeconds + 1 / (mainCastsPerSecond * flash.chance)) : 0;
-  const gain = (stacks) => overflow ? overflow.base + overflow.per2 * Math.floor(stacks / 2 + EPS) : 0;
-  let overloads = 0, out = null;
-  for (let step = 0; step < 60; step++) {
-    const activations = burstActivationsPerSecond + overloads;
-    const triggers = overflow && activations > 0 ? Math.min(1 / overflow.intervalSeconds, activations) : 0;
-    const perTrigger = activations > 0 ? (burstActivationsPerSecond * gain(burstStacks) + overloads * gain(overloadStacks)) / activations : 0;
-    const whimsyPerSecond = whimsyBase * Math.max(0, 1 + recoveryPercent / 100) + triggers * perTrigger;
-    const essenceExplosions = whimsyPerSecond / KEYWORDS.whimsyExplosion.cost;
-    const explosionsPerSecond = essenceExplosions + flashExplosions;
-    const ingenuityPerSecond = KEYWORDS.whimsyExplosion.ingenuity * explosionsPerSecond * Math.max(0, 1 + chaosPercent * maxSpellBurst / 100);
-    const next = overloadOn ? ingenuityPerSecond / (KEYWORDS.ingenuityOverload.cost * Math.max(EPS, 1 - lawChance)) : 0;
-    out = { whimsyPerSecond, essenceExplosions, flashExplosions, explosionsPerSecond, ingenuityPerSecond, overloadsPerSecond: next, overflowTriggersPerSecond: triggers };
-    if (Math.abs(next - overloads) < 1e-12) break;
-    overloads = next;
+  overloadOn = false, maxSpellBurst = 0, chaosPercent = 0, lawChance = 0, resetOnOverload = true, whimsyCap = true } = {}) {
+  if (!dealsSpell) return { whimsyPerSecond: 0, whimsyLostPerSecond: 0, essenceExplosions: 0, flashExplosions: 0, explosionsPerSecond: 0, ingenuityPerSecond: 0, overloadsPerSecond: 0, overflowTriggersPerSecond: 0, regularActivationsPerSecond: 0 };
+  const ingenuity = KEYWORDS.whimsyExplosion.ingenuity * Math.max(0, 1 + chaosPercent * maxSpellBurst / 100);
+  const spend = KEYWORDS.ingenuityOverload.cost * Math.max(EPS, 1 - lawChance);
+  // Your casts of the Main Skill other than an activation's automatic ones (the hit pass's uses count those too).
+  const ownCasts = Math.max(0, mainCastsPerSecond - burstStacks * burstActivationsPerSecond);
+  const out = whimsyWalk({ tick: whimsyBase / 2, tickSeconds: 0.5 / Math.max(EPS, 1 + recoveryPercent / 100), flash, ownCasts, overflow, regularSeconds: burstActivationsPerSecond > 0 ? 1 / burstActivationsPerSecond : Infinity,
+    burstStacks, overloadStacks, overloadOn, ingenuity, spend, resetOnOverload, whimsyCap });
+  const explosionsPerSecond = out.explosions + out.flashes;
+  return Object.fromEntries(Object.entries({ whimsyPerSecond: out.whimsy, whimsyLostPerSecond: out.lost, essenceExplosions: out.explosions, flashExplosions: out.flashes, explosionsPerSecond,
+    ingenuityPerSecond: explosionsPerSecond * ingenuity, overloadsPerSecond: out.overloads, overflowTriggersPerSecond: out.triggers, regularActivationsPerSecond: out.regular }).map(([key, value]) => [key, round(value)]));
+}
+
+// One walk of the cadence (whimsyCadence).
+function whimsyWalk({ tick, tickSeconds, flash, ownCasts, overflow, regularSeconds, burstStacks, overloadStacks, overloadOn, ingenuity, spend, resetOnOverload, whimsyCap }) {
+  const dt = CADENCE_WALK.frameSeconds, frames = Math.round(CADENCE_WALK.seconds / dt), warm = Math.round(CADENCE_WALK.warmSeconds / dt);
+  const n = { regular: 0, overloads: 0, explosions: 0, flashes: 0, triggers: 0, whimsy: 0, lost: 0 };
+  let charge = 0, whimsy = 0, ingenuityHeld = 0, tickClock = 0, castClock = 0, gateReady = -Infinity, flashReady = 0, flashProgress = 0, counting = false;
+  const cap = KEYWORDS.essenceCap;
+  const addWhimsy = (amount) => {
+    const next = whimsy + amount;
+    if (whimsyCap && next > cap) { if (counting) { n.lost += next - cap; n.whimsy += cap - whimsy; } whimsy = cap; }
+    else { if (counting) n.whimsy += amount; whimsy = next; }
+  };
+  const casts = (t, count) => {
+    if (!flash || !(flash.chance > 0) || t < flashReady - EPS) return;
+    flashProgress += flash.chance * count;
+    if (flashProgress >= 1 - EPS) { flashProgress = 0; flashReady = t + flash.intervalSeconds; ingenuityHeld += ingenuity; if (counting) n.flashes += 1; }
+  };
+  const activation = (t, stacks, ownCast) => {
+    casts(t, stacks + ownCast);
+    if (!overflow) return;
+    const gain = overflow.base + overflow.per2 * Math.floor(stacks / 2 + EPS);
+    // Inspiration Overflow's gate (C3): a gain while it is closed is dropped.
+    if (t >= gateReady - EPS) { gateReady = t + overflow.intervalSeconds; if (counting) n.triggers += 1; addWhimsy(gain); }
+  };
+  for (let frame = 0; frame < frames; frame++) {
+    counting = frame >= warm;
+    const t = frame * dt;
+    if (Number.isFinite(regularSeconds)) charge += dt / regularSeconds;
+    tickClock += dt;
+    while (tickClock >= tickSeconds - EPS) { tickClock -= tickSeconds; if (whimsy < cap - EPS) addWhimsy(tick); }
+    castClock += ownCasts * dt;
+    if (castClock >= 1 - EPS) { const count = Math.floor(castClock + EPS); castClock -= count; casts(t, count); }
+    if (charge >= 1 - EPS) { charge -= 1; if (counting) n.regular += 1; activation(t, burstStacks, 0); }
+    while (whimsy >= KEYWORDS.whimsyExplosion.cost - EPS) { whimsy = whimsyCap ? 0 : whimsy - KEYWORDS.whimsyExplosion.cost; ingenuityHeld += ingenuity; if (counting) n.explosions += 1; }
+    while (overloadOn && ingenuityHeld >= KEYWORDS.ingenuityOverload.cost - EPS) { ingenuityHeld -= spend; if (counting) n.overloads += 1; if (resetOnOverload) charge = 0; activation(t, overloadStacks, 1); }
   }
-  return Object.fromEntries(Object.entries(out).map(([key, value]) => [key, round(value)]));
+  const span = (frames - warm) * dt;
+  return Object.fromEntries(Object.entries(n).map(([key, value]) => [key, value / span]));
 }
 
 function blastNovaState(lines, modifierTexts, requestedConditions, facts, inputs) {
@@ -275,12 +350,25 @@ function creativeState(lines, modifierTexts, requestedConditions, facts, inputs)
   const flashLine = one("flash"), overflowLine = one("overflowWhimsy");
   const flash = flashLine ? { chance: Number(flashLine.match[1]) / 100, intervalSeconds: Number(flashLine.match[2]) } : null;
   const overflow = overflowLine ? { base: Number(overflowLine.match[1]), per2: Number(overflowLine.match[2]), intervalSeconds: Number(overflowLine.match[3]) } : null;
-  // Max Spell Burst: the build's lines + Multi-Coupling Equation's stacks.
+  // Max Spell Burst: the build's lines + Multi-Coupling Equation's stacks. Record 53529464 counts the held buffs whose record carries the
+  // Empower (5100311) or Defensive (5100304) tag: the board's Empower / Defensive skills (best case: held), and the Defensive buffs an item
+  // alternates (`inputs.heldDefensiveBuffs`: Dual Kismet: Twin Cities' Frost Shield, buff 10140, and Delayed Pain, buff 10430, both tagged
+  // 5100304; one held always, both 1 s in 4; user-approved 2026-11-09 "if the game files suggest that, yes", provisional: the kismet's own
+  // rows are not extracted, its text gives the timing). Each held count holds its share of the time: `stacks` the whole stacks always held,
+  // `partial` the time share of the extra stack (the Spell Burst model takes it as an average, src/skill-hit-model.js).
   const couplingLine = one("coupling");
   const empowerDefensive = inputs.empowerDefensive || [];
-  const coupling = couplingLine ? { per: Number(couplingLine.match[1]), gain: Number(couplingLine.match[2]), maxStacks: Number(couplingLine.match[3]), count: empowerDefensive.length, names: empowerDefensive } : null;
-  if (coupling) coupling.stacks = Math.min(coupling.maxStacks, Math.floor(coupling.count / coupling.per + EPS));
-  const maxSpellBurst = Math.max(0, Number(inputs.buildMaxSpellBurst) || 0) + (coupling ? coupling.stacks * coupling.gain : 0);
+  const heldDefensive = inputs.heldDefensiveBuffs || null;
+  const coupling = couplingLine ? { per: Number(couplingLine.match[1]), gain: Number(couplingLine.match[2]), maxStacks: Number(couplingLine.match[3]), count: empowerDefensive.length, names: empowerDefensive, held: heldDefensive } : null;
+  if (coupling) {
+    const stacksAt = (count) => Math.min(coupling.maxStacks, Math.floor(count / coupling.per + EPS));
+    const shares = heldDefensive?.counts?.length ? heldDefensive.counts : [{ count: 0, share: 1 }];
+    coupling.stacks = stacksAt(coupling.count + Math.min(...shares.map((item) => item.count)));
+    const expected = shares.reduce((total, item) => total + item.share * stacksAt(coupling.count + item.count), 0);
+    coupling.partial = Math.max(0, expected - coupling.stacks);
+    if (heldDefensive) coupling.count += Math.min(...shares.map((item) => item.count));
+  }
+  const maxSpellBurst = Math.max(0, Number(inputs.buildMaxSpellBurst) || 0) + (coupling ? (coupling.stacks + coupling.partial) * coupling.gain : 0);
   const gigWhimsy = one("gigWhimsy");
   const overloadLine = one("overload"), autoLine = one("auto");
   const pressed = requestedConditions.traitSkillOnCooldown !== false;
@@ -317,9 +405,16 @@ function creativeState(lines, modifierTexts, requestedConditions, facts, inputs)
   const contingency = one("contingency");
   // Split 423914: alive time 5 s × attr 3402 (Skill Effect Duration).
   const machineSeconds = KEYWORDS.contingency.lifetimeSeconds * Math.max(0, 1 + (Number(inputs.skillEffectDurationPercent) || 0) / 100);
-  const heroEffects = overloadOn && overloads > 0 ? {
-    overload: { activationsPerSecond: overloads, multiplierPercent: KEYWORDS.ingenuityOverload.maxSpellBurstAdditionalPercent },
-    machines: contingency ? { count: Number(contingency.match[1]), intervalSeconds: Number(contingency.match[2]), lifetimeSeconds: machineSeconds, overloadsPerSecond: overloads, source: contingency.line.source } : null
+  const partialStacks = coupling?.partial > 0 ? coupling.partial * coupling.gain : 0;
+  const heroEffects = (overloadOn && overloads > 0) || partialStacks > 0 ? {
+    ...(overloadOn && overloads > 0 ? {
+      // C1: the share of the regular Spell Burst activations left once every Overload empties the charge (the walk's regular activations ÷
+      // the hit pass's), read by the Spell Burst model (src/skill-hit-model.js).
+      overload: { activationsPerSecond: overloads, multiplierPercent: KEYWORDS.ingenuityOverload.maxSpellBurstAdditionalPercent, ...(main?.burstActivationsPerSecond > 0 ? { regularActivationShare: Math.min(1, cadence.regularActivationsPerSecond / main.burstActivationsPerSecond) } : {}) },
+      machines: contingency ? { count: Number(contingency.match[1]), intervalSeconds: Number(contingency.match[2]), lifetimeSeconds: machineSeconds, overloadsPerSecond: overloads, source: contingency.line.source } : null
+    } : {}),
+    // Multi-Coupling Equation's part-time extra stack (above): its time share of a Max Spell Burst stack, averaged by the Spell Burst model.
+    ...(partialStacks > 0 ? { spellBurstPartialStacks: partialStacks, spellBurstPartialSource: `Multi-Coupling Equation: ${heldDefensive?.text || "part-time stack"}` } : {})
   } : null;
   const switches = [], assumptions = [];
   if (mind) switches.push({ id: WHIMSY_FIELD_SWITCH, label: "Mind Domain: standing in the Whimsy Explosion's energy field", enabled: fieldOn, active: fieldOn && explosions > 0, summary: `Whimsy held at ${whimsyStacks} stacks`, reason: fieldOn ? "best-case assumption (you stand in the field: 5 s, 6 m, Split 318305)" : "switched off: no Whimsy stacks" });
@@ -443,7 +538,8 @@ function whimsyRead(key, match, c) {
     case "autoWhimsy": return c.explosionsOn ? feedsOverload(`${match[1]}% Whimsy Essence Recovery Speed`) : inactive(noSpell);
     case "coupling": {
       const cp = c.coupling, body = `+${(cp?.stacks || 0) * (cp?.gain || 0)} Max Spell Burst`;
-      return cp && cp.stacks > 0 ? inCalc(`${cp.count} Empower / Defensive skill(s) on the skill board (${cp.names.join(", ")}; best case: all affecting you): ${body}`, [body]) : inactive(`${cp?.count || 0} enabled Empower or Defensive skill(s) on the skill board (needs ${match[1]})`);
+      const partText = cp?.partial > 0 ? `; ${cp.held?.text || "a held Defensive buff"}: +${round(cp.partial * cp.gain)} Max Spell Burst on average (a further stack ${round(cp.partial * 100)}% of the time; provisional)` : "";
+      return cp && (cp.stacks > 0 || cp.partial > 0) ? inCalc(`${cp.count} Empower / Defensive buff(s) held (${[...cp.names, ...(cp.held?.names || [])].join(", ")}; best case: the board's all affecting you): ${body}${partText}`, cp.stacks > 0 ? [body] : []) : inactive(`${cp?.count || 0} enabled Empower or Defensive skill(s) on the skill board (needs ${match[1]})`);
     }
     case "hyper": {
       const body = `+${c.hyper.percent}% additional Spell Burst Charge Speed`;

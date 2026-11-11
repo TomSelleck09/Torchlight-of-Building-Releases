@@ -18,6 +18,8 @@ import { KEYWORD_RADII_METERS, DISTANT_STANDING_METERS } from "./dummy-target.js
 
 export const PURE_HEART_BASE_MAX_STACKS = 5;
 export const PURE_HEART_PERCENT_PER_STACK = 5;
+// "Lasts 10s. The duration of each stack of Pure Heart is calculated separately" (reference data Pure_Heart).
+export const PURE_HEART_BASE_SECONDS = 10;
 
 const LINE_KINDS = [
   ["gain", /^Gains (\d+) stacks? of Pure Heart when using an Attack Mobility Skill$/i],
@@ -56,6 +58,14 @@ export function resolvePureHeart({ modifierTexts = [], setups = [], mobilityUsed
   const gainSources = lines.filter((item) => item.kind === "gain").map(({ line }) => ({ source: line.source, text: line.text }));
   const maxSources = lines.filter((item) => item.kind === "maxStacks").map(({ line }) => ({ source: line.source, text: line.text, value: Number(clean(line.text).match(LINE_KINDS[3][1])[1]) * (line.multiplier ?? 1) }));
   const maxStacks = PURE_HEART_BASE_MAX_STACKS + maxSources.reduce((sum, item) => sum + item.value, 0);
+  // The press cadence of a Mobility skill that is not the Main Skill (user decision 2026-11-08, src/press-schedule.js mobilityWindows): each stack
+  // lasts its own 10 s × (1 + Σ "+X% Pure Heart Duration"), a use gives the gain lines' stacks + Σ chance × the extra stacks (expected value),
+  // so a use every duration × stacks per use ÷ max stacks holds the max.
+  const durationPercent = lines.filter((item) => item.kind === "duration").reduce((sum, { line }) => sum + Number(clean(line.text).match(/^([+-]?[\d.]+)%/)[1]) * (line.multiplier ?? 1), 0);
+  const durationSeconds = PURE_HEART_BASE_SECONDS * Math.max(0, 1 + durationPercent / 100);
+  const stacksPerUse = gainSources.reduce((sum, item) => sum + Number(clean(item.text).match(LINE_KINDS[0][1])[1]), 0)
+    + lines.filter((item) => item.kind === "extraChance").reduce((sum, { line }) => { const match = clean(line.text).match(/there is a ([\d.]+)% chance to gain (\d+) additional/i); return sum + (match ? Math.min(100, Number(match[1])) / 100 * Number(match[2]) : 0); }, 0);
+  const holdIntervalSeconds = maxStacks > 0 && stacksPerUse > 0 ? durationSeconds * stacksPerUse / maxStacks : null;
   const skills = attackMobilitySkillNames(setups);
   const reason = !gainSources.length ? "no Pure Heart gain line (\"Gains 1 stack of Pure Heart when using an Attack Mobility Skill\")"
     : !skills.length ? "no Attack Mobility Skill on the skill board"
@@ -72,7 +82,7 @@ export function resolvePureHeart({ modifierTexts = [], setups = [], mobilityUsed
   const text = active
     ? `Pure Heart (Azure Gunslinger): ${stackText}; ${damageApplies ? `+5% additional Attack Damage per stack (multiplies) → ×${round(factor, 6)} on attack hits against the Nearby dummy (not ailments: Attack is a hit-event tag)` : damageReason}; the extra-stack chance and duration change nothing at held max stacks.`
     : `Pure Heart (Azure Gunslinger): inactive, ${reason}.`;
-  const resolved = { active, damageApplies, stacks, maxStacks, factor, percent, skills, gainSources, maxSources, reason, damageReason, hitLines, text };
+  const resolved = { active, damageApplies, stacks, maxStacks, factor, percent, skills, gainSources, maxSources, durationSeconds, stacksPerUse, holdIntervalSeconds, reason, damageReason, hitLines, text };
   resolved.lines = lines.map(({ line, kind }) => ({ source: line.source, text: line.text, kind, ...pureHeartLineStatus(line.text, resolved) }));
   return resolved;
 }
