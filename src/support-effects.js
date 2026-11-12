@@ -24,7 +24,7 @@ import { BATCH6_SUPPORT_RULES, batch6Status, resolveBatch6Clause, BATCH6_DURATIO
 import { SUMMON_ACTIVATION_MEDIUM_REASON, summonMinionRows, summonSupportReading } from "./summon-support-minion.js";
 // Chunk 8 (2026-11-01): the clauses the census left unread, from their game records (src/support-chunk8.js).
 import { CHUNK8_SUPPORT_RULES, resolveChunk8Condition, chunk8OwnStatus } from "./support-chunk8.js";
-import { enemyBuffSet, ownCombatHeld, playerBuffSet } from "./unit-buff-set.js";
+import { atLeastShare, enemyBuffSet, ownCombatHeld, playerBuffSet } from "./unit-buff-set.js";
 // Your held buffs on your unit buff set (W9 step 2; the support state's `playerBuffs`), else the support state's flat fields (TLI_BUFF_SET=off).
 const heldOwn = (state) => ownCombatHeld(state);
 const ownAgilityStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.stacks("Agility", { stage: "blessing" }) : Number(state?.blessingStacks?.Agility) || 0; };
@@ -1446,8 +1446,12 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     // ---- Condition-unread batch 3 (2026-10-28) ----
     case "crowdControlAtLeast": {
       if (!hits && full.engine !== "skill-dot") return off("the supported skill deals no hits and no damage over time");
-      const types = enemyBuffSet(state)?.crowdControlTypes() ?? state.enemyCrowdControl ?? [];
-      return types.length >= clause.count ? on(`${types.length} crowd control type${types.length === 1 ? "" : "s"} on the dummy (${types.join(", ")}; src/combat-states.js) ≥ ${clause.count} (game recipe ${clause.recipe}, gate 300 ≥)`, { appliedValue: clause.value }) : off(`${types.length} crowd control type${types.length === 1 ? "" : "s"} on the dummy${types.length ? ` (${types.join(", ")})` : ""}, fewer than ${clause.count}`);
+      // The held set's types at their shares (2026-11-12): the share of time the dummy carries N or more (a part-time type is not a whole one).
+      const buffs = enemyBuffSet(state);
+      const shares = buffs ? buffs.crowdControlTypeShares() : (state.enemyCrowdControl || []).map((type) => [type, Number(state.enemyCrowdControlShares?.[type] ?? 1)]);
+      const types = shares.filter(([, share]) => share > 0).map(([type, share]) => share < 1 ? `${type} ${r(share * 100)}%` : type);
+      const share = atLeastShare(shares.map(([, value]) => value), clause.count);
+      return share > 0 ? on(`${types.length} crowd control type${types.length === 1 ? "" : "s"} on the dummy (${types.join(", ")}; src/combat-states.js) ≥ ${clause.count} (game recipe ${clause.recipe}, gate 300 ≥)${share < 1 ? `: ${r(share * 100)}% of the time (the types' shares read as independent), +${clause.value}% × ${r(share)}` : ""}`, { appliedValue: share < 1 ? r(clause.value * share) : clause.value }) : off(`${types.length} crowd control type${types.length === 1 ? "" : "s"} on the dummy${types.length ? ` (${types.join(", ")})` : ""}, fewer than ${clause.count}`);
     }
     case "traumatizedNearby": {
       if (full.engine !== "skill-hit") return off("Attack Speed of the supported skill: read on skill hits only");

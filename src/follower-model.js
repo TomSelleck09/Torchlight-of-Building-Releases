@@ -7,6 +7,7 @@ import { REAP_TICK_SECONDS } from "./reaping-model.js";
 import { ailmentDefinitions } from "./ailment-model.js";
 import { followerPathMode, followerRecipe, followerRecipeMatch, followerRecipeNumber } from "./recipe-follower-layers.js";
 import { enemyBuffSet, ownCombatHeld } from "./unit-buff-set.js";
+import { MAX_RESISTANCE_DEFAULT_PERCENT } from "./game-attribute-defaults.js";
 // Your held buffs (Fervor, Hasten, Profane, Aggression) from your unit buff set (W9 step 2), else the combat pass's `buffs` (TLI_BUFF_SET=off).
 const heldBuffs = (state) => ownCombatHeld(state) ?? state?.buffs;
 
@@ -433,6 +434,23 @@ const warcryEffectFactor = (selection) => 1 + (selection?.follower?.traitLines |
 const affixSum = (entry, pattern) => (entry?.skill?.affixLines || []).reduce((sum, text) => sum + (Number(clean(text).match(pattern)?.[1]) || 0), 0);
 const durationLine = (skill) => Number(skill?.lines.join("\n").match(/^Lasts (\d+(?:\.\d+)?) ?s$/im)?.[1]) || null;
 
+// ---- Origin Ice Shot's Projectile Amplification (game records, 2026-11-11; the followerIceShot buff below) --------------------
+// Buff 12180 (config_char_buff "s_yongbing_toushewuzengxiao", tags 5100310 / 5200102): default duration 4 s, subtype 1, cap 40, stack
+// mode 1, affix 200000401 [1.4]; the gain row is affix 1033360312 (trigger 1001160 on "this skill"), the cap row 1033360310, the Cold
+// row 1033360311.
+export const ICE_SHOT_AMPLIFICATION = Object.freeze({ buff: 12180, gainAffix: 1033360312, damageAffix: 200000401, capAffix: 1033360310, coldAffix: 1033360311, trigger: 1001160, perStackPercent: 1.4, seconds: 4, cap: 40, subtype: 1, stackMode: 1 });
+const MAX_AMPLIFICATION_STACKS = /^\+(\d+) Max Projectile Amplification Stacks$/i;
+const GLACIAL_TRAJECTORY = /^Projectile Amplification gains an additional base effect: \+(\d+(?:\.\d+)?)% additional Cold Damage per stack$/i;
+const OWN_PROJECTILE_QUANTITY = /^\+(\d+) to Projectile Quantity for this skill$/i;
+const TRAIT_PROJECTILE_QUANTITY = /^\+(\d+) Projectile Quantity$/i;
+/** The projectiles one Ice Shot cast generates: 1 + every field 2006108 write on it (the trait's and the skill's own affixes). */
+function iceShotProjectilesPerCast(entry, selection) {
+  const trait = (selection?.follower?.traitLines || []).reduce((sum, text) => sum + (Number(clean(text).match(TRAIT_PROJECTILE_QUANTITY)?.[1]) || 0), 0);
+  const own = affixSum(entry, OWN_PROJECTILE_QUANTITY);
+  const parts = [trait ? `+${trait} from the trait` : "", own ? `+${own} from its affixes` : ""].filter(Boolean);
+  return { perCast: 1 + trait + own, trait, own, text: `${1 + trait + own} projectile(s) per cast${parts.length ? ` (1 ${parts.join(", ")})` : ""}` };
+}
+
 // ---- The follower's Reaps and Scorching Pulse's Reaping Duration stacks ------------------------------------------------
 // Game data (2026-10-19, read-only non-encrypted tables; research/followers/scorching-pulse-2026-10-19.md). Origin Tartarus:
 // Scorching Pulse I–III (item_base 3980010 / 3980011 / 3980012) install skill stone 92011 with two fixed affixes:
@@ -709,6 +727,86 @@ const warcry = (label, keyword) => ({ match, ctx, value, text }) => {
 };
 
 const SPEED_PHANTOM_DEBUFF_SECONDS = 4;
+// Ill Will (Origin Tartarus: Shackles of Malice; SS14 records, 2026-11-12): affix 1778245 (trigger 1000033 with the "this skill" tag 5000002,
+// once per source entity, node 206 gate 1 s; local 0 = GetBuffCfgIdCountByTag([5100101]) on filter 101, the hit target; node 302 removes buff
+// 12080 there, node 301 adds l0 layers with duration -2) and config_char_buff 12080 "s_yongbing_eyi" (subtype 1: each layer its own instance;
+// cap 8; stack mode 1; default duration 4 s; no tags; affixes 101010106 [-6] = attr 5401 Erosion Resistance mod 1, 101010096 [10] = attr
+// 5741 Elemental Resistance mod 1). The keyword text (10000115) agrees: "-6% Erosion Resistance and +10% Elemental Resistance per stack for
+// 4s. Stacks up to 8 times".
+export const ILL_WILL = Object.freeze({ affix: 1778245, buff: 12080, cap: 8, seconds: 4, gateSeconds: 1, erosionPerLayer: 6, elementalPerLayer: 10 });
+/**
+ * The crowd control types on the dummy and their steady shares, [[type, share]] (share > 0): the dummy's unit buff set (the combat pass's
+ * holds, tag 5100101, Frostbite and Freeze included), else the combat pass's list (TLI_BUFF_SET=off).
+ */
+function dummyCrowdControlShares(state) {
+  const buffs = enemyBuffSet(state);
+  if (buffs) return buffs.crowdControlTypes().map((type) => [type, buffs.crowdControlShare(type)]).filter(([, share]) => share > 0);
+  const shares = state?.enemyCrowdControlShares || {};
+  return (state?.enemyCrowdControl || []).map((type) => [type, Number(shares[type] ?? 1)]).filter(([, share]) => share > 0);
+}
+// The dummy's resistance with Ill Will (2026-11-12, user-approved: both halves). The client's order (src/ignited-fire-resistance.js: manual
+// 1000010424, the Fire target trace): the typed stat is its flat sum (the dummy's 30%, Scorch, Fire's Allure, the max-Affliction "−X% All
+// Resistance": all mod 1 writes on 5101 / 5102 / 5103 / 5401), Elemental Resistance (5741) is added to Fire, Cold and Lightning, then the
+// sum is capped at Max Resistance (config_attributes 5127 / 5128 / 5129 / 5409 default 60), then your penetration is subtracted. So Ill Will
+// lowers Erosion by 6 per layer and raises an Elemental type by 10 per layer up to 60. A Fire Resistance "fixed at P1%" (record 556657600:
+// node 336 sets 5101 to P1 − GetAttr(5741)) keeps the fixed total, so Ill Will does not raise it.
+const ILL_WILL_ELEMENTAL = new Set(["Fire", "Cold", "Lightning"]);
+/** The dummy's `type` resistance with `layers` of Ill Will held, from its stat without them (before the cap and penetration). */
+export function illWillResistanceAt(type, statPercent, layers, maxPercent = MAX_RESISTANCE_DEFAULT_PERCENT) {
+  const stat = Number(statPercent) || 0;
+  if (!(layers > 0)) return stat;
+  if (type === "Erosion") return stat - ILL_WILL.erosionPerLayer * layers;
+  // The planner keeps a stat above the cap as it is (no reader caps the dummy's resistance yet): Ill Will never lowers it.
+  if (ILL_WILL_ELEMENTAL.has(type)) return Math.max(stat, Math.min(stat + ILL_WILL.elementalPerLayer * layers, maxPercent));
+  return stat;
+}
+/** The steady (time-averaged) resistance of `type` with the follower's Ill Will reading (`illWill` from resolveFollowerEffects). */
+export function illWillResistance(illWill, type, statPercent) {
+  if (!illWill?.layers || !(illWill.uptime > 0)) return statPercent;
+  return illWill.uptime * illWillResistanceAt(type, statPercent, illWill.layers) + (1 - illWill.uptime) * statPercent;
+}
+/**
+ * Ill Will on the loop (2026-11-12, user-approved): the 5 s / 20 s windows and the recount start it at the follower's first Shackles of Malice
+ * hit and renew it on each later one (at most once per the affix's 1 s gate), each holding its layers for the buff's 4 s; the layers at a hit
+ * are the crowd control types held on the clean dummy then (`schedules`: the combat pass's per-type schedules), else the steady count.
+ * Returns timed parts (src/timed-effects.js) whose level is the resistance points Ill Will takes off a type (negative where it raises one):
+ * a source's factor is (100 − net + points) ÷ (100 − net), net its resistance after penetration without Ill Will, so a part's percent is
+ * 100 ÷ (100 − net) for the sources it reaches (`nets`: { [type]: { hit, dot } }, the steady 100 − net with Ill Will). The steps' sustained
+ * level is the steady figure's, so the sustained figure does not move.
+ * @param {object} illWill resolveFollowerEffects(...).illWill
+ * @param {{ stats: object, nets: object, schedules?: object, horizon?: number, levelAt?: Function }} options stats: { [type]: stat without Ill Will }
+ */
+export function illWillTimedParts(illWill, { stats = {}, nets = {}, schedules = null, horizon = 120, levelAt = null } = {}) {
+  if (!illWill?.layers || !(illWill.uptime > 0) || !(illWill.intervalSeconds > 0)) return [];
+  const layersAt = (time) => {
+    const entries = schedules && levelAt ? Object.values(schedules).filter((schedule) => schedule) : [];
+    if (!entries.length) return illWill.layers;
+    return Math.min(ILL_WILL.cap, illWill.perType * entries.reduce((sum, schedule) => sum + Math.min(1, Math.max(0, levelAt(schedule, time))), 0));
+  };
+  const hits = [];
+  for (let time = illWill.firstSeconds; time < horizon; time += illWill.intervalSeconds) hits.push(time);
+  const parts = [];
+  for (const [type, stat] of Object.entries(stats)) {
+    const steadyChange = illWillResistance(illWill, type, stat) - stat;
+    if (!steadyChange) continue;
+    const points = [];
+    const push = (time, level) => { if (!points.length || points[points.length - 1][1] !== level) points.push([time, level]); };
+    hits.forEach((time, index) => {
+      push(time, -(illWillResistanceAt(type, stat, layersAt(time)) - stat));
+      const next = hits[index + 1] ?? Infinity;
+      if (time + illWill.holdSeconds < Math.min(next, horizon)) push(time + illWill.holdSeconds, 0);
+    });
+    for (const reach of ["hit", "dot"]) {
+      const net = nets[type]?.[reach];
+      if (!(net > 0)) continue;
+      // The steady figure holds 100 − net with Ill Will; without it the base is that + the steady change.
+      const base = net + steadyChange;
+      if (!(base > 0)) continue;
+      parts.push({ type, reach, percent: 100 / base, illWill: true, schedule: { kind: "steps", points, sustained: -steadyChange } });
+    }
+  }
+  return parts;
+}
 export const FOLLOWER_BUFFS = [
   {
     id: "followerStarStalker", skill: "Tartarus: Star Stalker", label: "Star Stalker: Euphoria", target: "self", needsNear: true, engine: "dot",
@@ -902,24 +1000,37 @@ export const FOLLOWER_BUFFS = [
   },
   {
     // Ice Shot: "This unit and nearby allies gain 1 stack of Projectile Amplification for each Projectile fired recently"
-    // (keyword: +1.4% additional Projectile Damage per stack (multiplies) for 4 s, up to 40). Read: the projectiles the follower
-    // fires (one per cast of each Projectile-tagged skill, plus its trait's "+N Projectile Quantity") over the last 4 s.
+    // (keyword: +1.4% additional Projectile Damage per stack (multiplies) for 4 s, up to 40). Game records (2026-11-11;
+    // ICE_SHOT_AMPLIFICATION): affix 1033360312 listens to trigger 1001160 (a projectile generated; raised in the projectile spawn
+    // code on the generating unit, research/oq-r3-r4-rea-2026-11-04.md) with the "this skill" tag 5000002, so only Ice Shot's own
+    // projectiles count: never the follower's other Projectile skills, never yours. Each one adds buff 12180 (duration −2: the
+    // record's 4 s) on the holder [1] and on its allies [20] (condition 324). Buff 12180: subtype 1 (every gain its own instance and
+    // timer), cap 40, stack mode 1 (the oldest replaced at the cap), affix 200000401 (attr 5719 mod 4 on Projectile 6001110, p0 ×
+    // GetEffectScale) on each instance, so each stack is its own factor: (1.014)^stacks on Projectile hits (the ailment record keeps
+    // no Projectile tag: hits only). Stacks = min(cap, Ice Shot's projectiles in the last 4 s) = min(cap, its casts/s (extra casts
+    // included: each casts the skill) × projectiles per cast × 4 s). Projectiles per cast: 1 (the Split's shot) + every field 2006108
+    // write on it (the trait's untagged "+N Projectile Quantity", 878078592; "+N to Projectile Quantity for this skill", 916010001;
+    // the base-plus-field sum inferred); Jumps and returns move the same projectile (inferred: no new one). Deep Accumulation
+    // (1033360310: attr 3440 flat on Projectile Amplification's tag 5200102, on [1] and [38]) raises your cap too; Glacial Trajectory
+    // (1033360311: one attr 5109 mod 4 write of GetBuffStack(12180) × p0 on [1] and [38]) is one +X% × stacks additional Cold Damage
+    // term, not a factor per stack. The gain needs no target (a skill use), so the windows hold it pre-built. Provisional links:
+    // open question follower-ice-shot-projectile-amplification.
     id: "followerIceShot", skill: "Origin Tartarus: Ice Shot", label: "Ice Shot: Projectile Amplification", target: "self", needsNear: true, engine: "projectile",
     pattern: /^This unit and nearby allies gain 1 stack of Projectile Amplification for each Projectile fired recently$/i,
     derive: (match, ctx) => {
-      const keyword = tartarusKeyword("Projectile Amplification")?.text.join(" ") || "";
-      const perStack = Number(keyword.match(/\+(\d+(?:\.\d+)?)% additional Projectile Damage/i)?.[1]) || 1.4, seconds = Number(keyword.match(/for (\d+(?:\.\d+)?) ?s/i)?.[1]) || 4, max = (Number(keyword.match(/Stacks up to (\d+)/i)?.[1]) || 40) + affixSum(ctxEntry(ctx), /^\+(\d+) Max Projectile Amplification Stacks$/i);
-      const cold = affixSum(ctxEntry(ctx), /^Projectile Amplification gains an additional base effect: \+(\d+(?:\.\d+)?)% additional Cold Damage per stack$/i);
-      const quantity = 1 + (ctx?.selection?.follower?.traitLines || []).reduce((sum, text) => sum + (Number(String(text).match(/^\+(\d+) Projectile Quantity$/i)?.[1]) || 0), 0);
-      const perSecond = [...(ctx?.cadence?.values() || [])].filter((entry) => entry.skill.tags.includes("Projectile")).reduce((sum, entry) => sum + entry.castsPerSecond * quantity, 0) || (ctxEntry(ctx)?.castsPerSecond || 0) * quantity;
+      const entry = ctxEntry(ctx), { perStackPercent: perStack, seconds } = ICE_SHOT_AMPLIFICATION;
+      const max = ICE_SHOT_AMPLIFICATION.cap + affixSum(entry, MAX_AMPLIFICATION_STACKS);
+      const cold = affixSum(entry, GLACIAL_TRAJECTORY);
+      const projectiles = iceShotProjectilesPerCast(entry, ctx?.selection);
+      const casts = totalCasts(entry), perSecond = casts * projectiles.perCast;
       const stacks = Math.min(max, perSecond * seconds);
-      if (!(stacks > 0)) return { inactive: "the follower fires no Projectile" };
+      if (!(stacks > 0)) return { inactive: "the follower never casts Ice Shot (game affix 1033360312: only this skill's own projectiles add stacks)" };
       const value = round(((1 + perStack / 100) ** stacks - 1) * 100);
-      // Glacial Trajectory: +X% additional Cold Damage per stack, multiplying like the keyword's base effect (provisional).
-      const coldValue = cold ? round(((1 + cold / 100) ** stacks - 1) * 100) : 0;
-      return { text: `+${value}% additional Projectile Damage`, ...(coldValue ? { texts: [{ text: `+${coldValue}% additional Cold Damage`, origin: "buff" }] } : {}), origin: "buff", summary: `${round(stacks)} stacks (${round(perSecond)} follower projectiles per second × ${seconds} s, up to ${max}) × ${perStack}% (multiplies) = +${value}% additional Projectile Damage${coldValue ? `; Glacial Trajectory ${cold}% per stack (multiplies) = +${coldValue}% additional Cold Damage` : ""}` };
+      // Glacial Trajectory: one write of stacks × X% (record 1033360311), so one additional term.
+      const coldValue = cold ? round(cold * stacks) : 0;
+      return { text: `+${value}% additional Projectile Damage`, ...(coldValue ? { texts: [{ text: `+${coldValue}% additional Cold Damage`, origin: "buff" }] } : {}), origin: "buff", summary: `${round(stacks)} stacks (Ice Shot ${round(casts)} casts/s × ${projectiles.text} = ${round(perSecond)} projectiles per second × ${seconds} s, up to ${max}; each stack its own ${seconds} s) × ${perStack}% (multiplies) = +${value}% additional Projectile Damage${coldValue ? `; Glacial Trajectory ${cold}% × ${round(stacks)} stacks (one term) = +${coldValue}% additional Cold Damage` : ""}` };
     },
-    reason: "the follower's own projectiles count (provisional reading of \"each Projectile fired recently\"); you stand near it"
+    reason: "game affix 1033360312: Ice Shot's own projectiles add the stacks (trigger 1001160 with the \"this skill\" tag), each stack its own 4 s (buff 12180, cap 40); the follower's other skills and your projectiles add none; best case: you stand near it"
   },
   {
     // Origin Fearless Warcry: "+6% additional Attack Damage and Ailment Damage dealt by attacks for allies for each Warcry Skill
@@ -951,6 +1062,34 @@ export const FOLLOWER_BUFFS = [
     },
     reason: "best case: the follower keeps slashing the Traumatized dummy"
   },
+  {
+    // Shackles of Malice's Ill Will (game records, 2026-11-12; ILL_WILL): on each of this skill's hits behind a 1 s gate, affix 1778245 counts
+    // the crowd control buffs on the hit target (GetBuffCfgIdCountByTag 5100101, the count Wings of Light's Intimidated reads), removes the
+    // target's Ill Will (buff 12080) and adds that many layers (duration -2: the record's 4 s). Buff 12080: each layer its own instance, up to
+    // 8, no tags, affixes 101010106 (-6: attr 5401 Erosion Resistance, mod 1) and 101010096 (+10: attr 5741 Elemental Resistance, mod 1). So
+    // the dummy holds min(8, crowd control types) layers 4 s after each chain hit. Read as the dummy's own resistance (illWillResistanceAt:
+    // Erosion −6 per layer, Fire / Cold / Lightning +10 per layer up to Max Resistance 60, before your penetration), which src/planner.js
+    // applies to its typed resistances (so your hits, DoTs, ailments, Reaps, Minions and the follower's own damage read it), at its steady
+    // uptime; the loop's windows start it at the first chain hit (illWillTimedParts). No modifier line: `displayText` is the badge's.
+    // The count is the planner's held crowd control types (their steady shares).
+    id: "followerIllWill", skill: "Origin Tartarus: Shackles of Malice", label: "Shackles of Malice: Ill Will", target: "enemy", needsNear: false, engine: "resistance",
+    pattern: /^Inflicts (\d+) stack of Ill Will for each Crowd Control Effect the target has when this skill hits\. Interval: (\d+(?:\.\d+)?) ?s$/i,
+    derive: (match, ctx) => {
+      const entry = ctxEntry(ctx);
+      if (!(OWN_DAMAGE[ctx?.skill?.name] && entry?.castsPerSecond > 0)) return { inactive: "the follower never casts it, so its chain never hits the dummy" };
+      const held = dummyCrowdControlShares(ctx?.state);
+      const count = held.reduce((sum, [, share]) => sum + share, 0);
+      if (!(count > 0)) return { inactive: "no crowd control effect on the dummy: Ill Will takes one layer per crowd control type the dummy carries when the chain hits (game affix 1778245: tag 5100101, Frostbite and Freeze included)" };
+      const { cap, seconds, erosionPerLayer, elementalPerLayer, buff, affix, gateSeconds } = ILL_WILL;
+      const perType = Number(match[1]), layers = Math.min(cap, perType * count), uptime = uptimeOf(seconds, entry);
+      const types = held.map(([type, share]) => share < 1 ? `${type} ${round(share * 100)}%` : type).join(", ");
+      const erosion = round(erosionPerLayer * layers), elemental = round(elementalPerLayer * layers);
+      const illWill = { layers, uptime, perType, holdSeconds: seconds, firstSeconds: Math.max(0, entry.firstUseSeconds ?? 0), intervalSeconds: Math.max(entry.periodSeconds || 1 / entry.castsPerSecond, Number(match[2]) || gateSeconds), types: held.map(([type]) => type) };
+      return { displayText: `-${erosion}% Erosion and +${elemental}% Elemental Resistance on the dummy (Elemental up to its Max Resistance 60)${uptime < 1 ? `, ${round(uptime * 100)}% of the time` : ""}`, origin: "derived", illWill,
+        summary: `${round(layers)} Ill Will layer${layers === 1 ? "" : "s"} (one per crowd control type on the dummy when the chain hits: ${types}; up to ${cap}; game affix ${affix}, buff ${buff}) × (-${erosionPerLayer}% Erosion, +${elementalPerLayer}% Elemental Resistance) for ${seconds} s, renewed by each chain hit, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime → the dummy's Erosion Resistance -${erosion}%, its Fire / Cold / Lightning Resistance +${elemental}% up to 60 (Max Resistance; before your penetration); in the 5 s / 20 s windows and the recount from the first chain hit (${round(illWill.firstSeconds)} s)` };
+    },
+    reason: "game records (affix 1778245, buff 12080): each chain hit gives the dummy one Ill Will layer per crowd control type it carries (up to 8, 4 s); best case: the follower's chain keeps hitting the dummy; the dummy's Erosion Resistance drops and its Fire, Cold and Lightning Resistance rise (capped at its Max Resistance 60) before your penetration, for every damage dealt to it (yours, your Minions', the follower's); in the windows and the recount from the follower's first chain hit (provisional: open question follower-ill-will)"
+  },
   // Follower traits (named followers).
   {
     // Relentless Claws: "Every 10s, …, inflicts Claw Mark on enemies within 6m, causing them to take +25% additional Physical
@@ -976,19 +1115,36 @@ export const FOLLOWER_BUFFS = [
     reason: "best case: you stand inside the Rat Guard's area (it lands at a random spot nearby); Spell hits and a Spell skill's own damage over time take it"
   },
   {
-    // Rampaging Rat: "+12% additional damage taken by enemies for 1s when a Projectile Skill lands a Critical Strike". Read: the
-    // follower's own Projectile Skills that always crit (Forking Thunder), one crit per cast (its other skills' crit chance
-    // is not published).
+    // Rampaging Rat (game modifier 600000009, class 878078592_d1_382580_d2_9561181_d3): "+12% additional damage taken by enemies for
+    // 1s when a Projectile Skill lands a Critical Strike". Every line of a ULT effect sits on the follower: the ULT records reach you
+    // only through filter target 38 (the follower's owner; Howl of the Pack 5500555 writes on [1] and again on [38], Relentless Claws
+    // 966087936 measures "within N m of you" from [38]), so target 1, the holder, is the follower. Affix 9561181: trigger 1000030
+    // on the holder's damage with [Critical Strike 5001010 + Projectile 6001110] (one tag object: both required), node 306 mode 2,
+    // one instance for p1 = 1 s, attr 57201 mod 4 (+p0 = 12% additional damage taken, no tag) on filter 101, the enemy of that
+    // damage event. So the follower's own Projectile crits put it on the dummy, and every hit and DoT the dummy takes (yours
+    // included) takes it; your own crits do not fire it (user-confirmed in game 2026-11-11: only the follower's own Projectile
+    // crits trigger it). The follower's crit chance: 100% on a skill that
+    // always crits, else its Critical Strike Rating 500 (config_mercenary_attr attr 4802 on all 48 letter rows; ÷ 100 = 5%, as
+    // the Minion model reads the Minions' 500), one crit check per cast (the crit cache: one per hit group per use). Uptime per
+    // skill: min(1, 1 s × uses/s) for a certain crit, 1 − (1 − p)^(uses/s × 1 s) for a chance (the Tendonslicer rule, timed
+    // schedule "chance"); several skills 1 − Π(1 − uptime). Provisional: the 5% crit chance, open question follower-crit-chance.
     id: "followerRampagingRat", trait: "rampaging-rat", label: "Rampaging Rat: damage taken on Projectile crits", target: "enemy", needsNear: false, engine: "all",
     pattern: /^\+(\d+(?:\.\d+)?)% additional damage taken by enemies for (\d+(?:\.\d+)?) ?s when a Projectile Skill lands a Critical Strike$/i,
     derive: (match, ctx) => {
-      const crits = [...(ctx?.cadence?.values() || [])].filter((entry) => entry.skill.tags.includes("Projectile") && alwaysCrits(entry.skill));
-      const rate = crits.reduce((sum, entry) => sum + entry.castsPerSecond, 0);
-      if (!(rate > 0)) return { inactive: "no equipped follower Projectile Skill always crits (the others' crit chance is not published)" };
-      const duration = Number(match[2]), percent = Number(match[1]), uptime = Math.min(1, duration * rate), period = 1 / rate;
-      return { text: `+${round(percent * uptime)}% additional damage taken`, origin: "derived", parts: uptime < 1 ? [{ type: null, reach: "all", percent, schedule: { kind: "periodic", durationSeconds: duration, periodSeconds: period } }] : [], summary: `+${percent}% additional damage taken for ${duration} s after each crit of ${crits.map((entry) => entry.name).join(", ")} (every ${round(period)} s): ${round(uptime * 100)}% uptime` };
+      const duration = Number(match[2]), percent = Number(match[1]);
+      const sources = [...(ctx?.cadence?.values() || [])].filter((entry) => entry.skill.tags.includes("Projectile") && OWN_DAMAGE[entry.skill.name] && heldUses(entry) > 0).map((entry) => {
+        const chance = followerCritChance(entry.skill), rate = heldUses(entry);
+        const schedule = chance >= 1 ? { kind: "periodic", durationSeconds: duration, periodSeconds: 1 / rate } : { kind: "chance", chancePercent: chance * 100, hitsPerSecond: rate, durationSeconds: duration, firstHitSeconds: Math.max(0, Number(entry.firstUseSeconds) || 0) };
+        const uptime = chance >= 1 ? Math.min(1, duration * rate) : 1 - (1 - chance) ** (rate * duration);
+        return { entry, chance, rate, schedule, uptime };
+      });
+      if (!sources.length) return { inactive: "no equipped follower Projectile Skill deals a hit, so none lands a Critical Strike (game affix 9561181: trigger 1000030 on the follower's own damage with the Critical Strike and Projectile tags; your own crits do not fire it)" };
+      const uptime = 1 - sources.reduce((rest, source) => rest * (1 - source.uptime), 1);
+      const schedule = sources.length === 1 ? sources[0].schedule : { kind: "union", schedules: sources.map((source) => source.schedule) };
+      const each = sources.map((source) => `${source.entry.skill.shortName || source.entry.name} ${round(source.rate)} casts/s × ${source.chance >= 1 ? "a certain crit" : `${round(source.chance * 100)}% crit chance (its Critical Strike Rating ${FOLLOWER_CRIT_RATING})`} → ${round(source.uptime * 100)}%`).join(", ");
+      return { text: `+${round(percent * uptime)}% additional damage taken`, origin: "derived", parts: uptime < 1 ? [{ type: null, reach: "all", percent, schedule }] : [], summary: `+${percent}% additional damage taken for ${duration} s after each Critical Strike of the follower's Projectile Skills (game affix 9561181): ${each}${sources.length > 1 ? `; together ${round(uptime * 100)}%` : ""} uptime, time-averaged` };
     },
-    reason: "the follower's own always-critting Projectile Skill (provisional)"
+    reason: "the follower's own Projectile crits only (game affix 9561181 on the follower; user-confirmed in game 2026-11-11); provisional: its 5% crit chance, open question follower-crit-chance"
   },
   {
     // Plague (game modifier 600000008; recipe 589368960: "+1% additional Non-Erosion Damage taken (multiplies)" writes damage taken
@@ -1043,7 +1199,6 @@ export const FOLLOWER_LINE_RULES = [
   { skill: "Tartarus: Frost Spike", pattern: /additional Shadow Damage for nearby allies/i, status: "Not modeled", reason: "your Shadow damage is not modeled (your Shadow Strike skills' Shadows are not modeled)" },
   { skill: "Origin Tartarus: Frost Spike", pattern: /additional Shadow Damage \(multiplies\)/i, status: "Not modeled", reason: "your Shadow damage is not modeled (your Shadow Strike skills' Shadows are not modeled); at 60 stacks it would be +71.2% additional Shadow Damage" },
   { skill: "Origin Tartarus: Black Hole", pattern: /gains Synergy Shift$/i, status: "Not modeled", reason: "Synergy Shift (-2% resistance to the type the holder inflicts per stack, +1% to the others, up to 30) needs the follower's own Fire / Cold / Lightning / Erosion damage events per second (its damage-over-time tick rate is not published) and whether the shift reaches your damage" },
-  { skill: "Origin Tartarus: Shackles of Malice", pattern: /stack of Ill Will for each Crowd Control Effect/i, status: "Not modeled", reason: "Ill Will (-6% Erosion and +10% Elemental Resistance per stack, up to 8) needs Crowd Control Effects on the dummy; whether it takes the follower's Reverse Knockback or random Crowd Control is not sourced" },
   { skill: "Origin Tartarus: Split Firebolt", pattern: /Elemental Resonance/i, status: "Not modeled", reason: "Elemental Infiltration needs 3 types of Elemental Resonance (Ignite, a Lightning crit and Cold Infiltration by the follower); the follower's Ignite chance is not published" },
   { skill: "Origin Tartarus: Raging Warcry", pattern: /\+\d+% additional Attack Hit Damage taken/i, status: "Partly modeled", reason: "its 50 Physical hit is counted with the follower's own damage; the 5-stack debuff (+50% additional Attack Hit Damage taken, one stack lost per attack hit) needs your attack-hit rate per 4 s and is not modeled" },
   { skill: "Origin Tartarus: Safeguard Ring", pattern: /Curses?|Tenacity Blessing|Removes Ignite/i, status: "Not modeled", reason: "the follower's curse sources are not published, and the Sentry removes your Ignite / Wilt from the dummy; not modeled" },
@@ -1054,7 +1209,16 @@ export const FOLLOWER_LINE_RULES = [
   { trait: "plague", pattern: /additional Wilt Duration$/i, status: "No DPS effect", reason: "game recipe 334360768: -30% additional Wilt Duration on the follower itself, so your Wilt is not shortened; it shortens the follower's own Wilt, whose stacks Plague's damage-taken line counts (provisional; open question follower-special-plague)" },
   { trait: "chant-of-conquest", pattern: /^\+\d+(?:\.\d+)?% Cast Speed$/i, status: "In calc", reason: "the follower's own Cast Speed: its Spell skills' cast times are divided by it in its cadence (provisional)" },
   { trait: "chant-of-conquest", pattern: /^\+\d+(?:\.\d+)?% Spell Skill Area$/i, status: "No DPS effect", reason: "the follower's own Skill Area" },
-  { trait: "curl-tailed-sentinel", pattern: /places a Rat Guard/i, status: "In calc", reason: "the Rat Guard's timing (5 s of every 10 s) for its Spell Damage line" }
+  { trait: "curl-tailed-sentinel", pattern: /places a Rat Guard/i, status: "In calc", reason: "the Rat Guard's timing (5 s of every 10 s) for its Spell Damage line" },
+  // Rampaging Rat's stat lines are the follower's (game affixes 878078592: field 2006108 Projectile Quantity, and 382580: attr 6005
+  // Projectile Speed, both on filter target [1], the holder; the ULT records reach you only through target 38): never yours.
+  // `read(selection, cadence, { conditionOn, near })` settles a status on the equipped skills and the switches.
+  { trait: "rampaging-rat", pattern: /^\+\d+ Projectile Quantity$/i, read: (selection, cadence, { conditionOn = () => true, near = true } = {}) => {
+    const own = "the follower's own Projectile Quantity (game affix 878078592: field 2006108 on the holder, the follower; not yours)";
+    const iceShot = cadence?.get("Origin Tartarus: Ice Shot");
+    return iceShot?.castsPerSecond > 0 && near && conditionOn("followerIceShot") ? { status: "In calc", reason: `${own}: its Ice Shot's Projectile Amplification counts the extra projectiles it fires` } : { status: "No DPS effect", reason: `${own}: the follower's damage counts one projectile per cast on one dummy` };
+  } },
+  { trait: "rampaging-rat", pattern: /^\+\d+(?:\.\d+)?% Projectile Speed$/i, status: "No DPS effect", reason: "the follower's own Projectile Speed (game affix 382580: attr 6005 on the holder, the follower; not yours): only its projectiles' flight" }
 ];
 
 // ---- Support affixes (2026-10-19; src/follower-affixes.js) ------------------------------------------------------------
@@ -1075,6 +1239,12 @@ const GUARANTEED_CRIT = /^This skill is guaranteed to land Critical Strikes$/i;
 // Evil Might (Nether Grasp): read held by AFFIX_MARKERS, part-time by AFFIX_EFFECTS.
 const EVIL_MIGHT = /^The Follower and nearby allies gain Profane for (\d+(?:\.\d+)?) ?s when casting this skill$/i;
 const alwaysCrits = (skill) => [...(skill?.lines || []), ...(skill?.affixLines || [])].some((text) => GUARANTEED_CRIT.test(clean(text)) || /guaranteed to land Critical Strikes/i.test(String(text)));
+// The follower's Critical Strike Rating: config_mercenary_attr attr 4802 = 500 on all 48 letter rows (2026-11-11; a fixed value
+// like the row's Movement Speed and Alert Radius, not one of its small per-level column indexes), read as a flat 5% (rating ÷ 100,
+// the Minion model's reading of the Minions' 500) with no line of its skills raising it. Read only by Rampaging Rat so far (provisional; open question
+// follower-crit-chance); the other crit readers keep a crit only on a skill that always crits.
+export const FOLLOWER_CRIT_RATING = 500;
+const followerCritChance = (skill) => alwaysCrits(skill) ? 1 : Math.min(1, FOLLOWER_CRIT_RATING / 100 / 100);
 const cadenceOf = (ctx) => ctx?.cadence?.get(ctx?.skill?.name) || null;
 // The skill deals damage on the dummy at its cadence (a modeled own-damage skill that is cast).
 const dealsDamage = (ctx) => Boolean(OWN_DAMAGE[ctx?.skill?.name]) && cadenceOf(ctx)?.castsPerSecond > 0;
@@ -1560,8 +1730,16 @@ const AFFIX_MODIFIERS = [
   { pattern: OWN_WARCRY_EFFECT, read: (match, ctx) => warcryRead(ctx) },
   { pattern: ECHOING_WARCRY, read: (match, ctx) => warcryRead(ctx) },
   { pattern: /^\+(\d+) Max Mystic Spread$/i, read: (match, ctx) => cadenceOf(ctx)?.castsPerSecond > 0 ? { status: "In calc", reason: `raises the Mystic Spread cap of the follower's Arcane Circle by ${match[1]} (its stacks = min(cap, 8 s × casts per second))` } : { status: "Inactive", reason: "the follower never casts it" } },
-  { pattern: /^\+(\d+) Max Projectile Amplification Stacks$/i, read: (match) => ({ status: "In calc", reason: `raises the Projectile Amplification cap of the follower's Ice Shot by ${match[1]} (its stacks = min(cap, the follower's projectiles in 4 s))` }) },
-  { pattern: /^Projectile Amplification gains an additional base effect: \+(\d+(?:\.\d+)?)% additional Cold Damage per stack$/i, read: (match) => ({ status: "In calc", reason: `+${match[1]}% additional Cold Damage per Projectile Amplification stack (multiplies, like the keyword's base effect; provisional), read with the follower's Ice Shot buff` }) }
+  { pattern: MAX_AMPLIFICATION_STACKS, read: (match) => ({ status: "In calc", reason: `raises the Projectile Amplification cap by ${match[1]} on the follower and on you (game affix 1033360310: attr 3440 flat on the buff's tag 5200102, filter targets [1] and [38]); its stacks = min(cap, Ice Shot's projectiles in 4 s)` }) },
+  { pattern: GLACIAL_TRAJECTORY, read: (match) => ({ status: "In calc", reason: `+${match[1]}% additional Cold Damage × the Projectile Amplification stacks, one term (game affix 1033360311: one attr 5109 mod 4 write of GetBuffStack(12180) × ${match[1]} on the follower and on you), read with the follower's Ice Shot buff` }) },
+  // "+N to Projectile Quantity for this skill" (916010001 row 1: field 2006108 on this skill): on Ice Shot each extra projectile is a
+  // Projectile Amplification stack; on another follower skill its damage counts one hit per cast on one dummy.
+  { pattern: OWN_PROJECTILE_QUANTITY, read: (match, ctx) => {
+    const entry = cadenceOf(ctx), state = ctx?.state || {};
+    const on = state.followerIceShot !== false && state.requestedConditions?.followerIceShot !== false && state.nearTarget !== false;
+    if (ctx?.skill?.name !== "Origin Tartarus: Ice Shot") return affixStatus(match[0]);
+    return totalCasts(entry) > 0 && on ? { status: "In calc", reason: `+${match[1]} projectiles per Ice Shot cast (game affix 916010001: field 2006108 on this skill), each a Projectile Amplification stack for 4 s (game affix 1033360312: trigger 1001160 per projectile generated)` } : { status: "No DPS effect", reason: "the follower's own Projectile Quantity: its Ice Shot's Projectile Amplification is off (its switch, or you standing Distant) or never cast; its damage counts one projectile per cast on one dummy" };
+  } }
 ];
 function steepRead(ctx) {
   const entry = cadenceOf(ctx), share = steepShareOf(entry?.skill);
@@ -1707,7 +1885,10 @@ const OWN_DAMAGE = {
   "Origin Tartarus: Focused Slash": { type: "Physical", perCast: 50, text: "one slash" },
   "Origin Tartarus: Split Firebolt": { type: "Fire", perCast: 50, text: "one firebolt (its split fireballs are not counted)" },
   "Origin Tartarus: Berserking Blade": { type: "Physical", perCast: 50, text: "one Sweep Slash" },
-  "Origin Tartarus: Shackles of Malice": { type: "Erosion", perCast: 50, text: "one chain hit" },
+  // Split 595806 is your Shackles of Malice's graph (2026-11-12): on a Cursed dummy (state 4000560) the chain also explodes and removes the
+  // dummy's curse buffs 0.04 s later (no support of the follower carries label 3100281 to keep them). The explosion's own damage (its
+  // per-curse factor is not decoded) is not counted; your curses are read as held through the clears (open question deepened-curse-survival).
+  "Origin Tartarus: Shackles of Malice": { type: "Erosion", perCast: 50, text: "one chain hit (on a Cursed dummy the chain also explodes and removes the dummy's curses, game Split 595806: the explosion's own damage is not counted, your curses are read as held)" },
   "Origin Tartarus: Thunder Slash": { type: "Lightning", perCast: 50, text: "one Sweep Slash" },
   "Origin Tartarus: Frost Spike": { type: "Cold", perCast: 50, text: "one thrust (its Shadow is not counted)" },
   "Origin Tartarus: Ice Shot": { type: "Cold", perCast: 50, text: "one shot" },
@@ -1890,7 +2071,7 @@ function applyAffixEffect(result, reading, base, { selection, near, on }) {
 }
 
 const buffFor = (line, follower) => FOLLOWER_BUFFS.find((item) => (line.skill ? item.skill === line.skill.name : item.trait && item.trait === follower?.id) && item.pattern.test(clean(line.text)));
-const ruleFor = (line, follower) => FOLLOWER_LINE_RULES.find((item) => item.reason && (line.skill ? item.skill === line.skill.name : item.trait && item.trait === follower?.id) && item.pattern.test(clean(line.text)));
+const ruleFor = (line, follower) => FOLLOWER_LINE_RULES.find((item) => (item.reason || item.read) && (line.skill ? item.skill === line.skill.name : item.trait && item.trait === follower?.id) && item.pattern.test(clean(line.text)));
 
 /**
  * The follower's modeled buffs and the reading of every line (src/line-effects.js).
@@ -1960,8 +2141,11 @@ export function resolveFollowerEffects(selection, state = {}) {
       const reason = !on ? `the "${buff.label}" best-case switch is off: left out` : !active ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away, outside the follower's area` : buff.reason;
       const texts = [{ text: derived.text, origin: derived.origin }, ...(derived.texts || [])].filter((item) => item.text);
       const status = active ? (buff.noDps ? "No DPS effect" : "In calc") : "Inactive";
-      result.lines.push({ text: line.text, source: line.source, skill: line.skill?.name || null, status, reason: buff.noDps && active ? `${buff.noDps}; ${derived.summary}` : reason, toggle: buff.id, derivedText: texts.map((item) => item.text).join("; "), active, summary: derived.summary });
-      result.buffs.push({ id: buff.id, label: buff.label, source: line.source, active, on, text: texts.map((item) => item.text).join("; "), summary: derived.summary, reason });
+      // `displayText`: a reading the planner applies itself (Ill Will on the dummy's resistances), with no modifier line of its own.
+      const shown = texts.map((item) => item.text).join("; ") || derived.displayText || "";
+      result.lines.push({ text: line.text, source: line.source, skill: line.skill?.name || null, status, reason: buff.noDps && active ? `${buff.noDps}; ${derived.summary}` : reason, toggle: buff.id, derivedText: shown, active, summary: derived.summary });
+      result.buffs.push({ id: buff.id, label: buff.label, source: line.source, active, on, text: shown, summary: derived.summary, reason });
+      if (active && derived.illWill) result.illWill = { ...derived.illWill, source: line.source };
       // Listed in the Config tab's best-case assumptions as "<label> (<follower> follower)" (src/planner.js bestCaseAssumptions).
       result.timedEffects.push({ id: buff.id, label: buff.label, source: `${selection.follower.displayName} follower`, target: buff.target, toggle: true, enabled: on, active, reason, summary: derived.summary, parts: active ? derived.parts || [] : [] });
       if (active) for (const item of texts) result.derived.push({ text: item.text, source: `${line.source}: ${buff.label}`, origin: item.origin, multiplier: 1, derivedFrom: line.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) }, ...(derived.reapWindow && item.text === derived.text ? { followerReapWindow: derived.reapWindow } : {}) });
@@ -1977,7 +2161,7 @@ export function resolveFollowerEffects(selection, state = {}) {
     }
     if (plain) { result.lines.push({ text: line.text, source: line.source, skill: line.skill?.name || null, status: null, reason: `read as "${plain}" for you`, plainText: plain }); continue; }
     const rule = ruleFor(line, selection.follower);
-    if (rule) { result.lines.push({ text: line.text, source: line.source, skill: line.skill?.name || null, status: rule.status, reason: rule.reason }); continue; }
+    if (rule) { const { status, reason } = rule.read ? rule.read(selection, cadence, { conditionOn, near }) : rule; result.lines.push({ text: line.text, source: line.source, skill: line.skill?.name || null, status, reason }); continue; }
     // The follower's own damage (and Scorching Pulse's Reap) on a damage line of a modeled skill.
     if (line.skill && OWN_DAMAGE_LINE.test(text)) {
       const own = damage.get(line.skill.name);
@@ -2054,7 +2238,19 @@ export function missingFollowerEngine(engine, planner, engines) {
   if (engine === "spellHit" && !engines.spellHit) return "no Spell hit in this build (Double Damage reaches hits only)";
   if (engine === "attack" && !engines.attackRate) return "no modeled attack hit in this build";
   if (engine === "steep" && !(engines.hits || []).some((hit) => (hit.components || []).some((component) => /^Steep Strike/.test(component.label || "") && component.hitsPerUse > 0))) return "no modeled hit lands Steep Strikes in this build";
+  if (engine === "resistance" && !["Erosion", "Fire", "Cold", "Lightning"].some((type) => dealtDamageTypes(engines, planner).has(type))) return "no Erosion, Fire, Cold or Lightning damage on the dummy in this build (Ill Will changes only those resistances)";
   return "";
+}
+
+// The damage types dealt on the dummy: your modeled hits' parts, the DoTs' types (Ignite Fire, Wilt Erosion, skill DoTs), the beam's Fire,
+// your modeled Minions' skills, the follower's own damage.
+function dealtDamageTypes(engines, planner = null) {
+  const types = new Set(engines?.dotTypes || []);
+  if (engines?.beam) types.add("Fire");
+  for (const hit of engines?.hits || []) for (const component of hit.components || []) if (component.type && component.hitsPerUse !== 0) types.add(component.type);
+  for (const minion of (planner?.minions || []).filter((item) => item?.modeled)) for (const skill of minion.skills || []) if (skill.type) types.add(skill.type);
+  for (const source of planner?.follower?.damageSources || []) if (source.type) types.add(source.type);
+  return types;
 }
 
 /**

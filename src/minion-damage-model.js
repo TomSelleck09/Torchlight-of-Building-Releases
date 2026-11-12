@@ -83,6 +83,9 @@ const PATTERNS = [
   [new RegExp(`^${NUM}% Spirit Magus Skill Damage$`, "i"), (m) => ({ kind: "increased", value: number(m[1]), spiritMagus: true })],
   // Gear-pact batch chunk 4: "Spirit Magi" wordings of the same Minion stats (Spirit Magus family only).
   [new RegExp(`^${NUM}% additional Spirit Magi Damage$`, "i"), (m) => ({ kind: "additional", value: number(m[1]), spiritMagus: true })],
+  // The body of Haze's "+X% additional damage for Spirit Magi against Blinded enemies" (game affix 171666624: node 111 on the Spirit Magus
+  // Minions, tag 6000330, then 5719 mod 4 against Blinded 4000140), resolved by the enemy-state condition.
+  [new RegExp(`^${NUM}% additional damage for Spirit Magi$`, "i"), (m) => ({ kind: "additional", value: number(m[1]), spiritMagus: true })],
   [new RegExp(`^${NUM} Spirit Magi Critical Strike Rating$`, "i"), (m) => ({ kind: "critRating", value: number(m[1]), flat: true, spiritMagus: true })],
   [new RegExp(`^${NUM}% additional Attack and Cast Speed for Minions(?: summoned by the supported skill)?$`, "i"), (m) => ({ kind: "speed", value: number(m[1]), additional: true, attack: true, cast: true })],
   [new RegExp(`^${NUM}% Attack and Cast Speed for Minions(?: summoned by the supported skill)?$`, "i"), (m) => ({ kind: "speed", value: number(m[1]), additional: false, attack: true, cast: true })],

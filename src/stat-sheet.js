@@ -42,6 +42,8 @@ export function panelResistanceEntries(planner, statTotals, panelLines = []) {
   });
 }
 
+// On the damage-path branch the sustained total also takes Ill Omen and Spacetime Turbulence, as damagePaths.sustained.totalDps does (Turbulence
+// since 2026-11-12: research/build-20t-mind-control-audit-2026-11-12.md G2).
 const sustainedModeledDps = ({ hitDps, dotDps, reapingDps }) => hitDps + dotDps + reapingDps;
 
 export function statSheetModel(planner, selectedKey, resources = {}) {
@@ -356,7 +358,7 @@ export function statSheetModel(planner, selectedKey, resources = {}) {
   if (planner.barrierSources?.length) defense.push({ title: "Barrier source", rows: planner.barrierSources.map(source => ({ label: source.source, value: source.trigger })) });
   // Defense-side cards default to the Defense tab of the Character stats panel.
   for (const entry of defense) entry.tab ??= "defense";
-  return { options, skill, active, beam, paths, statTotals, resistanceEntries, elixirPanel: panelLines.length ? planner.lineEffects?.combat?.elixir?.panel : null, ehp, totalDps: paths ? sustainedModeledDps({ hitDps: paths.sustained.beamDps + paths.sustained.hits.reduce((sum, hit) => sum + hit.dps, 0), dotDps: paths.sustained.dots.reduce((sum, dot) => sum + dot.dps, 0), reapingDps: paths.sustained.reaping.reapingDps }) + (paths.sustained.illOmen?.dps || 0) : totalDps, totalParts: paths ? undefined : totalParts, dummyDps: pathDummyDps, dummyFiveSecondDamage: pathFiveSecondDamage, dummyFiveSecondEquivalentFromTwentySecondDps, cards, defense };
+  return { options, skill, active, beam, paths, statTotals, resistanceEntries, elixirPanel: panelLines.length ? planner.lineEffects?.combat?.elixir?.panel : null, ehp, totalDps: paths ? sustainedModeledDps({ hitDps: paths.sustained.beamDps + paths.sustained.hits.reduce((sum, hit) => sum + hit.dps, 0), dotDps: paths.sustained.dots.reduce((sum, dot) => sum + dot.dps, 0), reapingDps: paths.sustained.reaping.reapingDps }) + (paths.sustained.illOmen?.dps || 0) + (paths.sustained.turbulence?.dps || 0) : totalDps, totalParts: paths ? undefined : totalParts, dummyDps: pathDummyDps, dummyFiveSecondDamage: pathFiveSecondDamage, dummyFiveSecondEquivalentFromTwentySecondDps, cards, defense };
 }
 
 // The selected skill's state beside the Active skill select. Energy never switches a skill off (user decision 2026-10-21): a
@@ -371,7 +373,7 @@ export function statSheetSkillStatus(model, planner) {
 export function renderStatSheet(planner, selectedKey, resources, format, escapeHtml) {
   const model = statSheetModel(planner, selectedKey, resources);
   const dummyNote = model.paths
-    ? `Uncalibrated model: ${format(model.paths.twentySeconds.beamDps)} beam, ${model.paths.twentySeconds.dots.map((dot) => `${format(dot.dps)} ${dot.name}`).join(", ")}${hasActiveReaping(planner) ? `, ${format(model.paths.twentySeconds.reaping.reapingDps)} Reaping DPS` : ""}${model.paths.twentySeconds.illOmen?.dps ? `, ${format(model.paths.twentySeconds.illOmen.dps)} Ill Omen DPS (best case beyond the dummy)` : ""}. No dummy test exists for this build.`
+    ? `Uncalibrated model: ${format(model.paths.twentySeconds.beamDps)} beam, ${model.paths.twentySeconds.dots.map((dot) => `${format(dot.dps)} ${dot.name}`).join(", ")}${hasActiveReaping(planner) ? `, ${format(model.paths.twentySeconds.reaping.reapingDps)} Reaping DPS` : ""}${model.paths.twentySeconds.illOmen?.dps ? `, ${format(model.paths.twentySeconds.illOmen.dps)} Ill Omen DPS (best case beyond the dummy)` : ""}${model.paths.twentySeconds.turbulence?.dps ? `, ${format(model.paths.twentySeconds.turbulence.dps)} Spacetime Turbulence DPS` : ""}. No dummy test exists for this build.`
     : planner.firesAllure?.active
     ? `Uncalibrated model: ${format(planner.recountOpening?.beamDps || 0)} beam, ${format(planner.recountOpening?.igniteDps || 0)} Scorch${hasActiveReaping(planner) ? `, ${format(planner.recountOpening?.reapingDps || 0)} Reaping DPS` : ""}. Compare with the same build and combat state in game.`
     : "Average from an empty target and channel stack state; includes calibrated Bard delivery and Ignite buildup.";

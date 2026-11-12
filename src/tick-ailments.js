@@ -17,14 +17,20 @@
 //   the planner's continuous Reap timing on the recount (the Reap toggle is gone since chunk 15). Each DoT it settles at the seconds and settle scale the recount reads. A source with a DoT that is not on
 //   the loop stays averaged, whole. Ill Omen is a series made from the DoT and Reap series when the run ends.
 import { expectedStrongestStacks } from "./ailment-model.js";
-import { heldAttempt, heldExpire, heldGroup, heldStoreLevels, newHeldState } from "./held-ailment-store.js";
+import { heldAttempt, heldExpire, heldGroup, heldRemove, heldStoreLevels, newHeldState } from "./held-ailment-store.js";
 import { wholePercentRoll } from "./whole-percent-roll.js";
 import { turbulenceSeries } from "./youga-spacetime.js";
 import { playerBuffSet } from "./unit-buff-set.js";
 
 const EPS = 1e-9;
+// src/tick-engine.js NIGHTFALL_SERIES (the engine keeps no import of this module, nor this module of it).
+const NIGHTFALL_SERIES = "reap:nightfall";
 // The series Ill Omen and Spacetime Turbulence are built from: every DoT and every Reap (as the recount's builders).
-const builderKeys = (inputs) => [...(inputs.ailments || []).filter((item) => !item.silent).map((item) => item.key), ...(inputs.reaping || []).map((source) => source.key)];
+// Approaching Nightfall's settlement (src/tick-engine.js NIGHTFALL_SERIES) is read as Reap damage there too (provisional, open question
+// approaching-nightfall-settle).
+const builderKeys = (inputs) => [...(inputs.ailments || []).filter((item) => !item.silent).map((item) => item.key), ...(inputs.reaping || []).map((source) => source.key), ...(nightfallOf(inputs) ? [NIGHTFALL_SERIES] : [])];
+// Approaching Nightfall on the loop: with a Reap of yours to answer (src/tick-engine.js nightfallOnReap).
+const nightfallOf = (inputs) => inputs.nightfall?.percent > 0 && (inputs.reaping || []).some((source) => source.holder !== "follower") ? inputs.nightfall : null;
 const FRAME_SECONDS = 1 / 30;
 const ELEMENTAL_TYPES = new Set(["Fire", "Cold", "Lightning"]);
 const AILMENT_TYPE = { ignite: "Fire", scorch: "Fire", trauma: "Physical", wilt: "Erosion" };
@@ -199,7 +205,7 @@ function heldStoreSpec(planner, ailment, streams, weights, aimBuff) {
   const kinds = rolls.flatMap((roll, index) => factors.map((factor) => ({ min: roll.min, max: roll.max, critChance: roll.critChancePercent / 100, critFactor: roll.critFactor, doubleChance: roll.doubleChancePercent / 100, factor, weight: weights[index] })));
   const levels = heldStoreLevels(kinds);
   return {
-    store: { create: () => newHeldState(levels), attempt: heldAttempt, group: heldGroup, expire: heldExpire, variantBuff: variant?.buff ?? null, variantCount: factors.length, levelCount: levels.values.length },
+    store: { create: () => newHeldState(levels), attempt: heldAttempt, group: heldGroup, expire: heldExpire, remove: heldRemove, variantBuff: variant?.buff ?? null, variantCount: factors.length, levelCount: levels.values.length },
     variant
   };
 }
@@ -208,7 +214,8 @@ function compileAilment(planner, ailment, type, timedLayers, inputs, targetBless
   const streams = streamsOf(planner, ailment), independent = ailment.stacking === "independent";
   // On the loop when its hit gains landed on a hit or Reaps can build it (with no Reap on the loop src/tick-ledger.js holds it full, the planner's value).
   const blessings = targetBlessings.filter((item) => item.hitPlaced || (item.gains?.reap && inputs.reaping?.length)).map((item) => ({ ...item, percent: targetBlessingPercent(planner, ailment.key, item) }));
-  const shared = { key: ailment.key, seconds: ailment.duration, path: ailment.silent ? null : ailment.key };
+  // `relink`: a linked skill DoT is added again by its link the frame after a removal (src/tick-engine.js; Approaching Nightfall).
+  const shared = { key: ailment.key, seconds: ailment.duration, path: ailment.silent ? null : ailment.key, ...(ailment.relink ? { relink: true } : {}) };
   if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus) };
   const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings, bus);
   const weights = heldStrength === "refresh" ? null : heldWeights(planner, ailment, streams);
@@ -372,11 +379,15 @@ export function compileAilmentProgram(planner, readings = {}, timerFields = {}, 
     const assumptions = reaps.map((item) => ({ id: `tick:reap:${item.spec.key}`, value: item.spec.trigger ?? "dot", text: `${item.spec.label}: ${reapEvents(item)}.` }));
     const heldText = (ailment, held) => `one held stack: an application at least as strong on its own amount replaces it, a weaker one does nothing (no refresh), and it ends ${ailment.duration} s after its own application${held.variant ? `; Aim's +${Math.round(held.variant.fullPercent * 100) / 100}% enters each application's amount while Aim is up` : ""}`;
     assumptions.push(...kept.map(({ ailment, streams, held }) => ({ id: `tick:ailment:${ailment.key}`, value: held ? "held" : ailment.stacking, text: `${ailment.name}: ${ailment.stacking === "independent" ? `up to ${ailment.limit} stacks, each ${ailment.duration} s on its own timer` : held ? heldText(ailment, held) : `one shared ${ailment.duration} s timer, restarted by each success; the run's strongest applications are held`}${streams.length ? `, applied by ${streams.map((stream) => `${stream.name} (${Math.round(stream.chance * 100)}%)`).join(", ")}` : ""}.` })));
+    // Approaching Nightfall answers the Reaps of yours on the loop (an averaged Reap is not on it, so it removes nothing there).
+    const nightfall = nightfallOf(inputs) && reaps.some(({ spec }) => spec.holder !== "follower") ? nightfallOf(inputs) : null;
+    if (nightfall) assumptions.push({ id: "tick:nightfall", value: nightfall.percent, text: `${nightfall.label || "Approaching Nightfall"}: each Reap of yours settles ${nightfall.percent}% of what your DoT records still hold, then removes every DoT on the dummy until its next application (open question approaching-nightfall-settle).` });
     return {
       ...lists,
       paths: Object.fromEntries(kept.filter(({ path }) => path).map(({ ailment, path }) => [ailment.key, path])),
       ailments: kept.map(({ spec }) => spec),
       reaps: reaps.map(({ spec }) => spec),
+      ...(nightfall ? { nightfall: { percent: nightfall.percent, label: nightfall.label || "Approaching Nightfall" } } : {}),
       derived: [
         ...(inputs.illOmen?.factor > 0 ? [{ key: "illOmen", label: inputs.illOmen.label || "Ill Omen", factor: inputs.illOmen.factor, builders: builderKeys(inputs), reason: "the factor × every DoT and Reap series, tick by tick" }] : []),
         // Spacetime Turbulence (Youga – Spacetime Elapse; src/youga-spacetime.js): at each move the recorded share of the DoT and Reap damage since

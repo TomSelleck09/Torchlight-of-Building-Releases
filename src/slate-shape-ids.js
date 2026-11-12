@@ -172,7 +172,8 @@ export function solveSlateBoard(slates, { maxSolutions = 64, maxNodes = 200000 }
     const index = order[depth], slate = slates[index], overlay = Boolean(slate.overlay);
     for (const candidate of [...slate.candidates].sort((a, b) => a.cost - b.cost)) {
       if (cost + candidate.cost > best) continue;
-      const keys = candidate.cells.map(cellKey);
+      // `occupied`: the cells it blocks when not all of `cells` (a Nether King's Divinity's grown cells).
+      const keys = (candidate.occupied || candidate.cells).map(cellKey);
       if (!overlay && keys.some((key) => occupied.has(key))) continue;
       if (!overlay) keys.forEach((key) => occupied.add(key));
       pick[index] = candidate;

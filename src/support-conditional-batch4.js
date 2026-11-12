@@ -388,7 +388,7 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
       return applied > 0 ? apply(applied, `${round(sealedPercent)}% of ${round(maxMana)} Max Mana sealed (the Aura seals + this support's own ${clause.ownSeal}%) = ${round(amount)} Mana ÷ ${clause.every} = ${steps} × ${clause.value}% = +${round(applied)}% (up to +${clause.cap}%; ${recipe}; provisional: whole steps)`, { provisional: true }) : off(`${round(amount)} Mana sealed, under ${clause.every}`);
     }
     case "lifeLostPer": {
-      const lost = state.life === "low" ? Math.max(0, Number(state.lifeLostPercent) || 0) : 0;
+      const lost = state.life === "low" || state.lifeBalance?.settled ? Math.max(0, Number(state.lifeLostPercent) || 0) : 0;
       const applied = Math.min(clause.cap, clause.value * lost / clause.every);
       const why = state.lifeLostReason || state.lifeReason || "Full Life";
       return applied > 0 ? apply(applied, `${round(lost)}% Life lost (${why}) ÷ ${clause.every} × ${clause.value}% = +${round(applied)}% (up to +${clause.cap}%; ${recipe})`) : off(`no Life lost (${why})`);

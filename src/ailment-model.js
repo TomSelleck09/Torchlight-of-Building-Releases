@@ -78,7 +78,8 @@ export function collectAilmentTypedSources(ailmentKey, modifierTexts = []) {
     ["chance", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% (?:chance to inflict ${A}|${A} chance${chanceAliases[ailmentKey].map((alias) => `|${escape(alias)}`).join("")})$`, "i")],
     ["duration", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% ${A} Duration$`, "i")],
     // "+X% additional <Ailment> Duration" (Profane, game buff 3492 attr 3601 mod 4; gear affix batch A 2026-10-22): its own multiplier.
-    ["additionalDuration", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% additional ${A} Duration$`, "i")],
+    // "-50% additional Ailment Duration" (Approaching Nightfall, record 10140181 row 1: attr 3601 mod 4, no tag) reaches every ailment alike.
+    ["additionalDuration", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% additional (?:${A}|(?:Damaging )?Ailment) Duration$`, "i")],
     // "+12% chance to deal double Trauma Damage" (corrosion affix; game affix 971068: on hit, with chance P1, +100% additional damage
     // on that hit's Trauma, tag 5100006; gear affix batch D 2026-10-22): a per-application ×2 the strongest-stacks roll reads.
     ["doubleChance", new RegExp(`^\\+?(\\d+(?:\\.\\d+)?)% chance to deal double ${A} Damage$`, "i")],

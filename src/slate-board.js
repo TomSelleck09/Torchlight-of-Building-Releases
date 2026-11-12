@@ -1,3 +1,5 @@
+import { NETHER_KING_GROWTH } from "./data/slates/nether-king-growth-ss14.js";
+
 export const SLATE_BOARD_ROWS = [
   [3, 4], [2, 3, 4, 5], [1, 2, 3, 4, 5, 6],
   [1, 2, 3, 4, 5, 6], [2, 3, 4, 5], [3, 4]
@@ -9,6 +11,15 @@ export function slateTransformRules(slate) {
   if(name==="Space Rift"||name==="Residence of Stars")return {rotate:false,flip:false};
   if(name==="Pedigree of Gods")return {rotate:false,flip:true};
   return {rotate:true,flip:true};
+}
+// How a slate's art is drawn for its pose (user request 2026-11-11). The shape always turns and flips as placed. Pedigree of Gods'
+// art is a portrait: it never turns upside down, so its vertical flip is dropped and its horizontal mirror is flipX × flipY
+// (its capture's transparent corners then still sit off the cells: Pedigree has no rotation). Every other slate's art follows the pose.
+export function slateArtTransform(slate, rotation = 0, flipX = 1, flipY = 1) {
+  const name=typeof slate==="string"?slate:slate?.template||slate?.name;
+  const fx=Number(flipX)===-1?-1:1,fy=Number(flipY)===-1?-1:1;
+  if(name==="Pedigree of Gods")return {rotation:0,flipX:fx*fy,flipY:1};
+  return {rotation:Number(rotation)||0,flipX:fx,flipY:fy};
 }
 // Nether King's Divinity: Judgment marks three cells that other slates sit on (its own cells do not block them): the
 // 2026-10-19 board holds 22 cells of other slates plus Judgment's three on a 24-cell board, and its only legal tiling puts
@@ -25,14 +36,133 @@ export function slateOffsets(slate, rotation = 0, flipX = 1, flipY = 1) {
   return cells.map(([column,row])=>[column-minColumn,row-minRow]);
 }
 export function slateSize(slate, rotation = 0, flipX = 1, flipY = 1) { const cells=slateOffsets(slate,rotation,flipX,flipY); return [Math.max(...cells.map(([column])=>column))+1,Math.max(...cells.map(([,row])=>row))+1]; }
-export function slateCells(slate, placement) {
+
+// ---- Nether King's Divinity growth (user-stated 2026-11-11; src/data/slates/nether-king-growth-ss14.js) -------------------------------
+// User, in game: "When you add one talent node filled in then the first square of the slate is present, then the second, then the
+// third." So the slate's cells are the first N cells of the game's growth order (config_devil_block_shape_s15), N = its filled Brand talent
+// nodes, at least the Source (the client always grows it): 0 or 1 Brand the Source, 2 the Source and the first Offspring, 3 all three.
+// GrowCount = N - 1, 0 to 2 (the table's range; the three Brand slots each sit on one cell, the log's effectDevilBlockIdx 1-3). The
+// crafter has said the same since the start ("0–1 → 1 block, 2 → 2, 3 → Authority"). The cells not grown yet are not on the board
+// (the client occupies and draws GrownCells only). Its placement keeps the whole drawing's frame, so the full drawing must fit the board
+// (the game's Source positions always hold the fully grown shape) while only the grown cells block, touch or count.
+/** The filled Brand talent nodes of a slate (`filledBrands` when a reader cleared its Brands, e.g. a slate past its Max Active count). */
+export function netherKingFilledBrands(slate) {
+  if (Number.isFinite(slate?.filledBrands)) return slate.filledBrands;
+  const brands = slate?.affixGroups?.brand ? slate.affixGroups.brand : slate?.brands || [];
+  return brands.filter(Boolean).length;
+}
+const sameDrawing = (shape, drawing) => Array.isArray(shape) && shape.length === drawing.length && shape.every(([column, row], index) => column === drawing[index][0] && row === drawing[index][1]);
+/** A Nether King's Divinity drawn in the planner's growth drawing: its growth record, else null (every other slate never grows). */
+export function netherKingGrowthFor(slate) {
+  const growth = NETHER_KING_GROWTH[slate?.template || slate?.name];
+  return growth && sameDrawing(slate.shape, growth.drawing.shape) ? growth : null;
+}
+/** The slate's GrowCount: its filled Brand talent nodes less the Source's, 0 to the type's maximum (null for a slate that does not grow). */
+export function netherKingGrowCount(slate) {
+  const growth = netherKingGrowthFor(slate);
+  return growth ? Math.max(0, Math.min(growth.maxGrowCount, netherKingFilledBrands(slate) - 1)) : null;
+}
+/**
+ * The growth rank of each drawn cell (0 the Source, then each Offspring in growth order). On the board, a drawing whose cells are the
+ * game's shape at one of its Source positions takes that position's order (the game fixes the shape by where the Source sits, so a
+ * turned or flipped drawing on those cells still grows from that Source); elsewhere (a position the game does not allow, or parked) the
+ * drawing's own order under its turn and flips.
+ */
+function growthRanks(slate, growth, placement) {
+  if (Number.isFinite(placement?.column) && Number.isFinite(placement?.row)) {
+    const cells = slateOffsets(slate, placement.rotation || 0, placement.flipX || 1, placement.flipY || 1).map(([column, row]) => [placement.column + column, placement.row + row]);
+    for (const order of Object.values(growth.sources)) {
+      const game = order.slice(0, cells.length);
+      const ranks = cells.map(([column, row]) => game.findIndex(([c, r]) => c === column && r === row));
+      if (ranks.every((rank) => rank >= 0) && new Set(ranks).size === ranks.length) return ranks;
+    }
+  }
+  return growth.drawing.order;
+}
+/** Indexes (into the slate's drawn shape) of the cells grown so far, in drawing order; null for a slate that does not grow. */
+export function slateGrownIndexes(slate, placement = null) {
+  const growth = netherKingGrowthFor(slate);
+  if (!growth) return null;
+  const growCount = netherKingGrowCount(slate);
+  return growthRanks(slate, growth, placement).flatMap((rank, index) => (rank <= growCount ? [index] : []));
+}
+/**
+ * The crafter's preview (user request 2026-11-12): a Nether King's Divinity drawn in its own unturned frame with `filledBrands` Brand
+ * talent nodes filled, so the card grows as the editor's Brands are filled or cleared. `shape` the drawing, `size` its frame [width,
+ * height], `grown` the grown cells' drawing indexes (the drawing's own order, as for a parked slate). Null for any other slate.
+ */
+export function netherKingPreviewGrowth(name, filledBrands) {
+  const growth = NETHER_KING_GROWTH[name];
+  if (!growth) return null;
+  const count = Math.max(0, Math.min(3, Number(filledBrands) || 0));
+  const slate = { name, shape: growth.drawing.shape, filledBrands: count };
+  return { shape: growth.drawing.shape, size: slateSize(slate, 0), grown: slateGrownIndexes(slate) };
+}
+/**
+ * Saved Contamination placements (slate geometryVersion 4) were made for the two-cell drawing (Source and the cell below, the frame's
+ * top-left the Source when unturned). The three-cell drawing (2026-11-12) adds the cell above the Source, so the frame moves. Each saved
+ * placement is moved so the same board cells grow in the same order: its Source and first Offspring stay where they were (the pose kept
+ * when it can be; the drawing's whole frame on the board). A placement no pose can keep (its above cell would leave the board: a Source
+ * the game does not allow) keeps its Source where one fits, else it is dropped (the slate stays equipped, off the board). Returns a new
+ * placements object; other slates are untouched.
+ */
+const OLD_CONTAMINATION_SHAPE = [[0,0],[0,1]];
+const CONTAMINATION = "Nether King's Divinity: Contamination";
+const POSES = [0, 90, 180, 270].flatMap((rotation) => [[1, 1], [-1, 1], [1, -1], [-1, -1]].map(([flipX, flipY]) => ({ rotation, flipX, flipY })));
+function rankedCells(slate, growth, placement) {
+  const offsets = slateOffsets(slate, placement.rotation || 0, placement.flipX || 1, placement.flipY || 1);
+  const cells = offsets.map(([column, row]) => [placement.column + column, placement.row + row]);
+  const ranks = growthRanks(slate, growth, placement);
+  return cells.map((cell, index) => ({ cell: key(cell[0], cell[1]), rank: ranks[index] })).sort((a, b) => a.rank - b.rank).map((entry) => entry.cell);
+}
+export function migrateContaminationPlacements(placements, slates) {
+  if (!placements || typeof placements !== "object") return placements;
+  const growth = NETHER_KING_GROWTH[CONTAMINATION];
+  const oldGrowth = { ...growth, drawing: { shape: OLD_CONTAMINATION_SHAPE, order: [0, 1] } };
+  const ids = new Set((slates || []).filter((slate) => (slate?.template || slate?.name) === CONTAMINATION).map((slate) => slate.id));
+  let next = placements;
+  for (const id of Object.keys(placements)) {
+    const placement = placements[id];
+    if (!ids.has(id) || !placement || !Number.isFinite(placement.column) || !Number.isFinite(placement.row)) continue;
+    const [source, offspring] = rankedCells({ shape: OLD_CONTAMINATION_SHAPE }, oldGrowth, placement);
+    const slate = { name: CONTAMINATION, shape: growth.drawing.shape };
+    const pose = { rotation: placement.rotation || 0, flipX: placement.flipX || 1, flipY: placement.flipY || 1 };
+    const poses = [pose, ...POSES.filter((other) => other.rotation !== pose.rotation || other.flipX !== pose.flipX || other.flipY !== pose.flipY)];
+    let best = null, fallback = null;
+    for (const candidate of poses) {
+      for (let row = 1; row <= 6 && !best; row += 1) for (let column = 1; column <= 6 && !best; column += 1) {
+        const at = { column, row, ...candidate };
+        if (slateFootprint(slate, at).some((cell) => !SLATE_BOARD_CELLS.has(key(cell.column, cell.row)))) continue;
+        const ranked = rankedCells(slate, growth, at);
+        if (ranked[0] === source && ranked[1] === offspring) best = at;
+        else if (!fallback && ranked[0] === source) fallback = at;
+      }
+      if (best) break;
+    }
+    const moved = best || fallback;
+    if (next === placements) next = { ...placements };
+    if (moved) next[id] = { ...placement, column: moved.column, row: moved.row, rotation: moved.rotation, flipX: moved.flipX, flipY: moved.flipY };
+    else delete next[id];
+  }
+  return next;
+}
+/** Every cell of the slate's drawing at `placement`, grown or not. */
+export function slateFootprint(slate, placement) {
   if (!placement) return [];
   return slateOffsets(slate,placement.rotation||0,placement.flipX||1,placement.flipY||1).map(([column,row])=>({column:placement.column+column,row:placement.row+row}));
 }
+/** The board cells the slate occupies at `placement`: its whole drawing, or a Nether King's Divinity's grown cells only. */
+export function slateCells(slate, placement) {
+  const cells = slateFootprint(slate, placement);
+  const grown = cells.length ? slateGrownIndexes(slate, placement) : null;
+  return grown ? cells.filter((_, index) => grown.includes(index)) : cells;
+}
 export function canPlaceSlate(slate, placement, placements, slates) {
-  const cells=slateCells(slate,placement);
-  if (!cells.length||cells.some((cell)=>!SLATE_BOARD_CELLS.has(key(cell.column,cell.row)))) return false;
+  if (!placement) return false;
+  const footprint=slateFootprint(slate,placement);
+  if (!footprint.length||footprint.some((cell)=>!SLATE_BOARD_CELLS.has(key(cell.column,cell.row)))) return false;
   if (isOverlaySlate(slate)) return true;
+  const cells=slateCells(slate,placement);
   const occupied=new Set();
   for (const other of slates) if (other.id!==slate.id&&!isOverlaySlate(other)&&placements[other.id]) for (const cell of slateCells(other,placements[other.id])) occupied.add(key(cell.column,cell.row));
   return cells.every((cell)=>!occupied.has(key(cell.column,cell.row)));

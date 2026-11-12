@@ -1,6 +1,6 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { matchTalentTextClause } from "./talent-text-effects.js";
-import { copiedSlateAffixes, isCopySlate, isOverlaySlate, slateCells, SLATE_BOARD_CELLS } from "./slate-board.js";
+import { copiedSlateAffixes, isCopySlate, isOverlaySlate, netherKingFilledBrands, slateCells, SLATE_BOARD_CELLS } from "./slate-board.js";
 import { modeledCoreTalents, noDamageCoreTalents, conditionalTextCoreTalents } from "./core-talent-model.js";
 import { inverseImageEffectMultiplier, inverseImageTalentNodes, prismReplacesCore, prismCoreRule } from "./prism-crafting.js";
 import { reflectedClauseScale } from "./inverse-image-values.js";
@@ -124,6 +124,8 @@ export function resolveSlateCandidate(captured, equippedIds, state = {}) {
     const limit = overLimit.get(item.id);
     if (!limit) continue;
     item.divinityLimited = `Max Active Divinity Slate${limit.limit === 1 ? "" : "s"}: ${limit.limit}`;
+    // A Nether King's Divinity past the limit still occupies its grown cells (one per filled Brand, src/slate-board.js): keep the count.
+    if (isNetherKingSlate(item)) item.filledBrands = netherKingFilledBrands(item);
     item.fixed = []; item.brands = []; item.baseTalentAffixes = [];
     warnings.push(item.template === PEDIGREE_OF_GODS || item.name === PEDIGREE_OF_GODS
       ? `${item.name}: only one Pedigree of Gods is active (Max Active Divinity Slate: 1); this copy is ignored.`

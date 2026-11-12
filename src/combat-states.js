@@ -79,18 +79,23 @@ const discordInterval = (line) => Number(line.clean.match(PATTERNS.discordCrowdC
 // Snow's deemed Frostbite Rating. A crowd control line with no effect of its own on the dummy (Weaken, Slow, Blind) reads In calc only
 // with one of them.
 const CROWD_CONTROL_READER = /type of crowd control effect the enemy has|for each type of Crowd Control Effect they are under|every type of Ailment or Crowd Control Effect inflicted recently|for each type of crowd control effect the target is under|^Each type of Crowd Control Effect, Ailment, and Curse afflicting an enemy is deemed/i;
+// Counters outside the modifier lines (2026-11-12): a follower skill's own text (Origin Tartarus: Shackles of Malice's Ill Will, affix 1778245:
+// GetBuffCfgIdCountByTag 5100101) and a support clause (Mind Control: Befuddle, recipe 587389760: GetBuffStackByTag 5100101 ≥ N). The planner
+// lists them on the line-condition state (`crowdControlCounters`, src/planner.js crowdControlCounterSources), so the crowd control holders'
+// badges and the hit pass's rate measurement see them like a line that counts the types.
+export const CROWD_CONTROL_COUNTER_TEXT = new RegExp(`${CROWD_CONTROL_READER.source}|for each Crowd Control Effect the target has|affected by [0-9]+ or more crowd control effects`, "i");
 // Readers of the Blinded state (target state 4000140: "+X% additional damage to Blinded enemies" 101010148, Spirit Magi 171666624,
 // Lucky Critical Strike against Blinded enemies) and of the Paralyzed state (Judgment 191779): a held Blind / Paralysis feeds them.
 const BLINDED_READER = /\bBlinded enem/i, PARALYZED_READER = /\bParalyzed enem/i;
 // Crowd control held from the game recipes (src/crowd-control-recipes.js; wiring audit gap 1, 2026-11-03): the planner measures the
 // event rates (your hits, triggered uses, Minion hits, skill casts: src/planner.js hit-rate pass) when such a line has a reader, or
 // holds Paralysis (its own damage taken).
-export function crowdControlChanceRatesNeeded(modifierTexts = [], supportHolders = []) {
+export function crowdControlChanceRatesNeeded(modifierTexts = [], supportHolders = [], counters = []) {
   const lines = modifierTexts.filter((line) => line?.origin !== "derived" && !line?.lineEffect).map((line) => ({ ...line, clean: normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim() }));
   // Support clauses that hold crowd control (wiring audit W6a item 1) count as holders too.
   const holders = [...lines.filter((line) => !scriptedCrowdControl(line.clean)).map((line) => recipeCrowdControl(line)).filter(Boolean), ...supportHolders.map((holder) => holder.reading).filter(Boolean)];
   if (!holders.length) return false;
-  const readers = lines.some((line) => CROWD_CONTROL_READER.test(line.clean) || BLINDED_READER.test(line.clean) || PARALYZED_READER.test(line.clean));
+  const readers = (counters || []).length > 0 || lines.some((line) => CROWD_CONTROL_READER.test(line.clean) || BLINDED_READER.test(line.clean) || PARALYZED_READER.test(line.clean));
   return readers || holders.some((holder) => holder.rows.some((row) => row.types.some((type) => type.type === "Paralysis")));
 }
 // Read only for the revived Numbed family's own stacks (revivedNumbed in resolveCombatStates), so they stay out of PATTERNS.
@@ -333,6 +338,7 @@ const PATTERNS = {
   attackProjectileBlind: /^Blinds nearby enemies when using an Attack Projectile Skill$/i,
   mainSkillManaConsume: /^Consumes (\d+(?:\.\d+)?)% of current Mana when casting a Main Skill(?:\. Interval: (\d+(?:\.\d+)?) ?s)?$/i,
   attackLifeConsume: /^Consumes (\d+(?:\.\d+)?)% of current Life when you use Attack Skills$/i,
+  skillUseLifeConsume: /^Consumes (\d+(?:\.\d+)?)% of current Life on skill use$/i,
   valkyrieGain: /^Gains 1 stack of Valkyrie's Hymn for every (\d+(?:\.\d+)?)% Max Mana consumed$/i,
   valkyrieMax: /^\+(\d+) Max Valkyrie's Hymn Stacks$/i,
   valkyriePerStack: /^\+(\d+(?:\.\d+)?)% Elemental Damage for every stack of Valkyrie's Hymn$/i,
@@ -471,7 +477,8 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const find = (pattern) => lines.filter((line) => pattern.test(line.clean) && !sageOwnedLine(state.heroId, line));
   // Lines that count crowd control types on the dummy (ccTypeDamage, Self-Delusion here; Passing of Time in src/line-conditions.js
   // ailmentOrCcTypes): the follower's Weaken / Slow / Taunt / Blind read In calc only with one (2026-10-27).
-  const crowdControlReaders = lines.filter((line) => CROWD_CONTROL_READER.test(line.clean)).length;
+  // The counters outside the lines (a follower skill's Ill Will, a support clause such as Befuddle: state.crowdControlCounters) count too.
+  const crowdControlReaders = lines.filter((line) => CROWD_CONTROL_READER.test(line.clean)).length + (Array.isArray(state.crowdControlCounters) ? state.crowdControlCounters.length : 0);
   const values = (pattern, index = 1) => find(pattern).map((line) => num(line.clean.match(pattern)[index]) * (line.multiplier ?? 1));
   // Lines that read the dummy's damaging ailments (batch 7 badge fixes, 2026-10-28): "any" counts ailment types or any ailment, the
   // named keys an Ignited / Traumatized / Wilted dummy. The follower's ailment markers (its 1-base Ignite / Wilt / Trauma only marks the
@@ -1589,7 +1596,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (merged) { paralysisMergedInto = "witchAntelope"; antelopeParalysis = { schedule: ownParalysisSchedule, percent: paralysisValue, partSchedule: paralysisSchedule }; }
     const uptime = sustainedLevel(paralysisSchedule), sustained = round(paralysisValue * uptime);
     if (active) { holdCc("Paralysis", held ? { kind: "full" } : paralysisSchedule); holdCc("Weaken", { kind: "periodic", durationSeconds: cooldown, periodSeconds: 2 * cooldown, startSeconds: cooldown }); }
-    const ccLines = find(PATTERNS.ccTypeDamage).length > 0;
+    // Weaken counts for every crowd control counter (crowdControlReaders: 75106, Self-Delusion, Wings of Light's Intimidated, …), not
+    // only the pact counter's wording (2026-11-12).
+    const ccLines = crowdControlReaders > 0;
     const reason = !allowed ? offReason("witchAntelope") : !inside ? `outside ${radius} m` : held
       ? `Paralysis is already held by an on-hit source (1 stack), so the Paralysis turns add nothing; Weaken lowers only the enemy's damage${ccLines ? " and counts as a crowd control type (Weaken lasts its cooldown: best case, provisional)" : ""}`
       : `best case: Paralysis (+${paralysisValue}% damage taken, 4 s base duration: manual rule 1002020420) and Weaken in turn, a cast every ${cooldown} s from t = 0: Paralysis on 0–4 s of every ${2 * cooldown} s, ${round(sustainedLevel(ownParalysisSchedule) * 100)}% uptime${merged ? `, combined with ${chanceParalysisActive.map((item) => `${item.skill}'s ${item.support}`).join(", ")} (1 − Π(1 − uptime), 1 stack) to ${round(uptime * 100)}%` : ""} (+${sustained}% sustained); Weaken lasts its cooldown (not sourced: best case, provisional)`;
@@ -1650,12 +1659,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const radius = num(line.clean.match(PATTERNS.channelWeaken)[2]);
     const active = Boolean(state.channeledMain) && explicitRadiusHolds(radius, state.nearTarget);
     if (active) holdCc("Weaken", { kind: "full" });
-    entry(line, active && find(PATTERNS.ccTypeDamage).length > 0, active ? "the channeled Main Skill keeps Weaken on the dummy: Weaken lowers only the enemy's damage and counts as a crowd control type" : "no channeled Main Skill", { status: active ? (find(PATTERNS.ccTypeDamage).length ? "In calc" : "No DPS effect") : "Inactive" });
+    // In calc with any crowd control counter (crowdControlReaders), as the recipe holders below (2026-11-12: it read only 75106's wording).
+    entry(line, active && crowdControlReaders > 0, active ? `the channeled Main Skill keeps Weaken on the dummy: Weaken lowers only the enemy's damage and counts as a crowd control type${crowdControlReaders > 0 ? " (the crowd control counters read it)" : " (no line counts crowd control types)"}` : "no channeled Main Skill", { status: active ? (crowdControlReaders > 0 ? "In calc" : "No DPS effect") : "Inactive" });
   }
   for (const line of find(PATTERNS.attackProjectileBlind)) {
     const active = Boolean(state.activeTags?.has?.("Attack") && state.activeTags?.has?.("Projectile"));
     if (active) holdCc("Blinding", { kind: "full" });
-    entry(line, active && find(PATTERNS.ccTypeDamage).length > 0, active ? "an active Attack Projectile Skill keeps the dummy Blinded: a crowd control type" : "no active Attack Projectile Skill", { status: active ? (find(PATTERNS.ccTypeDamage).length ? "In calc" : "No DPS effect") : "Inactive" });
+    const read = crowdControlReaders > 0 || lines.some((other) => BLINDED_READER.test(other.clean));
+    entry(line, active && read, active ? `an active Attack Projectile Skill keeps the dummy Blinded: a crowd control type${read ? "" : " (no line counts crowd control types or reads a Blinded enemy)"}` : "no active Attack Projectile Skill", { status: active ? (read ? "In calc" : "No DPS effect") : "Inactive" });
   }
   // Crowd control from the game recipes (src/crowd-control-recipes.js; the block before the Paralysis sources above): the types each
   // line holds join the held set, one union per type with the scripted holders (an on-hit holder that keeps a type up wins), and each
@@ -1899,6 +1910,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       const why = !state.resourceConsumption?.measured ? "Life consumed: measured by the hit pass" : !moving ? "no Attack use measured" : `${consume.percent}% of ${consume.currentLife} current Life (the planner's Life state; every copy reads the same current Life) × ${consume.usesPerSecond} Attack uses/s (${consume.uses.map((use) => `${use.name} ${use.stepsPerSecond}`).join(", ")}) = ${consume.lifePerSecond} Life consumed per second${readers ? ", read by the build's Life-consumed lines" : "; no Life-consumed reader on the build"} (record 200000005; its links proven, research/attack-life-consume-2026-11-09.md; current Life the Life group's best case)`;
       entry(line, moving, why, { status: moving && readers ? "In calc" : "No DPS effect", provisional: moving && readers });
     }
+    // "Consumes X% of current Life on skill use" (Blade-dancer's Fingers, record 539780864: 1000074 with no tag, the same consume pair;
+    // 2026-11-11 build audit G2): on every use of any skill, yours and the Seething Spirit's forwarded casts.
+    const skill = state.resourceConsumption?.skillConsume || null;
+    for (const line of find(PATTERNS.skillUseLifeConsume)) {
+      const moving = Boolean(skill && skill.lifePerSecond > 0);
+      const why = !state.resourceConsumption?.measured ? "Life consumed: measured by the hit pass" : !moving ? "no skill use measured" : `${skill.percent}% of ${skill.currentLife} current Life (the planner's Life state; every copy reads the same current Life) × ${skill.usesPerSecond} skill uses/s (${skill.uses.map((use) => `${use.name} ${use.stepsPerSecond}`).join(", ")}) = ${skill.lifePerSecond} Life consumed per second${readers ? ", read by the build's Life-consumed lines" : "; no Life-consumed reader on the build"} (record 539780864: trigger 1000074, every use but a triggered one; current Life the Life group's best case)`;
+      entry(line, moving, why, { status: moving && readers ? "In calc" : "No DPS effect", provisional: moving && readers });
+    }
   }
 
   // Icemirror: Stage in the Mirror. Mirrored Shade (buff 11750) every 1 s while standing on a Terra Skill: "+X% additional Terra
@@ -2140,6 +2159,8 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (/Full Life/i.test(condition)) {
       // The Full Life rule of src/line-conditions.js atFullLife (≥ 95% unsealed, not at Low Life; user-confirmed 2026-10-12), inlined
       // to keep the module graph acyclic.
+      // A settled Life balance (src/life-balance.js, 2026-11-11 build audit G4) holds Full Life on its share of your uses.
+      if (state.lifeBalance?.settled) { const share = Math.max(0, Math.min(1, Number(state.lifeBalance.fullLifeShare) || 0)); return { line, share, reason: `at Full Life on ${Math.round(share * 10000) / 100}% of your uses (the Life balance: ${state.lifeBalance.useWeightedLifePercent}% current Life)` }; }
       const full = state.life !== "low" && (state.lifeRemainingPercent ?? 100) >= 95;
       return { line, share: full ? 1 : 0, reason: full ? "at Full Life: the dummy never attacks (best case)" : "not at Full Life (sealed Life or the Low Life group)" };
     }

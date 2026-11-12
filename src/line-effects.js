@@ -46,7 +46,8 @@ export function handledElsewhere(text) {
   // (own defence: src/low-resource-model.js, src/effective-hp.js; enemy debuffs: curse and support models).
   if (matchTalentTextClause(text, "talent") || matchTalentTextClause(text, "slate")) return true;
   // (Impending's stacking enemy debuff is read by src/combat-states.js since the residual batch, checked above.)
-  if (/damage taken/i.test(text) && !/^Every [\d.]+ s, .+ for enemies within \d+ m\.|^When Ignite is inflicted, Ignite spreads|Attack Horizontal Projectile Damage taken by nearby enemies$/i.test(text)) return true;
+  // (Haze's standing-still row ends on your own damage taken: its condition rule reads the damage part, src/line-conditions.js.)
+  if (/damage taken/i.test(text) && !/^Every [\d.]+ s, .+ for enemies within \d+ m\.|^When Ignite is inflicted, Ignite spreads|Attack Horizontal Projectile Damage taken by nearby enemies$|^While standing still, .+ dealt by attacks\. [+-]?[\d.]+% additional damage taken$/i.test(text)) return true;
   // Blur lines belong to src/blur-effects.js, except Stab In The Back's Blur consumption (resolved here as not modeled) and Chain behind
   // the Curtain's Affliction Effect (chunk 12, key blurRatingPoints).
   if (/\bBlur\b/i.test(text) && !/^While Blur is active, loses Blur after casting a Main Skill|Affliction Effect for every 1 Blur Rating$|^Adds [\d.]+ - [\d.]+ \w+ Damage to Attacks and Spells while Blur is active$/i.test(text)) return true;
@@ -153,6 +154,52 @@ const scaleBody = (body, factor, power, multiplier) => {
   return `${rounded >= 0 ? "+" : ""}${rounded}${body.slice(match[0].length - 1)}`;
 };
 
+// A body with no damage effect (Regain, Movement Speed, Block) leaves the line In calc (legendary
+// audit 2026-10-22: Agony's Embrace read Partly modeled for its Regain half while its Penetration moved the figures).
+const neutralBody = (item) => { const body = normalizePercentageText(item.body).replace(/\s+/g, " ").trim(); return NEUTRAL_BODY.test(body) || NEUTRAL_REGEN.test(body); };
+// A line's badge from its resolved condition and bodies. A body-less condition (Hare's Agility's stack gain: its stacks are the next
+// clause's factor) is In calc while it holds; a resolved `partial` (a part with no reading, named in the condition text) reads Partly modeled.
+function entryStatus(resolved, bodies) {
+  const unread = bodies.filter((item) => !item.readers.length && !neutralBody(item));
+  return resolved.notOnDummy ? "Not on dummy" : resolved.unmodeled ? "Not modeled" : resolved.active === null ? "Not modeled" : !resolved.active ? "Inactive" : !bodies.length ? "In calc" : bodies.every((item) => !item.readers.length && neutralBody(item)) ? "No DPS effect" : bodies.every((item) => !item.readers.length) ? "Not modeled" : unread.length || resolved.partial ? "Partly modeled" : "In calc";
+}
+const derivedLineOf = (line, item, split, resolved, timeShare = null) => ({ text: item.derivedText, source: line.source, origin: line.origin, multiplier: 1, derivedFrom: line.text, lineEffect: { conditional: true, key: split.condition.key, conditionText: resolved.conditionText, provisional: Boolean(resolved.provisional), ...(timeShare ? { timeShare } : {}) } });
+
+/**
+ * Settle the lines of one condition `key` again on a later state, in place: the entries in `lineEffects.lines`, and their derived lines in
+ * `lineEffects.derived` and `modifierTexts` (removed and re-added when the text changes). src/planner.js runs it for the per-Movement-Speed
+ * lines once the held conditional Movement Speed has joined the stat sheet's figure (Haze's "+1% additional Damage per +5% Movement Speed",
+ * node 114 reading the combat increased Movement Speed). Speed and Blessing bodies are not re-routed (no key it is used for has one).
+ * @returns {boolean} whether a derived line changed
+ */
+export function resettleLineEffects(lineEffects, key, state, modifierTexts = []) {
+  let changed = false;
+  const squash = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim();
+  for (const entry of lineEffects?.lines || []) {
+    if (entry.condition !== key) continue;
+    const line = modifierTexts.find((item) => item.source === entry.source && item.origin !== "derived" && !item.lineEffect && squash(item.text) === entry.text);
+    if (!line) continue;
+    const split = { condition: { key, params: entry.params, wording: entry.text } };
+    const resolved = resolveLineCondition(split.condition, state);
+    const multiplier = line.multiplier ?? 1;
+    const bodies = entry.bodies.map((item, index) => ({ ...item, derivedText: resolved.active ? scaleBody(item.body, resolved.bodyFactors?.[index] !== undefined ? resolved.bodyFactors[index] : resolved.factor, resolved.power, multiplier) : null }));
+    const old = (lineEffects.derived || []).filter((item) => item.lineEffect?.key === key && item.source === line.source && item.derivedFrom === line.text);
+    const fresh = resolved.active ? bodies.filter((item) => item.derivedText && item.readers.length).map((item) => derivedLineOf(line, item, split, resolved)) : [];
+    Object.assign(entry, { active: resolved.active === true, conditionText: resolved.conditionText, provisional: Boolean(resolved.provisional), factor: resolved.factor ?? null, bodies, status: entryStatus(resolved, bodies) });
+    if (old.map((item) => item.text).join("\n") === fresh.map((item) => item.text).join("\n")) { for (const item of old) item.lineEffect = { ...item.lineEffect, conditionText: resolved.conditionText }; continue; }
+    changed = true;
+    for (const item of old) {
+      const at = lineEffects.derived.indexOf(item);
+      if (at >= 0) lineEffects.derived.splice(at, 1);
+      const there = modifierTexts.indexOf(item);
+      if (there >= 0) modifierTexts.splice(there, 1);
+    }
+    lineEffects.derived.push(...fresh);
+    modifierTexts.push(...fresh);
+  }
+  return changed;
+}
+
 /**
  * @param {object[]} modifierTexts planner.modifierTexts (lines with { text, source, origin, multiplier })
  * @param {object} state src/planner.js lineConditionState
@@ -213,13 +260,7 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
       const derivedText = resolved.active ? scaleBody(body, resolved.bodyFactors?.[index] !== undefined ? resolved.bodyFactors[index] : resolved.factor, resolved.power, multiplier) : null;
       return { body, derivedText, readers: bodyReaders(body) };
     });
-    // A body with no damage effect (Regain, Movement Speed, Block) leaves the line In calc (legendary
-    // audit 2026-10-22: Agony's Embrace read Partly modeled for its Regain half while its Penetration moved the figures).
-    const neutral = (item) => { const body = normalizePercentageText(item.body).replace(/\s+/g, " ").trim(); return NEUTRAL_BODY.test(body) || NEUTRAL_REGEN.test(body); };
-    const unread = bodies.filter((item) => !item.readers.length && !neutral(item));
-    // A body-less condition (Hare's Agility's stack gain: its stacks are the next clause's factor) is In calc while it holds; a
-    // resolved `partial` (a part with no reading, named in the condition text) reads Partly modeled.
-    const status = resolved.notOnDummy ? "Not on dummy" : resolved.unmodeled ? "Not modeled" : resolved.active === null ? "Not modeled" : !resolved.active ? "Inactive" : !bodies.length ? "In calc" : bodies.every((item) => !item.readers.length && neutral(item)) ? "No DPS effect" : bodies.every((item) => !item.readers.length) ? "Not modeled" : unread.length || resolved.partial ? "Partly modeled" : "In calc";
+    const status = entryStatus(resolved, bodies);
     const entry = { source: line.source, origin: line.origin, text, condition: split.condition.key, params: split.condition.params, group: resolved.group, active: resolved.active === true, conditionText: resolved.conditionText, provisional: Boolean(resolved.provisional), factor: resolved.factor ?? null, bodies, status };
     lines.push(entry);
     if (!resolved.active) continue;
@@ -228,7 +269,7 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
       // `timeShare` (2026-10-27, research/lucky-crit-mechanics-2026-10-27.md): the body holds this share of the time / uses (its value is
       // the time average); the crit models split such crit terms into on / off states (src/crit-time-states.js).
       const timeShare = resolved.timeShare && resolved.factor > 0 && resolved.factor < 1 ? resolved.factor : null;
-      const derivedLine = { text: item.derivedText, source: line.source, origin: line.origin, multiplier: 1, derivedFrom: line.text, lineEffect: { conditional: true, key: split.condition.key, conditionText: resolved.conditionText, provisional: Boolean(resolved.provisional), ...(timeShare ? { timeShare } : {}) } };
+      const derivedLine = derivedLineOf(line, item, split, resolved, timeShare);
       derived.push(derivedLine);
       const speed = item.derivedText.match(SPEED);
       if (speed && /Cast Speed/i.test(speed[3])) {

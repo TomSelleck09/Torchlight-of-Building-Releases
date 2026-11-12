@@ -10,6 +10,7 @@ import { migrateLegendaryEquipment } from "./legendary-text-migrations.js";
 import { migrateChangedEquipment } from "./changed-item-migrations.js";
 // Saved SS13 Nether King lines read as their SS14 nodes (user decision 2026-10-22; src/nether-king-migration.js).
 import { migrateNetherKingSlates } from "./nether-king-migration.js";
+import { migrateContaminationPlacements } from "./slate-board.js";
 // Saved slate lines take the catalog's "+" (2026-11-01; src/slate-line-signs.js).
 import { signSavedSlateLines } from "./slate-line-signs.js";
 // Saved prism lines take the game's "+" (chunk 5, 2026-11-01; src/prism-crafting.js).
@@ -126,7 +127,7 @@ export const defaultPlannerState = {
   },
   skills: { setupOrder: null, boardSlots: {skills:[],auras:[]}, supportOrder: {}, setupEnabled: {}, skillLevels: {}, supportEnabled: {}, supportLevels: {}, specialSupportConfigs: {}, customSupports: {}, customSetups: [] },
   equippedSlateIds: null,
-  slates: { geometryVersion: 4, placements: null, parked: {}, inventory: [] },
+  slates: { geometryVersion: 5, placements: null, parked: {}, inventory: [] },
   // The build's one follower (2026-10-15; src/follower-model.js): its id, rarity and one Tartarus Skill per unlocked slot (its
   // name, or { name, tier, affixes } once support affixes are chosen, 2026-10-19; null when empty). Not part of the hero
   // loadouts: the follower stays when the hero changes.
@@ -175,6 +176,16 @@ const ownedState = (state) => normalizePlannerState(clone(state));
 const now = () => new Date().toISOString();
 const makeId = () => globalThis.crypto?.randomUUID?.() || `build-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+// Slate geometry versions: 4 the board since 2026-09 (placements are each drawing's frame), 5 since 2026-11-12, when Nether King's
+// Divinity: Contamination is drawn with its third cell (above the Source). A version 4 state's Contamination placements are moved so
+// the same cells grow (src/slate-board.js migrateContaminationPlacements); below 4 the planner keeps its captured placements as before.
+function normalizeSlateState(saved, defaults) {
+  const inventory = migrateSlateNames(signSavedSlateLines(migrateNetherKingSlates(Array.isArray(saved?.inventory) ? saved.inventory : [])));
+  let geometryVersion = Number(saved?.geometryVersion || 0);
+  let placements = saved?.placements && typeof saved.placements === "object" ? saved.placements : null;
+  if (geometryVersion === 4) { placements = migrateContaminationPlacements(placements, inventory); geometryVersion = 5; }
+  return { ...defaults, ...(saved || {}), geometryVersion, placements, parked: saved?.parked && typeof saved.parked === "object" ? saved.parked : {}, inventory };
+}
 export function normalizePlannerState(value = {}) {
   validatePlannerState(value);
   value = migrateRenamedSkills(value);
@@ -209,7 +220,7 @@ export function normalizePlannerState(value = {}) {
     disabledSupportNames: [],
     removedInventoryItemIds: Array.isArray(value.removedInventoryItemIds) ? value.removedInventoryItemIds : [],
     equippedSlateIds: Array.isArray(value.equippedSlateIds) ? value.equippedSlateIds : null,
-    slates: { ...defaults.slates, ...(value.slates || {}), geometryVersion: Number(value.slates?.geometryVersion || 0), placements: value.slates?.placements && typeof value.slates.placements === "object" ? value.slates.placements : null, parked: value.slates?.parked && typeof value.slates.parked === "object" ? value.slates.parked : {}, inventory: migrateSlateNames(signSavedSlateLines(migrateNetherKingSlates(Array.isArray(value.slates?.inventory) ? value.slates.inventory : []))) },
+    slates: normalizeSlateState(value.slates, defaults.slates),
     talentRanks: value.talentRanks && typeof value.talentRanks === "object" ? value.talentRanks : {},
     talents: { ...defaults.talents, ...(value.talents || {}), useCapturedRanks:value.talents?.useCapturedRanks ?? !emptyTemplate, selectedTrees:normalizeTalentTreeSelection(value.talents?.selectedTrees,defaults.talents.selectedTrees), coreSelections:{ ...(value.talents?.coreSelections ?? defaults.talents.coreSelections) }, prismInventory:Array.isArray(value.talents?.prismInventory)?value.talents.prismInventory.map(migratePrismTexts):[], installedPrisms:{...(value.talents?.installedPrisms||{})}, installedPrismNodes:{...(value.talents?.installedPrismNodes||{})} },
     // Saved legendary lines with an unsigned positive roll get their "+" on read (src/legendary-text-migrations.js).

@@ -33,6 +33,7 @@ import { applyBatch5ProfileEdits } from "./support-hit-count-batch5.js";
 import { applyBatch6SentryEdits } from "./minion-sentry-batch6.js";
 import { applyFocusSpeed } from "./focus-speed.js";
 import { reboundState } from "./ice-lances-rebound.js";
+import { maxChanneledStacksLine } from "./channeled-stack-lines.js";
 
 // Generic spell-hit engine (profile kind "hit", engine "skill-hit"; src/skill-hit-profiles.js).
 //
@@ -304,7 +305,8 @@ export function classifySentryLine(text) {
 // `fanLandsAll` (Banishment: Tangle, src/tangle-model.js tangleHitEffects): a Tangle-fired cast from a Minion lands every
 // projectile of a fan on the dummy (best case, user statement 2026-11-03: more land than from the player); the falloff stays.
 const fanReach = (reach, fanLandsAll) => fanLandsAll && reach === "fan" ? "all" : reach;
-const falloffVolley = (falloff, nearTarget, fanLandsAll = false) => falloff ? shotgunVolley(fanLandsAll && falloff.reach === "fan" ? { ...falloff, reach: "all" } : falloff, { nearTarget }) : null;
+// `landed`: the user's projectile landing count (combat.projectileHits), read only by a volley the profile marks `projectile: true`.
+const falloffVolley = (falloff, nearTarget, fanLandsAll = false, landed = null) => falloff ? shotgunVolley(fanLandsAll && falloff.reach === "fan" ? { ...falloff, reach: "all" } : falloff, { nearTarget, landed: falloff.projectile ? landed : null }) : null;
 
 // One Multistrike sequence (Attack skills). Game manual (config_multi_language_en, sourced): 1001020124 "Multistrike Chance is
 // 0 by default. When the Multistrike Chance exceeds 100%, one additional attack is guaranteed to be performed after your
@@ -522,7 +524,7 @@ export function movementFocusProfile(profile, moveSpeed) {
   return { ...profile, focus: { ...profile.focus, pointsPerSecond }, useModel: { ...profile.useModel, usesPerSecond, firstUseSeconds: pointsPerSecond > 0 ? perUse / pointsPerSecond : Infinity, note } };
 }
 
-export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null } = {}) {
+export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null, projectileHits = null } = {}) {
   // A Focus skill that gains its Focus Pts per metre moved (Thunder Focus) at the player's movement speed (user decision 2026-11-10).
   profile = movementFocusProfile(profile, moveSpeed);
   // Hero effects on one skill (src/youga-ultimate-one.js: Clockwork Core's Tangle cadence, its shared bonuses, Recall hits,
@@ -530,6 +532,13 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // modifier lines read below.
   if (heroEffects?.extraModifierTexts?.length) modifierTexts = [...modifierTexts, ...heroEffects.extraModifierTexts];
   const fanLandsAll = Boolean(heroEffects?.fanLandsAll);
+  // "Projectiles hitting the dummy" (Config tab, combat.projectileHits[setupKey]; user decision 2026-11-12): a whole count ≥ 1 replaces
+  // the automatic landing rule of this setup's projectile volleys (profile falloff specs marked `projectile: true` and the fan that
+  // extra Projectile Quantity makes), clamped to each volley's fired count, at either distance. Absent: automatic (best case).
+  const landedOverride = Number.isInteger(projectileHits) && projectileHits >= 1 ? projectileHits : null;
+  // Every projectile volley the hit passes build (for the Config row's fired / automatic counts).
+  const projectileVolleys = [];
+  const projectileVolley = (falloff) => { const volley = falloffVolley(falloff, nearTarget, fanLandsAll, landedOverride); if (volley && falloff?.projectile) projectileVolleys.push(volley); return volley; };
   // Skill-mechanics census batch 5 (B3; src/support-hit-count-batch5.js): this setup's hit-count and cadence supports (Shotgun Effect,
   // waves, pulses, cooldowns, intervals, Focus Pts, Steep Strike overrides) apply to a copy of the profile; its notes list each change.
   profile = applyBatch5ProfileEdits(profile, supportEffectsFor(setup, { profile, engine: "skill-hit" }), { weapon }).profile;
@@ -665,6 +674,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   for (const line of modifierTexts.flatMap((item) => { const parts = splitHitLineText(item.text); return parts.length > 1 ? parts.map((text) => ({ ...item, text, compoundText: item.text })) : [item]; })) {
     // Traced pool: a line resolved from a conversion line (its per-stat value) is read through the conversion record instead.
     if (tracedLines.size && line.derivedFrom && tracedLines.has(lineKeyOf(line.source, line.derivedFrom))) continue;
+    // The ring's "+N Max Channeled Stacks when equipped in the left / right Ring slot" counts from that slot only (2026-11-12,
+    // src/channeled-stack-lines.js; the plain wording is classifyChannelLine's).
+    const ringStacks = channel ? maxChanneledStacksLine(line) : null;
+    if (ringStacks?.ringSlot) { if (ringStacks.active) channelLines.push({ kind: "maxStacks", value: ringStacks.value * (line.multiplier ?? 1), source: line.source, text: line.text, origin: line.origin }); continue; }
     const channelParsed = channel ? classifyChannelLine(line.text) : null;
     if (channelParsed) { channelLines.push({ ...channelParsed, source: line.source, text: line.text, origin: line.origin, value: channelParsed.value * (line.multiplier ?? 1) }); continue; }
     const textParsed = classifyHitLine(line.text, { targetCursed, enemyAilments });
@@ -1368,10 +1381,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       return { hits: count * gate, detail: `${count} per use (${max} − ${numerator} ÷ (Attack Speed ${round(speedFactor)} + ${offset}) = ${round(max - numerator / (Math.max(0, speedFactor) + offset))}, whole hits; ${spec.speedCount.source})${gate !== 1 ? ` × ${round(gate)} Demolisher share` : ""}` };
     }
     if (spec?.perStack) { const stacks = channelState?.fullStacks ?? 5; return { hits: spec.perStack * stacks * gate, detail: `${spec.perStack} per channel stack × ${stacks} stacks per cycle` }; }
-    if (spec?.countAtStacks) { const stacks = channelState?.fullStacks ?? 5; const count = spec.countAtStacks(stacks); const volley = falloffVolley(spec.falloff, nearTarget, fanLandsAll);
+    if (spec?.countAtStacks) { const stacks = channelState?.fullStacks ?? 5; const count = spec.countAtStacks(stacks); const volley = projectileVolley(spec.falloff);
       // Census batch 5: Inexhaustible Barrage: Bombard (with a gun) adds extraPerWave projectiles to each next wave: wave k fires k × that more.
       const perWave = spec.falloff?.extraPerWave || 0;
-      const falloff = perWave && count > 0 ? Array.from({ length: Math.max(1, Math.floor(count)) }, (_, k) => falloffVolley({ ...spec.falloff, count: spec.falloff.count + perWave * k }, nearTarget, fanLandsAll).total).reduce((a, b) => a + b, 0) / Math.max(1, Math.floor(count)) : volley?.total ?? 1; return { hits: count * (spec.perTick ?? 1) * falloff * gate, shotgun: volley, detail: `${round(count)} at ${stacks} stacks × ${spec.perTick ?? 1} per tick${volley ? ` × ${shotgunVolleyText(volley)}` : ""}` }; }
+      const falloff = perWave && count > 0 ? Array.from({ length: Math.max(1, Math.floor(count)) }, (_, k) => projectileVolley({ ...spec.falloff, count: spec.falloff.count + perWave * k }).total).reduce((a, b) => a + b, 0) / Math.max(1, Math.floor(count)) : volley?.total ?? 1; return { hits: count * (spec.perTick ?? 1) * falloff * gate, shotgun: volley, detail: `${round(count)} at ${stacks} stacks × ${spec.perTick ?? 1} per tick${volley ? ` × ${shotgunVolleyText(volley)}` : ""}` }; }
     // A per-stack rate (Ring of Blades: one hit per blade per second; blades = its Max Projectiles, else channeled stacks): hits per use = stacks ×
     // rate × the effective channel interval, so the hit rate is independent of cast speed.
     if (spec?.perSecondPerStack) {
@@ -1397,7 +1410,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     // `durationSeconds` on the spec: a fixed span per use (Spiral Strike's dash) whose ticks follow the speed-scaled interval.
     const span = spec?.durationAtStacks ? spec.durationAtStacks(channelState?.fullStacks ?? 5) : spec?.durationSeconds ?? terra?.durationSeconds ?? (channel && !release && useTime != null ? useTime : 1);
     const ticks = interval ? span / interval : 1;
-    const volley = falloffVolley(spec?.falloff, nearTarget, fanLandsAll);
+    const volley = projectileVolley(spec?.falloff);
     const falloff = volley?.total ?? 1;
     const everyUses = Math.max(1, spec?.everyUses || 1);
     const hits = ticks * (spec?.perTick ?? 1) * falloff / everyUses * gate;
@@ -1579,7 +1592,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const rawPerUse = !steepRole ? steppedPerUse : attemptMode
       ? { ...steppedPerUse, detail: `${steppedPerUse.detail} (${steepRole.role === "sweep" ? `${typeof component.perUse === "number" ? component.perUse : 1} − ${round(steepStrike.share)}` : `${round(steepStrike.share)}${clusterFactor !== 1 ? ` × ${clusterFactor}` : ""}`}: Steep Strikes per use from stored attempts${steepStrike.attempts.window ? ", Big Stride's window open" : ""}${clusterFactor !== 1 ? `; × ${clusterFactor} Blade Cluster hits per launched Steep Strike` : ""}; user-supplied mechanism, provisional)` }
       : { ...steppedPerUse, detail: `${steppedPerUse.detail} (${steepRole.role === "sweep" ? `1 − ${round(steepStrike.share)}` : `${round(steepStrike.share)}${(steepRole.perSteep ?? 1) !== 1 ? ` × ${steepRole.perSteep}` : ""}${clusterFactor !== 1 ? ` × ${clusterFactor}` : ""}`}: Steep Strike share min(100%, ${round(steepStrike.chancePercent)}% chance))` };
-    const extraVolley = projectileBoost && !component.perUse?.falloff ? shotgunVolley({ count: extraProjectiles + 1, factor: falloffFactor, reach: fanReach(volleyRule?.reach || "fan", fanLandsAll) }, { nearTarget }) : null;
+    const extraVolley = projectileBoost && !component.perUse?.falloff ? shotgunVolley({ count: extraProjectiles + 1, factor: falloffFactor, reach: fanReach(volleyRule?.reach || "fan", fanLandsAll) }, { nearTarget, landed: profile.noProjectileControl ? null : landedOverride }) : null;
+    if (extraVolley && !profile.noProjectileControl) projectileVolleys.push(extraVolley);
     // Psionic Missile: Convergence (census batch 5): each explosion after the first takes +X% × min(cap, projectiles fired).
     const converge = extraVolley && volleyRule?.subsequentAdditional ? { ...volleyRule.subsequentAdditional, bonus: volleyRule.subsequentAdditional.value * Math.min(volleyRule.subsequentAdditional.cap, extraVolley.count) / 100 } : null;
     if (converge) extraVolley.total = 1 + extraVolley.factor * (extraVolley.reached - 1) * (1 + converge.bonus);
@@ -2364,8 +2378,17 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     skillAilmentTexts: (setup?.effects || []).join("\n").split(/\r?\n/).map((text) => text.trim()).filter((text) => text && ailmentPattern.test(text)),
     supportNames: (setup?.supports || []).filter((support) => support.enabled !== false).map((support) => support.name)
   };
+  // The Config tab's "Projectiles hitting the dummy" row (2026-11-12): the largest projectile volley this setup fires per use, how
+  // many land automatically (best case) and with the user's count. A skill whose extra projectiles cannot hit the same enemy (Ice
+  // Lances without Rebound, Forking Thunder, Split Shot without Volley; the Ice Lances run of 2026-10-12) gets a read-only row.
+  const projectileLanding = profile.noProjectileControl ? null : projectileVolleys.length ? (() => {
+    const top = projectileVolleys.reduce((best, volley) => volley.count > best.count ? volley : best);
+    return { fired: top.count, auto: top.override ? top.autoReached : top.reached, landed: top.reached, override: landedOverride, applied: Boolean(top.override), reach: top.reach, canHitSame: true };
+  })() : extraProjectiles > 0 && !falloffFactor && skillTags.has("Projectile") ? { fired: 1 + extraProjectiles, auto: 1, landed: 1, override: null, applied: false, canHitSame: false } : null;
+  if (projectileLanding?.applied) notes.push(`${profile.name}: ${projectileLanding.landed} of ${projectileLanding.fired} projectiles hit the dummy (set on the Config tab${landedOverride > projectileLanding.fired ? `: saved ${landedOverride}, ${projectileLanding.fired} fired` : ""}; best case ${projectileLanding.auto}).`);
   return {
     key, name: profile.name, setupKey: setup?.setupKey, profile, skillHit: true, damageType: profile.damageType, dealtTypes,
+    ...(projectileLanding ? { projectileLanding } : {}),
     // Extreme Coldness (src/damage-type-restriction.js): the typed parts this hit loses.
     typeRestriction: typeRestriction ? { type: typeRestriction.type, label: typeRestriction.label, removedTypes: [...new Set(perType.filter((component) => removesType(typeRestriction, component.type)).map((component) => component.type))], keptTypes: [...new Set(perType.filter((component) => !removesType(typeRestriction, component.type)).map((component) => component.type))] } : null,
     level, baseLevel: base.level, effectiveness: primary?.effectiveness ?? base.effectiveness, components: perType, primary,

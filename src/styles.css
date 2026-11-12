@@ -429,7 +429,7 @@ body.unified-planner #skills-view>.talent-page-heading h1,body.unified-planner #
 #talents-view.showing-slates #slate-board .slate-stage{min-width:calc(var(--cell)*14)}
 #talents-view.showing-slates #slate-board .slate-board-toolbar{margin-bottom:0}
 #talents-view.showing-slates #slate-board .divinity-board{align-self:center;justify-self:center;margin:0}
-.slate-piece-art{transform:translate(-50%,-50%) scale(var(--slate-flip-x,1),var(--slate-flip-y,1)) rotate(var(--slate-rotation))!important}.slate-piece i{pointer-events:auto}
+.slate-piece-art{transform:translate(-50%,-50%) scale(var(--slate-art-flip-x,var(--slate-flip-x,1)),var(--slate-art-flip-y,var(--slate-flip-y,1))) rotate(var(--slate-art-rotation,var(--slate-rotation)))!important}.slate-piece i{pointer-events:auto}
 .slate-cell-art{display:block;width:100%;height:100%;object-fit:cover;pointer-events:none}
 .slate-piece:has(.slate-cell-art) strong,.slate-piece:has(.slate-cell-art) em{display:none}
 .slate-piece-art{position:absolute;z-index:1;left:50%;top:50%;width:var(--slate-art-width);height:var(--slate-art-height);object-fit:fill;transform:translate(-50%,-50%) rotate(var(--slate-rotation));pointer-events:none}.slate-piece:has(.slate-piece-art) i{border-color:transparent;background:transparent;box-shadow:none}.slate-piece:has(.slate-piece-art) strong,.slate-piece:has(.slate-piece-art) em{display:none}.slate-piece:has(.slate-piece-art) span{z-index:3;top:7px;left:7px;box-shadow:0 1px 5px #000}.slate-piece.selected:has(.slate-piece-art) i{outline:2px solid #61e5ec}.slate-piece.copied-by-neighbor:has(.slate-piece-art) i{outline:2px solid rgba(241,80,230,.7);box-shadow:0 0 16px rgba(241,80,230,.65)}
@@ -443,6 +443,9 @@ body.unified-planner #skills-view>.talent-page-heading h1,body.unified-planner #
 .slate-judgment-badge{margin:8px 12px;padding:6px 9px;border:1px solid #278da6;border-radius:5px;background:#143644;color:#82ebf5;font-size:.72rem;font-weight:700}
 .slate-piece:has(.slate-piece-art) span,.slate-piece:has(.slate-cell-art) span{display:none}
 .slate-piece-art{filter:drop-shadow(0 0 2px rgba(255,167,38,.9));image-rendering:auto}
+/* Nether King's Divinity: Contamination is three cells (2026-11-12); its capture shows two, so it covers the strip, centred. */
+.slate-piece-art[src$="nether-kings-contamination.svg"],.slate-craft-growth>img[src$="nether-kings-contamination.svg"]{object-fit:cover;object-position:center}
+.slate-craft-card>.slate-craft-growth{grid-row:1/3;justify-self:center;position:relative;display:block}.slate-craft-growth>img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill}.slate-craft-growth>i{position:absolute;z-index:1;box-sizing:border-box;border:1px solid rgba(106,70,19,.95);box-shadow:inset 0 0 0 1px rgba(255,184,58,.18)}.slate-craft-growth:has(img[src$="nether-king-judgment.png"])>i{border-color:#d24bc9;box-shadow:none}
 .slate-piece.copy-slate .slate-piece-art,.slate-piece.copied-by-neighbor .slate-piece-art{filter:drop-shadow(0 0 3px rgba(220,66,210,.9))}
 .slate-inventory{width:min(980px,calc(96vw / var(--page-zoom)));height:min(710px,calc(92vh / var(--page-zoom)));max-height:none}.slate-inventory-tabs{gap:12px}.slate-inventory-tabs button{font-weight:700}.slate-inventory-tabs button.active{border-color:transparent;background:#347ff0}.slate-inventory-tabs button[data-slate-inventory-tab="legendary"].active{background:#ff741a}.slate-inventory-tabs button[data-slate-inventory-tab="judgment"].active{background:#9346bf}
 #slate-crafter-body{height:calc(100% - 61px)}.slate-craft-layout,.slate-template-layout{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:26px;height:100%;padding:18px 12px 12px}.slate-craft-layout>section,.slate-template-layout>section{min-height:0;padding-right:20px;overflow:auto;border-right:1px solid #222b36}.slate-craft-layout>aside,.slate-template-layout>aside{position:relative;padding:2px 4px 72px;color:#9fa9b6}.slate-shape-options>button{display:grid;place-items:center}.slate-shape-options img{max-width:44px;max-height:44px;object-fit:contain}.slate-shape-preview img{max-width:60px;max-height:60px;object-fit:contain}.slate-craft-card{display:grid;grid-template-columns:38px 1fr;gap:3px 10px;align-items:center}.slate-craft-card>img{grid-row:1/3;width:34px;height:34px;object-fit:contain}.slate-craft-card hr,.slate-craft-card em,.slate-craft-card b{grid-column:1/-1}.slate-craft-card.nether{border-color:#6e4b2d;border-bottom-color:#f66f18;color:#f48127;background:#21150e}.slate-craft-card em{margin-top:10px;color:#a98d7c;font-size:.65rem;font-style:normal}.slate-craft-card b{color:#eee;font-size:.76rem}.slate-readonly,.slate-authority-copy{box-sizing:border-box;width:100%;padding:11px;border:1px solid #27303a;border-radius:7px;color:#b8c0cb;background:#151b23}.slate-authority-copy{color:#e7eaf0}.slate-template-layout p{margin:0 0 12px;color:#aeb7c5;font-size:.78rem}.slate-template-grid{display:grid;grid-template-columns:repeat(6,96px);gap:9px}.slate-template-grid button{display:grid;grid-template-rows:58px auto;place-items:center;min-height:88px;padding:7px;border:1px solid transparent;border-radius:7px;color:#bcc4d0;background:#1b2231;cursor:pointer}.slate-template-grid button:hover{border-color:#ff7818}.slate-template-grid img{max-width:52px;max-height:52px;object-fit:contain}.slate-template-grid span{font-size:.64rem;text-align:center}.slate-empty-preview{display:grid;place-items:center;height:200px;margin-top:10px;border:1px dashed #252e39;border-radius:8px;color:#8d97a3;font-style:italic}.slate-inventory-actions{bottom:0}.slate-inventory-actions .button{min-height:44px}.slate-inventory-actions .button:last-child{font-size:.9rem;font-weight:800}
@@ -971,10 +974,10 @@ body.unified-planner .talent-node.legendary-node.selected{border-color:#ff9a3d;b
 .hero-trait-tree .hero-choice-art,.hero-trait-tree .hero-memory-art{width:56px;height:56px;object-fit:cover}
 .hero-trait-tree .hero-memory-socket:not(.filled)>b{width:54px;height:54px}
 .hero-trait-tree .hero-memory-socket{position:relative;width:64px;height:56px;justify-self:center;align-self:center}
-.hero-trait-tree .hero-memory-revival-icon{position:absolute;z-index:2;top:-5px;left:-4px;display:grid;place-items:center;width:23px;height:23px;border:1px solid #8bcdea;border-radius:50%;background:#173f61;box-shadow:0 0 0 1px #06111d,0 1px 5px #07131dcc;pointer-events:none}
-.hero-trait-tree .hero-memory-revival-icon svg{display:block;width:20px;height:20px;filter:drop-shadow(0 1px 1px #04111d)}
-.hero-trait-tree .hero-memory-revival-icon .moon-disc{fill:#173f61}
-.hero-trait-tree .hero-memory-revival-icon .moon-crescent{filter:drop-shadow(0 0 1px #f5ffff)}
+.hero-trait-tree .hero-memory-revival-icon,#overview-board .overview-memory .hero-memory-revival-icon{position:absolute;z-index:2;top:-5px;left:-4px;display:grid;place-items:center;width:23px;height:23px;border:1px solid #8bcdea;border-radius:50%;background:#173f61;box-shadow:0 0 0 1px #06111d,0 1px 5px #07131dcc;pointer-events:none}
+.hero-trait-tree .hero-memory-revival-icon svg,#overview-board .overview-memory .hero-memory-revival-icon svg{display:block;width:20px;height:20px;filter:drop-shadow(0 1px 1px #04111d)}
+.hero-trait-tree .hero-memory-revival-icon .moon-disc,#overview-board .overview-memory .hero-memory-revival-icon .moon-disc{fill:#173f61}
+.hero-trait-tree .hero-memory-revival-icon .moon-crescent,#overview-board .overview-memory .hero-memory-revival-icon .moon-crescent{filter:drop-shadow(0 0 1px #f5ffff)}
 .hero-trait-tree .hero-memory-socket em{position:absolute;top:calc(100% + 3px);left:50%;max-width:78px;font-size:.58rem;transform:translateX(-50%)}
 .hero-trait-tree .hero-tier .tier-divider{height:52px}
 .hero-trait-tree .hero-tier.hero-memory-only-tier{grid-template-columns:48px 64px minmax(0,1fr)}
@@ -1111,7 +1114,7 @@ body.unified-planner #equipment-view .inventory-item .inventory-item-icon img{wi
 .prism-crafter-layout{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:24px;min-height:0;flex:1;padding:16px 14px 0}
 #prism-crafter-form{overflow:auto;padding-right:10px}.prism-crafter-layout aside{min-width:0;overflow:auto;color:#adb5c1;font-size:13px}.prism-crafter-layout aside>span{display:block;margin:3px 0 10px}
 .prism-type-tabs{display:flex;gap:8px;margin-bottom:20px}.prism-type-tabs button{padding:10px 16px;background:#202737;border:1px solid #30394a;border-radius:4px;color:#d7dbe4;font-weight:700;cursor:pointer}.prism-type-tabs button.active{background:#3b281e;border-color:#e5761b;color:#ff9448}
-.prism-base-field,.prism-fixed label{display:grid;gap:8px;color:#adb5c1;font-size:13px}.prism-base-field select,.prism-fixed input,.prism-affix-select select{width:100%;min-height:39px;padding:8px 12px;background:#202633;border:1px solid #30394a;border-radius:7px;color:#e9edf4;font:inherit}.prism-fixed{margin-top:5px}.prism-fixed small{display:block;margin:7px 0;color:#a8b0bd}.prism-fixed p{padding:13px;border:1px solid #2e3641;border-radius:4px;line-height:1.5}.prism-crafter-layout h3{font-size:13px;color:#aeb5c1}.prism-affix-select{display:grid;gap:8px;margin:12px 0;padding:12px;border:1px solid #2c3441;border-radius:5px}.prism-affix-select>span{display:flex;align-items:center;gap:9px}.prism-affix-select b{padding:3px 8px;border-radius:3px;font-size:11px}.prism-affix-select b.radius{background:#273e71;color:#adc6ff}.prism-affix-select b.rare{background:#1c533c;color:#a4f5c6}.prism-affix-select b.legendary{background:#49306a;color:#e5c7ff}.prism-affix-select small{color:#aeb5c1}
+.prism-base-field,.prism-fixed label{display:grid;gap:8px;color:#adb5c1;font-size:13px}.prism-base-field select,.prism-fixed input,.prism-affix-select select{width:100%;min-height:39px;padding:8px 12px;background:#202633;border:1px solid #30394a;border-radius:7px;color:#e9edf4;font:inherit}.prism-fixed{margin-top:5px}.prism-fixed small{display:block;margin:7px 0;color:#a8b0bd}.prism-fixed p{padding:13px;border:1px solid #2e3641;border-radius:4px;line-height:1.5}.prism-crafter-layout h3{font-size:13px;color:#aeb5c1}.prism-affix-select{display:grid;gap:8px;margin:12px 0;padding:12px;border:1px solid #2c3441;border-radius:5px}.prism-affix-select>span{display:flex;align-items:center;gap:9px}.prism-affix-select b{padding:3px 8px;border-radius:3px;font-size:11px}.prism-affix-select b.radius{background:#273e71;color:#adc6ff}.prism-affix-select b.rare{background:#1c533c;color:#a4f5c6}.prism-affix-select b.legendary{background:#49306a;color:#e5c7ff}.prism-affix-select b.base{background:#231e16;color:var(--gold)}.prism-affix-select small{color:#aeb5c1}
 #prism-crafter-preview{min-height:200px;border:1px solid #333c47;border-radius:8px;padding:15px}.prism-preview-empty{display:grid;place-items:center;min-height:170px;color:#9ea7b3}.prism-preview-card{background:#19150f;border:1px solid #574537;border-radius:8px;color:#e8e6e3;text-align:center;overflow:hidden}.prism-preview-icon{margin:15px auto 8px}.prism-preview-card h3{font-size:18px;color:#ff8a31;margin:0 8px 9px}.prism-preview-card>small{display:inline-block;border:1px solid #685039;padding:4px 10px;margin-bottom:16px}.prism-preview-card>div{padding:14px;border-top:2px solid #e97717;text-align:left}.prism-preview-card p{margin:6px 0 10px;line-height:1.5}.prism-preview-card h4{color:#ff9e40;margin:15px 0 8px;font-size:12px}
 .prism-crafter-dialog>footer{display:flex;justify-content:flex-end;gap:12px;padding:14px;border-top:1px solid #303844}.prism-crafter-dialog>footer button{min-width:130px;min-height:41px;background:#232a3a;border:1px solid #30394a;border-radius:8px;color:#dce0e8;font-weight:700;cursor:pointer}.prism-crafter-dialog>footer [data-confirm-prism-craft]:disabled{opacity:.45;cursor:not-allowed}
 .prism-type-tabs button[data-prism-type="inverse"].active{background:#33213f;border-color:#a25ad0;color:#dea9ff}
@@ -3966,6 +3969,17 @@ body .loadout-tab .loadout-tab-rename:focus{border-bottom-color:#e8b660}
 .config-segmented button:focus-visible{outline:2px solid #ffbd82;outline-offset:-2px}
 .config-segmented em{padding:.04rem .32rem;border:1px solid #a67736;border-radius:3px;color:#ffd39b;background:#2d241a;font-size:.58rem;font-style:normal;letter-spacing:.06em;text-transform:uppercase}
 @media(max-width:560px){.config-segmented{display:flex;width:100%}.config-segmented button{flex:1 1 0;justify-content:center}}
+/* "Projectiles hitting the dummy" rows (src/configuration-panel.js projectileHitsHtml; 2026-11-12): the choice row's layout, the skill icon,
+   a number input in the Advanced inputs' look and an Auto button in the segmented style. */
+.config-projectile-skill{display:flex;align-items:center;gap:.6rem;min-width:0}
+.config-projectile-icon{display:grid;flex:none;place-items:center;width:30px;height:30px;margin:0;padding:0;border:1px solid #695039;border-radius:50%;overflow:hidden;background:linear-gradient(145deg,#241c16,#10151c)}
+.config-projectile-icon img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.config-projectile-control{display:inline-flex;align-items:center;gap:.45rem}
+.config-projectile-control input{width:7.2rem;padding:.35rem .5rem;border:1px solid #3b4a59;border-radius:4px;background:#08131f;color:#e9f4ff;font:inherit;font-size:.74rem}
+.config-projectile-control input::placeholder{color:#7f909d}
+.config-projectile-control input:focus{outline:2px solid rgba(255,189,130,.55);border-color:#a67736}
+.config-projectile-control .config-segmented{display:inline-flex;width:auto}
+.config-projectile-fixed{min-width:2rem;padding:.3rem .6rem;border:1px solid #3b4a59;border-radius:4px;color:#a9bac8;background:#18232e;font-size:.74rem;font-weight:700;text-align:center}
 
 /* Section "?" help: hidden quality-of-life controls per section (src/qol-help.js). */
 button.qol-help{display:inline-grid;place-items:center;flex:none;box-sizing:border-box;width:18px;height:18px;min-width:0;min-height:0;margin:0 0 0 .5rem;padding:0;vertical-align:middle;border:1px solid rgba(240,154,66,.55);border-radius:50%;background:rgba(16,20,27,.65);color:var(--gold);-webkit-text-fill-color:currentColor;font:700 .68rem/1 Georgia,serif;font-style:normal;letter-spacing:0;text-transform:none;text-indent:0;text-shadow:none;cursor:help;box-shadow:none}
@@ -4590,7 +4604,7 @@ body.layout-tabs .overview-trait-icons{display:grid;justify-items:center;gap:6px
 body.layout-tabs .overview-trait{display:grid;place-items:center;width:60px;height:60px}
 body.layout-tabs .overview-trait .art-frame{width:58px!important;height:58px!important;margin:0}
 body.layout-tabs .overview-trait.empty{box-sizing:border-box;border:1px dashed #3a4655;border-radius:50%;opacity:.6}
-body.layout-tabs .overview-memory{display:grid;place-items:center;box-sizing:border-box;width:60px;height:60px;min-height:0;margin:0;padding:0;border:1px solid #3a4655;border-radius:0;background:#0c1118}
+body.layout-tabs .overview-memory{position:relative;display:grid;place-items:center;box-sizing:border-box;width:60px;height:60px;min-height:0;margin:0;padding:0;border:1px solid #3a4655;border-radius:0;background:#0c1118}
 body.layout-tabs .overview-memory .art-frame{width:54px!important;height:54px!important;margin:0}
 body.layout-tabs .overview-memory.empty{border-style:dashed;opacity:.55}
 body.layout-tabs .overview-memory.absent{visibility:hidden}
@@ -4742,8 +4756,7 @@ body.unified-planner.layout-tabs .hero-follower-panels .follower-showcase .hero-
    (a % height in the old grid resolved against a 258 px track and pushed the image under the text block). */
 body.unified-planner.layout-tabs .hero-follower-panels .hero-showcase .hero-portrait{display:flex;align-items:center;justify-content:center}
 body.unified-planner.layout-tabs .hero-follower-panels .hero-showcase .hero-portrait img{flex:none;width:150px;height:150px}
-/* No follower: the empty "+" portrait is shorter, so a tall trait band (Bing - Creative Genius) still fits 1920x950. */
-body.unified-planner.layout-tabs .hero-follower-panels .follower-showcase .hero-portrait:not(:has(img)){height:104px}
+/* No follower: the empty "+" portrait keeps the hero portrait's size (user 2026-11-12: the two portraits match). */
 body.unified-planner.layout-tabs .hero-follower-panels .hero-showcase::before{display:none}
 body.unified-planner.layout-tabs .hero-follower-panels .hero-showcase .hero-identity{margin:0}
 body.layout-tabs .hero-follower-panels .hero-trait-area{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -4887,15 +4900,37 @@ body.layout-tabs .sidebar-resistances article{padding:calc(4px + var(--sidebar-r
   body.layout-tabs #skills-view>.catalogue-skill-panel,body.layout-tabs #equipment-view>.gear-workbench,body.layout-tabs #configuration-view>.configuration-card{flex:1 1 auto}
   body.layout-tabs #configuration-view>.configuration-card{display:flex;flex-direction:column}
   body.layout-tabs #configuration-view>.configuration-card>.stat-sheet-banner{flex:1 1 auto;align-content:start;margin-bottom:0}
-  body.layout-tabs .hero-follower-panels{grid-template-rows:auto 1fr;min-height:var(--tab-content-height)}
-  body.layout-tabs .hero-follower-panels>.follower-tab-panel{display:flex;flex-direction:column}
-  body.layout-tabs .hero-follower-panels #follower-panel:not([hidden]){flex:1 1 auto}
+  /* Equal bands (user 2026-11-12): the two bands share the height down to the sidebar's bottom line, half each while both fit;
+     a band whose content needs more (Sage's Scent Bottle, Bing's paired traits, a short window) takes it and the other the rest. */
+  body.layout-tabs .hero-follower-panels{grid-template-rows:minmax(min-content,1fr) minmax(min-content,1fr);align-items:stretch;min-height:var(--tab-content-height)}
+  body.layout-tabs .hero-follower-panels>.hero-tab-panel,body.layout-tabs .hero-follower-panels>.follower-tab-panel{display:flex;flex-direction:column}
+  body.layout-tabs .hero-follower-panels #hero-panel-hero:not([hidden]),body.layout-tabs .hero-follower-panels #follower-panel:not([hidden]){flex:1 1 auto}
   /* Hero / Follower on a 1080p window (user 2026-11-02): no disclaimer on this tab, so the bands take its height and the page does not
      scroll. The sidebar and the bands end on one line. */
   body.layout-tabs[data-active-section="hero"]{--tab-content-height:calc(calc(100vh / var(--page-zoom)) - 136px)}
   body.layout-tabs[data-active-section="hero"] .site-disclaimer{display:none}
   body.layout-tabs[data-active-section="hero"] .stats-sidebar{align-self:stretch}
   body.layout-tabs[data-active-section="hero"] .app-body{padding-bottom:0}
+  /* The bands reach the sidebar's bottom even when the sidebar runs taller than the content height (user 2026-11-12). */
+  body.layout-tabs[data-active-section="hero"] .app-body>main{align-self:stretch;display:flex;flex-direction:column}
+  body.layout-tabs[data-active-section="hero"] #section-panel-hero:not([hidden]){display:flex;flex-direction:column;flex:1 1 0}
+  body.layout-tabs[data-active-section="hero"] #section-panel-hero>.hero-follower-panels{flex:1 1 0}
+  /* Gear (user requests 2026-11-12): no disclaimer either, so the page does not scroll; the sidebar and the Gear frame end on one line. */
+  body.layout-tabs[data-active-section="gear"]{--tab-content-height:calc(calc(100vh / var(--page-zoom)) - 136px)}
+  body.layout-tabs[data-active-section="gear"] .site-disclaimer{display:none}
+  body.layout-tabs[data-active-section="gear"] .stats-sidebar{align-self:stretch}
+  body.layout-tabs[data-active-section="gear"] .app-body{padding-bottom:0}
+  body.layout-tabs[data-active-section="gear"] .app-body>main{align-self:stretch;display:flex;flex-direction:column}
+  body.layout-tabs[data-active-section="gear"] #section-panel-gear:not([hidden]){display:flex;flex-direction:column;flex:1 1 0}
+  body.layout-tabs[data-active-section="gear"] #section-panel-gear>#equipment-view:not([hidden]){flex:1 1 0}
+}
+/* Gear in a short window (user 2026-11-12, no scroll at about 860 px tall): the equipped slots stay as large as fits, 130 px at most,
+   from the content height less the heading, frame padding and the four 8 px gaps. */
+@media(min-width:1024px) and (max-height:929px){
+  body.layout-tabs.unified-planner #equipment-view{--gear-slot:clamp(100px,calc((var(--tab-content-height) - 119px) / 5),130px)}
+  body.layout-tabs.unified-planner #equipment-view #equipment-grid{grid-template-columns:repeat(2,var(--gear-slot))!important;grid-auto-rows:var(--gear-slot)!important}
+  body.layout-tabs.unified-planner #equipment-view #equipment-grid .equipment-item{width:var(--gear-slot)!important;min-height:var(--gear-slot)!important;height:var(--gear-slot)!important}
+  body.layout-tabs.unified-planner #equipment-view #equipment-grid .equipment-item img{height:calc(var(--gear-slot) - 40px)}
 }
 @media(min-width:1024px) and (max-height:929px){
   body.unified-planner.layout-tabs .hero-follower-panels .hero-showcase .hero-portrait{height:140px}

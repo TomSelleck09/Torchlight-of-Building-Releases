@@ -388,18 +388,18 @@ export function applyBatch5ProfileEdits(profile, effects, { weapon = null } = {}
     const clause = first("shotgunGained");
     if (profile.name === "Split Shot") {
       const hit = find("hit");
-      hit.perUse = { perTick: 1, falloff: { count: SPLIT_SHOT.projectiles, factor: SPLIT_SHOT.factor, reach: "fan" } };
+      hit.perUse = { perTick: 1, falloff: { count: SPLIT_SHOT.projectiles, factor: SPLIT_SHOT.factor, reach: "fan", projectile: true } };
       next.projectileVolley = { factor: SPLIT_SHOT.factor, reach: "fan", note: "Split Shot: Volley: the projectiles fly as a volley with Shotgun Effect", status: "Split Shot: Volley gives Shotgun Effect: the 1 + 2 projectiles and extra Projectile Quantity fly as a fan, all reach the dummy standing close, each after the first keeping 23%" };
       note(clause, `Shotgun Effect: the 1 + 2 projectiles fly as one fan (with "fired as a volley"), all reach the dummy standing close, each after the first keeping ${SPLIT_SHOT.factor * 100}% (its hit rule's repeatDmgDecPercent 23)`);
     } else if (profile.name === "Electrifying Shot") {
       // Close-Range (chunk 8): recipe 322672192 swaps the skill for Split 410757, hit rule bHitBrother 1 and repeatDmgDecPercent 30.
-      find("shot").perUse = { perTick: 1, falloff: { count: 1, factor: clause.coefficient, reach: "fan" } };
+      find("shot").perUse = { perTick: 1, falloff: { count: 1, factor: clause.coefficient, reach: "fan", projectile: true } };
       next.projectileVolley = { factor: clause.coefficient, reach: "fan", note: "Electrifying Shot: Close-Range: Shotgun Effect", status: "Electrifying Shot: Close-Range gives Shotgun Effect: extra Projectile Quantity flies as a fan, all reach the dummy standing close, each after the first keeping 30% (the text's 70% is lost)" };
       note(clause, `Shotgun Effect keeping ${round(clause.coefficient * 100)}% (hit rule table 30): extra projectiles from Projectile Quantity fly as a fan, all reach the dummy standing close (Split 410757)`);
     } else if (profile.name === "Sparkle") {
       // `groupNone`: the hit rule is in brother group −1 (no earlier hit counted), so field 2006262 never reaches it (coefficientAdd below).
       const spec = tickSpec(find("hit"), SPARKLE);
-      spec.falloff = { count: 1, factor: SPARKLE.factor, reach: "fan", groupNone: true };
+      spec.falloff = { count: 1, factor: SPARKLE.factor, reach: "fan", groupNone: true, projectile: true };
       next.projectileVolley = { factor: SPARKLE.factor, reach: "fan", groupNone: true, note: "Sparkle: Magnetic Field: Shotgun Effect", status: "Sparkle: Magnetic Field gives Shotgun Effect: extra Projectile Quantity flies as a fan, all reach the dummy standing close, each at 100% (the moving projectiles' hit rule, Split 564131, is in brother group −1: no earlier hit is counted)" };
       note(clause, "Shotgun Effect: extra projectiles from Projectile Quantity fly as a fan, all reach the dummy standing close, each at 100% (Split 564131: the moving projectiles' hit rule is in brother group −1 with bCalcPercentOnSameEntity 0, so its table 36 never applies; client 0x1423e3d40)");
     }
@@ -436,7 +436,7 @@ export function applyBatch5ProfileEdits(profile, effects, { weapon = null } = {}
     const clause = first("fangVolley"), massive = find("massive"), small = find("small");
     const every = typeof massive.perUse === "number" && massive.perUse > 0 ? Math.round(1 / massive.perUse) : 10;
     massive.perUse = 0;
-    if (small?.group) components.push({ ...small, key: "volley", label: `Small Fangs (Volley, ${clause.value} per Bite Charge cycle)`, perUse: { perTick: 1, everyUses: every, falloff: { count: clause.value, factor: FANG_VOLLEY_KEPT, reach: "all", groupNone: true } }, basis: "provisional", note: `Hound's Fangs: Volley: ${clause.value} Small Fangs instead of the Massive Fang every ${every} casts, all on the dummy (they can hit the same enemy), each at 100% (Split 679413: their hit rule is brother group −1 with an empty table, no Shotgun falloff)` });
+    if (small?.group) components.push({ ...small, key: "volley", label: `Small Fangs (Volley, ${clause.value} per Bite Charge cycle)`, perUse: { perTick: 1, everyUses: every, falloff: { count: clause.value, factor: FANG_VOLLEY_KEPT, reach: "all", groupNone: true, projectile: true } }, basis: "provisional", note: `Hound's Fangs: Volley: ${clause.value} Small Fangs instead of the Massive Fang every ${every} casts, all on the dummy (they can hit the same enemy), each at 100% (Split 679413: their hit rule is brother group −1 with an empty table, no Shotgun falloff)` });
     note(clause, `no Massive Fang; ${clause.value} Small Fangs every ${every} casts on the dummy, each at 100%: ×${round(shotgunTotal(clause.value, FANG_VOLLEY_KEPT))} (Split 679413: brother group −1, empty table)`);
   }
   // ---- Projectile Quantity fixed, dispersed, pulses, convergence ----

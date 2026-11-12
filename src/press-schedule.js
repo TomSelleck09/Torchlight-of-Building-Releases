@@ -19,7 +19,7 @@
 //   - its own model: a skill whose model already takes the Main Skill time it costs (Vendetta, Endless Vendetta);
 //   - not needed: a skill nothing on the dummy needs (a Mobility skill no line reads, a restoring Elixir, a buff skill whose buff is
 //     inactive or read by nothing: the skill badge's rule, src/skill-coverage.js idleBuffReason; an inactive damage source): never pressed.
-// A press costs the skill's use time (a hit model's effective use time; else the Split header's, Cast Speed-scaled when its speed type
+// A press costs the skill's use time (a hit model's effective use time, whether the hit deals damage or not; else the Split header's, Cast Speed-scaled when its speed type
 // is Cast Speed), or a leap's fixed time when longer. The Main Skill keeps 1 − Σ press time ÷ interval of its action time: a cast or
 // channel Main Skill (a beam, a channeled DoT) loses it, a cooldown- or Terra-bound one keeps its rate while its casts fit, and one you
 // do not cast (Clockwork Core-, Tangle-, Wind Rhythm-, Activation Medium- or item-triggered) loses nothing (src/planner.js pressInputs.main).
@@ -127,7 +127,10 @@ export function collectPressInputs({ setups = [], activeNames = new Set(), mainK
     const hit = skillHits.find((item) => item.setupKey === key && item.modeled);
     const clauses = setup.supportEffects?.clauses || [];
     const header = headerUseTime(name, castSpeedFactor);
-    const useSeconds = Number(hit?.rate?.effectiveUseTimeSeconds) > 0 ? hit.rate.effectiveUseTimeSeconds : header.seconds;
+    // The use time is the hit model's whether its hit deals damage or not (2026-11-11 build audit G3: Thunder Spike under Extreme Coldness
+    // has no damage, but its attack-speed use time, 0.064 s, is still the press; the Split header's 1 s is unscaled for an attack-speed skill).
+    const timedHit = hit || skillHits.find((item) => item.setupKey === key && Number(item?.rate?.effectiveUseTimeSeconds) > 0);
+    const useSeconds = Number(timedHit?.rate?.effectiveUseTimeSeconds) > 0 ? timedHit.rate.effectiveUseTimeSeconds : header.seconds;
     const leap = Math.max(0, ...enabledSupports(setup).map((support) => LEAP_FIXED_SECONDS[support.name] || 0));
     const pressSeconds = Math.max(useSeconds, leap);
     const useNote = leap > useSeconds ? `the leap's fixed ${leap} s over its ${round(useSeconds)} s use time; provisional` : `${round(useSeconds)} s use time`;

@@ -122,7 +122,7 @@ function terraRecast(name) {
     perSecond: (castSpeedFactor = 1) => 1 / Math.max(speedType === "cast-speed" && castSpeedFactor > 0 ? useTimeSeconds / castSpeedFactor : useTimeSeconds, chargeIntervalSeconds)
   });
 }
-function dotProfile(name, { groupId, durationSeconds, delivery, channeled = false, castIntervalSeconds = null, refreshPerSecond = null, extraAdditional = [], perAdditionalMaxStackAdditionalPercent = null, notes = [], gameNote = "", unmodeled = [], randomRoll = null }) {
+function dotProfile(name, { groupId, durationSeconds, delivery, channeled = false, castIntervalSeconds = null, refreshPerSecond = null, extraAdditional = [], perAdditionalMaxStackAdditionalPercent = null, notes = [], gameNote = "", unmodeled = [], randomRoll = null, linked = false }) {
   const table = skillHitDamageSs13[name] || skillHitDamageNewSkills[name];
   const group = (table?.groups || []).find((item) => item.id === groupId) || null;
   const row = (level) => group?.levels?.[String(Math.max(1, Math.min(20, Math.floor(level || 20))))]?.entries?.[0] || null;
@@ -134,7 +134,7 @@ function dotProfile(name, { groupId, durationSeconds, delivery, channeled = fals
     delivery, castIntervalSeconds, channeled, beam: tags.includes("Beam"), maxChanneledStacks: channeled ? skillTimingSs13[name]?.channel?.maxStacks ?? 5 : null,
     dot: { durationSeconds, perSecondAtLevel, stacking: "strongest", referenceLevel: 20, referencePerSecond: perSecondAtLevel(20) },
     refreshPerSecond, recast: delivery === "spell-terra" ? terraRecast(name) : null, extraAdditional, perAdditionalMaxStackAdditionalPercent,
-    builtInReaping: null, canInflictHitAilments: false, randomRoll: randomRoll ? Object.freeze({ ...randomRoll }) : null,
+    builtInReaping: null, canInflictHitAilments: false, randomRoll: randomRoll ? Object.freeze({ ...randomRoll }) : null, ...(linked ? { linked: true } : {}),
     notes, unmodeled, reason: group ? null : `no game DoT row linked for ${name}`,
     sources: { refdata: table?.refdata || null, gameData: group ? `config_skill_damage group ${groupId} (levels 1–20, DoT row${gameNote ? `; ${gameNote}` : ""})` : null, timing: skillTimingSs13[name] ? `SkillEditor Split ${skillTimingSs13[name].splitId}` : null }
   });
@@ -142,7 +142,11 @@ function dotProfile(name, { groupId, durationSeconds, delivery, channeled = fals
 
 const SKILL_DOT_PROFILES = Object.freeze(Object.fromEntries([
   // Batch 1: spell channels whose own damage is a status (Wilting Beam shape: refreshed by every channel use).
-  dotProfile("Mind Control", { groupId: 251, durationSeconds: 2, delivery: "channel-other", channeled: true, castIntervalSeconds: 0.333, perAdditionalMaxStackAdditionalPercent: 21.5,
+  // `linked` (2026-11-12, SS14 client; research/build-20t-mind-control-audit-2026-11-12.md G5): the DoT is buff 10180 (s_shengmingjiqu_dot, tags DoT
+  // 5100309 and 5100310, damage 251), added by the link component 167513 of Split 513922 (Skill_SuckLife). Its update (0x142273d40 → 0x1422806e0)
+  // drops a linked target's record when the buff instance is gone and adds the buff again for every linked target that holds none, so a DoT a
+  // removal takes off (Approaching Nightfall) is back at the link's next update, read as the next frame while channeling (inferred cadence).
+  dotProfile("Mind Control", { groupId: 251, durationSeconds: 2, delivery: "channel-other", channeled: true, castIntervalSeconds: 0.333, perAdditionalMaxStackAdditionalPercent: 21.5, linked: true,
     notes: ["Mind Control: one Link reaches the single dummy (3 + 1 per channeled stack links need other enemies); the DoT (reference data: lasts 2 s) is refreshed by every channel use. The 0.5% Max Life per second per link is leech, not damage."] }),
   dotProfile("Path of Flames", { groupId: 161, durationSeconds: 2, delivery: "channel-other", channeled: true, castIntervalSeconds: 0.333, perAdditionalMaxStackAdditionalPercent: 21.5,
     notes: ["Path of Flames: the Fire Path's DoT (reference data: lasts 2 s) is taken as refreshed every channel use with the dummy standing on the path (best case; laying the path needs the character to move). The dash hit at max stacks (group 162) carries 0 damage in every game row and is not modeled."] }),

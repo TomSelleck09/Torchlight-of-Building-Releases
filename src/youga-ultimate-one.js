@@ -337,9 +337,11 @@ const ALTERNATE = {
   "Shadow Shot": { read: (ctx, effect) => {
     const per = 30 * effect, cap = 120 * effect;
     return { lines: [{ text: `+${round(cap)}% additional Erosion Damage`, settle: (env) => {
+      // The count every crowd control counter reads (2026-11-12): each type at its share of time (src/unit-buff-set.js crowdControlCount).
       const types = env.target?.crowdControlTypes || [];
-      const value = Math.min(cap, per * types.length);
-      return value > 0 ? { text: `+${round(value)}% additional Erosion Damage`, working: `+${round(per)}% per crowd control type on the dummy × ${types.length} (${types.join(", ")}; src/combat-states.js), up to +${round(cap)}% (game recipe 15240669)` } : null;
+      const count = Number.isFinite(env.target?.crowdControlCount) ? env.target.crowdControlCount : types.length;
+      const value = Math.min(cap, per * count);
+      return value > 0 ? { text: `+${round(value)}% additional Erosion Damage`, working: `+${round(per)}% per crowd control type on the dummy × ${round(count)} (${types.join(", ")}${count < types.length ? `; part-time types at their share of time` : ""}; src/combat-states.js), up to +${round(cap)}% (game recipe 15240669)` } : null;
     } }], reason: "no crowd control effect on the dummy" };
   } },
   // Blizzard (recipe 5359173: on this skill's hit, a P3 s debuff on the target: attr 51211 Cold Damage taken mod 4 = GetMaxMin(0, l0 ×

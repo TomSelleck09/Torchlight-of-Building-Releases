@@ -53,6 +53,7 @@
 // - Mercury Purged: each Baptism buff is held while the build keeps that ailment on the dummy (every infliction refreshes its 8 s).
 
 import { normalizePercentageText } from "./percentage-text.js";
+import { maxChanneledStacksLine } from "./channeled-stack-lines.js";
 
 export const CHARIOT = "rosa-high-court-chariot";
 export const UNSULLIED = "rosa-unsullied-blade";
@@ -258,7 +259,9 @@ function chariotState(lines, modifierTexts, requestedConditions) {
   // No Guard (Desperation; 475417344): 10 × (2 + field 2006050 "+N Max Channeled Stacks") × (1 + Block Ratio × p0 / 100). The channel
   // recasts the Domain at max stacks: +100% effect for the first 2 stacks lost, +100% for each further one. The field read has no cap.
   const channel = one("despChannel"), effect = one("despEffect");
-  const maxStacks = (channel ? Number(channel.match[1]) : KEYWORDS.noGuard.firstStacksLost) + plainSum(modifierTexts, MAX_CHANNELED);
+  const maxStacks = (channel ? Number(channel.match[1]) : KEYWORDS.noGuard.firstStacksLost) + plainSum(modifierTexts, MAX_CHANNELED)
+    // The ring's "+N Max Channeled Stacks when equipped in the left / right Ring slot" from that slot (2026-11-12, src/channeled-stack-lines.js).
+    + modifierTexts.filter((line) => line && line.origin !== "derived" && !line.lineEffect).reduce((total, line) => { const read = maxChanneledStacksLine(line); return total + (read?.ringSlot && read.active ? read.value * (line.multiplier ?? 1) : 0); }, 0);
   const lostIncrease = maxStacks >= KEYWORDS.noGuard.firstStacksLost ? KEYWORDS.noGuard.perStackLostPercent * (1 + Math.max(0, maxStacks - KEYWORDS.noGuard.firstStacksLost)) : 0;
   const noGuardIncrease = lostIncrease + plainSum(modifierTexts, NO_GUARD_EFFECT);
   const perRatio = effect ? Number(effect.match[1]) : 0;

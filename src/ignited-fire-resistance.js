@@ -70,10 +70,14 @@ export function ignitedFireResistanceLines(modifierTexts = []) {
  * @param {boolean|number} p.fixed "Fire Resistance … is fixed at 0" (Fueling: true) or at a value (Ice to Blaze while Frostbitten,
  *   hero trait audit B2): the line has nothing to scale
  * @param {string} [p.reading] defaults to the active reading
- * @returns {{ lines, multiplier, reading, applies, unmultipliedPercent, hitPercent, dotPercent, capped, maxPercent, dotFlatChange }}
+ * @param {{ percent: number, uptime: number }|null} [p.elementalRaise] Elemental Resistance (5741) on the dummy for `uptime` of the time (the
+ *   follower's Ill Will, src/follower-model.js): added to the Fire stat after Sun's Embrace's multiplier and capped at `maxPercent` (the Fire
+ *   target trace adds 5741 to 5101; manual 1000010424 caps, then penetration), time-averaged; none on a fixed Fire Resistance (record
+ *   556657600 sets 5101 to the fixed value − 5741, so the total stays fixed)
+ * @returns {{ lines, multiplier, reading, applies, unmultipliedPercent, hitPercent, dotPercent, capped, maxPercent, dotFlatChange, elementalRaise, transformsFlat, withoutRaise }}
  *   dotFlatChange(r): the change of the DoT resistance when one more flat 5101 write r (e.g. −8 at max Affliction) holds.
  */
-export function ignitedFireResistance({ modifierTexts = [], ignited = false, basePercent = 30, reductionPercent = 0, fixed = false, reading = activeReading, maxPercent = DUMMY_MAX_FIRE_RESISTANCE_PERCENT, floorPercent = activeFloorPercent } = {}) {
+export function ignitedFireResistance({ modifierTexts = [], ignited = false, basePercent = 30, reductionPercent = 0, fixed = false, reading = activeReading, maxPercent = DUMMY_MAX_FIRE_RESISTANCE_PERCENT, floorPercent = activeFloorPercent, elementalRaise = null } = {}) {
   const lines = ignitedFireResistanceLines(modifierTexts);
   const multiplier = lines.reduce((factor, line) => factor * (1 + line.value / 100), 1);
   const fixedValue = fixed === true ? 0 : Number.isFinite(fixed) ? fixed : null;
@@ -87,10 +91,16 @@ export function ignitedFireResistance({ modifierTexts = [], ignited = false, bas
     if (reading === "floor") return Math.max(floorPercent, Math.min(x * multiplier, maxPercent));
     return Math.min(x * multiplier, maxPercent);
   };
+  // Elemental Resistance on top (Ill Will), up to the cap; a stat already above it is left as it is.
+  const raise = elementalRaise && elementalRaise.percent > 0 && elementalRaise.uptime > 0 && fixedValue == null ? { percent: elementalRaise.percent, uptime: Math.min(1, elementalRaise.uptime) } : null;
+  const raised = (value) => raise ? raise.uptime * Math.max(value, Math.min(value + raise.percent, maxPercent)) + (1 - raise.uptime) * value : value;
   return {
     lines, multiplier, reading, applies, ignited, basePercent, reductionPercent, maxPercent,
-    unmultipliedPercent: flat, hitPercent: at(flat, false), dotPercent: at(flat, true),
+    unmultipliedPercent: flat, hitPercent: raised(at(flat, false)), dotPercent: raised(at(flat, true)),
     capped: applies && reading !== "beforeReductions" && flat * multiplier > maxPercent,
-    dotFlatChange: (change) => at(flat + change, true) - at(flat, true)
+    dotFlatChange: (change) => raised(at(flat + change, true)) - raised(at(flat, true)),
+    // Whether a flat change (the max-Affliction reduction) reaches the resistance through dotFlatChange rather than as it is.
+    transformsFlat: applies || Boolean(raise), elementalRaise: raise,
+    withoutRaise: { hitPercent: at(flat, false), dotPercent: at(flat, true) }
   };
 }

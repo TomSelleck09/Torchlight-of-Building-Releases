@@ -97,6 +97,56 @@ export function attackLifeConsumption(lines = [], { attackUses = [], currentLife
   return { copies: lines, percent: round(percent), currentLife: round(life), lifePerUse: round(lifePerUse), uses, usesPerSecond: round(stepsPerSecond), lifePerSecond: round(stepsPerSecond * lifePerUse) };
 }
 
+// "Consumes X% of current Life on skill use" (Blade-dancer's Fingers; game record 539780864, 2026-11-11 build audit G2): trigger 1000074
+// with no tag, node 500 current Life (blackboard 13) × p0, node 122 type 1: the consume pair of 200000005, so it is Life consumed for
+// every Life-consumed reader. It fires on every 1000074 use of any skill: a press, a Spell Burst automatic cast, a Multistrike repeat,
+// each Combo step, the Seething Spirit's forwarded casts (ghost 10100 forwards its use events to your rows; research/attack-life-consume-
+// 2026-11-09.md §3); a triggered use (1000060: an Activation Medium trigger, Preparation, an item trigger, a Focus strike) never fires it.
+// Activation Medium: Motionless's auto-casts are your own uses (user-confirmed in game 2026-11-11).
+export const SKILL_USE_LIFE_CONSUME = /^Consumes (\d+(?:\.\d+)?)% of current Life on skill use$/i;
+
+/** The "Consumes X% of current Life on skill use" copies: [{ percent, source, text }]. */
+export function skillUseLifeConsumeLines(modifierTexts = []) {
+  const lines = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived" || line.lineEffect) continue;
+    for (const text of clauses(line.text)) {
+      const match = text.match(SKILL_USE_LIFE_CONSUME);
+      if (match) lines.push({ percent: Number(match[1]) * (line.multiplier ?? 1), source: line.source, text });
+    }
+  }
+  return lines;
+}
+
+// "Seething Spirit consumes X% of current Life when using skills" (Ancestral Hate, revived on Rehan – Seething Silhouette; game record
+// 11461973 row 6, 2026-11-11 build audit G1): trigger 1000074 with mine [6001190] (the tag ghost 10100 adds to every Seething Spirit
+// cast), node 500 current Life (blackboard 13) × 30, node 122 type 1: the consume pair of 200000005, so it is Life consumed on data
+// types 10000000 / 10000001 for every Life-consumed reader. Each Spirit cast (each skill instance: a Combo step) raises 1000074 at
+// its release and the Spirit's use events reach your rows (research/attack-life-consume-2026-11-09.md §3), at the planner's current Life.
+export const SPIRIT_LIFE_CONSUME = /^Seething Spirit consumes (\d+(?:\.\d+)?)% of current Life when using skills$/i;
+
+/** The "Seething Spirit consumes X% of current Life when using skills" copies: [{ percent, source, text }]. */
+export function spiritLifeConsumeLines(modifierTexts = []) {
+  const lines = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived" || line.lineEffect) continue;
+    for (const text of clauses(line.text)) {
+      const match = text.match(SPIRIT_LIFE_CONSUME);
+      if (match) lines.push({ percent: Number(match[1]) * (line.multiplier ?? 1), source: line.source, text });
+    }
+  }
+  return lines;
+}
+
+/**
+ * The Life Ancestral Hate takes per second: percent × current Life on every Seething Spirit cast (`spiritUses`: { usesPerSecond,
+ * stepsPerUse, name, from }), null without a copy or an active Spirit.
+ */
+export function spiritLifeConsumption(lines = [], { spiritUses = null, currentLife = 0 } = {}) {
+  if (!lines.length || !spiritUses) return null;
+  return attackLifeConsumption(lines, { attackUses: [spiritUses], currentLife });
+}
+
 export const MAIN_SKILL_MANA_CONSUME = /^Consumes (\d+(?:\.\d+)?)% of current Mana when casting a Main Skill(?:\. Interval: (\d+(?:\.\d+)?) ?s)?$/i;
 
 /** The "Consumes X% of current Mana when casting a Main Skill" copies (each its own gate): [{ percent, intervalSeconds, source, text }]. */
@@ -197,7 +247,7 @@ export function setupCost(setup, costLines = [], { fixedSupportMultiplierPercent
  * their own player uses (Multistrike repeats and triggered uses excluded: rate.playerUsesPerSecond); the beam its casts; a DoT-only
  * skill its applications unless a trigger casts it (`triggeredKeys`).
  */
-export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey = null, beamCastsPerSecond = 0, triggeredKeys = new Set(), main = null, attackUses = [] } = {}) {
+export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey = null, beamCastsPerSecond = 0, triggeredKeys = new Set(), main = null, attackUses = [], skillUses = [] } = {}) {
   const uses = new Map();
   const add = (key, value, label) => { if (!key || !(value > 0)) return; const current = uses.get(key) || { usesPerSecond: 0, from: [] }; current.usesPerSecond += value; current.from.push(label); uses.set(key, current); };
   if (beamSetupKey) add(beamSetupKey, beamCastsPerSecond, "beam casts");
@@ -213,14 +263,15 @@ export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey 
   // The Main Skill's every use (player presses, Spell Burst automatic casts, Multistrike repeats, triggered uses: triggers 1000074 and
   // 1000060), for the "Consumes X% of current Mana when casting a Main Skill" copies.
   // The Attack skills' player uses (1000074) with their skill instances per use, for "Consumes X% of current Life when you use Attack Skills".
-  return { measured: true, bySetup: uses, attackUses, main: main && main.usesPerSecond > 0 ? { setupKey: main.setupKey ?? null, name: main.name ?? null, usesPerSecond: main.usesPerSecond } : null };
+  // Every skill's 1000074 uses (any skill, Attack or not), for "Consumes X% of current Life on skill use" (record 539780864).
+  return { measured: true, bySetup: uses, attackUses, skillUses, main: main && main.usesPerSecond > 0 ? { setupKey: main.setupKey ?? null, name: main.name ?? null, usesPerSecond: main.usesPerSecond } : null };
 }
 
 /**
  * The build's Mana and Life consumed per second and in the last 4 s. `uses` is resourceUseFacts' output (null before the hit pass:
  * the result is unmeasured and every consumption line stays off with that reason).
  */
-export function resourceConsumption({ setups = [], activeNames = new Set(), modifierTexts = [], uses = null, maxMana = 0, maxLife = 0, currentLife = 0, currentMana = null, consumeBlocked = null, fixedSupportMultiplierPercent = 100, spiritAttackUses = null } = {}) {
+export function resourceConsumption({ setups = [], activeNames = new Set(), modifierTexts = [], uses = null, maxMana = 0, maxLife = 0, currentLife = 0, currentMana = null, consumeBlocked = null, fixedSupportMultiplierPercent = 100, spiritAttackUses = null, spiritUses = null } = {}) {
   const costLines = skillCostLines(modifierTexts);
   // Frozen Lotus "Skills no longer cost Mana" (record 342173504, label 3010050; chunk 4, 2026-11-01): no Mana is consumed, so every
   // "Mana consumed recently" line reads 0. A share converted to Life stays a Life cost.
@@ -237,8 +288,48 @@ export function resourceConsumption({ setups = [], activeNames = new Set(), modi
   }
   const consume = mainSkillManaConsumption(mainSkillManaConsumeLines(modifierTexts), { mainUsesPerSecond: Number(uses.main?.usesPerSecond) || 0, mainName: uses.main?.name ?? null, currentMana: currentMana ?? maxMana, blocked: consumeBlocked });
   const attackConsume = attackLifeConsumption(attackLifeConsumeLines(modifierTexts), { attackUses: [...(uses.attackUses || []), ...(spiritAttackUses ? [spiritAttackUses] : [])], currentLife });
-  const manaPerSecond = skills.reduce((sum, skill) => sum + skill.manaPerSecond, 0) + (consume?.manaPerSecond || 0), lifePerSecond = skills.reduce((sum, skill) => sum + skill.lifePerSecond, 0) + (attackConsume?.lifePerSecond || 0);
-  return { measured: true, manaPerSecond: round(manaPerSecond), lifePerSecond: round(lifePerSecond), manaRecently: round(manaPerSecond * RESOURCE_RECENT_SECONDS), lifeRecently: round(lifePerSecond * RESOURCE_RECENT_SECONDS), maxMana, maxLife, skills, costLines, consume, attackConsume };
+  const skillConsume = attackLifeConsumption(skillUseLifeConsumeLines(modifierTexts), { attackUses: [...(uses.skillUses || []), ...(spiritUses ? [spiritUses] : [])], currentLife });
+  const spiritConsume = spiritLifeConsumption(spiritLifeConsumeLines(modifierTexts), { spiritUses, currentLife });
+  const manaPerSecond = skills.reduce((sum, skill) => sum + skill.manaPerSecond, 0) + (consume?.manaPerSecond || 0), lifePerSecond = skills.reduce((sum, skill) => sum + skill.lifePerSecond, 0) + (attackConsume?.lifePerSecond || 0) + (spiritConsume?.lifePerSecond || 0) + (skillConsume?.lifePerSecond || 0);
+  return { measured: true, manaPerSecond: round(manaPerSecond), lifePerSecond: round(lifePerSecond), manaRecently: round(manaPerSecond * RESOURCE_RECENT_SECONDS), lifeRecently: round(lifePerSecond * RESOURCE_RECENT_SECONDS), maxMana, maxLife, skills, costLines, consume, attackConsume, spiritConsume, skillConsume };
+}
+
+/**
+ * The consumes of current Life as event streams for the Life balance (src/life-balance.js; 2026-11-11 build audit G4): one stream per use
+ * source (a setup's uses, the Seething Spirit's casts), each event taking every copy that fires on it at once (the copies of one use read the
+ * same current Life and are netted once a frame), so Σ percent × events/s is the same Life consumed per unit of current Life that
+ * resourceConsumption counts. `fixedLifePerSecond`: the skill costs paid in Life (a fixed amount per use). Empty without measured uses.
+ */
+export function currentLifeConsumeStreams({ setups = [], activeNames = new Set(), modifierTexts = [], uses = null, spiritAttackUses = null, spiritUses = null, fixedSupportMultiplierPercent = 100 } = {}) {
+  if (!uses) return { streams: [], fixedLifePerSecond: 0 };
+  const sum = (lines) => lines.reduce((total, line) => total + line.percent, 0);
+  const attackPercent = sum(attackLifeConsumeLines(modifierTexts)), skillPercent = sum(skillUseLifeConsumeLines(modifierTexts)), spiritPercent = sum(spiritLifeConsumeLines(modifierTexts));
+  const byKey = new Map();
+  const add = (key, name, rate, percent, from) => {
+    if (!(rate > 0) || !(percent > 0)) return;
+    const entry = byKey.get(key) || { source: name, eventsPerSecond: 0, percentRate: 0, from: [] };
+    entry.eventsPerSecond = Math.max(entry.eventsPerSecond, rate);
+    entry.percentRate += percent * rate;
+    entry.from.push(`${from} ${round(percent)}%`);
+    byKey.set(key, entry);
+  };
+  const steps = (use) => (Number(use?.usesPerSecond) || 0) * (use?.stepsPerUse || 1);
+  for (const use of [...(uses.attackUses || []), ...(spiritAttackUses ? [spiritAttackUses] : [])]) add(use.setupKey, use.name, steps(use), attackPercent, "Attack use");
+  for (const use of [...(uses.skillUses || []), ...(spiritUses ? [spiritUses] : [])]) add(use.setupKey, use.name, steps(use), skillPercent, "skill use");
+  if (spiritUses) add(spiritUses.setupKey, spiritUses.name, steps(spiritUses), spiritPercent, "Seething Spirit cast");
+  const costLines = skillCostLines(modifierTexts);
+  let fixedLifePerSecond = 0;
+  for (const setup of setups) {
+    if (setup.enabled === false || !activeNames.has(setup.name)) continue;
+    const use = uses.bySetup?.get(setup.setupKey);
+    if (!use || !(use.usesPerSecond > 0)) continue;
+    const cost = setupCost(setup, costLines, { fixedSupportMultiplierPercent, currentLife: 0 });
+    // "N% of current Life will be consumed when the supported skill is cast" (Recklessness) on the setup's player uses.
+    add(setup.setupKey, setup.name, use.usesPerSecond, cost.currentLifePercent, "supported skill cast");
+    fixedLifePerSecond += use.usesPerSecond * cost.life;
+  }
+  const streams = [...byKey.values()].map((entry) => ({ source: entry.source, percentOfCurrent: entry.percentRate / entry.eventsPerSecond, eventsPerSecond: entry.eventsPerSecond, consumed: true, from: entry.from }));
+  return { streams, fixedLifePerSecond };
 }
 
 /**

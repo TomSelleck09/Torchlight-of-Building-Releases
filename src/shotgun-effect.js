@@ -68,16 +68,20 @@ export function shotgunReach(count, reach = "all", { nearTarget = true } = {}) {
  * One volley on the dummy: { count, reached, factor, reach, total } with total = 1 + factor × (reached − 1).
  * @param {{ count: number, factor?: number, reach?: "fan"|"half"|"all" }} falloff
  */
-export function shotgunVolley(falloff, { nearTarget = true } = {}) {
+export function shotgunVolley(falloff, { nearTarget = true, landed = null } = {}) {
   if (!falloff) return null;
   const count = Math.max(1, Math.trunc(Number(falloff.count) || 1));
   const reach = SHOTGUN_REACH[falloff.reach] ? falloff.reach : "all";
   const factor = falloff.factor ?? 1;
-  const reached = shotgunReach(count, reach, { nearTarget });
+  const autoReached = shotgunReach(count, reach, { nearTarget });
+  // `landed`: the user's "Projectiles hitting the dummy" count (Config tab, combat.projectileHits; 2026-11-12), clamped to 1..fired.
+  // It replaces the reach rule at either distance.
+  const override = Number.isFinite(landed) && landed >= 1;
+  const reached = override ? Math.min(count, Math.max(1, Math.trunc(landed))) : autoReached;
   // `lead`: full-damage hits outside the volley's brother group (a hit rule in group −1 is never counted by a sibling, client
   // 0x1423e3d40), landing before it: Spectral Slash's Finisher slash ahead of its Clones (Split 626480; research/spectral-slash-clones-2026-11-09.md).
   const lead = Math.max(0, Number(falloff.lead) || 0);
-  return { count, reached, factor, reach, nearTarget: nearTarget !== false, ...(lead ? { lead } : {}), total: lead + shotgunTotal(reached, factor) };
+  return { count, reached, factor, reach, nearTarget: nearTarget !== false, ...(lead ? { lead } : {}), ...(override ? { override: true, autoReached } : {}), total: lead + shotgunTotal(reached, factor) };
 }
 
 /** Hit-profile note for a volley of `count` at coefficient `factor` (best case: standing close). */

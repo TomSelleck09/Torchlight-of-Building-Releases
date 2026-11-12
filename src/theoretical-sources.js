@@ -211,7 +211,9 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     ...additionalIgniteDurationRolls.map((roll) => ({
       ...entry(roll.source, roll.value, "Additional Ignite duration", "Game-file operation 4; equipped-item binding provisional"),
       key: roll.key
-    }))
+    })),
+    // "-50% additional Ailment Duration" (Approaching Nightfall, record 10140181 row 1; src/build-mechanics.js).
+    ...(extraSources.additionalDuration || []).map((line) => entry(line.source, line.value, "Additional Ignite duration", "game record", { text: line.text }))
   ].filter((item) => item.value);
   hookInPlace("duration", allDurationSources);
   const durationSources = firesAllureDurationSources(allDurationSources, coreTalents.firesAllure);
@@ -445,7 +447,8 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
   // scales it with the rest of the flat sum: the applied change is the multiplied sum's change.
   const maxAffliction = maxAfflictionReductionPercent && active("affliction") ? {
     ...maxAfflictionUptime({ afflictionPerSecond: passiveAfflictionPerSecond, removers: afflictionRemovers }),
-    reductionPercent: combat.ignitedFireResistance?.applies ? combat.ignitedFireResistance.dotFlatChange(maxAfflictionReductionPercent) : maxAfflictionReductionPercent,
+    // (and so does the follower's Ill Will, which raises the sum toward the cap: transformsFlat)
+    reductionPercent: combat.ignitedFireResistance?.transformsFlat ? combat.ignitedFireResistance.dotFlatChange(maxAfflictionReductionPercent) : maxAfflictionReductionPercent,
     resistancePercent: combat.targetFireResistancePercent,
     penetrationPercent: penetrationSources.reduce((sum, item) => sum + item.value, 0),
     sources: maxAfflictionReductionSources

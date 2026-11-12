@@ -233,9 +233,15 @@ export function prismAffixCoverage(prism, kind, clause = null) {
   // Phantasmagoria's +75% is already inside its rolls: its level 3 rows (config_modifier 12243…) hold the amplified values, rare and legendary
   // (6% -> 10.5%; +40% -> +100%, not ×1.75, so the rows decide). So the base affix is carried by the roll values.
   if (kind === "base" && prism?.type === "ethereal" && prism.base === "Phantasmagoria") return "In calc";
-  // Haze's base affix (chunk 5, 2026-11-01): its lines reach the readers once the panel has a core; four rows have no reader yet (open question
-  // `prism-haze-base-lines`), and the Harmonious Field trigger needs that skill's model.
-  if (kind === "base" && prism?.type === "ethereal" && prism.base === "Haze" && prism.baseAffix) return /While standing still|per \+5% Movement Speed|Elites within 10m|per Synthetic Troop Minion|Harmonious Field/.test(prism.baseAffix) ? "Not modeled" : combineStatuses(String(prism.baseAffix).split(/;\s*/).map((line) => refineCoverage("Not modeled", line)));
+  // Haze's base affix (chunk 5, 2026-11-01; every row read since 2026-11-11): its lines reach the readers once the panel has a core (open
+  // question `prism-haze-base-lines`), clause by clause as src/modifier-texts.js pushes them.
+  // An Inactive clause is neutral beside an In calc one, as on the hero traits (heroTraitCoverage below): a row's clauses are the
+  // game row's alternatives (the One-Handed / Two-Handed row: the held weapon settles which applies), so a one-handed build reads
+  // In calc, not Partly modeled (2026-11-11); a row with no clause in force stays Inactive.
+  if (kind === "base" && prism?.type === "ethereal" && prism.base === "Haze" && prism.baseAffix) {
+    const statuses = String(prism.baseAffix).split(/;\s*/).map((line) => refineCoverage("Not modeled", line));
+    return statuses.includes("In calc") && statuses.every((status) => status === "In calc" || status === "Inactive" || neutralStatuses.has(status)) ? "In calc" : combineStatuses(statuses);
+  }
   // Every other base's text reaches the readers as "[Base] clause" lines (src/modifier-texts.js; core audit batch B1): the
   // base affix combines the statuses of those clauses.
   if (kind === "base" && prism?.type === "ethereal") {

@@ -52,6 +52,7 @@ import { legendaryLineStatus } from "./legendary-line-status.js";
 import { TROOP_FAMILIES } from "./moto-iris-traits.js";
 import { MAGMASKULL_AFFLICTION_FIRE_LINE } from "./affliction-fire-hits.js";
 import { isFocusRateProfile } from "./focus-speed.js";
+import { nightfallLineStatus } from "./approaching-nightfall.js";
 
 // Second opinion for tooltip coverage badges. The older per-panel checks know the
 // Ignite ledger; this one knows the generic ailment, Reaping, crit, support, curse,
@@ -249,10 +250,17 @@ export function engineLineStatus(text, planner = context) {
   if (gainedAura) return gainedAura;
   // Regain enablers on attack Critical Strike (Ranger Legendary Medium Talents; user-stated 2026-10-14; src/regain-model.js):
   // In calc when the talent drives a Regain pool that a used Regain line reads; otherwise Life / Energy Shield recovery only.
+  // The Life balance's inputs (src/life-balance.js, 2026-11-11 build audit G4): with a settled balance, the Life recovery and loss lines set
+  // the current Life every consume and Life reader takes.
+  const balanceInput = lifeBalanceLineStatus(text, planner);
+  if (balanceInput) return balanceInput;
   const enabler = regainEnablerStatus(text, planner);
   if (enabler) return enabler;
   const regainAmount = regainAmountStatus(text, planner);
   if (regainAmount) return regainAmount;
+  // Approaching Nightfall's two clauses (src/approaching-nightfall.js): the settlement on Reaping and the Ailment Duration.
+  const nightfall = planner?.activation ? nightfallLineStatus(normalizePercentageText(String(text || "")).trim(), planner) : null;
+  if (nightfall) return nightfall.status;
   const buffTiming = buffTimingLineStatus(text, planner);
   if (buffTiming) return buffTiming;
   let found = null;
@@ -288,6 +296,23 @@ export function regainAmountStatus(text, planner = context) {
   const regain = planner.lineEffects?.combat?.regain;
   const decides = pools.some((pool) => { const amount = Number(regain?.pools?.[pool]?.uncappedPercent) || 0; return value > 0 ? amount > 0 && amount - value <= 0 : amount <= 0 && amount - value > 0; });
   return reads && decides ? "In calc" : "Counted in stats";
+}
+
+// The lines the Life balance reads (src/life-balance.js; 2026-11-11 build audit G4): Life Regain and its interval, Life Path's double and gate,
+// Split Form's no-hit label, the Restoration Over Time share, Ancestral Hate's interval share, Life Regeneration, Eternal Sun's "when Life is
+// not full" Regeneration, Chaos Abyss's loss and Tide of the Styx's "Non-Full Life state will be considered as Low Life".
+const LIFE_BALANCE_INPUTS = [
+  /^[+-][\d.]+% Life Regain(?: and (?:Energy )?Shield Regain| and Energy Shield Regain)?$/i, /^[+-][\d.]+% additional (?:Life )?Regain Interval$/i,
+  /^(?:Double Life Regain|Life Regain doubles)$/i, /^Life Regain is only effective when Life is lower than [\d.]+ ?%$/i, /^Life Regain no longer requires a hit to activate$/i,
+  /^Converts [\d.]+% of Life Regain and (?:Energy )?Shield Regain to Restoration Over Time$/i, /^Additional bonuses to Energy Shield Regain Interval also apply to Life Regain Interval/i,
+  /^Regenerates [\d.]+% Life per second(?: when Life is not full)?$/i, /^Regenerates [\d.]+ Life per second$/i, /^[+-][\d.]+% (?:additional )?Life Regeneration Speed$/i,
+  /^Loses [\d.]+% current Life(?: and Energy Shield)? when inflicting \w+ ?\. Interval: [\d.]+ ?s$/i, /^Non- ?Full Life state will be considered as Low Life$/i
+];
+/** A Life balance input line's status, or null when the build settles no balance or the text is not one. */
+export function lifeBalanceLineStatus(text, planner = context) {
+  if (!planner?.lineEffects?.state?.lifeBalance?.settled) return null;
+  const clean = normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim().replace(/^\[[^\]]+\]\s*/, "");
+  return LIFE_BALANCE_INPUTS.some((pattern) => pattern.test(clean)) ? "In calc" : null;
 }
 
 /** A Regain enabler line's status (src/regain-model.js), or null when the text is not one. */
@@ -594,7 +619,7 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     if (holder) return holder.status;
     // "Consumes X% of current Mana when casting a Main Skill" (src/combat-states.js, 2026-11-05 build audit gap 1): the combat entry
     // decides (In calc where a Mana-consumed reader takes the consumption); without one the residual rule stands.
-    if (/^Consumes [\d.]+% of current (?:Mana when casting a Main Skill|Life when you use Attack Skills)\b/i.test(line)) {
+    if (/^Consumes [\d.]+% of current (?:Mana when casting a Main Skill|Life when you use Attack Skills|Life on skill use)\b/i.test(line)) {
       const own = (planner?.lineEffects?.combat?.entries || []).find((item) => item.text === line);
       if (own) return own.status;
     }
@@ -1180,6 +1205,17 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (planner?.activation && (/^Triggers the Sentry Main Skill when there are no Sentries within \d+ ?m\. Interval: [\d.]+ ?s$/i.test(text) || /^The number of Sentries that can be deployed at a time is equal to the Max Sentry Quantity$/i.test(text))) {
     return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.castFrequency) ? "No DPS effect" : "Inactive";
   }
+  // Haze base row 1204200108's trigger (game affix 182134464: Shared Fate's gates, 206 1 s, the Main Skill a Sentry skill, no own Sentry
+  // within 10 m, plus gate 184 on buff 10981 while channeling Harmonious Field): the same recast, so the same reading; Inactive without an
+  // enabled Harmonious Field on the board or a modeled Sentry skill.
+  if (planner?.activation && /^When channeling Harmonious Field, triggers the Sentry Main Skill if there are no Sentries within \d+ ?m\. Interval: [\d.]+ ?s$/i.test(text)) {
+    const field = planner.activation.activeNames?.has("Harmonious Field") && (planner.activation.setups || []).some((setup) => setup.name === "Harmonious Field" && setup.enabled !== false);
+    return field && (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.castFrequency) ? "No DPS effect" : "Inactive";
+  }
+  // "+X% Empower Skill Effect for <Skill>" (src/empower-effects.js NAMED_EMPOWER): In calc where that skill's Empower buff is in the
+  // calculation and Empower-scaled, Inactive otherwise.
+  const namedEmpower = normalizePercentageText(String(text)).replace(/\s+/g, " ").trim().match(/^[+-]?\d+(?:\.\d+)?% Empower (?:Skill )?Effect for (.+)$/i);
+  if (namedEmpower && planner?.activation) return (planner.empowerEffects?.entries || []).some((entry) => entry.skill === namedEmpower[1].trim() && entry.active && entry.empowerScaled) ? "In calc" : "Inactive";
   // Empower's one-Magus limit (src/minion-cores.js applySpiritMagiLimit): In calc where it left a Magus out, No DPS effect with one Magus.
   if (planner?.activation && /^The number of Max Spirit Magi In Map is 1$/i.test(text)) { const limit = planner.minionCores?.spiritMagiLimit; return limit?.dropped?.length ? "In calc" : (limit?.magi ?? magi.length) >= 1 ? "No DPS effect" : "Inactive"; }
   // Commander's Gambit on the Minions (src/minion-cores.js commanderGambitState): In calc where a modeled Minion holds one of your

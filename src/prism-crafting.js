@@ -126,6 +126,18 @@ export function prismSupportsLegendaryAffix(prism) {
   return prism?.type === "ethereal";
 }
 
+// The crafter's Haze base affix: kept only while the base is Haze (the Base Affix select shows only then).
+export function prismDraftBaseAffix(draft) {
+  return draft?.type === "ethereal" && draft.base === "Haze" ? draft.baseAffix || "" : "";
+}
+
+// The crafted prism the crafter stores: Legendary affix only where the prism has the slot, baseAffix only on Haze (field left out otherwise).
+export function prismCraftedItem(draft, id) {
+  const { baseAffix: _baseAffix, ...rest } = draft || {};
+  const baseAffix = prismDraftBaseAffix(draft);
+  return { ...rest, legendaryAffix: prismSupportsLegendaryAffix(draft) ? draft.legendaryAffix : "", ...(baseAffix ? { baseAffix } : {}), id };
+}
+
 export function prismHasMutatedCore(prism) {
   return prism?.type === "ethereal" && prismLevel(prism.base) === 4 && /\bMutated Core Talents no longer replace the original talent\b/i.test(prism.legendaryAffix || "");
 }

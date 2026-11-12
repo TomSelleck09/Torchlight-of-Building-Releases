@@ -334,7 +334,10 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   const perUsePercent = Math.max(0, Number(lifeConsume.percentOfMaxPerAttackUse) || 0), otherPercent = Math.max(0, Number(lifeConsume.otherPercentPerSecond) || 0);
   const mainSteps = Math.max(1, Number(facts?.mainStepsPerUse) || 1), spiritAttacks = Boolean(facts?.mainIsAttack);
   const perRagePercent = consumed ? Number(consumed.match[2]) / Number(consumed.match[1]) : Infinity;
-  const consumedRate = consumed ? G * ((hate ? spiritUsesIn * Number(hate.match[1]) : 0) + (spiritAttacks ? perUsePercent * spiritUsesIn * mainSteps : 0) + otherPercent) / perRagePercent : 0;
+  // Ancestral Hate reads current Life: the Life balance's level when the planner settled one (lifeConsume.currentLifeShare, 2026-11-11 build
+  // audit G4), else Max Life (an upper bound).
+  const hateShare = Number.isFinite(Number(lifeConsume.currentLifeShare)) ? Math.max(0, Math.min(1, Number(lifeConsume.currentLifeShare))) : 1;
+  const consumedRate = consumed ? G * ((hate ? spiritUsesIn * Number(hate.match[1]) * hateShare : 0) + (spiritAttacks ? perUsePercent * spiritUsesIn * mainSteps : 0) + otherPercent) / perRagePercent : 0;
   // Your own Attack uses: while you attack (Berserk's attacking phase, and outside Berserk).
   const playerConsumedIn = consumed ? G * perUsePercent * inside.attackSteps / perRagePercent : 0;
   const playerConsumedOut = consumed ? G * (perUsePercent * out.attackSteps + otherPercent) / perRagePercent : 0;

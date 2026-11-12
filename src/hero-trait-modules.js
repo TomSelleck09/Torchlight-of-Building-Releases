@@ -14,6 +14,8 @@ import { REHAN_HEROES, rehanModuleOf, rehanLineRead, rehanRevivedLine } from "./
 import { ROSA_HEROES, rosaModuleOf, rosaLineRead, rosaRevivedLine } from "./rosa-traits.js";
 import { BING_HEROES, bingModuleOf, bingLineRead, bingRevivedLine } from "./bing-traits.js";
 import { CRIMSON_SHADE_SWITCH, SELENA_B13_PATTERNS, cleanSelenaB13, selenaB13ClauseKey } from "./selena-leftover-traits.js";
+// The Life-consumed readers (node 612 / gate 610 on data types 10000000 / 10000001; Hysteria's Rage): src/combat-states.js uses the same list.
+const LIFE_CONSUMED_READER = /Life (?:has been )?consumed recently|consumed more than [+\d.]+ ?% (?:of )?(?:Max )?Life recently|Rage for every [\d.]+% Max Life consumed/i;
 
 // Youga clause → badge module (src/youga-ultimate-one.js YOUGA_PATTERNS).
 const YOUGA_GROUPS = Object.freeze({
@@ -680,8 +682,14 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
     if (["rage", "burst", "spirit"].includes(module.key)) {
       const rehanState = state.rehan || null;
       if (!rehan.switched) { rehan.switched = true; for (const item of rehanState?.switches || []) timedEffects.push({ ...item, source: module.label, target: "self", toggle: true, provisional: true, parts: [] }); }
-      const read = rehanLineRead(heroId, line.clean, rehanState, { revived: line.origin === "memory" });
+      let read = rehanLineRead(heroId, line.clean, rehanState, { revived: line.origin === "memory" });
       if (!read) { entry(line, { ...module, status: "Not modeled" }, false, "this Rehan clause is not read"); continue; }
+      // Ancestral Hate's Life cost is also Life consumed for the build's Life-consumed lines (record 11461973 row 6, the consume pair of
+      // 200000005; src/resource-consumption.js spiritLifeConsumption; 2026-11-11 build audit G1), not only Hysteria's Rage.
+      const spiritConsume = read.key === "hateConsume" ? state.resourceConsumption?.spiritConsume : null;
+      if (spiritConsume?.lifePerSecond > 0 && read.status !== "In calc" && modifierTexts.some((other) => LIFE_CONSUMED_READER.test(String(other.text ?? "")))) {
+        read = { ...read, status: "In calc", reason: `${spiritConsume.percent}% of ${spiritConsume.currentLife} current Life (the planner's Life state) × ${spiritConsume.usesPerSecond} Seething Spirit casts/s = ${spiritConsume.lifePerSecond} Life consumed per second, read by the build's Life-consumed lines (record 11461973 row 6, the consume pair of 200000005; ${read.reason})` };
+      }
       const active = read.status === "In calc";
       entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active, conditionText: `${module.label}: ${read.reason}`, status: read.status, provisional: true, bodies: read.bodies.map((body) => ({ body, derivedText: active ? body : null, readers: ["hero"] })), condition: "heroModule", group: null, module: module.key });
       if (active) for (const body of read.bodies) derive(body, line.source, read.reason, read.key === "tunnelPenalty" ? { rehanNonBurst: true } : { rehanPhase: "average" });

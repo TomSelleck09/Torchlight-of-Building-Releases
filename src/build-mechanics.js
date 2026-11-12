@@ -667,8 +667,11 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   // skill-hit engine reads the derived line itself. Hero-module debuffs on the dummy (src/hero-trait-modules.js: Selena's
   // Crimson Tide, Gemma's Purgatory; Selena traits batch 2026-10-13) are enemy debuffs too, so they reach the DoTs the same way,
   // and so are the follower's (src/follower-model.js: Lightning Beam's Spell Damage taken, like Frail).
+  // Deepened Curse's derived line (`allDamageTaken`, src/planner.js) is an enemy debuff on all damage too (record 611820480 row 2: attr
+  // 5720 mod 4, no tag), so it joins the same bucket (2026-11-12); src/planner.js adds it with addLateDamageTakenLine when it is pushed after
+  // the last collection.
   for (const line of modifierTexts) {
-    if (line.origin !== "derived" || !["combatState", "heroModule", "follower"].includes(line.lineEffect?.key)) continue;
+    if (line.origin !== "derived" || !(["combatState", "heroModule", "follower"].includes(line.lineEffect?.key) || line.allDamageTaken)) continue;
     // Frail's "+X% additional Spell Damage taken" reaches the beam's Spell hits (never DoTs: Spell Damage taken).
     const spell = String(line.text).match(/^\+(\d+(?:\.\d+)?)% additional Spell Damage taken$/i);
     if (spell) { if (activeNames.has("Scorching Beam")) hit.push({ source: line.source, bucket: "additional", percent: number(spell[1]), text: `${line.text} (enemy debuff)` }); continue; }
@@ -680,7 +683,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
       if (activeNames.has("Scorching Beam")) hit.push({ source: line.source, bucket: "additional", percent: number(fire[1]), text: `${line.text} (enemy debuff)` });
       // The Ignite ledger's taken list feeds the generic Ignite too (a skill other than the beam inflicting it; batch 1 2026-10-27:
       // it was beam-gated, so Flame Jet's Ignite missed the Nether King "+14% additional Fire Damage taken" node).
-      combatTaken.push({ source: line.source, text: line.text, value: number(fire[1]), category: "Additional damage taken", condition: line.lineEffect.conditionText });
+      combatTaken.push({ source: line.source, text: line.text, value: number(fire[1]), category: "Additional damage taken", condition: line.lineEffect?.conditionText });
       continue;
     }
     // Another typed debuff ("+X% additional Cold Damage taken"): the beam's added-damage part of that type only (batch 7 damage fixes
@@ -697,7 +700,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     const match = String(line.text).match(/^([+-]\d+(?:\.\d+)?)% (?:additional )?damage taken$/i);
     if (!match) continue;
     const value = number(match[1]);
-    combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: line.lineEffect.conditionText });
+    combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: line.lineEffect?.conditionText ?? (line.allDamageTaken ? "target cursed by the supported skill for its delay or more" : undefined) });
     if (activeNames.has("Scorching Beam")) hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)` });
   }
   // Own timed buffs with an "additional Max Damage" body (Bitter Thunder; src/combat-states.js): the beam's upper hit roll.
@@ -857,7 +860,10 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     penetration,
     generic,
     grantedSupports,
-    ignite: { increased: igniteIncreased, additional: igniteAdditional, combatAdditional: igniteCombatAdditional, additionalAfflictionEffect, afflictionEffect: derivedAfflictionEffect, additionalReapingRecovery: tormentAddedRecovery, maxAfflictionResistance, grantedSupports, combatTaken, penetration: ignitePenetration, base: igniteScoped.base, chance: [...igniteScoped.chance, ...scopedDamagingChance], igniteBlocked, focusBuff: focusLines.ignite },
+    ignite: { increased: igniteIncreased, additional: igniteAdditional, combatAdditional: igniteCombatAdditional, additionalAfflictionEffect, afflictionEffect: derivedAfflictionEffect, additionalReapingRecovery: tormentAddedRecovery, maxAfflictionResistance, grantedSupports, combatTaken, penetration: ignitePenetration, base: igniteScoped.base, chance: [...igniteScoped.chance, ...scopedDamagingChance], igniteBlocked, focusBuff: focusLines.ignite,
+      // "-50% additional Ailment Duration" (Approaching Nightfall, record 10140181 row 1: attr 3601 mod 4, no tag): an additional Ignite duration term
+      // (the field only where a line carries it).
+      ...(() => { const lines = modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text ?? "")).trim().match(/^([+-]?\d+(?:\.\d+)?)% additional (?:Damaging )?Ailment Duration$/i); return match ? { source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1) } : null; }).filter(Boolean); return lines.length ? { additionalDuration: lines } : {}; })() },
     scopedAilmentLines,
     syntheticTexts: synthetic,
     recognized,
@@ -872,6 +878,16 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
  * Plain "+X% additional damage" (Gladiator's Roar, recipe 654286; Modularization: Sever, 11991501), "+X% Elemental Damage" (Empowered
  * Element, 446081152), and `resistanceTypes` (Corrosion Focus: Infection's enemy Resistance, 762108224, read as an equal Penetration).
  */
+export function addLateDamageTakenLine(mechanics, line, activeNames) {
+  // An enemy debuff on all damage pushed after the last collection (Deepened Curse's `allDamageTaken` line, src/planner.js; 2026-11-12):
+  // the Ignite ledger's damage-taken bucket (Paralysis's), which the generic Ignite, Trauma, Wilt and skill-DoT layers read
+  // (src/ailment-shared.js `taken`), and so their Reaps; the beam's hits too. One additional factor per line, like Paralysis.
+  const value = number(String(line.text).match(/^([+-]\d+(?:\.\d+)?)% (?:additional )?damage taken$/i)?.[1] || 0) * (line.multiplier ?? 1);
+  if (!value) return;
+  mechanics.ignite.combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: "target cursed by the supported skill for its delay or more" });
+  if (activeNames?.has?.("Scorching Beam")) mechanics.hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)` });
+}
+
 export function addLateMechanicsLine(mechanics, line) {
   const value = Math.round((Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0) * (line.multiplier ?? 1) * 10000) / 10000;
   if (!value) return;

@@ -264,6 +264,9 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
   const atMaxAffliction = combatRating >= 100;
   const maxAfflictionLines = atMaxAffliction ? supports.maxAffliction : [];
   const combatAdditional = [...townAdditional, ...sharedCombat, ...maxAfflictionLines];
+  // An enemy debuff on all damage (an untagged attr 5720 write on the enemy: Deepened Curse, record 611820480; src/planner.js marks its derived line
+  // `allDamageTaken`) reaches the skill's own DoT, and so its Reaps (2026-11-12, research/build-20t-mind-control-audit-2026-11-12.md G6): it
+  // arrives in the shared `taken` list (src/build-mechanics.js addLateDamageTakenLine, with Ignite / Trauma / Wilt), counted once there.
   const taken = [...sharedTaken, ...typed.taken];
   const increasedPercent = increased.reduce((sum, line) => sum + line.value, 0);
   const afflictionEffectPercent = shared?.afflictionEffectPercent || 0;

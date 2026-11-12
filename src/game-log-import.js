@@ -50,7 +50,7 @@ import { netherKingFixedAffixesSs13 } from "./data/nether-king-slate-affixes-ss1
 import { netherKingUltimateAffixesSs13 } from "./data/nether-king-ultimate-affixes-ss13.js";
 import { netherKingNodesSs14, retiredNetherKingNodesSs14 } from "./data/nether-king-nodes-ss14.generated.js";
 import { craftedSlateShape, legendarySlateShapes } from "./slate-judgment.js";
-import { canPlaceSlate, isOverlaySlate, slateTransformRules } from "./slate-board.js";
+import { canPlaceSlate, isOverlaySlate, netherKingFilledBrands, netherKingGrowCount, netherKingGrowthFor, slateCells, slateTransformRules } from "./slate-board.js";
 import { DEFAULT_GAME_DIRECTION, GAME_SLATE_NAME_ALIASES, LEGENDARY_SLATE_GEOMETRY, UNDRAWN_GAME_SLATES, craftedSlateGod, craftedSlateShapeForId, gameDirectionTurn, netherDirectionTurn, plannerGodKey, plannerPlacementForCells, slatePlacementCandidates, solveSlateBoard, turnKeepsFootprint } from "./slate-shape-ids.js";
 import { isValidPedigreeAffix } from "./pedigree-slots.js";
 import { etherealPrismBases, prismAffixes, prismHazeBaseAffixes, prismMutationAffix, prismMutationDownsides } from "./prism-crafting.js";
@@ -497,7 +497,7 @@ export function blankPlannerState() {
   state.equipmentOverrides = {}; state.equipmentInventory = [];
   state.hero = { selectedHeroId: "", selectedTraits: {}, memories: {}, memoryTraitLevels: {}, memoryInventory: [], equippedMemoryIds: {}, baseTraitMemoryId: "", baseTraitMemoryRoll: null, sageScent: { elixir: "", damage: "", defense: "", functional: "" }, carinoSpecialAmmoSupports: ["", "", ""], heroTraitSupports: {}, heroTraitSupportLevels: {}, heroTraitSupportConfigs: {}, treeTraits: {}, heroLoadouts: {} };
   state.skills = { setupOrder: [], boardSlots: { skills: [], auras: [] }, supportOrder: {}, setupEnabled: Object.fromEntries(selenaCompleteSkillLoadoutSs13.setups.map((setup) => [setup.name, false])), skillLevels: {}, supportEnabled: {}, supportLevels: {}, specialSupportConfigs: {}, customSupports: {}, customSetups: [] };
-  state.equippedSlateIds = []; state.slates = { geometryVersion: 4, placements: {}, parked: {}, affixOverrides: {}, inventory: [] };
+  state.equippedSlateIds = []; state.slates = { geometryVersion: 5, placements: {}, parked: {}, affixOverrides: {}, inventory: [] };
   state.talentRanks = {}; state.talents = { useCapturedRanks: false, selectedTrees: ["", "", "", ""], coreSelections: {}, prismInventory: [], installedPrisms: {}, installedPrismNodes: {} };
   state.followers = defaultFollowerState(); // never carried over from the open build
   state.pacts = { activeSpirits: Object.fromEntries(selenaScorchingBeamPactsSs13.pactspirits.map((spirit) => [spirit.name, false])), selectedSpirits: ["", "", ""], spiritLevels: {}, nativeNodeQuantities: {}, kismetSlots: {}, fateUnlocks: {}, kismetSlotMode: true, volcanoEnabled: [false, false, false, false], reapingDurationQuantity: 0, spellBlockEnabled: [false], attackBlockEnabled: [false, false] };
@@ -1245,6 +1245,15 @@ function legendarySlateRecord({ entry, item, id, gameName, idMap, record }) {
     while (fixed.length < 2) fixed.push("");
     while (brand.length < 3) brand.push("");
     crafted = { id, name, god: "Nether King", shape: "authority", rotation: 0, flipX: 1, flipY: 1, affixes: [...fixed, ...brand].filter(Boolean), affixGroups: { fixed: fixed.slice(0, 2), brand: brand.slice(0, 3) }, rarity: "legendary", icon: "" };
+    // Its cells follow its filled Brand talent nodes (user-stated 2026-11-11; src/slate-board.js slateGrownIndexes): one cell per filled
+    // Brand in growth order, at least the Source, so GrowCount = Brands - 1. The dump's growCount (the server's Offspring count; protobuf
+    // leaves out a zero) should agree; when it does not, the planner keeps the filled-Brand rule and says so.
+    const growthSlate = { ...crafted, shape };
+    if (netherKingGrowthFor(growthSlate)) {
+      const planned = netherKingGrowCount(growthSlate), brands = netherKingFilledBrands(crafted);
+      const logged = item.growCount == null || item.growCount === "" ? 0 : Number(item.growCount);
+      if (logged !== planned) record.messages.push(["notes", `Slate at ${entry.Index} (${name}): logs growCount ${item.growCount ?? "none (0)"}, but its ${brands} filled Brand talent node(s) give growCount ${planned}; the planner draws ${Math.min(planned + 1, shape.length)} cell(s), one per filled Brand (at least the Source)`]);
+    }
   } else {
     const copyRule = item.InfluenceId ? idMap.slateInfluences[item.InfluenceId] : "";
     if (copyRule && /^Copies/.test(copyRule)) affixes.push(copyRule);
@@ -1312,7 +1321,9 @@ function slateRecordCandidates(record, index) {
       const key = candidate.cells.map((cell) => cell.join(",")).sort().join(" ");
       const known = candidates.find((entry) => entry.key === key);
       if (known) { if (reading.cost < known.cost) Object.assign(known, { cost: reading.cost, fallback: Boolean(reading.fallback) }); continue; }
-      candidates.push({ key, cells: candidate.cells, placement, cost: reading.cost, fallback: Boolean(reading.fallback) });
+      // A Nether King's Divinity blocks only its grown cells (src/slate-board.js slateCells); its whole drawing must still fit the board.
+      const occupied = slateCells(boardSlate, placement).map(({ column, row }) => [column, row]);
+      candidates.push({ key, cells: candidate.cells, ...(occupied.length !== candidate.cells.length ? { occupied } : {}), placement, cost: reading.cost, fallback: Boolean(reading.fallback) });
     }
   }
   return { candidates, onBoard };

@@ -163,6 +163,37 @@ export function heldAttempt(state, kindIndex, chance, notActiveChance, group, fr
   return addedMass;
 }
 
+/**
+ * A removal of every held stack in `share` of the cases (Approaching Nightfall, revived affix 10140181: node 345 removes the target's DoT buffs
+ * when you Reap; `share` the part of a Reap that fired, 1 for a whole Reap). Each group keeps 1 − share of its cells. Returns the mass removed.
+ */
+export function heldRemove(state, share) {
+  const keep = Math.max(0, 1 - share), { groups, byLevel: held } = state;
+  let removed = 0;
+  if (!(keep > 0)) {
+    for (const group of groups) { removed += group.mass; group.cells.fill(0); state.spare.push(group.cells); }
+    groups.length = 0;
+    held.fill(0);
+    state.held = 0;
+    state.base = 0;
+    state.freshHeld = 0;
+    state.freshBase = 0;
+    return removed;
+  }
+  for (const group of groups) {
+    for (let level = group.low; level <= group.high; level += 1) group.cells[level] *= keep;
+    removed += group.mass * (1 - keep);
+    group.mass *= keep;
+    group.base *= keep;
+  }
+  for (let level = 0; level < held.length; level += 1) held[level] *= keep;
+  state.held *= keep;
+  state.base *= keep;
+  state.freshHeld *= keep;
+  state.freshBase *= keep;
+  return removed;
+}
+
 /** The groups whose timer ends on this tick go: returns the mass that ended. */
 export function heldExpire(state, frame) {
   const { groups, byLevel: held } = state;

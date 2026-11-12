@@ -1,6 +1,7 @@
 import { readReapingSource, reapingRecoveryFixedShare } from "./reaping-sources.js";
 import { collectAilmentTypedSources } from "./ailment-model.js";
 import { frameSnap as snapToFrames } from "./frame-snapping.js";
+import { normalizePercentageText } from "./percentage-text.js";
 
 // Reaping over every active damage-over-time ailment.
 // Each Reaping source has its own recovery timer per target (user-confirmed: multiple
@@ -29,7 +30,9 @@ const rawInterval = (source, recoverySeconds, totalDotDps, successfulApplication
   : source.trigger === "max channeled stacks" ? Math.max(recoverySeconds, (source.usesPerTrigger || 1) / Math.max(1e-9, source.usesPerSecond || 0))
   // "skill use" (a skill's built-in Reap on hit, e.g. Scorching Pulse): one Reap per use, at the skill's own use interval.
   : source.trigger === "skill use" ? 1 / Math.max(1e-9, source.usesPerSecond || 0)
-  : source.trigger === "full Affliction" ? Math.max(recoverySeconds, 100 / afflictionPerSecond)
+  // A full-Affliction Reap waits for the rating its own removal takes off to refill; one that removes nothing (Traceless Pain: record 523087 is a
+  // node 631 Reap gated on state 4000900 with no node 627) fires at its recovery while the rating is full (2026-11-12, research/build-20t-mind-control-audit-2026-11-12.md G1).
+  : source.trigger === "full Affliction" ? Math.max(recoverySeconds, Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 100)) / afflictionPerSecond)
   : recoverySeconds + 1 / successfulApplicationsPerSecond;
 const perAilmentType = /^When Reaping, \+(\d+(?:\.\d+)?)% additional Reaping Duration for each type of Damaging Ailment the enemy has$/i;
 // "When Reaping, +X% chance to Reap 2 times" (Sage – Licorice Note's Twinspine Flower Ingredient, time-averaged by src/sage-traits.js;
@@ -109,7 +112,19 @@ export function calculateMultiSourceReaping({ modifierTexts = [], dots = [], ext
   // A source scoped to DoTs the dummy does not carry (a Trauma-only Reap without Trauma) never triggers (chunk 3).
   const inScope = (source) => !source.dotKeys || dots.some((dot) => (source.dotKeys.includes(dot.key) || source.dotKeys.includes(String(dot.name || "").toLowerCase())) && dot.dps > 0);
   const recentReapPercent = totalDotDps > 0 && sources.some(inScope) && !cannotReap ? modifiers.recentReap.reduce((sum, line) => sum + line.value * line.cap, 0) : 0;
-  const modeled = sources.map((source) => {
+  // Only a "Reaping removes …" line clears the dummy's Affliction (node 627 on trigger 1000032: Torturer's Touch, affix 221839 "Reaping removes
+  // enemy's Affliction"); a full-Affliction Reap only needs the rating full (Traceless Pain, record 523087: no node 627). The removal is read from
+  // the Reap's own item, as the Ignite path does (src/reaping-sources.js collectReapingSources); without such a line the Reap removes nothing
+  // (2026-11-12, user-approved; research/build-20t-mind-control-audit-2026-11-12.md G1).
+  const removalOf = (source) => {
+    if (source.trigger !== "full Affliction") return undefined;
+    if (Number.isFinite(source.afflictionRemovedPercent)) return source.afflictionRemovedPercent;
+    const reset = modifierTexts.filter((line) => line.source === source.source).map((line) => normalizePercentageText(String(line.text || "")).trim()).find((text) => /^Reaping removes/i.test(text));
+    const percent = reset?.match(/^Reaping removes ([\d.]+)% Affliction from enemies$/i);
+    return percent ? Number(percent[1]) : reset ? 100 : 0;
+  };
+  const modeled = sources.map((found) => {
+    const source = found.trigger === "full Affliction" ? { ...found, afflictionRemovedPercent: removalOf(found) } : found;
     // `additionalRecoveryFactor` on a source: a recovery line for that source only (Wilting Beam: Rapid Completion; provisional).
     // A Reap with a stated Cooldown (Dual Kismet: Plague Source, `fixedRecovery`) keeps it: Reaping Recovery Speed shortens
     // Reaping recovery, not a cooldown (provisional; pact scripted-effects batch 2026-10-13).

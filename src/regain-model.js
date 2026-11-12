@@ -15,8 +15,10 @@
 // attack Critical Strike. Interval: 2 s" triggers Energy Shield Regain. When the build lands attack crits, the Shield pool Regains
 // at least once per its interval whether or not Energy Shield is missing: rate = max(1 / 2 s, the Regain Interval rate when a
 // drain or hit applies). It still needs a non-zero Energy Shield Regain amount.
-// Not read: "Life Regain is only effective when Life is lower than 50%", "Doubles Life Regain …", conversions to Restoration
-// Over Time, and whether an Energy Shield pool exists at all (Max Energy Shield is not totalled; provisional).
+// Not read here: "Life Regain is only effective when Life is lower than 50%", "Doubles Life Regain …", conversions to Restoration
+// Over Time (the Life balance of a self-consuming build reads them: src/life-balance.js, 2026-11-11), and whether an Energy Shield pool
+// exists at all (Max Energy Shield is not totalled; provisional). Read: Ancestral Hate's share of the Shield interval on the Life
+// interval (lifeRegainIntervalSeconds).
 
 // Base interval: config_attributes 1320 Life Regain Interval / 1610 Shield Regain Interval, default 0.5 s each (2026-10-17 game
 // attribute data; matches reference data).
@@ -86,6 +88,32 @@ const intervalSeconds = (stat, base = REGAIN_BASE_INTERVAL_SECONDS) => {
   return Math.max(0, base * (1 + increased / 100) * additional);
 };
 
+// Ancestral Hate (revived on Rehan – Seething Silhouette; record 11461973 row 2, 2026-11-11 build audit G4): node 114 from attribute 1610
+// (Shield Regain Interval) mod 4 to 1320 (Life Regain Interval) mod 4, fromValue 1, toLowerValue 1, useMinValueLimit −65: the Shield
+// interval's combined additional bonus is one more additional factor on the Life interval, never below −65%. Panel 0.033 s on the 10 T
+// Frost Spike build (0.5 × 0.158 × 0.42).
+const SHIELD_INTERVAL_TO_LIFE = /^Additional bonuses to Energy Shield Regain Interval also apply to Life Regain Interval, up to (-?\d+(?:\.\d+)?) ?%$/i;
+/** The Ancestral Hate factor on the Life Regain Interval: { factor, source, text } or null. */
+export function shieldIntervalOnLife(modifierTexts = [], shieldStat = null) {
+  for (const line of modifierTexts) {
+    if (line.origin === "derived" || line.lineEffect) continue;
+    for (const text of String(line.text ?? "").split(/\r?\n/).map((part) => part.replace(/\s+/g, " ").trim())) {
+      const match = text.match(SHIELD_INTERVAL_TO_LIFE);
+      if (!match) continue;
+      const additional = Number.isFinite(Number(shieldStat?.additional)) && shieldStat?.additional !== undefined ? Number(shieldStat.additional) : 1;
+      const floor = Number(match[1]) / 100;
+      const bonus = Math.max(floor, additional - 1);
+      return { factor: round(1 + bonus), bonusPercent: round(bonus * 100), floorPercent: Number(match[1]), source: line.source, text };
+    }
+  }
+  return null;
+}
+/** The Life Regain Interval in seconds (attribute 1320 with Ancestral Hate's share of the Shield interval). */
+export function lifeRegainIntervalSeconds({ lifeIntervalStat = null, shieldIntervalStat = null, modifierTexts = [] } = {}) {
+  const shield = shieldIntervalOnLife(modifierTexts, shieldIntervalStat);
+  return { seconds: intervalSeconds(lifeIntervalStat, BASE_INTERVAL_BY_POOL.life) * (shield ? shield.factor : 1), shield };
+}
+
 /**
  * @param {object} p
  * @param {object[]} p.modifierTexts planner modifier texts
@@ -102,7 +130,7 @@ export function resolveRegain({ modifierTexts = [], supportDrains = [], stats = 
   const pools = {};
   for (const key of ["life", "energyShield"]) {
     const amountPercent = Math.max(0, Number(stats[`${key}Regain`]?.value) || 0);
-    const interval = intervalSeconds(stats[`${key}RegainInterval`], BASE_INTERVAL_BY_POOL[key]);
+    const interval = key === "life" ? lifeRegainIntervalSeconds({ lifeIntervalStat: stats.lifeRegainInterval, shieldIntervalStat: stats.energyShieldRegainInterval, modifierTexts }).seconds : intervalSeconds(stats[`${key}RegainInterval`], BASE_INTERVAL_BY_POOL[key]);
     const drainedBy = activeDrains.filter((drain) => drain.pools.includes(key));
     const missing = drainedBy.length > 0 || hitRecently !== false;
     const missingReason = drainedBy.length ? `self-drain: ${drainedBy.map((drain) => `${drain.source} (${drain.reason})`).join(", ")}` : hitRecently !== false ? "hit recently (best case; condition 'Hit or blocked recently')" : "no missing " + POOL_LABEL[key];

@@ -39,6 +39,9 @@ import { itemTriggerEvent, parseItemTrigger } from "./item-triggered-skills.js";
 const N = "([+-]?\\d+(?:\\.\\d+)?)";
 const round = (value) => Math.round(value * 10000) / 10000;
 const GLOBAL_EMPOWER = new RegExp(`^${N}% Empower (?:Skill )?Effect$`, "i");
+// "+X% Empower Skill Effect for <Skill>" (Haze base row 1204200108, game affix 951902784: attr 3401 mod 3 on [Empower 5100311, the skill's
+// own buff tag], 5200080 being Harmonious Field's buff 10980): increased Empower Effect for that skill's buff only.
+export const NAMED_EMPOWER = new RegExp(`^${N}% Empower (?:Skill )?Effect for (.+)$`, "i");
 const ICE_BOND_EUPHORIA = /other skills \+?(\d+(?:\.\d+)?)% additional Cold Damage against Frostbitten enemies/i;
 const FROSTBITTEN = new Set(["Frostbite", "Frozen", "Freeze"]);
 // Game text of Blizzard's debuff (config_multi_language_en, Blizzard skill description): "for 6s".
@@ -181,13 +184,21 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
     if (match) globalSources.push({ source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1), reading: "increased" });
   }
   const globalIncreasedPercent = globalSources.reduce((sum, item) => sum + item.value, 0);
+  // Named lines join their skill's increased sum only.
+  const namedSources = new Map();
+  for (const line of modifierTexts) {
+    if (line.origin === "derived") continue;
+    const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(NAMED_EMPOWER);
+    if (match) { const name = match[2].trim(); namedSources.set(name, [...(namedSources.get(name) || []), { source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1), reading: `increased, ${name} only` }]); }
+  }
+  const namedGlobal = (name) => { const own = namedSources.get(name) || []; return { globalIncreasedPercent: globalIncreasedPercent + own.reduce((sum, item) => sum + item.value, 0), globalSources: own.length ? [...globalSources, ...own] : globalSources }; };
   const globalAdditional = empowerAdditionalLines(modifierTexts);
   const frostbitten = buffs ? buffs.holds("Frostbite") || buffs.holds("Frozen") : enemyAilments.some((name) => FROSTBITTEN.has(name));
   for (const setup of setups) {
     if (setup.enabled === false || !activeNames.has(setup.name)) continue;
     const clauses = setup.supportEffects?.clauses || [];
     const empowerTag = (setup.tags || []).includes("Empower") || clauses.some((clause) => clause.family === "empower" && clause.kind === "becomes");
-    const effect = empowerEffectFactor(clauses, { globalIncreasedPercent, globalSources, prebuiltSelfBuffs, globalAdditional });
+    const effect = empowerEffectFactor(clauses, { ...namedGlobal(setup.name), prebuiltSelfBuffs, globalAdditional });
     const factorText = `Empower Effect ×${round(effect.factor)} = (1 + ${effect.increasedPercent}%) × ${effect.additionalFactor}`;
     if (setup.name === "Ice Bond") {
       const base = iceBondEuphoriaPercent(setup.effectiveLevel);
@@ -229,6 +240,7 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
   // recipe 607440: on hit, probability P1, a 4 s cooldown gate) and "Triggers Lv. N Fearless Warcry when hitting an enemy. Interval:
   // 8 s" (Varagon's Attack): the same buff at the item's level, Empower Effect from the character's lines only (no supports).
   const itemEffect = empowerEffectFactor([], { globalIncreasedPercent, globalSources, prebuiltSelfBuffs, globalAdditional });
+  const itemEffectFor = (name) => namedSources.has(name) ? empowerEffectFactor([], { ...namedGlobal(name), prebuiltSelfBuffs, globalAdditional }) : itemEffect;
   // "Unable to trigger Empower Skills" (Tyrant's Smoldering Hold; record 993987840, node 243 bCannotTrigger on tag 6001230): an item cannot trigger one.
   const noEmpowerTriggers = modifierTexts.some((line) => /^Unable to trigger Empower Skills$/i.test(String(line.text ?? "").trim()));
   for (const line of modifierTexts) {
@@ -236,7 +248,7 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
     const pair = noEmpowerTriggers ? null : parseChanceTriggerPair(line.text);
     if (pair) {
       for (const name of pair.names.filter((item) => EMPOWER_BUFF_SPECS[item])) {
-        const entry = empowerBuffEntry({ name, level: pair.level, effect: itemEffect, empowerScaled: true, modifierTexts, ctx: buffContext, item: { chancePercent: pair.chancePercent, cooldownSeconds: pair.cooldownSeconds, hitsPerSecond: buffContext.hitsPerSecond, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${name}` });
+        const entry = empowerBuffEntry({ name, level: pair.level, effect: itemEffectFor(name), empowerScaled: true, modifierTexts, ctx: buffContext, item: { chancePercent: pair.chancePercent, cooldownSeconds: pair.cooldownSeconds, hitsPerSecond: buffContext.hitsPerSecond, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${name}` });
         if (entry) buffCandidates.push(entry);
       }
       continue;
@@ -250,7 +262,7 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
     // 11486053: moving, then a cooldown gate). The same buff at the line's level, as the chance pairs above (chunk 12).
     if (trigger?.name && EMPOWER_BUFF_SPECS[trigger.name] && trigger.intervalSeconds > 0 && !noEmpowerTriggers) {
       const event = itemTriggerEvent(trigger, { moving: buffContext.moving, mobilityUsesPerSecond: buffContext.mobilityUsesPerSecond, anyHit: buffContext.anyHit });
-      const entry = event.active ? empowerBuffEntry({ name: trigger.name, level: trigger.level, effect: itemEffect, empowerScaled: true, modifierTexts, ctx: buffContext, item: { intervalSeconds: event.intervalSeconds ?? trigger.intervalSeconds, when: event.reason, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${trigger.name}` }) : null;
+      const entry = event.active ? empowerBuffEntry({ name: trigger.name, level: trigger.level, effect: itemEffectFor(trigger.name), empowerScaled: true, modifierTexts, ctx: buffContext, item: { intervalSeconds: event.intervalSeconds ?? trigger.intervalSeconds, when: event.reason, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${trigger.name}` }) : null;
       if (entry) buffCandidates.push(entry);
     }
   }

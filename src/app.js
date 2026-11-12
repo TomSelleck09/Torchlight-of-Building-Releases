@@ -18,8 +18,7 @@ import { calculatePlanner, buildCharacterLevel } from "./planner.js";
 import { automaticCombatConditionIds, bestCaseCombat } from "./combat-condition-mode.js";
 import { classifySkillCoverage, supportClauseCoverage, supportLineCoverage } from "./skill-coverage.js";
 import { curseSlotSummary } from "./curse-limit.js";
-import { aimUptimeAfterToggle } from "./aim-controls.js";
-import { configurationPanelMarkup } from "./configuration-panel.js";
+import { configurationPanelMarkup, clampCombatValue } from "./configuration-panel.js";
 import { coverageBadge, gearLineCoverage, gearLineCoverageReason, talentEffectCoverage, talentLineCoverage, slateLineCoverage, slateLineCoverageReason, prismAffixCoverage, prismAffixCoverageReason, heroTraitCoverage, heroTraitCoverageReason } from "./calculation-coverage.js";
 import { scorchingBeamBaseHits, strippedBeamHitCoefficient } from "./scorching-beam-base-hit.js";
 import { damagePathControlsMarkup, renderStatSheet } from "./stat-sheet.js";
@@ -82,7 +81,7 @@ import { voraxCraftingSs13 } from "./data/gear/vorax-crafting-ss13.generated.js"
 import { selenaScorchingBeamPactsSs13 } from "./data/pacts/selena-scorching-beam-ss13.js";
 import { pactspiritCatalogSs13 } from "./data/pacts/pactspirit-catalog-ss13.js";
 import { orderedPactspiritNodes, pactspiritEffectsAtLevel, pactspiritLevel, togglePactNodeChain } from "./pactspirit-levels.js";
-import { etherealPrismBases, inverseImageEffectMultiplier, inverseImageReflectedCoordinates, inverseImageReflectionMap, inverseImageReflectedBounds, prismTalentNodes, inverseImageRoll, inverseImageRolls, prismAffixes, prismBaseEffect, prismReplacesCore, prismSupportsLegendaryAffix, prismLegendaryAffixesForBase, prismAffectsNode, prismArea, prismAreaBounds, prismNodeAffixes, prismRareAffixesForBase } from "./prism-crafting.js";
+import { etherealPrismBases, inverseImageEffectMultiplier, inverseImageReflectedCoordinates, inverseImageReflectionMap, inverseImageReflectedBounds, prismTalentNodes, inverseImageRoll, inverseImageRolls, prismAffixes, prismBaseEffect, prismReplacesCore, prismSupportsLegendaryAffix, prismLegendaryAffixesForBase, prismAffectsNode, prismArea, prismAreaBounds, prismNodeAffixes, prismRareAffixesForBase, prismHazeBaseAffixes, prismDraftBaseAffix, prismCraftedItem } from "./prism-crafting.js";
 import { etherealPrismIcons } from "./prism-icons.js";
 import { switchHeroLoadout } from "./hero-loadouts.js";
 import { equippedKismetSummary } from "./pact-kismet-summary.js";
@@ -111,7 +110,7 @@ import { lunarPhaseRevivedAffixDetailsSs13 } from "./data/heroes/memory-revival-
 import { baseTraitDescriptionForLevel, withoutArtificialMoonLines, baseTraitLevelForMemory, slotTraitLevel, nonBaseTraitLevelExtras, artificialMoonGate, clampMemoryEnhancement, closestMemoryTier, memoryBaseStatLabel, memoryScaledBaseStat, rolledMemoryAffixText, memoryMaxEnhancementForRarity, memoryTierNumericValue, traitLevelBonusForEnhancement, memoryTraitLevelContribution, reduceBaseTraitMemoryStat, waxAndWaneLabel } from "./hero-memory-rules.js";
 import { MAX_TALENT_POINTS, TALENT_THRESHOLDS, allocateTalentToMaxWithPrerequisites, allocateTalentWithPrerequisites, canAllocateTalent, pruneInvalidTalentRanks, removeTalentWithDependents, talentEffectText, talentPointTotals } from "./talent-rules.js";
 import { godTalentTreesSs13, talentFamiliesSs13, talentOptionsForSlot } from "./talent-selection-rules.js";
-import { SLATE_BOARD_ROWS, adjacentSlateIds, autoPlaceSlates, canPlaceSlate, isCopySlate, slateOffsets, slateSize, slateTransformRules } from "./slate-board.js";
+import { SLATE_BOARD_ROWS, adjacentSlateIds, autoPlaceSlates, canPlaceSlate, isCopySlate, netherKingPreviewGrowth, slateArtTransform, slateGrownIndexes, slateOffsets, slateSize, slateTransformRules } from "./slate-board.js";
 import { downloadBackup, isSafeMode, setSafeMode } from "./recovery-core.js";
 import { buildCodeFromFileText, buildFileName, buildFileText, copyBuildCodeToClipboard, downloadTextFile, shareableBuildCode } from "./build-file.js";
 import { restoreLatestRevision } from "./planner-state.js";
@@ -345,9 +344,34 @@ const craftedSlateIcon=(slate)=>{
   if(shapeIndex&&slate.icon?.includes("/slates/gods/"))return godSlateShapeCapture(slateGodKey(slate.god),slateShapeCodes[shapeIndex]);
   return slateGameCaptureByName[template]||slate.icon;
 };
-const legendarySlateShapes={"Fallen Starlight":[[0,0],[0,1]],"Space Rift":[[0,0],[0,1],[0,2],[0,3],[0,4],[0,5]],"A Corner of Divinity":[[0,0],[1,0],[1,1]],"Residence of Stars":[[2,0],[0,1],[1,1],[2,1],[1,2],[2,2],[3,2],[1,3]],"Pedigree of Gods":[[0,0],[1,0],[0,1],[1,1],[2,1],[1,2],[2,2]],"Sparks of Moth Fire":[[0,0]],"When Sparks Set the Prairie Ablaze":[[0,0]],"Nether King's Divinity: Judgment":[[0,0],[3,0],[3,3]],"Nether King's Divinity: Contamination":[[0,0],[0,1]],"Nether King's Divinity: Offspring":[[2,0],[1,1],[0,2]]};
+const legendarySlateShapes={"Fallen Starlight":[[0,0],[0,1]],"Space Rift":[[0,0],[0,1],[0,2],[0,3],[0,4],[0,5]],"A Corner of Divinity":[[0,0],[1,0],[1,1]],"Residence of Stars":[[2,0],[0,1],[1,1],[2,1],[1,2],[2,2],[3,2],[1,3]],"Pedigree of Gods":[[0,0],[1,0],[0,1],[1,1],[2,1],[1,2],[2,2]],"Sparks of Moth Fire":[[0,0]],"When Sparks Set the Prairie Ablaze":[[0,0]],"Nether King's Divinity: Judgment":[[0,0],[3,0],[3,3]],"Nether King's Divinity: Contamination":[[0,1],[0,2],[0,0]],"Nether King's Divinity: Offspring":[[2,0],[1,1],[0,2]]};
 const craftedSlateShape=(shape,name,god)=>{ if(legendarySlateShapes[name])return legendarySlateShapes[name]; const index=Number(String(shape).match(/-(\d+)$/)?.[1]); if(Number.isInteger(index))return godSlateCapturedShapes[slateGodKey(god)]?.[index]||(slateGodKey(god)==="deception"?[[0,0],[1,0],[1,1],[2,1]]:[[1,0],[2,0],[0,1],[1,1]]); return {corner:[[0,0],[0,1],[1,1]],line:[[0,0],[0,1]],tee:[[0,0],[1,0],[1,1]],single:[[0,0]]}[shape]||[[0,0]]; };
 const craftedSlateForBoard=(slate)=>({ ...slate, icon:craftedSlateIcon(slate), shape:craftedSlateShape(slate.shape,slate.template||slate.name,slate.god), fixed:(slate.affixes||[]).filter(Boolean), level:100 });
+// A Nether King's Divinity shows only its grown cells, the Source plus one per filled Brand (src/slate-board.js slateGrownIndexes, user
+// rule 2026-11-11): the other cells get no tile, and the art is masked to the grown cells in the drawing's own unturned frame, so the
+// piece's turn and flips apply to the mask as to the art. Each tile keeps its drawn index for the drag code.
+const slatePieceTiles=(slate,offsets,grown)=>offsets.map(([column,row],index)=>grown&&!grown.includes(index)?"":`<i data-cell-index="${index}" style="--piece-column:${column};--piece-row:${row}">${slate.cellIcon?`<img class="slate-cell-art" src="${slate.cellIcon}" alt="">`:""}</i>`).join("");
+const slatePieceArtMask=(slate,grown)=>{
+  const base=slateOffsets(slate,0);
+  if(!grown||grown.length===base.length)return "";
+  const [width,height]=slateSize(slate,0),at=(value,size)=>size>1?`${value/(size-1)*100}%`:"0%";
+  const layers=grown.map((index)=>`linear-gradient(#000,#000) ${at(base[index][0],width)} ${at(base[index][1],height)}/${100/width}% ${100/height}% no-repeat`).join(",");
+  return ` style="-webkit-mask:${layers};mask:${layers}"`;
+};
+// The art's own pose (src/slate-board.js slateArtTransform: Pedigree of Gods' portrait never turns upside down), as CSS variables
+// on the piece; the drag code sets the same variables when a dragged slate turns or flips.
+const slateArtVars=(slate,rotation,flipX,flipY)=>{ const art=slateArtTransform(slate,rotation,flipX,flipY); return `;--slate-art-rotation:${art.rotation}deg;--slate-art-flip-x:${art.flipX};--slate-art-flip-y:${art.flipY}`; };
+const setSlateArtVars=(element,slate,rotation,flipX,flipY)=>{ const art=slateArtTransform(slate,rotation,flipX,flipY); element.style.setProperty("--slate-art-rotation",`${art.rotation}deg`); element.style.setProperty("--slate-art-flip-x",art.flipX); element.style.setProperty("--slate-art-flip-y",art.flipY); };
+// The crafter's preview card for a Nether King's Divinity (user request 2026-11-12): only the cells grown from the Brand talent nodes
+// filled in the editor (src/slate-board.js netherKingPreviewGrowth: 0-1 the Source, 2 and the first Offspring, 3 all), art masked to them
+// as on the board, in the drawing's unturned frame; the shape preview's turn and flips apply to the whole card art.
+const netherCraftGrowthMarkup=(name,filled,transform="")=>{
+  const growth=netherKingPreviewGrowth(name,filled),icon=slateGameCaptureByName[name]||"";
+  if(!growth)return `<img src="${icon}" alt="">`;
+  const [width,height]=growth.size,cell=34/Math.max(width,height),slate={name,shape:growth.shape};
+  const tiles=growth.grown.map((index)=>{ const [column,row]=slateOffsets(slate,0)[index]; return `<i style="left:${column*cell}px;top:${row*cell}px;width:${cell}px;height:${cell}px"></i>`; }).join("");
+  return `<span class="slate-craft-growth" data-nether-growth data-grown-cells="${growth.grown.length}" role="img" aria-label="${escapeHtml(name)}: ${growth.grown.length} of ${growth.shape.length} cells grown" style="width:${width*cell}px;height:${height*cell}px${transform?`;transform:${transform}`:""}"><img src="${icon}" alt=""${slatePieceArtMask(slate,growth.grown)}>${tiles}</span>`;
+};
 const slatesForBoard = () => [...selenaScorchingBeamSlatesSs13.slates,...(plannerState.slates?.inventory||[]).map(craftedSlateForBoard)];
 function parkSlateBesideGrid(slate, rotation=0, flipX=1, flipY=1) {
   const stage=document.querySelector("#slate-board .slate-stage"),board=stage?.querySelector(".divinity-board");
@@ -374,7 +398,7 @@ function parkSlateBesideGrid(slate, rotation=0, flipX=1, flipY=1) {
   return false;
 }
 const validSlatePlacements = (placements) => placements && slatesForBoard().filter((slate)=>equippedSlateIds.has(slate.id)).every((slate)=>placements[slate.id] && canPlaceSlate(slate,placements[slate.id],placements,slatesForBoard()));
-let slatePlacements = plannerState.slates?.geometryVersion===4 && validSlatePlacements(plannerState.slates?.placements) ? plannerState.slates.placements : structuredClone(selenaScorchingBeamSlatesSs13.capturedPlacements);
+let slatePlacements = plannerState.slates?.geometryVersion>=4 && validSlatePlacements(plannerState.slates?.placements) ? plannerState.slates.placements : structuredClone(selenaScorchingBeamSlatesSs13.capturedPlacements);
 parkedSlates = plannerState.slates?.parked || {};
 const disabledEquipmentSlots = new Set(plannerState.disabledEquipmentSlots);
 const talentRanks = new Map();
@@ -453,7 +477,7 @@ function capturePlannerState() {
     hero: plannerState.hero,
     skills: plannerState.skills,
     equippedSlateIds: [...equippedSlateIds],
-    slates: { geometryVersion: 4, placements: slatePlacements, parked: parkedSlates, affixOverrides: plannerState.slates?.affixOverrides || {}, inventory: plannerState.slates?.inventory || [] },
+    slates: { geometryVersion: 5, placements: slatePlacements, parked: parkedSlates, affixOverrides: plannerState.slates?.affixOverrides || {}, inventory: plannerState.slates?.inventory || [] },
     talentRanks: Object.fromEntries(talentRanks),
     talents: plannerState.talents,
     combat: plannerState.combat,
@@ -637,7 +661,7 @@ function emptyPlannerState(){
   empty.equipmentOverrides={}; empty.equipmentInventory=[];
   empty.hero={ selectedHeroId:"", selectedTraits:{}, memories:{}, memoryTraitLevels:{}, memoryInventory:[], equippedMemoryIds:{}, baseTraitMemoryId:"", baseTraitMemoryRoll:null, sageScent:{elixir:"",damage:"",defense:"",functional:""}, carinoSpecialAmmoSupports:["","",""], heroTraitSupports:{}, heroTraitSupportLevels:{}, heroTraitSupportConfigs:{}, treeTraits:{}, heroLoadouts:{} };
   empty.skills={ setupOrder:[], boardSlots:{skills:[],auras:[]}, supportOrder:{}, setupEnabled:Object.fromEntries(selenaCompleteSkillLoadoutSs13.setups.map((setup)=>[setup.name,false])), skillLevels:{}, supportEnabled:{}, supportLevels:{}, specialSupportConfigs:{}, customSupports:{}, customSetups:[] };
-  empty.equippedSlateIds=[]; empty.slates={geometryVersion:4,placements:{},affixOverrides:{}};
+  empty.equippedSlateIds=[]; empty.slates={geometryVersion:5,placements:{},affixOverrides:{}};
   empty.talentRanks={}; empty.talents={useCapturedRanks:false,selectedTrees:["","","",""],coreSelections:{},prismInventory:[],installedPrisms:{},installedPrismNodes:{}};
   empty.pacts={ activeSpirits:Object.fromEntries(selenaScorchingBeamPactsSs13.pactspirits.map((spirit)=>[spirit.name,false])), selectedSpirits:["","",""], spiritLevels:{}, nativeNodeQuantities:{}, kismetSlots:{}, fateUnlocks:{}, kismetSlotMode:true, volcanoEnabled:[false,false,false,false], reapingDurationQuantity:0, spellBlockEnabled:[false], attackBlockEnabled:[false,false] };
   empty.combat={...empty.combat,conditions:{...Object.fromEntries(Object.keys(empty.combat.conditions).map((key)=>[key,false])),targetLife:true,prebuiltSelfBuffs:true}};
@@ -654,7 +678,7 @@ function applyPlannerState(next) {
   // keys disabled same-name supports on every other setup); the global list is emptied on read (normalizePlannerState). The
   // town comparison reads the per-setup keys itself (`townSupportUnlinked`).
   equippedSlateIds.clear(); (next.equippedSlateIds || selenaScorchingBeamSlatesSs13.slates.map((slate) => slate.id)).forEach((value) => equippedSlateIds.add(value));
-  slatePlacements = next.slates?.geometryVersion===4 && validSlatePlacements(next.slates?.placements) ? next.slates.placements : structuredClone(selenaScorchingBeamSlatesSs13.capturedPlacements);
+  slatePlacements = next.slates?.geometryVersion>=4 && validSlatePlacements(next.slates?.placements) ? next.slates.placements : structuredClone(selenaScorchingBeamSlatesSs13.capturedPlacements);
   parkedSlates = next.slates?.parked || {};
   talentRanks.clear();
   for (const panel of selenaScorchingBeamTalentSetupSs13.panels.filter((panel) => next.talents.useCapturedRanks !== false && next.talents.selectedTrees.includes(panel.name))) for (const node of panel.allocatedNodes) talentRanks.set(panel.name + ":" + node.coordinate, node.rank);
@@ -896,7 +920,7 @@ function overviewTraitColumns(hero) {
     const legacy = key === "base" ? "" : plannerState.hero.memories?.[key] || "";
     const memoryIcon = memory ? heroMemoryIcon(memory.type) : legacy ? (tliArt.hero.memories?.[legacy] || traits.find((entry) => entry.level === 1)?.icon) : "";
     const memoryTile = key === "base" && !baseSlotOpen ? absentMemory : memory || legacy
-      ? `<span class="overview-memory hero-memory-socket filled ov-item${memory ? ` memory-rarity-${escapeHtml(memory.rarity)}` : ""}" tabindex="0" data-memory-tier="${escapeHtml(key)}" aria-label="${escapeHtml(`${label} memory: ${memory?.name || memory?.type || legacy}`)}">${artwork(memoryIcon, memory?.name || legacy, "hero-memory-art")}</span>`
+      ? `<span class="overview-memory hero-memory-socket filled ov-item${memory ? ` memory-rarity-${escapeHtml(memory.rarity)}` : ""}" tabindex="0" data-memory-tier="${escapeHtml(key)}" aria-label="${escapeHtml(`${label} memory: ${memory?.name || memory?.type || legacy}`)}">${artwork(memoryIcon, memory?.name || legacy, "hero-memory-art")}${memory ? memorySocketRevivalBadge(memory, "ov-") : ""}</span>`
       : `<span class="overview-memory empty" aria-label="${escapeHtml(label)} memory: none"></span>`;
     return `<div class="overview-trait-col"><span class="overview-trait-level">${escapeHtml(label)}</span><span class="overview-trait-icons">${traitIcons}</span>${memoryTile}</div>`;
   }).join("")}</div>`;
@@ -1555,9 +1579,9 @@ function openPrismInventory(){
   renderPrismInventory();$("#prism-inventory-dialog").showModal();
 }
 function prismAffixSelect(kind,label){
-  const value=prismDraft[`${kind}Affix`]||"",options=kind==="rare"?prismRareAffixesForBase(prismDraft.base):kind==="legendary"?prismLegendaryAffixesForBase(prismDraft.base):prismAffixes[kind];
-  const optionLabel=(affix)=>kind==="legendary"&&affix.includes("Gains a stack of Fortitude")?`Fortitude — ${affix.match(/Owns (\d+) additional/)?.[1]||"?"} additional stack(s) — ${affix}`:affix;
-  return `<label class="prism-affix-select"><span><b class="${kind}">${label}</b><small>Only ${label} mods</small></span><select data-prism-affix="${kind}" aria-label="${label} Prism affix"${fullTextTitle(options.includes(value)?optionLabel(value):"")}><option value="">-- Select ${label} Slot --</option>${options.map((affix)=>`<option value="${escapeHtml(affix)}" ${affix===value?"selected":""}${fullTextTitle(optionLabel(affix))}>${escapeHtml(optionLabel(affix))}</option>`).join("")}</select></label>`;
+  const value=prismDraft[`${kind}Affix`]||"",options=kind==="base"?prismHazeBaseAffixes:kind==="rare"?prismRareAffixesForBase(prismDraft.base):kind==="legendary"?prismLegendaryAffixesForBase(prismDraft.base):prismAffixes[kind];
+  const optionLabel=(affix)=>kind==="base"?affix.replaceAll("; "," / "):kind==="legendary"&&affix.includes("Gains a stack of Fortitude")?`Fortitude — ${affix.match(/Owns (\d+) additional/)?.[1]||"?"} additional stack(s) — ${affix}`:affix;
+  return `<label class="prism-affix-select"><span><b class="${kind}">${label}</b><small>${kind==="base"?"Adds an effect to the Core Talent":`Only ${label} mods`}</small></span><select data-prism-affix="${kind}" aria-label="${label} Prism affix"${fullTextTitle(options.includes(value)?optionLabel(value):"")}><option value="">-- Select ${kind==="base"?label:`${label} Slot`} --</option>${options.map((affix)=>`<option value="${escapeHtml(affix)}" ${affix===value?"selected":""}${fullTextTitle(optionLabel(affix))}>${escapeHtml(optionLabel(affix))}</option>`).join("")}</select></label>`;
 }
 function inverseRollSign(value){return value<0?"negative":value>0?"positive":"zero";}
 function inverseRollStyle(range,value){
@@ -1581,7 +1605,7 @@ function renderPrismCrafter(){
   if(draft.type==="inverse"){
     $("#prism-crafter-form").innerHTML=tabs+`<div class="inverse-image-heading"><img src="${prismIcon(draft)}" alt=""><div><strong>Inverse Image</strong><small>Ultimate</small></div></div><p class="inverse-image-description">${modifierTextMarkup(prismBaseEffect(draft.type,draft.base))}</p><p class="inverse-radius">Radius: <strong>3x3</strong></p><h3>Mod Values</h3><div class="inverse-rolls">${Object.entries(inverseImageRolls).map(([kind,range])=>inverseImageControl(kind,range)).join("")}</div>`;
   }else{
-    $("#prism-crafter-form").innerHTML=tabs+`<label class="prism-base-field">Base Item *<select data-prism-base aria-label="Base Prism"${fullTextTitle(draft.base?`Ethereal Prism: ${draft.base}`:"")}><option value="">Select Base Prism</option>${etherealPrismBases.map((base)=>`<option value="${escapeHtml(base)}" ${base===draft.base?"selected":""}${fullTextTitle(`Ethereal Prism: ${base}`)}>Ethereal Prism: ${escapeHtml(base)}</option>`).join("")}</select></label>${draft.base?`<div class="prism-fixed"><label>${prismReplacesCore(draft)?"Core Talent":"Prism Effect"} *<input value="${escapeHtml(draft.base)}" readonly></label><small>${prismReplacesCore(draft)?"This prism replaces the panel core talent":"This prism does not replace the panel core talent"}</small><p>${modifierTextMarkup(prismBaseEffect(draft.type,draft.base,draft.legendaryAffix))}</p></div><h3>Random Affixes (${affixes.length}/${hasLegendary?3:2})</h3>${prismAffixSelect("radius","Radius")}${prismAffixSelect("rare","Rare")}${hasLegendary?prismAffixSelect("legendary","Legendary"):""}`:""}`;
+    $("#prism-crafter-form").innerHTML=tabs+`<label class="prism-base-field">Base Item *<select data-prism-base aria-label="Base Prism"${fullTextTitle(draft.base?`Ethereal Prism: ${draft.base}`:"")}><option value="">Select Base Prism</option>${etherealPrismBases.map((base)=>`<option value="${escapeHtml(base)}" ${base===draft.base?"selected":""}${fullTextTitle(`Ethereal Prism: ${base}`)}>Ethereal Prism: ${escapeHtml(base)}</option>`).join("")}</select></label>${draft.base?`<div class="prism-fixed"><label>${prismReplacesCore(draft)?"Core Talent":"Prism Effect"} *<input value="${escapeHtml(draft.base)}" readonly></label><small>${prismReplacesCore(draft)?"This prism replaces the panel core talent":"This prism does not replace the panel core talent"}</small><p>${modifierTextMarkup(prismBaseEffect(draft.type,draft.base,draft.legendaryAffix,draft.baseAffix))}</p>${draft.base==="Haze"?prismAffixSelect("base","Base Affix"):""}</div><h3>Random Affixes (${affixes.length}/${hasLegendary?3:2})</h3>${prismAffixSelect("radius","Radius")}${prismAffixSelect("rare","Rare")}${hasLegendary?prismAffixSelect("legendary","Legendary"):""}`:""}`;
   }
   renderPrismCrafterPreview();
   $("[data-confirm-prism-craft]").disabled=!draft.base;
@@ -1633,7 +1657,7 @@ function placeCraftedPrism(coordinate){
 
 document.addEventListener("change",(event)=>{
   if(!prismDraft)return;
-  if(event.target.matches("[data-prism-base]")){prismDraft.base=event.target.value;if(!prismRareAffixesForBase(prismDraft.base).includes(prismDraft.rareAffix))prismDraft.rareAffix="";if(!prismLegendaryAffixesForBase(prismDraft.base).includes(prismDraft.legendaryAffix))prismDraft.legendaryAffix="";renderPrismCrafter();}
+  if(event.target.matches("[data-prism-base]")){prismDraft.base=event.target.value;if(!prismRareAffixesForBase(prismDraft.base).includes(prismDraft.rareAffix))prismDraft.rareAffix="";if(!prismLegendaryAffixesForBase(prismDraft.base).includes(prismDraft.legendaryAffix))prismDraft.legendaryAffix="";prismDraft.baseAffix=prismDraftBaseAffix(prismDraft);renderPrismCrafter();}
   if(event.target.matches("[data-prism-affix]")){prismDraft[`${event.target.dataset.prismAffix}Affix`]=event.target.value;renderPrismCrafter();}
   if(event.target.matches("[data-inverse-roll]")){const kind=event.target.dataset.inverseRoll;event.target.value=inverseImageRoll(prismDraft,kind);}
 });
@@ -1948,9 +1972,10 @@ function clearInvalidBaseTraitMemory(){
   if(plannerState.hero.baseTraitMemoryId&&baseTraitReduction()===null){plannerState.hero.baseTraitMemoryId="";plannerState.hero.baseTraitMemoryRoll=null;}
 }
 function heroMemoryIsRevived(memory){ return Boolean(memory&&(memory.revivalMethod&&memory.revivalMethod!=="none"||memory.waxAndWane||memory.risingMoon||memory.revivedAffix)); }
-function memorySocketRevivalBadge(memory){
+// idPrefix keeps the SVG ids unique when the same memory also shows on the Overview (both views are in the DOM).
+function memorySocketRevivalBadge(memory,idPrefix=""){
   if(!heroMemoryIsRevived(memory))return "";
-  const symbolId=`memory-moon-${String(memory.id).replace(/[^a-z0-9_-]/gi,"")}`;
+  const symbolId=`${idPrefix}memory-moon-${String(memory.id).replace(/[^a-z0-9_-]/gi,"")}`;
   return `<span class="hero-memory-revival-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><defs><linearGradient id="${symbolId}-shine" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset=".52" stop-color="#c9efff"/><stop offset="1" stop-color="#65bdf0"/></linearGradient><mask id="${symbolId}-cut" maskUnits="userSpaceOnUse"><rect width="24" height="24" fill="#fff"/><circle cx="14.9" cy="9" r="5.9" fill="#000"/></mask></defs><circle class="moon-disc" cx="12" cy="12" r="10.2"/><circle class="moon-crescent" cx="12" cy="12" r="6.7" fill="url(#${symbolId}-shine)" mask="url(#${symbolId}-cut)"/></svg></span>`;
 }
 function memoryRevivalBadge(memory){return heroMemoryIsRevived(memory)?'<span class="memory-revival-badge"><span aria-hidden="true">☾</span> Revived</span>':"";}
@@ -2814,7 +2839,7 @@ function renderSlateCrafter(){
   const netherIcon=slateGameCaptureByName[netherName];
   const gods=["Goddess of Deception","Goddess of Hunting","Goddess of Knowledge","God of Machines","God of Might","God of War"];
   const godKey=slateGodKey(selectedSlateGod), suffix=godSlateAssets[godKey]?.[0], nativeSlateFiles=suffix?slateShapeCodes.map(shape=>`UI_TalantNG_${shape}_0_Icon_${suffix}_112.webp`):[], native=Boolean(suffix), nativeArt=(file)=>`<img src="${file.includes("_Z1_")&&godSlateCaptureByKey[godKey]?slateAsset(`game-captures/${godSlateCaptureByKey[godKey]}.svg`):godKey==="deception"&&file.includes("_Z1_")?slateAsset("game-captures/goddess-of-deception-divinity.webp"):godSlateShapeCapture(godKey,slateShapeCodes.find(shape=>file.includes(`_${shape}_`)))}" alt="${selectedSlateGod} slate">`;
-  body.innerHTML=`<div class="slate-craft-layout"><section>${nether?`<fieldset class="slate-craft-gods"><legend>Nether King Type</legend>${netherNames.map(type=>`<button type="button" data-nether-slate-type="${type}" class="${type===selectedNetherSlateType?"active":""}">${type}</button>`).join("")}</fieldset>`:`<fieldset class="slate-craft-gods"><legend>God</legend>${gods.map(god=>`<button type="button" data-slate-god="${god}" class="${god===selectedSlateGod?"active":""}">${god}</button>`).join("")}</fieldset>`}<fieldset><legend>Shape &amp; Orientation</legend><div class="slate-shape-options ${native?"native-slate-assets":""}">${nether?`<button type="button" class="active" data-craft-shape="authority"><img src="${netherIcon}" alt=""></button>`:native?nativeSlateFiles.map((file,index)=>`<button type="button" class="${index?"":"active"}" data-craft-shape="${godKey}-${index}">${nativeArt(file)}</button>`).join(""):["corner","line","tee","single"].map((shape,index)=>`<button type="button" class="${index?"":"active"}" data-craft-shape="${shape}">${slateShapeArt(shape)}</button>`).join("")}<span class="slate-shape-preview">${nether?`<img src="${netherIcon}" alt="">`:native?nativeArt(nativeSlateFiles[0]):slateShapeArt("corner")}</span><div class="slate-transform-options"><button type="button" data-craft-transform="rotate">↻ Rotate</button><button type="button" data-craft-transform="flip-h">↔ Flip H</button><button type="button" data-craft-transform="flip-v">↕ Flip V</button></div></div>${nether?`<small>Block grows with filled Brand Talent Nodes<br>(0–1 → 1 block, 2 → 2, 3 → Authority)</small>`:""}</fieldset>${nether?`<fieldset><legend>Authority Effect</legend><input class="slate-readonly" value="${netherName}" readonly><small>This slate has a fixed Authority effect</small><p class="slate-authority-copy">${escapeHtml(AUTHORITY_TEXTS[selectedNetherSlateType==="Offspring"?"Banishment":selectedNetherSlateType]||"")}</p>${selectedNetherSlateType==="Offspring"?`<label class="slate-affix-row"><span>Bonus Effect</span><select data-banishment-effect aria-label="Banishment Bonus Effect"><option value="">Select Bonus Effect…</option>${Object.keys(BANISHMENT_EFFECTS).map((name)=>`<option value="${escapeHtml(name)}">${escapeHtml(`Effect: ${name}`)}</option>`).join("")}</select></label>`:""}</fieldset>`:""}${affixRows("Fixed Affixes",1,2,nether?netherKingBasePool:affixPool)}${affixRows(nether?"Brand Talent Nodes":"Random Affixes",3,3,nether?netherKingBrandPool:affixPool)}</section><aside><span>Preview</span><div class="slate-craft-card ${nether?"nether":slateGodFamilyClass(selectedSlateGod)}">${nether?`<img src="${netherIcon}" alt="">`:native?nativeArt(nativeSlateFiles[0]):`${slateShapeArt("corner")} `}<strong>${nether?netherName:selectedSlateGod}</strong><small>${nether?"NETHER KING'S DIVINITY · LEGENDARY":"DIVINITY SLATE · MAGIC"}</small>${nether?`<hr><em>AUTHORITY</em><b>${netherName}</b>`:""}</div>${actions}</aside></div>`;
+  body.innerHTML=`<div class="slate-craft-layout"><section>${nether?`<fieldset class="slate-craft-gods"><legend>Nether King Type</legend>${netherNames.map(type=>`<button type="button" data-nether-slate-type="${type}" class="${type===selectedNetherSlateType?"active":""}">${type}</button>`).join("")}</fieldset>`:`<fieldset class="slate-craft-gods"><legend>God</legend>${gods.map(god=>`<button type="button" data-slate-god="${god}" class="${god===selectedSlateGod?"active":""}">${god}</button>`).join("")}</fieldset>`}<fieldset><legend>Shape &amp; Orientation</legend><div class="slate-shape-options ${native?"native-slate-assets":""}">${nether?`<button type="button" class="active" data-craft-shape="authority"><img src="${netherIcon}" alt=""></button>`:native?nativeSlateFiles.map((file,index)=>`<button type="button" class="${index?"":"active"}" data-craft-shape="${godKey}-${index}">${nativeArt(file)}</button>`).join(""):["corner","line","tee","single"].map((shape,index)=>`<button type="button" class="${index?"":"active"}" data-craft-shape="${shape}">${slateShapeArt(shape)}</button>`).join("")}<span class="slate-shape-preview">${nether?`<img src="${netherIcon}" alt="">`:native?nativeArt(nativeSlateFiles[0]):slateShapeArt("corner")}</span><div class="slate-transform-options"><button type="button" data-craft-transform="rotate">↻ Rotate</button><button type="button" data-craft-transform="flip-h">↔ Flip H</button><button type="button" data-craft-transform="flip-v">↕ Flip V</button></div></div>${nether?`<small>Block grows with filled Brand Talent Nodes<br>(0–1 → 1 block, 2 → 2, 3 → Authority)</small>`:""}</fieldset>${nether?`<fieldset><legend>Authority Effect</legend><input class="slate-readonly" value="${netherName}" readonly><small>This slate has a fixed Authority effect</small><p class="slate-authority-copy">${escapeHtml(AUTHORITY_TEXTS[selectedNetherSlateType==="Offspring"?"Banishment":selectedNetherSlateType]||"")}</p>${selectedNetherSlateType==="Offspring"?`<label class="slate-affix-row"><span>Bonus Effect</span><select data-banishment-effect aria-label="Banishment Bonus Effect"><option value="">Select Bonus Effect…</option>${Object.keys(BANISHMENT_EFFECTS).map((name)=>`<option value="${escapeHtml(name)}">${escapeHtml(`Effect: ${name}`)}</option>`).join("")}</select></label>`:""}</fieldset>`:""}${affixRows("Fixed Affixes",1,2,nether?netherKingBasePool:affixPool)}${affixRows(nether?"Brand Talent Nodes":"Random Affixes",3,3,nether?netherKingBrandPool:affixPool)}</section><aside><span>Preview</span><div class="slate-craft-card ${nether?"nether":slateGodFamilyClass(selectedSlateGod)}">${nether?netherCraftGrowthMarkup(netherName,0):native?nativeArt(nativeSlateFiles[0]):`${slateShapeArt("corner")} `}<strong>${nether?netherName:selectedSlateGod}</strong><small>${nether?"NETHER KING'S DIVINITY · LEGENDARY":"DIVINITY SLATE · MAGIC"}</small>${nether?`<hr><em>AUTHORITY</em><b>${netherName}</b>`:""}</div>${actions}</aside></div>`;
   [...body.querySelectorAll(".slate-affix-row select:not([data-banishment-effect])")].forEach((select,index)=>setSlateAffixPool(select,nether?(index<2?netherKingBasePool:netherKingBrandPool):affixPool,selectedSlateGod));
   body.querySelector(".slate-craft-card small")?.insertAdjacentHTML("afterend",'<div class="slate-craft-affix-preview" aria-live="polite"></div>');
   updateSlateCraftPreview();
@@ -2852,6 +2877,8 @@ function updateSlateCraftPreview(){
   const art=body.querySelector(".slate-shape-preview img"),cardArt=card.querySelector(":scope > img");
   if(art&&cardArt){cardArt.src=art.src;cardArt.style.transform=art.style.transform;}
   const selects=[...body.querySelectorAll(".slate-affix-row select:not([data-banishment-effect])")];
+  const growthArt=card.querySelector("[data-nether-growth]");
+  if(growthArt)growthArt.outerHTML=netherCraftGrowthMarkup(`Nether King's Divinity: ${selectedNetherSlateType}`,selects.slice(2).filter((select)=>select.value).length,art?.style.transform||"");
   const groups=[["Fixed Affixes",selects.slice(0,2)],[activeSlateCrafterTab==="judgment"?"Brand Talent Nodes":"Random Affixes",selects.slice(2)]];
   body.querySelectorAll(".slate-craft-layout fieldset").forEach((fieldset)=>{const legend=fieldset.querySelector(":scope > legend");if(!legend)return;const group=groups.find(([title])=>legend.textContent.startsWith(title));if(group)legend.textContent=`${group[0]} (${group[1].filter((select)=>select.value).length}/${group[1].length})`;});
   preview.innerHTML=groups.map(([title,slots])=>{const chosen=slots.filter((select)=>select.value).map((select)=>{const option=select.selectedOptions[0],details=option.dataset.affixDetails||option.textContent,colon=details.indexOf(": "),type=colon<0?"":details.slice(0,colon),effect=colon<0?details:details.slice(colon+2),tree=option.dataset.affixTree||"",limited=option.dataset.maxDivinityEffect==="1";return `<li class="${limited?"max-one-divinity":""}"><small>${escapeHtml([tree,type].filter(Boolean).join(" · "))}</small><span>${modifierTextMarkup(effect)}</span>${limited?'<strong class="max-divinity-badge" title="Only one copy of this effect is active across equipped slates">MAX ACTIVE DIVINITY: 1</strong><small>Duplicates on other slates do not stack.</small>':""}</li>`;});return chosen.length?`<section><h3>${title}</h3><ul>${chosen.join("")}</ul></section>`:"";}).join("")||'<p>Choose affixes to preview their effects.</p>';
@@ -2878,7 +2905,7 @@ function openCraftedSlateEditor(slate){
       if(affix&&![...select.options].some((option)=>option.value===affix))select.add(new Option(affix,affix));
       select.value=affix;
     });
-    if(preview?.firstElementChild){ preview.dataset.rotation=String(slate.rotation||0); preview.dataset.flipX=String(slate.flipX||1); preview.dataset.flipY=String(slate.flipY||1); preview.firstElementChild.style.transform=`rotate(${slate.rotation||0}deg) scale(${slate.flipX||1}, ${slate.flipY||1})`; }
+    if(preview?.firstElementChild){ preview.dataset.rotation=String(slate.rotation||0); preview.dataset.flipX=String(slate.flipX||1); preview.dataset.flipY=String(slate.flipY||1); const art=slateArtTransform(selectedLegendarySlateName,slate.rotation||0,slate.flipX||1,slate.flipY||1); preview.firstElementChild.style.transform=`rotate(${art.rotation}deg) scale(${art.flipX}, ${art.flipY})`; }
     const template=[...document.querySelectorAll("[data-slate-template]")].find((button)=>button.dataset.slateTemplate===slate.name);
     if(template&&!preview){ template.classList.add("active"); const card=$(".slate-empty-preview"),image=template.querySelector("img"); card.className="slate-craft-card"; card.innerHTML=`${image?.outerHTML||""}<strong>${escapeHtml(slate.name)}</strong><small>DIVINITY SLATE · LEGENDARY</small>`; }
     updateSlateCraftPreview();
@@ -2918,8 +2945,8 @@ function renderSlates() {
   $("#slate-count").textContent = equippedSlateIds.size;
   const adjacent = new Set(slates.filter((item) => item.copyRule && slatePlacements[item.id]).flatMap((item) => adjacentSlateIds(item, slatePlacements, slates)));
   const cells = SLATE_BOARD_ROWS.flatMap((columns,row) => columns.map((column) => `<button type="button" class="slate-cell" data-slate-cell="${column},${row+1}" aria-label="Board cell ${column}, ${row+1}"></button>`)).join("");
-  const pieces = slates.filter((slate) => equippedSlateIds.has(slate.id) && slatePlacements[slate.id]).map((slate,index) => { const placement=slatePlacements[slate.id],flipX=placement.flipX||1,flipY=placement.flipY||1; const [width,height]=slateSize(slate,placement.rotation,flipX,flipY); const [baseWidth,baseHeight]=slateSize(slate,0); const offsets=slateOffsets(slate,placement.rotation,flipX,flipY); const neighbors=slate.copyRule ? adjacentSlateIds(slate,slatePlacements,slates).length : 0; return `<button type="button" class="slate-piece ${slate.overlay ? "overlay-slate" : ""} ${slate.copyRule ? "copy-slate" : ""} ${judgmentAffected.has(slate.id) || authorityMarked.has(slate.id) ? "judgment-affected" : ""} ${adjacent.has(slate.id) ? "copied-by-neighbor" : ""} ${selectedSlateId===slate.id ? "selected" : ""}" style="--slate-column:${placement.column};--slate-row:${placement.row};--slate-width:${width};--slate-height:${height};--slate-base-width:${baseWidth};--slate-base-height:${baseHeight};--slate-art-width:${baseWidth*72}px;--slate-art-height:${baseHeight*72}px;--slate-rotation:${placement.rotation||0}deg;--slate-flip-x:${flipX};--slate-flip-y:${flipY}" data-slate-id="${slate.id}" aria-label="${escapeHtml(slate.name)}: hover for affixes">${offsets.map(([column,row])=>`<i style="--piece-column:${column};--piece-row:${row}">${slate.cellIcon ? `<img class="slate-cell-art" src="${slate.cellIcon}" alt="">` : ""}</i>`).join("")}${slate.icon ? `<img class="slate-piece-art" src="${slate.icon}" alt="">` : ""}<span>${index+1}</span><strong>${slate.name}</strong>${slate.copyRule ? `<em>${neighbors} adjacent</em>` : ""}</button>`; }).join("");
-  const parkedPieces=slates.filter((slate)=>parkedSlates[slate.id]&&!equippedSlateIds.has(slate.id)).map((slate)=>{const placement=parkedSlates[slate.id],flipX=placement.flipX||1,flipY=placement.flipY||1,[width,height]=slateSize(slate,placement.rotation,flipX,flipY),[baseWidth,baseHeight]=slateSize(slate,0),offsets=slateOffsets(slate,placement.rotation,flipX,flipY);return `<button type="button" class="slate-piece parked-slate ${slate.copyRule?"copy-slate":""}" style="--park-x:${placement.x}%;--park-y:${placement.y}%;--slate-width:${width};--slate-height:${height};--slate-base-width:${baseWidth};--slate-base-height:${baseHeight};--slate-art-width:${baseWidth*72}px;--slate-art-height:${baseHeight*72}px;--slate-rotation:${placement.rotation||0}deg;--slate-flip-x:${flipX};--slate-flip-y:${flipY}" data-slate-id="${slate.id}" aria-label="${escapeHtml(slate.name)}: parked outside the grid; drag onto the grid to equip">${offsets.map(([column,row])=>`<i style="--piece-column:${column};--piece-row:${row}">${slate.cellIcon?`<img class="slate-cell-art" src="${slate.cellIcon}" alt="">`:""}</i>`).join("")}${slate.icon?`<img class="slate-piece-art" src="${slate.icon}" alt="">`:""}<strong>${escapeHtml(slate.name)}</strong></button>`;}).join("");
+  const pieces = slates.filter((slate) => equippedSlateIds.has(slate.id) && slatePlacements[slate.id]).map((slate,index) => { const placement=slatePlacements[slate.id],flipX=placement.flipX||1,flipY=placement.flipY||1; const [width,height]=slateSize(slate,placement.rotation,flipX,flipY); const [baseWidth,baseHeight]=slateSize(slate,0); const offsets=slateOffsets(slate,placement.rotation,flipX,flipY); const grown=slateGrownIndexes(slate,placement); const neighbors=slate.copyRule ? adjacentSlateIds(slate,slatePlacements,slates).length : 0; return `<button type="button" class="slate-piece ${slate.overlay ? "overlay-slate" : ""} ${slate.copyRule ? "copy-slate" : ""} ${judgmentAffected.has(slate.id) || authorityMarked.has(slate.id) ? "judgment-affected" : ""} ${adjacent.has(slate.id) ? "copied-by-neighbor" : ""} ${selectedSlateId===slate.id ? "selected" : ""}" style="--slate-column:${placement.column};--slate-row:${placement.row};--slate-width:${width};--slate-height:${height};--slate-base-width:${baseWidth};--slate-base-height:${baseHeight};--slate-art-width:${baseWidth*72}px;--slate-art-height:${baseHeight*72}px;--slate-rotation:${placement.rotation||0}deg;--slate-flip-x:${flipX};--slate-flip-y:${flipY}${slateArtVars(slate,placement.rotation||0,flipX,flipY)}" data-slate-id="${slate.id}" aria-label="${escapeHtml(slate.name)}: hover for affixes">${slatePieceTiles(slate,offsets,grown)}${slate.icon ? `<img class="slate-piece-art" src="${slate.icon}" alt=""${slatePieceArtMask(slate,grown)}>` : ""}<span>${index+1}</span><strong>${slate.name}</strong>${slate.copyRule ? `<em>${neighbors} adjacent</em>` : ""}</button>`; }).join("");
+  const parkedPieces=slates.filter((slate)=>parkedSlates[slate.id]&&!equippedSlateIds.has(slate.id)).map((slate)=>{const placement=parkedSlates[slate.id],flipX=placement.flipX||1,flipY=placement.flipY||1,[width,height]=slateSize(slate,placement.rotation,flipX,flipY),[baseWidth,baseHeight]=slateSize(slate,0),offsets=slateOffsets(slate,placement.rotation,flipX,flipY);return `<button type="button" class="slate-piece parked-slate ${slate.copyRule?"copy-slate":""}" style="--park-x:${placement.x}%;--park-y:${placement.y}%;--slate-width:${width};--slate-height:${height};--slate-base-width:${baseWidth};--slate-base-height:${baseHeight};--slate-art-width:${baseWidth*72}px;--slate-art-height:${baseHeight*72}px;--slate-rotation:${placement.rotation||0}deg;--slate-flip-x:${flipX};--slate-flip-y:${flipY}${slateArtVars(slate,placement.rotation||0,flipX,flipY)}" data-slate-id="${slate.id}" aria-label="${escapeHtml(slate.name)}: parked outside the grid; drag onto the grid to equip">${slatePieceTiles(slate,offsets,slateGrownIndexes(slate,placement))}${slate.icon?`<img class="slate-piece-art" src="${slate.icon}" alt=""${slatePieceArtMask(slate,slateGrownIndexes(slate,placement))}>`:""}<strong>${escapeHtml(slate.name)}</strong></button>`;}).join("");
   const selectedForTools=slates.find((slate)=>slate.id===selectedSlateId), selectedPlacement=selectedForTools&&(slatePlacements[selectedForTools.id]||parkedSlates[selectedForTools.id]);
   const quickTools=selectedForTools&&selectedPlacement&&(equippedSlateIds.has(selectedForTools.id)||parkedSlates[selectedForTools.id])?`<div class="slate-quick-tools" style="--tool-x:${slateToolsPosition?.x??8}px;--tool-y:${slateToolsPosition?.y??8}px"><strong>${selectedForTools.name}</strong><div><button type="button" data-slate-move="${selectedForTools.id}" title="Move">✥</button>${slateTransformRules(selectedForTools).rotate?`<button type="button" data-slate-rotate="${selectedForTools.id}" data-slate-rotate-dir="1" title="Rotate clockwise (D)">↻</button><button type="button" data-slate-rotate="${selectedForTools.id}" data-slate-rotate-dir="-1" title="Rotate counter-clockwise (A)">↶</button>`:""}${slateTransformRules(selectedForTools).flip?`<button type="button" data-slate-flip="${selectedForTools.id}" data-slate-flip-axis="x" title="Flip horizontal (S)">↔</button><button type="button" data-slate-flip="${selectedForTools.id}" data-slate-flip-axis="y" title="Flip vertical (W)">↕</button>`:""}<button type="button" data-edit-slate="${selectedForTools.id}" title="Edit affixes">✎</button><button type="button" class="danger" data-slate-remove="${selectedForTools.id}" title="Remove">×</button></div></div>`:"";
   $("#slate-board").innerHTML = `<div class="slate-board-toolbar slate-board-toolbar-actions">${qolHelpButton("slates")}<button type="button" class="button button-secondary" data-slate-inventory>Inventory</button></div><div class="slate-stage"><div class="divinity-board ${slateEditMode ? "editing" : ""}">${cells}${pieces}</div>${parkedPieces}</div>`;
@@ -3270,7 +3297,7 @@ function renderConfiguration() {
   // best-case assumptions and Advanced inputs. Manual mode lists only the conditions with a source in this build, read from
   // the same build in automatic mode.
   const probe = plannerState.combat.conditionMode === "manual" ? conditionSourceProbe() : null;
-  $("#combat-conditions").innerHTML = configurationPanelMarkup({ planner, combat: plannerState.combat, probe, activeNames: activation.activeNames, open: { ...configSectionOpen, assumptions: bestCaseAssumptionsOpen }, format });
+  $("#combat-conditions").innerHTML = configurationPanelMarkup({ planner, combat: plannerState.combat, probe, activeNames: activation.activeNames, open: { ...configSectionOpen, assumptions: bestCaseAssumptionsOpen }, format, icon: (name) => artwork(tliArt.skills[name], "", "skill-glyph config-projectile-icon") });
 }
 
 function damageBucketDiagram(theoretical, planner) {
@@ -3461,8 +3488,8 @@ function slateTooltipContent(element){
   if(!slate)return null;
   const icon=slate.icon||slate.cellIcon||"";
   const pose=slatePlacements[id]||parkedSlates[id]||slate;
-  const rotation=((Number(pose.rotation)||0)%360+360)%360;
-  const flipX=Number(pose.flipX)===-1?-1:1,flipY=Number(pose.flipY)===-1?-1:1;
+  const art=slateArtTransform(slate,Number(pose.rotation)||0,pose.flipX,pose.flipY);
+  const rotation=((art.rotation%360)+360)%360,flipX=art.flipX,flipY=art.flipY;
   const affixes=slateAffixes(slate);
   const affected=judgmentAffectedSlateIds(slatesForBoard(),slatePlacements,equippedSlateIds).has(slate.id);
   const authorityMark=authorityMarkedSlates(slatesForBoard(),slatePlacements,[...equippedSlateIds]).get(slate.id)||null;
@@ -4219,7 +4246,8 @@ document.addEventListener("contextmenu", (event) => {
     slateDrag.element.style.setProperty("--slate-rotation",`${slateDrag.rotation}deg`);
     slateDrag.element.style.setProperty("--slate-flip-x",flipX);
     slateDrag.element.style.setProperty("--slate-flip-y",flipY);
-    [...slateDrag.element.querySelectorAll(":scope>i")].forEach((cell,index)=>{ const [column,row]=offsets[index]; cell.style.setProperty("--piece-column",column); cell.style.setProperty("--piece-row",row); });
+    setSlateArtVars(slateDrag.element,slate,slateDrag.rotation,flipX,flipY);
+    [...slateDrag.element.querySelectorAll(":scope>i")].forEach((cell,index)=>{ const [column,row]=offsets[Number(cell.dataset.cellIndex??index)]; cell.style.setProperty("--piece-column",column); cell.style.setProperty("--piece-row",row); });
     return;
   }
   const memoryRow=event.target.closest("[data-memory-inventory-id]");
@@ -4499,7 +4527,7 @@ document.addEventListener("click", (event) => {
   const deletePrism=event.target.closest("[data-delete-crafted-prism]");
   if(deletePrism){const id=deletePrism.dataset.deleteCraftedPrism;for(const [name,itemId] of Object.entries(plannerState.talents.installedPrisms||{}))if(itemId===id){const item=plannerState.talents.prismInventory.find((entry)=>entry.id===id);clearInverseReflectedRanks(name,item,plannerState.talents.installedPrismNodes[name]);delete plannerState.talents.installedPrisms[name];delete plannerState.talents.installedPrismNodes[name];if(item?.type==="inverse")reconcileTalentRanksAfterPrismChange(name);}plannerState.talents.prismInventory=plannerState.talents.prismInventory.filter((item)=>item.id!==id);persistPlannerState();renderCandidateViews();renderPrismInventory();return;}
   if(event.target.closest("[data-unequip-prism]")){const name=plannerState.talents.selectedTrees[activePrismTreeSlot],item=plannerState.talents.prismInventory.find((entry)=>entry.id===plannerState.talents.installedPrisms[name]);clearInverseReflectedRanks(name,item,plannerState.talents.installedPrismNodes[name]);delete plannerState.talents.installedPrisms[name];delete plannerState.talents.installedPrismNodes[name];if(item?.type==="inverse")reconcileTalentRanksAfterPrismChange(name);persistPlannerState();renderCandidateViews();renderPrismInventory();return;}
-  if(event.target.closest("[data-confirm-prism-craft]")){if(!prismDraft?.base)return;const editing=Boolean(prismEditingId),item={...prismDraft,legendaryAffix:prismSupportsLegendaryAffix(prismDraft)?prismDraft.legendaryAffix:"",id:prismEditingId||globalThis.crypto?.randomUUID?.()||`prism-${Date.now()}`};if(editing){const index=plannerState.talents.prismInventory.findIndex((entry)=>entry.id===prismEditingId);if(index<0)return;plannerState.talents.prismInventory[index]=item;}else plannerState.talents.prismInventory.push(item);persistPlannerState();$("#prism-crafter-dialog").close();renderCandidateViews();renderPrismInventory();$("#prism-inventory-dialog").showModal();showToast(`${prismName(item)} ${editing?"updated":"crafted"}`);return;}
+  if(event.target.closest("[data-confirm-prism-craft]")){if(!prismDraft?.base)return;const editing=Boolean(prismEditingId),item=prismCraftedItem(prismDraft,prismEditingId||globalThis.crypto?.randomUUID?.()||`prism-${Date.now()}`);if(editing){const index=plannerState.talents.prismInventory.findIndex((entry)=>entry.id===prismEditingId);if(index<0)return;plannerState.talents.prismInventory[index]=item;}else plannerState.talents.prismInventory.push(item);persistPlannerState();$("#prism-crafter-dialog").close();renderCandidateViews();renderPrismInventory();$("#prism-inventory-dialog").showModal();showToast(`${prismName(item)} ${editing?"updated":"crafted"}`);return;}
   const viewButton = event.target.closest("[data-view]");
   if (viewButton) {
     if(viewButton.dataset.view==="slates"){ activateWorkspaceView("talents"); setTalentSlateMode(true); renderTalents(); saveWorkspaceLocation(); }
@@ -4742,7 +4770,7 @@ document.addEventListener("click", (event) => {
   const craftShape=event.target.closest("[data-craft-shape]");
   if(craftShape){ document.querySelectorAll("[data-craft-shape]").forEach((button)=>button.classList.toggle("active",button===craftShape)); const art=craftShape.querySelector("img,.god-slate-shape"), preview=document.querySelector(".slate-shape-preview"); if(art&&preview){ preview.innerHTML=art.outerHTML; preview.dataset.rotation="0"; preview.dataset.flipX="1"; preview.dataset.flipY="1"; updateSlateCraftPreview(); } }
   const craftTransform=event.target.closest("[data-craft-transform]");
-  if(craftTransform){ const rules=slateTransformRules(activeSlateCrafterTab==="legendary"?selectedLegendarySlateName:""),operation=craftTransform.dataset.craftTransform; if((operation==="rotate"&&!rules.rotate)||(operation!=="rotate"&&!rules.flip))return; const preview=document.querySelector(".slate-shape-preview"), art=preview?.querySelector("img,.god-slate-shape"); if(preview&&art){ let rotation=Number.parseInt(preview.dataset.rotation||"0",10), flipX=Number.parseInt(preview.dataset.flipX||"1",10), flipY=Number.parseInt(preview.dataset.flipY||"1",10); if(operation==="rotate") rotation=(rotation+90)%360; if(operation==="flip-h") flipX*=-1; if(operation==="flip-v") flipY*=-1; preview.dataset.rotation=String(rotation); preview.dataset.flipX=String(flipX); preview.dataset.flipY=String(flipY); art.style.transform=`rotate(${rotation}deg) scale(${flipX}, ${flipY})`; updateSlateCraftPreview(); } }
+  if(craftTransform){ const rules=slateTransformRules(activeSlateCrafterTab==="legendary"?selectedLegendarySlateName:""),operation=craftTransform.dataset.craftTransform; if((operation==="rotate"&&!rules.rotate)||(operation!=="rotate"&&!rules.flip))return; const preview=document.querySelector(".slate-shape-preview"), art=preview?.querySelector("img,.god-slate-shape"); if(preview&&art){ let rotation=Number.parseInt(preview.dataset.rotation||"0",10), flipX=Number.parseInt(preview.dataset.flipX||"1",10), flipY=Number.parseInt(preview.dataset.flipY||"1",10); if(operation==="rotate") rotation=(rotation+90)%360; if(operation==="flip-h") flipX*=-1; if(operation==="flip-v") flipY*=-1; preview.dataset.rotation=String(rotation); preview.dataset.flipX=String(flipX); preview.dataset.flipY=String(flipY); const pose=slateArtTransform(activeSlateCrafterTab==="legendary"?selectedLegendarySlateName:"",rotation,flipX,flipY); art.style.transform=`rotate(${pose.rotation}deg) scale(${pose.flipX}, ${pose.flipY})`; updateSlateCraftPreview(); } }
   if(event.target.closest("[data-add-crafted-slate]")){
     const activeShape=$("[data-craft-shape].active"), preview=$(".slate-shape-preview"), template=$("[data-slate-template].active");
     const fallbackName=activeSlateCrafterTab==="judgment"?`Nether King's Divinity: ${selectedNetherSlateType}`:template?.dataset.slateTemplate||selectedSlateGod;
@@ -5047,7 +5075,8 @@ function refreshDraggedSlateShape(slate){
   slateDrag.element.style.setProperty("--slate-rotation",`${slateDrag.rotation}deg`);
   slateDrag.element.style.setProperty("--slate-flip-x",flipX);
   slateDrag.element.style.setProperty("--slate-flip-y",flipY);
-  [...slateDrag.element.querySelectorAll(":scope>i")].forEach((cell,index)=>{ const [column,row]=offsets[index]; cell.style.setProperty("--piece-column",column); cell.style.setProperty("--piece-row",row); });
+  setSlateArtVars(slateDrag.element,slate,slateDrag.rotation,flipX,flipY);
+  [...slateDrag.element.querySelectorAll(":scope>i")].forEach((cell,index)=>{ const [column,row]=offsets[Number(cell.dataset.cellIndex??index)]; cell.style.setProperty("--piece-column",column); cell.style.setProperty("--piece-row",row); });
 }
 
 document.addEventListener("mousedown",(event)=>{
@@ -5296,6 +5325,17 @@ document.addEventListener("click", (event) => {
   plannerState.combat.bestCaseOverrides = overrides;
   persistPlannerState(); renderConfiguration();
 });
+// "Projectiles hitting the dummy" (src/configuration-panel.js; 2026-11-12): Auto clears the setup's count (the automatic best case).
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-projectile-hits-reset]");
+  if (!button) return;
+  const key = button.dataset.projectileHitsReset;
+  if (!plannerState.combat.projectileHits || !(key in plannerState.combat.projectileHits)) return;
+  const next = { ...plannerState.combat.projectileHits };
+  delete next[key];
+  if (Object.keys(next).length) plannerState.combat.projectileHits = next; else delete plannerState.combat.projectileHits;
+  persistPlannerState(); renderConfiguration();
+});
 
 document.addEventListener("click", (event) => {
   if (!selectedSlateId || !talentSlateMode || event.target.closest("[data-slate-id],.slate-quick-tools")) return;
@@ -5349,7 +5389,8 @@ $("#skill-selector-detail").addEventListener("change", (event) => { if (!event.t
 $("#skill-selector-detail").addEventListener("change", (event) => { if (event.target.matches("[data-selector-level]")) { selectorLevel = Math.max(1, Math.min(40, Number(event.target.value) || 20)); renderSkillSelector(); } if(event.target.matches("[data-special-roll],[data-special-roll-number],[data-progression-roll],[data-progression-roll-number],[data-activation-trigger-roll],[data-activation-trigger-roll-number]")) renderSkillSelector(); });
 
 document.addEventListener("change", (event) => {
-  if (event.target.checkValidity && !event.target.checkValidity()) { event.target.reportValidity(); return; }
+  // The Config tab's number inputs clamp to their range instead (src/configuration-panel.js clampCombatValue; 2026-11-12).
+  if (!event.target.matches("[data-combat-value],[data-projectile-hits]") && event.target.checkValidity && !event.target.checkValidity()) { event.target.reportValidity(); return; }
   if(event.target.matches("[data-legendary-tier]")){ const index=Number(event.target.dataset.legendaryTier); selectedLegendaryTierChoices.set(index,Number(event.target.value)); refreshLegendaryModRow(index,`#equipment-crafter-body [data-legendary-tier="${index}"]`); return; }
   if(event.target.matches("[data-edit-legendary-tier]")){ const index=Number(event.target.dataset.editLegendaryTier); editingTierChoices.set(index,Number(event.target.value)); editingLegendaryTexts.delete(index); refreshInventoryModRow(index,`#inventory-item-body [data-edit-legendary-tier="${index}"]`); return; }
   if(event.target.matches("[data-legendary-placeholder]")){ const index=Number(event.target.dataset.legendaryPlaceholder); if(event.target.value)selectedLegendaryPlaceholderChoices.set(index,event.target.value); else selectedLegendaryPlaceholderChoices.delete(index); refreshLegendaryModRow(index,`#equipment-crafter-body [data-legendary-placeholder="${index}"]`); return; }
@@ -5423,15 +5464,23 @@ document.addEventListener("change", (event) => {
     if (event.target.dataset.combatCondition === "prebuiltSelfBuffs") plannerState.combat.bestCaseOverrides = { ...(plannerState.combat.bestCaseOverrides || {}), prebuiltSelfBuffs: event.target.checked }; else plannerState.combat.conditions[event.target.dataset.combatCondition] = event.target.checked; // Own buffs built before the fight: stored in combat.bestCaseOverrides (src/combat-condition-mode.js; 2026-10-14)
     persistPlannerState(); renderConfiguration();
   }
-  if (event.target.matches("[data-aim-uptime-auto]")) {
-    plannerState.combat.aimUptimePercent = aimUptimeAfterToggle(event.target.checked, currentPlanner().aim);
+  // "Projectiles hitting the dummy": a whole count clamped to 1..fired (src/configuration-panel.js clampCombatValue); empty = automatic.
+  if (event.target.matches("[data-projectile-hits]")) {
+    const key = event.target.dataset.projectileHits;
+    const value = clampCombatValue("projectileHits", event.target.value, { min: event.target.min, max: event.target.max });
+    const next = { ...(plannerState.combat.projectileHits || {}) };
+    if (value == null) delete next[key]; else next[key] = value;
+    if (Object.keys(next).length) plannerState.combat.projectileHits = next; else delete plannerState.combat.projectileHits;
     persistPlannerState(); renderConfiguration();
   }
   if (event.target.matches("[data-combat-value]")) {
     const key = event.target.dataset.combatValue;
-    const value = Number(event.target.value);
-    plannerState.combat[key] = ["extraMaxChanneledStacks", "extraInitialChanneledStacks"].includes(key) ? Math.max(-20, Math.min(20, Number.isFinite(value) ? Math.trunc(value) : 0)) : value;
-    persistPlannerState(); renderConfiguration();
+    // Clamped to the input's min / max, integer keys rounded (src/configuration-panel.js clampCombatValue); an empty or
+    // non-numeric entry writes nothing and the card re-renders the stored value.
+    const value = clampCombatValue(key, event.target.value, { min: event.target.min, max: event.target.max });
+    if (value != null) plannerState.combat[key] = value;
+    if (value != null) persistPlannerState();
+    renderConfiguration();
   }
 });
 

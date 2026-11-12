@@ -140,6 +140,9 @@ function otherAilment({ ailment, retention, count: mainCount, critChancePercent,
     key: ailment.key, name: ailment.name,
     // A skill's own DoT is no ailment for "inflicting an Ailment" Reaps (wiring audit W2 gap 2; src/dummy-recount.js triggerAilmentIndex).
     ...(ailment.skillDot ? { skillDot: true } : {}),
+    // A skill DoT its link keeps on the target (Mind Control: src/skill-damage-profiles.js `linked`): the tick engine adds it again the frame after a
+    // removal (Approaching Nightfall). The recount does not read it.
+    ...(ailment.profile?.linked ? { relink: true } : {}),
     chance: clampChance(chancePercent), notActiveChance: clampChance(chancePercent),
     duration: ailment.durationSeconds,
     ...(uses ? { uses } : {}),
@@ -272,7 +275,9 @@ export function collectDummyRecountInputs({
       // A source the Reaping model never triggers (a gear "Cannot inflict Reap", a trigger out of scope: intervalSeconds Infinity,
       // reapingDps 0) stays out of the recount too (chunk 15, 2026-11-01: the engine runs these inputs, and The Cycle I Resist's "skill use"
       // Reap used to come through here with its own recovery even when the planner's windows read 0). The key keeps the source's index.
-      if (!Number.isFinite(source.intervalSeconds) || !(source.reapsPerSecond > 0)) return;
+      // Under Approaching Nightfall the window's rate is the steady cycle's (a Reap another one always beats reads 0 there); the loop runs every
+      // source the Reaping model triggers, at its own timer.
+      if (!Number.isFinite(source.intervalSeconds) || !((source.withoutNightfall?.reapsPerSecond ?? source.reapsPerSecond) > 0)) return;
       const full = source.trigger === "full Affliction";
       // A max-channeled-stacks Reap (skill built-in) fires while the DoT is active at its steady interval
       // (max of cooldown and uses-to-max ÷ rate), like a DoT-triggered source with that recovery.
@@ -285,8 +290,9 @@ export function collectDummyRecountInputs({
         recoverySeconds: maxStacks && Number.isFinite(source.intervalSeconds) ? source.intervalSeconds : source.recoverySeconds, floorSeconds: RECOUNT_STEP_SECONDS,
         // Start-up: uses fall at u / rate (u ≥ 1); the opening channel reaches max stacks firstTriggerUses uses after the first.
         ...(maxStacks && source.usesPerSecond > 0 && Number.isFinite(source.firstTriggerUses) ? { firstReadySeconds: (1 + source.firstTriggerUses) / source.usesPerSecond } : {}),
-        // Parity with reaping-model.js: a full-Affliction source waits for a full 100-point refill.
-        afflictionRemovedPercent: 100,
+        // Parity with reaping-model.js: a full-Affliction source removes what its own "Reaping removes …" line says (node 627), else nothing,
+        // and waits for that much to refill (2026-11-12, research/build-20t-mind-control-audit-2026-11-12.md G1).
+        afflictionRemovedPercent: full ? Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 0)) : 0,
         seconds: Object.fromEntries(source.perDot.map((dot) => [dot.key, dot.seconds])),
         // `trueDamage`: the Reap's settle scale (src/true-damage.js), 1 since the client keeps the "damage applied to Life" term on Reaps.
         settle: Object.fromEntries(source.perDot.map((dot) => [dot.key, { affliction: full ? settleAffliction[dot.key] ?? 1 : null, resistance: full && dot.key === "ignite" ? igniteFullResistance : null, trueDamage: dot.trueDamageScale ?? 1 }])),
@@ -296,7 +302,7 @@ export function collectDummyRecountInputs({
         duration: multiReapDuration(source, multiReaping)
       });
     });
-    if (multiReaping.sources.some((source) => source.trigger === "full Affliction")) assumptions.push({ id: "fullAfflictionRefill", value: 100, text: "Multi-source full-Affliction Reaps wait for a full 100-point refill; the source's Affliction removal % is not used (parity with reaping-model.js)." });
+    if (multiReaping.sources.some((source) => source.trigger === "full Affliction")) assumptions.push({ id: "fullAfflictionRefill", value: Math.max(...multiReaping.sources.filter((source) => source.trigger === "full Affliction").map((source) => source.afflictionRemovedPercent ?? 0)), text: "Multi-source full-Affliction Reaps remove the Affliction their own \"Reaping removes …\" line names (none without one) and wait for that much to refill (parity with reaping-model.js)." });
   } else if (igniteReaping && canIgnite) {
     igniteReaping.sources.forEach((source, index) => {
       const full = source.trigger === "full Affliction";

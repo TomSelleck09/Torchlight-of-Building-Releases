@@ -451,6 +451,7 @@ function createWorld(spec, frames, trace) {
   };
   for (const path of paths.values()) addSeries(seriesKey(path), path.label, path.kind || "hit", path.working ? { working: path.working } : {});
   for (const reap of spec.reaps || []) addSeries(reap.key, reap.label, "reap");
+  if (spec.nightfall) addSeries(NIGHTFALL_SERIES, spec.nightfall.label || "Approaching Nightfall", "reap");
   for (const item of spec.averaged || []) addSeries(item.key, item.label, "averaged", { averaged: true, reason: item.reason || "" });
   for (const item of spec.derived || []) addSeries(item.key, item.label, "derived", { reason: item.reason || "" });
   const reaps = (spec.reaps || []).map(newReap);
@@ -476,6 +477,9 @@ function createWorld(spec, frames, trace) {
     accumulators: new Map(), buffTicks: new Map(), buffExpiries: new Map(),
     dotSpecs: new Map([...(spec.dots || []), ...(spec.ailments || [])].map((item) => [item.key, item])),
     reaps, reapByKey: new Map(reaps.map((reap) => [reap.spec.key, reap])),
+    // Approaching Nightfall (spec.nightfall): the share of the remaining DoT each Reap of yours settles, then every DoT record goes.
+    nightfall: spec.nightfall?.percent > 0 ? { percent: spec.nightfall.percent, fires: 0, removed: 0 } : null,
+    relinks: new Map(),
     reapWatchers: new Map([...new Set(reaps.flatMap((reap) => reapAilments(reap.spec)).filter(Boolean))].map((key) => [key, reaps.filter((reap) => reap.spec.trigger === "success" && reapAilments(reap.spec).includes(key))])),
     averaged: (spec.averaged || []).map((item) => ({ ...item, startFrame: Math.max(1, framesAtOrAfter(item.fromSeconds ?? 0)) })),
     attacks: [], hits: [], dotRecords: [],
@@ -872,6 +876,90 @@ function removeOnReap(world, key, mass) {
   }
 }
 
+// Approaching Nightfall (revived affix 10140181 row 2, SS14 records; research/build-20t-mind-control-audit-2026-11-12.md G5): your Reap raises
+// 1000032 on you, which runs node 1015 ("settles linkPercent% of the remaining total Damage Over Time", limitFromSelf: your own DoTs) and node 345
+// (removeRule 1: the target's buffs tagged 5100309 Damage Over Time, every attacker's) on the event's other unit, the dummy. In the share of a Reap
+// that fired: the percent of what your DoT records still hold (each one's amount per second now × its remaining seconds; a chain's or a held
+// store's groups and a stack record's stacks each on their own timer) lands as one settlement on its own series, then every DoT record goes. A
+// DoT comes back at its next application, a linked one (`relink`: Mind Control's link) in the next frame's Skill stage; the Affliction gains only
+// while one of yours is held, as before.
+export const NIGHTFALL_SERIES = "reap:nightfall";
+// The base × seconds a DoT record still holds after this tick's pass (a Reap of the buff stage runs before it: one tick more on a record that settled
+// before).
+function remainingBaseSeconds(world, dot, beforePass) {
+  const left = (expiryFrame, fresh = false) => Math.max(0, expiryFrame - world.frame + (beforePass && !fresh ? 1 : 0)) * FRAME_SECONDS;
+  if (dot.groups) return dot.groups.reduce((sum, group) => sum + group.base * (group.scale ?? 1) * left(group.expiryFrame, group.frame === world.frame), 0);
+  if (dot.stacks) { let sum = 0; for (let at = dot.head; at < dot.stacks.length; at += 1) sum += dot.stacks[at].weight * dot.stacks[at].value * left(dot.stacks[at].expiryFrame); return sum; }
+  return dotBase(dot) * left(dot.expiryFrame, world.frame < dot.firstSettleFrame);
+}
+// A DoT record loses `share` of its mass (1: it is gone). The lapse count of a chain or a held store takes what went, as an expiry does.
+function removeDotShare(world, key, dot, share) {
+  const keep = Math.max(0, 1 - share), run = world.ailmentRuns.get(key), spec = world.ailmentSpecs.get(key);
+  if (dot.kind === "held") {
+    const removed = spec.store.remove(dot, share);
+    if (run) run.ended += removed;
+    if (run?.chain && run.chain !== dot) removeChainShare(run.chain, keep);
+    if (!(keep > 0) || !(dot.held > 0)) world.dots.delete(key);
+    return;
+  }
+  if (dot.groups) {
+    const removed = removeChainShare(dot, keep);
+    if (run) run.ended += removed;
+    if (!(dot.held > 0)) world.dots.delete(key);
+    return;
+  }
+  if (dot.stacks) {
+    for (let at = dot.head; at < dot.stacks.length; at += 1) dot.stacks[at].weight *= keep;
+    dot.weight *= keep;
+    dot.base *= keep;
+    if (!(keep > 0) || !(dot.weight > 1e-15)) world.dots.delete(key);
+    return;
+  }
+  if (!(keep > 0)) world.dots.delete(key);
+  else dot.base = dotBase(dot) * keep;
+}
+function removeChainShare(chain, keep) {
+  const { groups, byCount } = chain, removed = chain.held * (1 - keep);
+  if (!(keep > 0)) {
+    for (const group of groups) releaseGroup(chain, group);
+    groups.length = 0;
+    byCount.fill(0);
+    chain.low = chain.top + 1;
+    chain.high = 0;
+    chain.held = 0;
+    chain.base = 0;
+    chain.freshHeld = 0;
+    chain.freshBase = 0;
+    return removed;
+  }
+  for (const group of groups) group.scale *= keep;
+  for (let n = chain.low; n <= chain.high; n += 1) byCount[n] *= keep;
+  chain.held *= keep;
+  chain.base *= keep;
+  chain.freshHeld = (chain.freshHeld || 0) * keep;
+  chain.freshBase = (chain.freshBase || 0) * keep;
+  return removed;
+}
+function nightfallOnReap(world, reapSpec, mass) {
+  const state = world.nightfall, beforePass = world.stage === "buff";
+  let total = 0;
+  for (const [key, dot] of world.dots) {
+    const dotSpec = world.dotSpecs.get(key);
+    if (!dotSpec?.path || world.otherOrigins.has(dot.by)) continue;
+    total += remainingBaseSeconds(world, dot, beforePass) * currentPathValue(world, world.paths.get(dotSpec.path));
+  }
+  total *= state.percent / 100 * mass;
+  state.fires += mass;
+  deal(world, NIGHTFALL_SERIES, total, { kind: "reap", nightfall: true, by: reapSpec.key, mass });
+  for (const [key, dot] of [...world.dots]) {
+    // A linked DoT (Mind Control's link, Split 513922 component 167513) is added again on the link's next update, the next frame's Skill stage.
+    if (world.ailmentSpecs.get(key)?.relink && !world.otherOrigins.has(dot.by)) world.relinks.set(key, { frame: world.frame + 1, origin: dot.by });
+    removeDotShare(world, key, dot, Math.min(1, mass));
+  }
+  state.removed += Math.min(1, mass);
+  note(world, "dotsRemoved", { by: reapSpec.key, mass });
+}
+
 // One Reap: every DoT it reaches, at that DoT's rate on this tick × its seconds × its settle scale. `mass` is the share of a Reap that fired, and
 // `triggerBase` what that share holds of the ailment that fired it. The path is past resistance, so no second resistance step and no crit.
 function settleReap(world, reap, mass = 1, triggerBase = null, rating = undefined) {
@@ -896,6 +984,8 @@ function settleReap(world, reap, mass = 1, triggerBase = null, rating = undefine
   // tick-reap-any-source-removal (proven, research/oq-r1-r2-rea-2026-11-04.md R1.6): the removal (node 627) answers every 1000032 of its holder
   // with no source check, so any Reap of yours removes the Affliction, in the share that fired; a remover's own Reap removes in fireRemovers.
   if (spec.holder !== "follower" && mass > 0) removeOnReap(world, spec.key, mass);
+  // Approaching Nightfall answers the same 1000032 of yours: the share of the remaining DoT, then no DoT record is left.
+  if (world.nightfall && spec.holder !== "follower" && mass > 0) nightfallOnReap(world, spec, mass);
   // What a Reap grants (a Blessing gained when Reaping): the share of a Reap that fired, in expectation.
   if (spec.onFire) fireEffects(world, spec.onFire.map((effect) => ({ ...effect, stacks: (effect.stacks ?? 1) * mass })), spec.label || spec.key);
   // The trigger bus (W10 step 2b): the Reap raises 1000032 on its holder and 1000030 (SS14 client: a Reap's fixed amount is a settled damage
@@ -1092,6 +1182,13 @@ const STAGES = {
   },
   // 5. Skill: advance phases, fire events.
   skill(world) {
+    // A linked DoT a removal took off is added again by its link on the next update (spec.ailments[].relink: Mind Control's link component).
+    if (world.relinks.size) for (const [key, item] of [...world.relinks]) {
+      if (world.frame < item.frame) continue;
+      world.relinks.delete(key);
+      applyAilment(world, { kind: "ailment", ailment: key, key: `${key}:link`, chance: 1 }, item.origin);
+      note(world, "relink", { ailment: key });
+    }
     for (const action of world.actions) {
       const due = action.timeline?.get(world.frame);
       if (due) {
@@ -1293,6 +1390,8 @@ export const firstHitTimeline = (run) => ({ ...run, firstDamageSeconds: Number.i
  * @param {object[]} [spec.reaps] { key, label, baseSeconds, speedFactor, trigger, reapSeconds, scale, onFire (effects a Reap grants), holder ("follower": the follower's Reap, for the trigger bus; default yours), dots: { [dot]: { seconds, scale, durationScale (world → this tick's seconds over `seconds`: a Reaping Duration stack the trigger bus holds) } } }. trigger: none, a DoT
  *   was dealt this tick; "success", a success of `ailment`; "affliction", `remover` fired; "uses", `usesPerTrigger` uses counted by `reapUses` on an
  *   ailment effect or the effect "reapUse", from `startUses`
+ * @param {object} [spec.nightfall] Approaching Nightfall { percent, label }: each Reap of yours settles percent% of what your DoT records still hold on
+ *   the series NIGHTFALL_SERIES, then removes every DoT record (in the share of the Reap that fired); a held store needs `store.remove`
  * @param {object[]} [spec.derived] a series made from others when the run ends: { key, label, factor, builders: [series key], reason }
  * @param {object[]} [spec.collectors] { key, windowSeconds, seed: [{ frame, value }] (ticks ≤ 0, oldest first) }
  * @param {object[]} [spec.initialBuffs] buffs held at engagement: { buff, stacks, seconds, layered, layers: [{ seconds, stacks }] (a layered buff's layers) }
@@ -1355,6 +1454,8 @@ export function runTickEngine(spec, { seconds = spec?.seconds ?? 54, trace = fal
     ailments: Object.fromEntries([...world.ailmentRuns].map(([key, item]) => { const held = world.ailmentTicks.get(key); return [key, { successes: item.total, lapses: item.lapses, activeTicks: held.activeTicks, meanBase: held.activeTicks ? held.baseTicks / held.activeTicks : 0 }]; })),
     // Expected fires per Reap.
     reaps: Object.fromEntries(world.reaps.map((reap) => [reap.spec.key, reap.fires])),
+    // Approaching Nightfall: the expected Reaps it answered (each removed every DoT record in its share).
+    ...(world.nightfall ? { nightfall: { fires: world.nightfall.fires, removals: world.nightfall.removed } } : {}),
     // The trigger bus's listeners, the events each heard and the expected successes, the average share of each buff it holds.
     ...(world.bus ? { bus: world.bus.report() } : {}),
     trace: world.trace

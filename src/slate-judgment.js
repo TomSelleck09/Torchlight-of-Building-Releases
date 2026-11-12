@@ -11,7 +11,7 @@ const godShapes = {
   might: [null, [[0,0],[1,0],[2,0],[2,1]], [[0,0],[1,0],[0,1],[1,1]], [[1,0],[0,1],[1,1],[2,1]]],
   war: [null, [[0,0],[1,0],[2,0],[2,1]], [[0,0],[1,0],[0,1],[1,1]], [[1,0],[0,1],[1,1],[1,2]]]
 };
-export const legendarySlateShapes = {"Fallen Starlight":[[0,0],[0,1]],"Space Rift":[[0,0],[0,1],[0,2],[0,3],[0,4],[0,5]],"A Corner of Divinity":[[0,0],[1,0],[1,1]],"Residence of Stars":[[2,0],[0,1],[1,1],[2,1],[1,2],[2,2],[3,2],[1,3]],"Pedigree of Gods":[[0,0],[1,0],[0,1],[1,1],[2,1],[1,2],[2,2]],"Sparks of Moth Fire":[[0,0]],"When Sparks Set the Prairie Ablaze":[[0,0]],"Nether King's Divinity: Judgment":[[0,0],[3,0],[3,3]],"Nether King's Divinity: Contamination":[[0,0],[0,1]],"Nether King's Divinity: Offspring":[[2,0],[1,1],[0,2]]};
+export const legendarySlateShapes = {"Fallen Starlight":[[0,0],[0,1]],"Space Rift":[[0,0],[0,1],[0,2],[0,3],[0,4],[0,5]],"A Corner of Divinity":[[0,0],[1,0],[1,1]],"Residence of Stars":[[2,0],[0,1],[1,1],[2,1],[1,2],[2,2],[3,2],[1,3]],"Pedigree of Gods":[[0,0],[1,0],[0,1],[1,1],[2,1],[1,2],[2,2]],"Sparks of Moth Fire":[[0,0]],"When Sparks Set the Prairie Ablaze":[[0,0]],"Nether King's Divinity: Judgment":[[0,0],[3,0],[3,3]],"Nether King's Divinity: Contamination":[[0,1],[0,2],[0,0]],"Nether King's Divinity: Offspring":[[2,0],[1,1],[0,2]]};
 export function craftedSlateShape(shape, name, god) {
   if (legendarySlateShapes[name]) return legendarySlateShapes[name];
   const godKey = ({"Goddess of Deception":"deception","Goddess of Hunting":"hunting","Goddess of Knowledge":"knowledge","God of Machines":"machines","God of Might":"might","God of War":"war"}[god] || "deception");

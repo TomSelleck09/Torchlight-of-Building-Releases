@@ -5,6 +5,16 @@ import { CONSUMED_COMBO_POINTS, COMBO_POINTS_PER_STARTER } from "./combo-points.
 import { regainsIn } from "./regain-model.js";
 import { WORLD_WITHIN_LINE, worldWithinChances } from "./world-within.js";
 import { consumedStacks, consumedRecently, RESOURCE_RECENT_SECONDS } from "./resource-consumption.js";
+// The consume copies behind a "Life consumed recently" reading (src/resource-consumption.js): the Attack copies (record 200000005),
+// Ancestral Hate's Seething Spirit copy (11461973 row 6) and the skill-use copies (539780864); each a share of the same current Life.
+function lifeConsumeSourcesText(model, { detail = false } = {}) {
+  const parts = [];
+  const attack = model?.attackConsume, spirit = model?.spiritConsume, skill = model?.skillConsume;
+  if (attack?.lifePerSecond > 0) parts.push(detail ? `the Attack Life consume copies, ${round(attack.usesPerSecond)} Attack uses/s × ${round(attack.percent)}% of ${round(attack.currentLife)} current Life (record 200000005, its links proven: research/attack-life-consume-2026-11-09.md)` : "the Attack Life consume copies");
+  if (spirit?.lifePerSecond > 0) parts.push(detail ? `Ancestral Hate, ${round(spirit.usesPerSecond)} Seething Spirit casts/s × ${round(spirit.percent)}% of ${round(spirit.currentLife)} current Life (record 11461973 row 6)` : "Ancestral Hate's Seething Spirit casts");
+  if (skill?.lifePerSecond > 0) parts.push(detail ? `the skill-use Life consume copies, ${round(skill.usesPerSecond)} skill uses/s × ${round(skill.percent)}% of ${round(skill.currentLife)} current Life (record 539780864)` : "the skill-use Life consume copies");
+  return parts.length ? ` and ${parts.join(", ")}` : "";
+}
 
 // One condition resolver for every line source (research/talent-batch-2026-10-12.md §7.1, chunk 2): support clauses
 // (src/support-effects.js delegates here), talent nodes, cores, gear, slates, pacts and kismets (src/line-effects.js).
@@ -42,6 +52,8 @@ const blessingShareAtLeast = (state, name, stacks) => {
 };
 // A Blessing condition held for a share of the time: on at that factor, off at 0.
 const blessingShareResult = (share, onText, offText) => share >= 1 - 1e-9 ? on(onText) : share > 1e-9 ? on(`${onText} ${Math.round(share * 10000) / 100}% of the time (each stack its own timer: blessing-layer-timers)`, { factor: share, timeShare: true, provisional: true }) : off(offText);
+// A Life state held on a share of your uses (the Life balance, src/life-balance.js): on at that factor, off at 0.
+const lifeShareResult = (share, onText, offText) => share >= 1 - 1e-9 ? on(onText) : share > 1e-9 ? on(`${onText}: on ${Math.round(share * 10000) / 100}% of your uses (the Life balance; provisional)`, { factor: share, timeShare: true, provisional: true }) : off(offText);
 const ownBlessingMaxStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingMaxStacks() : state.blessingMaxStacks; };
 // The active Auras (the aura ledger's membership, Focus skills in Aura slots included), the Empower skills on the board, the Minions and
 // Spirit Magi out, Barrier, Blur and the combat block chance.
@@ -62,7 +74,10 @@ const ownCombatBuffs = (state) => ownCombatHeld(state) ?? state.buffs;
 export const LOW_LIFE_BELOW_PERCENT = 35;
 export const FULL_LIFE_AT_LEAST_PERCENT = 95;
 export const FULL_MANA_AT_LEAST_PERCENT = 95;
-export const atFullLife = (state) => state.life !== "low" && (state.lifeRemainingPercent ?? 100) >= FULL_LIFE_AT_LEAST_PERCENT;
+// A settled Life balance (src/life-balance.js; 2026-11-11 build audit G4) holds Full Life on its share of the uses: the majority for a reader
+// that takes one state, the share for the line readers below.
+export const atFullLife = (state) => state.lifeBalance?.settled ? state.lifeBalance.fullLifeShare >= 0.5 : state.life !== "low" && (state.lifeRemainingPercent ?? 100) >= FULL_LIFE_AT_LEAST_PERCENT;
+const lifeBalanceShare = (state, key) => state.lifeBalance?.settled ? Math.max(0, Math.min(1, Number(state.lifeBalance[key]) || 0)) : null;
 export const atFullMana = (state) => state.mana !== "low" && (state.manaRemainingPercent ?? 100) >= FULL_MANA_AT_LEAST_PERCENT;
 const notFullLifeReason = (state) => state.life === "low" ? `not at Full Life (${state.lifeReason})` : `Life sealed to ${state.lifeRemainingPercent}%: not at Full Life (Full Life needs at least ${FULL_LIFE_AT_LEAST_PERCENT}% unsealed, user-confirmed 2026-10-12)`;
 const notFullManaReason = (state) => state.mana === "low" ? `not at Full Mana (${state.manaReason})` : `Mana sealed to ${state.manaRemainingPercent}%: not at Full Mana (at least ${FULL_MANA_AT_LEAST_PERCENT}% unsealed, by analogy with Full Life; provisional)`;
@@ -333,6 +348,25 @@ const LINE_RULES = [
   // Miniature Void Sea (legendary audit batch 8): "+12% additional Minion Damage for every Minion you have. Stacks up to 6 times":
   // one step per Minion the build keeps out (the same count), summed (provisional).
   [/^(.+?) for every Minion you have\. Stacks up to (\d+) times?$/, (m) => ({ body: m[1], key: "perMinion", params: { cap: num(m[2]) } })],
+  // Ethereal Prism: Haze base rows (config_modifier 1204200101-114 through server affix 10004; 2026-11-11, open question prism-haze-base-lines):
+  // - "While standing still, +X% additional Attack Damage and Ailment Damage dealt by attacks. -Y% additional damage taken" (affix 9590149:
+  //   5719 mod 4 on [standing still 4000700, Attack], 3604 mod 4 on [Attack, Ignite / Wilt / Trauma, 4000700], 5720 mod 4 on 4000700): Attack
+  //   hits and the ailments Attack skills inflict, the Movement group's standing-still alternative. The damage taken is yours (a defence; the
+  //   dummy never attacks), so it is no body: read as a body it would be an enemy debuff.
+  [new RegExp(`^While standing still, \\+?${N}% additional Attack Damage and Ailment Damage dealt by attacks\\. [+-]?\\d+(?:\\.\\d+)?% additional damage taken$`), (m) => ({ bodies: [`+${num(m[1])}% additional Attack Damage`, `+${num(m[1])}% additional Ailment Damage dealt by attacks`], key: "standingStill" })],
+  // - "+X% additional Damage per +Y% Movement Speed, up to +Z%" (affix 647724864: node 114 from attr 41 Movement Speed, fromMod 3 (the increased
+  //   sum), ÷ Y × X into 57191 mod 4 (additional, untagged), max Z, no GetFloorInt): linear, read on the combat Movement Speed.
+  [new RegExp(`^\\+?${N}% additional Damage per \\+?${N}% Movement Speed, up to \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[1])}% additional damage`, key: "perMovementSpeed", params: { value: num(m[1]), per: num(m[2]), cap: num(m[3]) } })],
+  // - "+X% additional Attack Damage and Ailment Damage dealt by attacks when there are Elites within 10m nearby" (affix 988982784: gate 4, at
+  //   least one enemy of filter 24 within 10 m; its 5719 mod 4 write carries no tag, so it is all your damage, while the 3604 writes stay on
+  //   [Attack, Ignite / Wilt / Trauma]): the dummy is a Boss, so an Elite, within 10 m in both distance alternatives (src/dummy-target.js).
+  [new RegExp(`^\\+?${N}% additional Attack Damage and Ailment Damage dealt by attacks when there are Elites within (\\d+(?:\\.\\d+)?) ?m nearby$`), (m) => ({ bodies: [`+${num(m[1])}% additional damage`, `+${num(m[1])}% additional Ailment Damage dealt by attacks`], key: "eliteWithin", params: { meters: num(m[2]) } })],
+  // - "+X% Skill Area when there are no Elites within 10m nearby" (affix 200140384: Not(the nearest Rare monster 5002030 or Boss 5002000 within
+  //   10 m)): never on the dummy.
+  [/^(.+?) when there are no Elites within (\d+(?:\.\d+)?) ?m nearby$/, (m) => ({ body: m[1], key: "noEliteWithin", params: { meters: num(m[2]) } })],
+  // - "+X% additional Minion Damage per Synthetic Troop Minion you own" (affix 549333: 5719 mod 4 on every Minion, value l0 × p0 with l0 =
+  //   GetMinionCount(Synthetic Troop 6000320) set on trigger 1000340): one additional term of X × the Synthetic Troop Minions out.
+  [new RegExp(`^(\\+?${N}% additional Minion Damage) per Synthetic Troop Minion you own$`), (m) => ({ body: m[1], key: "perTroopMinion" })],
   // Caged Fury (Aromatic belt blend 270393984, hyperlink 10149; research/caged-fury-audit-2026-11-05.md): a distance gate, not Stand Still.
   // Record rows 1 / 2 gate on node 610 over the movement counter (data type 10000100, 1/100 m) in the last 1 s: row 1 (opt 6, at most 1200)
   // +35% additional damage and Physique, row 2 (opt 4, at least 1200) +15% additional Attack Speed and Movement Speed. Standing still reads 0 m,
@@ -776,7 +810,7 @@ function resolveKey(condition, state) {
     // Recklessness: "X% additional damage for the supported skill for every 1% Life lost, up to C%" (the Life lost the perLifeLost
     // lines read). Life lost is missing unsealed Life; sealed Life is not Life lost (user-confirmed 2026-10-15; src/planner.js).
     case "lifeLost": {
-      const lost = state.life === "low" ? Math.max(0, state.lifeLostPercent ?? 0) : 0;
+      const lost = state.life === "low" || state.lifeBalance?.settled ? Math.max(0, state.lifeLostPercent ?? 0) : 0;
       const applied = Math.min(condition.cap ?? Infinity, (condition.perPercent ?? 0) * lost);
       const why = state.lifeLostReason || state.lifeReason;
       return lost > 0 ? on(`${round(lost)}% Life lost (${why}) × ${condition.perPercent}% = +${round(applied)}% (up to +${condition.cap}%)`, { appliedValue: round(applied) }) : off(`no Life lost (${why || "Full Life"})`, { appliedValue: 0 });
@@ -893,14 +927,14 @@ function resolveKey(condition, state) {
       if (!(state.hasHasten || ownCombatBuffs(state)?.hasHasten)) return off("no Hasten source");
       return state.moving !== false ? on(`Hasten and moving (movement group): ${params.stacks} stacks, fully stacked (user rule)`) : off("standing still (movement group)");
     }
-    case "lowLife": return state.life === "low" ? on(`at Low Life (${state.lifeReason})`) : off(`not at Low Life (${state.lifeReason})`);
-    case "notLowLife": return state.life !== "low" ? on(`not at Low Life (${state.lifeReason})`) : off(`at Low Life (${state.lifeReason})`);
+    case "lowLife": { const share = lifeBalanceShare(state, "lowLifeShare"); if (share !== null) return lifeShareResult(share, `at Low Life (${state.lifeReason})`, `not at Low Life (${state.lifeReason})`); return state.life === "low" ? on(`at Low Life (${state.lifeReason})`) : off(`not at Low Life (${state.lifeReason})`); }
+    case "notLowLife": { const share = lifeBalanceShare(state, "lowLifeShare"); if (share !== null) return lifeShareResult(1 - share, `not at Low Life (${state.lifeReason})`, `at Low Life (${state.lifeReason})`); return state.life !== "low" ? on(`not at Low Life (${state.lifeReason})`) : off(`at Low Life (${state.lifeReason})`); }
     // Revived Minion Damage (game affix 11705637, chunk 2 2026-11-01: the larger of current Life ÷ Max Life and current Energy Shield ÷ Max
     // Energy Shield against the threshold, GetStat modes 0 and 1): Life counts its unsealed share (sealed Life counts against it, as for
     // Full Life) and is out at Low Life. Energy Shield holds whenever the build has any, best case: the dummy never attacks, and the
     // affix's own "Loses N Life and M Energy Shield every second" is not held as a missing level (open question revived-minion-life-or-shield).
     case "lifeOrShieldAtLeast": {
-      const life = state.life !== "low" && (state.lifeRemainingPercent ?? 100) >= params.percent;
+      const life = state.lifeBalance?.settled ? state.lifeBalance.useWeightedLifePercent >= params.percent : state.life !== "low" && (state.lifeRemainingPercent ?? 100) >= params.percent;
       const shield = (Number(state.stats?.maxEnergyShield) || 0) > 0;
       const lifeText = state.life === "low" ? `at Low Life (${state.lifeReason})` : `Life ${round(state.lifeRemainingPercent ?? 100)}% unsealed`;
       if (life) return on(`${lifeText} ≥ ${params.percent}% (the dummy never attacks; provisional)`, { provisional: true });
@@ -957,7 +991,7 @@ function resolveKey(condition, state) {
       const unit = percentOfMax ? `% of Max ${resource}` : ` ${resource}`;
       if (!held) return off(`${resource} consumed recently: ${state.resourceConsumption?.reason || "no consumption model in this context"}`, { provisional: true, ...(condition.value !== undefined ? { appliedValue: 0 } : {}) });
       const perSecond = /^mana$/i.test(resource) ? state.resourceConsumption.manaPerSecond : state.resourceConsumption.lifePerSecond;
-      const working = `${round(held.amount)}${unit} consumed in the last ${RESOURCE_RECENT_SECONDS} s (${round(perSecond)} ${resource}/s from the build's player-cast skill costs${state.resourceConsumption?.attackConsume?.lifePerSecond > 0 && /^life$/i.test(resource) ? " and the Attack Life consume copies" : ""}; game recipe: 4 s stacks) ÷ ${every} = ${held.raw}${capStacks != null && held.raw > capStacks ? `, capped at ${round(capStacks)}` : ""} (provisional: resource-consumption-rate)`;
+      const working = `${round(held.amount)}${unit} consumed in the last ${RESOURCE_RECENT_SECONDS} s (${round(perSecond)} ${resource}/s from the build's player-cast skill costs${/^life$/i.test(resource) ? lifeConsumeSourcesText(state.resourceConsumption) : ""}; game recipe: 4 s stacks) ÷ ${every} = ${held.raw}${capStacks != null && held.raw > capStacks ? `, capped at ${round(capStacks)}` : ""} (provisional: resource-consumption-rate)`;
       if (!(held.stacks > 0)) return off(`no ${resource} consumed: ${working}`, { provisional: true, ...(condition.value !== undefined ? { appliedValue: 0 } : {}) });
       if (condition.value !== undefined) return on(working, { appliedValue: round(condition.multiplies ? ((1 + condition.value / 100) ** held.stacks - 1) * 100 : condition.value * held.stacks), provisional: true });
       return on(working, { factor: held.stacks, provisional: true });
@@ -965,7 +999,7 @@ function resolveKey(condition, state) {
     case "resourceConsumedAbove": {
       const share = consumedRecently(state, params.resource, { percentOfMax: true });
       if (share === null) return off(`${params.resource} consumed recently: ${state.resourceConsumption?.reason || "no consumption model in this context"}`, { provisional: true });
-      const text = `${round(share)}% of Max ${params.resource} consumed in the last ${RESOURCE_RECENT_SECONDS} s (game gate 610, 4 s; rate from the build's player-cast skill costs${state.resourceConsumption?.attackConsume?.lifePerSecond > 0 && /^life$/i.test(params.resource) ? ` and the Attack Life consume copies, ${round(state.resourceConsumption.attackConsume.usesPerSecond)} Attack uses/s × ${round(state.resourceConsumption.attackConsume.percent)}% of ${round(state.resourceConsumption.attackConsume.currentLife)} current Life (record 200000005, its links proven: research/attack-life-consume-2026-11-09.md)` : ""}: provisional, resource-consumption-rate)`;
+      const text = `${round(share)}% of Max ${params.resource} consumed in the last ${RESOURCE_RECENT_SECONDS} s (game gate 610, 4 s; rate from the build's player-cast skill costs${/^life$/i.test(params.resource) ? lifeConsumeSourcesText(state.resourceConsumption, { detail: true }) : ""}: provisional, resource-consumption-rate)`;
       return share > params.percent ? on(`${text} > ${params.percent}%`, { provisional: true }) : off(`${text}, not more than ${params.percent}%`, { provisional: true });
     }
     case "perArmor": {
@@ -1182,7 +1216,7 @@ function resolveKey(condition, state) {
       return steps > 0 ? on(`${round(sealed)}% Life sealed ÷ ${params.every} = ${round(steps)} (sealing by a source the planner does not read is not counted: provisional)`, { factor: steps, provisional: true }) : off(`${round(sealed)}% Life sealed: none`);
     }
     case "perLifeLost": {
-      const lost = state.life === "low" ? state.lifeLostPercent ?? 0 : 0;
+      const lost = state.life === "low" || state.lifeBalance?.settled ? state.lifeLostPercent ?? 0 : 0;
       const why = state.lifeLostReason || state.lifeReason;
       // "for every N% Missing Life" (hero trait audit B2): the lost share ÷ N, linear (node 119, chunk 12).
       const every = params.every > 1 ? params.every : 1;
@@ -1284,6 +1318,29 @@ function resolveKey(condition, state) {
       const out = Math.min(params.cap, Number(ownLevel(state, "Minions", state.minionCount)) || 0);
       return out > 0 ? on(`${out} Minion${out === 1 ? "" : "s"} out (modeled Minions at their max; up to ${params.cap}; provisional)`, { factor: out, provisional: true }) : off("no modeled Minion out");
     }
+    // Haze base rows (rules above; 2026-11-11). Synthetic Troop Minions: the modeled troop summons' and modules' Minions at their max
+    // (src/minion-damage-model.js minionCountOut; best case, all out before engaging), one term.
+    case "perTroopMinion": {
+      const out = Math.max(0, Number(ownLevel(state, "Synthetic Troop Minions", state.troopMinionCount)) || 0);
+      return out > 0 ? on(`${out} Synthetic Troop Minion${out === 1 ? "" : "s"} out (the modeled Synthetic Troop and Module Minions at their max; game affix 549333: GetMinionCount on tag 6000320 × the value, one additional term)`, { factor: out }) : off("no modeled Synthetic Troop Minion out");
+    }
+    // Node 114 on the increased Movement Speed (fromMod 3; the stat sheet's lines plus the held conditional ones once the line resolver has
+    // run: src/planner.js settles the derived line again on that figure), linear, at most the cap.
+    case "perMovementSpeed": {
+      const speed = Number(state.movementSpeedPercent) || 0;
+      const raw = speed / params.per * params.value;
+      const value = Math.min(params.cap, raw);
+      return value !== 0 ? on(`+${round(speed)}% increased Movement Speed ÷ ${params.per} × ${params.value}% = ${round(raw)}%${raw > params.cap ? `, capped at +${params.cap}%` : ""} (game affix 647724864: node 114, linear)`, { factor: value / params.value }) : off("no increased Movement Speed");
+    }
+    case "eliteWithin": {
+      const holds = dummyTarget.elite && explicitRadiusHolds(params.meters, state.nearTarget);
+      const group = params.meters < DISTANT_STANDING_METERS ? "distance" : null;
+      return holds ? on(`the dummy is a Boss, so an Elite, within ${params.meters} m (src/dummy-target.js; ${state.nearTarget === false ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away` : "the player stands within 10 m"}); the record's untagged damage write reaches all your damage (provisional: open question prism-haze-base-lines)`, { group, provisional: true }) : off(`the dummy is outside ${params.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`, { group });
+    }
+    case "noEliteWithin": {
+      const near = dummyTarget.elite && explicitRadiusHolds(params.meters, state.nearTarget);
+      return near ? off(`the dummy is a Boss, so an Elite, within ${params.meters} m (src/dummy-target.js)`, { notOnDummy: params.meters >= DISTANT_STANDING_METERS }) : on(`the dummy is outside ${params.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
+    }
     case "perEvasion": {
       const evasion = Number(state.stats?.evasion) || 0;
       const steps = Math.min(perSteps(evasion, params.every), params.per > 0 ? params.cap / params.per : Infinity);
@@ -1330,8 +1387,8 @@ function resolveKey(condition, state) {
     }
     case "barrierActive": return (playerBuffSet(state)?.staged("barrier") ? playerBuffSet(state).holds("Barrier") : state.barrier) ? on("Barrier held: Guard on a channeled skill keeps it up (user-confirmed 2026-10-10)") : off("no Barrier source (only Guard on a channeled skill is modeled)");
     case "notWieldingWandOrStaff": return (state.weapon?.types || []).some((type) => /Wand|Tin Staff/i.test(type)) ? off("a Wand or Tin Staff is held (game record 146061584)") : on("no Wand or Tin Staff held (game record 146061584)");
-    case "fullLife": return atFullLife(state) ? on("at Full Life: the dummy never attacks (best case)") : off(notFullLifeReason(state));
-    case "notFullLife": return atFullLife(state) ? off("at Full Life: the dummy never attacks") : on(notFullLifeReason(state));
+    case "fullLife": { const share = lifeBalanceShare(state, "fullLifeShare"); if (share !== null) return lifeShareResult(share, `at Full Life (${state.lifeReason})`, `not at Full Life (${state.lifeReason})`); return atFullLife(state) ? on("at Full Life: the dummy never attacks (best case)") : off(notFullLifeReason(state)); }
+    case "notFullLife": { const share = lifeBalanceShare(state, "fullLifeShare"); if (share !== null) return lifeShareResult(1 - share, `not at Full Life (${state.lifeReason})`, `at Full Life (${state.lifeReason})`); return atFullLife(state) ? off("at Full Life: the dummy never attacks") : on(notFullLifeReason(state)); }
     case "notFullMana": return atFullMana(state) ? off(`at Full Mana (${state.manaReason})`) : on(notFullManaReason(state));
     case "blessingPerStack": {
       const stacks = ownBlessingStacks(state)?.[params.name] || 0;

@@ -65,9 +65,10 @@ const staticWrite = (effect) => effect.kind === "attr" && effect.understood !== 
 
 /**
  * The build pool. `modifierTexts`: the planner's lines; `playerBuffs`: your unit buff set (src/unit-buff-set.js); `stats`: the stat
- * sheet's totals (src/planner.js lineConditionState.stats); `conversions`: the pool's conversion mode.
+ * sheet's totals (src/planner.js lineConditionState.stats); `conversions`: the pool's conversion mode; `movementSpeedPercent`: the combat
+ * increased Movement Speed (src/planner.js lineConditionState, the stat sheet's lines and the held conditional ones).
  */
-export function buildAttributePool({ modifierTexts = [], playerBuffs = null, stats = null, conversions = "legacy" } = {}) {
+export function buildAttributePool({ modifierTexts = [], playerBuffs = null, stats = null, conversions = "legacy", movementSpeedPercent = null } = {}) {
   const pool = new AttributePool({ conversions });
   const derivedFrom = new Set(modifierTexts.filter((line) => line?.derivedFrom).map((line) => lineKeyOf(line.source, line.derivedFrom)));
   const convertedLines = new Map();
@@ -134,6 +135,10 @@ export function buildAttributePool({ modifierTexts = [], playerBuffs = null, sta
   }
   // The stat sheet's totals.
   for (const [key, attr] of Object.entries(STAT_ATTRS)) if (Number.isFinite(stats?.[key])) pool.add({ unit: "player", attr, mod: 1, value: stats[key], layer: "stat", source: { kind: "stat", key } });
+  // The combat increased Movement Speed as Movement Speed's whole increased part (attr 4; a record's 41 is its encoded derived read): a
+  // conversion reading it (fromMod 3; Haze's "+1% additional Damage per +5% Movement Speed", record 647724864) sees the held conditional
+  // Movement Speed lines too, as the line's text reading does (2026-11-11).
+  if (Number.isFinite(movementSpeedPercent)) pool.add({ unit: "player", attr: 4, mod: 3, value: movementSpeedPercent, layer: "stat", source: { kind: "stat", key: "movementSpeedPercent" } });
   pool.convertedLines = convertedLines;
   return pool;
 }

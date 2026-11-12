@@ -146,6 +146,19 @@ const round6 = (value) => Math.round(value * 1e6) / 1e6;
 const byList = (by) => (by == null ? null : Array.isArray(by) ? by : [by]);
 // 1 − Π(1 − share) over the holders; a held one (share 1) gives 1 exactly.
 const unionShare = (holders) => !holders.length ? 0 : holders.some((entry) => entry.share >= 1) ? 1 : 1 - holders.reduce((rest, entry) => rest * (1 - entry.share), 1);
+/**
+ * The share of time at least `n` of independent holds are up, from their shares (Poisson binomial; rounded to 1e-6). A threshold on a
+ * count of buff types (Befuddle's "3 or more crowd control effects"): the held ones count whole, a part-time one at its share.
+ */
+export function atLeastShare(shares, n) {
+  let dist = [1];
+  for (const raw of shares) {
+    const share = clamp01(raw), next = new Array(dist.length + 1).fill(0);
+    dist.forEach((p, k) => { next[k] += p * (1 - share); next[k + 1] += p * share; });
+    dist = next;
+  }
+  return round6(dist.slice(Math.max(0, Math.ceil(Number(n) || 0))).reduce((total, p) => total + p, 0));
+}
 
 /**
  * One unit's buffs. Entries: { buff, name, label, state, states, tags, damaging, source, reason, inflictedBy, share, stacks, series, stage,
@@ -250,6 +263,22 @@ export class UnitBuffSet {
     const target = buffRecordOf(key)?.name ?? key, state = stateIdOf(key);
     return unionShare(this.crowdControl(options).filter((entry) => entry.share > 0 && (entry.name === target || entry.ccName === key || (state != null && entry.states.includes(state)))));
   }
+
+  /** Each crowd control type's own share of time, by the producer's names, first hold first (one buff record per type: the share of its
+   * own holds, not of a state another record also carries, so Frostbite is buff 112's share even while Freeze 110 holds Frostbitten). */
+  crowdControlTypeShares(options = {}) {
+    const groups = new Map();
+    for (const entry of this.crowdControl(options)) { const key = entry.ccName ?? entry.label ?? entry.name; groups.set(key, [...(groups.get(key) || []), entry]); }
+    return [...groups].map(([type, holders]) => [type, unionShare(holders.filter((entry) => entry.share > 0))]);
+  }
+
+  /** The crowd control count every per-type counter reads (2026-11-12): GetBuffCfgIdCountByTag(5100101) on the unit, each type at its
+   * share of time (rounded to 1e-6): Self-Delusion, the pact counter 75106, Wings of Light's Intimidated, Ill Will, Shadow Shot. */
+  crowdControlCount(options = {}) { return round6(this.crowdControlTypeShares(options).reduce((total, [, share]) => total + share, 0)); }
+
+  /** The share of time at least `n` crowd control types are on the unit (a threshold counter: Befuddle's gate 300 on
+   * GetBuffStackByTag 5100101), the types' shares read as independent. */
+  crowdControlAtLeast(n, options = {}) { return atLeastShare(this.crowdControlTypeShares(options).map(([, share]) => share), n); }
 
   /** A unit-level number of one buff (Numbed stacks, Frostbite Rating), or null when no producer set one. */
   level(name) { const target = buffRecordOf(name)?.name ?? name; return Object.prototype.hasOwnProperty.call(this.levels, target) ? this.levels[target] : null; }

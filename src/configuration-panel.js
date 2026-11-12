@@ -2,7 +2,7 @@
 // HP banner card holding .stat-section groups) with very few switches. Conditions the build can create stay automatic (best
 // case); only the scenario switches, the exclusive choices (src/planner.js exclusiveConditionGroups), the best-case
 // assumption list (src/planner.js bestCaseAssumptions), the game-timing switch (Snap Reap recovery to 1/30 s frames, only with a
-// modeled Reap source; 2026-10-23) and the rarely used number inputs (Advanced, collapsed) are shown.
+// modeled Reap source; 2026-10-23) and the rarely used number inputs (Advanced, collapsed; only those that apply, 2026-11-12) are shown.
 // Calculations are unchanged; every control writes the same combat state keys as before.
 import { escapeHtml } from "./html.js";
 import { aimUptimeControl } from "./aim-controls.js";
@@ -61,27 +61,67 @@ function choicesHtml(assumptions, format) {
   }).join("");
 }
 
-function advancedHtml(planner, combat) {
-  const aimUptime = aimUptimeControl(combat.aimUptimePercent, planner.aim);
-  const toggles = [
-    planner.firesAllure?.active ? toggleRow({ label: "Fire's Allure · enemy within 10 m", attrs: 'data-combat-condition="firesAllureNearby"', checked: combat.conditions?.firesAllureNearby !== false }) : "",
-    planner.aim?.active ? toggleRow({ label: "Aim uptime · Auto", note: aimUptime.label, attrs: "data-aim-uptime-auto", checked: aimUptime.auto }) : ""
-  ].join("");
+// Advanced (user-approved cleanup 2026-11-12, research/advanced-inputs-and-projectiles-2026-11-12.md Part A): only the inputs that
+// can move a figure for this build show. Peak Affliction, Target Fire Resistance, manual Aim uptime, Well-Fought Battle stacks and
+// Idyll stacks are gone (their keys stay valid in saves; the calculation reads their defaults: src/combat-condition-mode.js
+// withRemovedCombatDefaults). Returns "" when nothing applies, and the section is then left out.
+const safetyInNumbersOnBoard = (planner) => (planner.activation?.setups || []).some((setup) => setup.enabled !== false
+  && (!planner.activation?.activeNames || planner.activation.activeNames.has?.(setup.name) !== false)
+  && (setup.supports || []).some((support) => support.enabled !== false && support.name === "Precise: Safety in Numbers"));
+
+function advancedHtml(planner, combat, probe) {
+  const aimUptime = aimUptimeControl(undefined, planner.aim);
+  const toggles = planner.firesAllure?.active ? toggleRow({ label: "Fire's Allure · enemy within 10 m", attrs: 'data-combat-condition="firesAllureNearby"', checked: combat.conditions?.firesAllureNearby !== false }) : "";
   const number = (label, key, value, { min, max, step = 1, readonly = false, title = "" } = {}) =>
     `<label${title ? ` title="${escapeHtml(title)}"` : ""}><span>${escapeHtml(label)}</span><input type="number"${min != null ? ` min="${min}"` : ""}${max != null ? ` max="${max}"` : ""} step="${step}"${key ? ` data-combat-value="${key}"` : ""} value="${escapeHtml(String(value ?? ""))}"${readonly ? " readonly" : ""}></label>`;
+  const manualAffliction = combat.conditionMode === "manual" && probe?.conditions?.affliction === true;
   const inputs = [
     planner.firesAllure?.active ? number("Scorch stacks for resistance reduction (best case by default)", "firesAllureScorchStacks", combat.firesAllureScorchStacks ?? planner.igniteLimit, { min: 0, max: planner.igniteLimit }) : "",
-    number("Allies affected by aura (Safety in Numbers)", "auraAffectedAllies", combat.auraAffectedAllies ?? 1, { min: 0, max: 7 }),
-    number("Average Affliction", "afflictionAverage", combat.afflictionAverage, { min: 0, max: 100 }),
-    number("Peak Affliction", "afflictionPeak", combat.afflictionPeak, { min: 0, max: 100 }),
-    number("Target Fire Resistance %", "targetFireResistancePercent", combat.targetFireResistancePercent, { min: -200, max: 200 }),
-    number("Aim Max Charges (derived)", "", planner.aim?.maxCharges ?? 0, { readonly: true, title: (planner.aim?.chargeSources || []).map((entry) => `${entry.source}: +${entry.value}`).join(" · ") }),
-    number("Well-Fought Battle stacks", "aimBattleStacks", combat.aimBattleStacks ?? 3, { min: 0, max: 3 }),
-    number(`Aim uptime %${aimUptime.auto ? " (auto)" : " (manual)"}`, "aimUptimePercent", aimUptime.value, { min: 0, max: 100, step: 0.01, readonly: aimUptime.auto, title: aimUptime.label }),
-    number("Idyll stacks", "idyllStacks", combat.idyllStacks, { min: 0, max: 15 })
+    safetyInNumbersOnBoard(planner) ? number("Allies affected by aura (Safety in Numbers)", "auraAffectedAllies", combat.auraAffectedAllies ?? 1, { min: 0, max: 7 }) : "",
+    manualAffliction ? number("Average Affliction", "afflictionAverage", combat.afflictionAverage, { min: 0, max: 100 }) : "",
+    planner.aim?.active ? number("Aim Max Charges (derived)", "", planner.aim?.maxCharges ?? 0, { readonly: true, title: (planner.aim?.chargeSources || []).map((entry) => `${entry.source}: +${entry.value}`).join(" · ") }) : "",
+    planner.aim?.active ? number("Aim uptime % (auto)", "", aimUptime.value, { readonly: true, title: aimUptime.label }) : ""
   ].join("");
   const seaFoam = planner.seaFoamNocturne?.selected ? `<div class="combat-number-controls">${number("Extra max Channeled Stacks · Sea Foam", "extraMaxChanneledStacks", combat.extraMaxChanneledStacks, { min: -20, max: 20 })}${number("Extra min/initial Channeled Stacks · Sea Foam", "extraInitialChanneledStacks", combat.extraInitialChanneledStacks, { min: -20, max: 20 })}<small>Enter effective extra stacks after any Bard Song bonus. Sea Foam uses their sum, capped at 5. Current Tide Effect: +${planner.seaFoamNocturne.tideEffectPercent}%${planner.seaFoamNocturne.applied ? "" : " · inactive without Tide Contact"}.</small></div>` : "";
-  return `${toggles}<div class="combat-number-controls">${inputs}</div>${seaFoam}`;
+  if (!toggles && !inputs && !seaFoam) return "";
+  return `${toggles}${inputs ? `<div class="combat-number-controls">${inputs}</div>` : ""}${seaFoam}`;
+}
+
+// "Projectiles hitting the dummy" (user decision 2026-11-12; research/advanced-inputs-and-projectiles-2026-11-12.md Part B): one row
+// per skill on the board that fires a projectile volley (src/skill-hit-model.js projectileLanding). Empty input = automatic (the best
+// case); a whole count from 1 to the projectiles fired per use is stored in combat.projectileHits[setupKey]. A skill whose extra
+// projectiles cannot hit the same enemy gets a read-only row. Icebound Beam has no row (its projectiles always hit the target).
+export function projectileLandingRows(planner) {
+  const seen = new Set();
+  return (planner.skillHits || []).filter((hit) => hit.projectileLanding && hit.setupKey && !seen.has(hit.setupKey) && seen.add(hit.setupKey))
+    .map((hit) => ({ setupKey: hit.setupKey, name: hit.name, ...hit.projectileLanding }));
+}
+
+function projectileHitsHtml(rows, combat, icon) {
+  return rows.map((row) => {
+    const saved = combat.projectileHits?.[row.setupKey];
+    const head = `<span class="config-projectile-skill">${icon(row.name)}<span><strong>${escapeHtml(row.name)}</strong>`;
+    if (!row.canHitSame) return `<div class="config-choice config-projectile-row">${head}<small>1 of ${row.fired} fired: extra projectiles can't hit the same enemy</small></span></span><span class="config-projectile-fixed" aria-label="${escapeHtml(row.name)}: 1 projectile hits the dummy">1</span></div>`;
+    const set = Number.isInteger(saved) && saved >= 1;
+    const note = set ? `Set: ${row.landed} of ${row.fired}${saved > row.fired ? ` (saved ${saved}, ${row.fired} fired now)` : ""} · best case ${row.auto}` : `Auto: ${row.auto} of ${row.fired} (best case)`;
+    const label = `Projectiles of ${row.name} hitting the dummy`;
+    return `<div class="config-choice config-projectile-row">${head}<small>${escapeHtml(note)}</small></span></span><span class="config-projectile-control"><input type="number" min="1" max="${row.fired}" step="1" inputmode="numeric" data-projectile-hits="${escapeHtml(row.setupKey)}" value="${set ? row.landed : ""}" placeholder="Auto: ${row.auto} of ${row.fired}" aria-label="${escapeHtml(label)}"><span class="config-segmented"><button type="button" class="${set ? "" : "active"}" aria-pressed="${!set}" data-projectile-hits-reset="${escapeHtml(row.setupKey)}" title="Back to the automatic best case">Auto</button></span></span></div>`;
+  }).join("");
+}
+
+// The Advanced number inputs' handler (src/app.js): the browser lets a value outside min / max or a decimal be typed, and the state
+// validator rejects those (src/state-validation.js), which stopped the planner. Clamp to the input's range, round the integer keys,
+// and return null for a value that is not a number (nothing is written).
+const INTEGER_COMBAT_VALUES = new Set(["projectileHits", "auraAffectedAllies", "firesAllureScorchStacks", "aimBattleStacks", "idyllStacks", "extraMaxChanneledStacks", "extraInitialChanneledStacks"]);
+export function clampCombatValue(key, raw, { min = null, max = null } = {}) {
+  if (raw === "" || raw == null) return null;
+  let value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  if (INTEGER_COMBAT_VALUES.has(key)) value = Math.round(value);
+  const low = min === "" || min == null ? null : Number(min), high = max === "" || max == null ? null : Number(max);
+  if (Number.isFinite(low)) value = Math.max(low, value);
+  if (Number.isFinite(high)) value = Math.min(high, value);
+  return value;
 }
 
 /**
@@ -90,7 +130,7 @@ function advancedHtml(planner, combat) {
  * needed in manual mode); `activeNames`: the active skill names; `open`: { scenario, manual, choices, assumptions, advanced };
  * `format`: the number formatter.
  */
-export function configurationPanelMarkup({ planner, combat, probe = null, activeNames = new Set(), open = {}, format = String }) {
+export function configurationPanelMarkup({ planner, combat, probe = null, activeNames = new Set(), open = {}, format = String, icon = () => "" }) {
   const automatic = combat.conditionMode !== "manual";
   const prebuilt = planner.conditions?.prebuiltSelfBuffs !== false;
   const scenario = [
@@ -105,11 +145,14 @@ export function configurationPanelMarkup({ planner, combat, probe = null, active
   // The press rotation's lines (one per pressed skill and the Main Skill's share; src/press-schedule.js), listed above the switches.
   const pressLines = (planner.pressRotation?.assumptions || []).filter((item) => item.id === "pressRotation" || /^pressRotation:(?!free$|unresolved$)/.test(item.id));
   const bestCaseBody = `${pressLines.map((item) => `<p class="stat-sheet-note config-press-line">${escapeHtml(item.text)}</p>`).join("")}${bestCase.map((item) => `<label class="toggle-row" title="${escapeHtml(item.text)}"><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.note || item.text)}</small></span><input type="checkbox" data-best-case="${escapeHtml(item.toggle)}"${item.on !== false ? " checked" : ""}></label>`).join("")}`;
+  const advanced = advancedHtml(planner, combat, probe);
+  const projectileRows = projectileLandingRows(planner);
   const sections = [
     section({ key: "scenario", title: "Scenario", open: open.scenario !== false, body: scenario }),
     choices.length ? section({ key: "choices", title: "Choices that can't both hold", count: choices.length, open: open.choices !== false, body: choicesHtml(choices, format) }) : "",
     bestCase.length || pressLines.length ? section({ key: "assumptions", title: "Best-case assumptions", count: bestCase.length + pressLines.length, open: open.assumptions, body: bestCaseBody, extraClass: "best-case-assumptions" }) : "",
-    section({ key: "advanced", title: "Advanced", open: open.advanced, body: advancedHtml(planner, combat) })
+    projectileRows.length ? section({ key: "projectiles", title: "Projectiles hitting the dummy", count: projectileRows.length, open: open.projectiles !== false, body: projectileHitsHtml(projectileRows, combat, icon), extraClass: "config-projectiles" }) : "",
+    advanced ? section({ key: "advanced", title: "Advanced", open: open.advanced, body: advanced }) : ""
   ].join("");
   return `<section class="stat-sheet-banner stat-sheet-banner-wide config-banner" aria-label="Configuration"><h2>Configuration <small>${automatic ? "Best case" : "Manual"}</small><button type="button" class="config-best-case-button" data-best-case-reset>Set all to best case</button></h2><div class="config-sections">${sections}</div></section>`;
 }

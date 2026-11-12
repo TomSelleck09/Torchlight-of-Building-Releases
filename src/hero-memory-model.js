@@ -7,6 +7,7 @@ import { lunarPhaseRevivedAffixDetailsSs13 } from "./data/heroes/memory-revival-
 import { equippedBaseTraitSlot, memoryFitsBaseTraitSlot, normalizeRevivedAffix, revivedAffixForMemoryType, revivedAffixTiers } from "./data/heroes/memory-revival-ss13.js";
 import { exclusiveRevivalState, revivedAffixCounts } from "./hero-exclusive-revivals.js";
 import { extraPickMemory } from "./hero-trait-tree.js";
+import { nightfallIntakeText, nightfallLineStatus } from "./approaching-nightfall.js";
 
 // The text of a regular revived affix (a reference data family with tiers), or "" (Base Trait Slot, lunar phase, none).
 // Only the one counted revived memory reads (src/hero-exclusive-revivals.js revivedAffixCounts; Q-H11, provisional), and a
@@ -22,7 +23,8 @@ function revivedFamilyText(memory, hero = {}) {
     if (exclusive) return exclusive.intake.join("\n");
     const text = lunarPhaseRevivedAffixDetailsSs13[name];
     if (/Hero Trait Exclusive/i.test(text) || name === "Ceaseless Tide" || /^Artificial Moon/.test(name)) return "";
-    return text;
+    // Approaching Nightfall's two record rows are two lines (src/approaching-nightfall.js): the Ailment Duration and the settlement on Reaping.
+    return name === "Approaching Nightfall" ? nightfallIntakeText(text) : text;
   }
   if (!revivedAffixTiers(name).length || /Base Trait Slot$/.test(name)) return "";
   return revivedAffixForMemoryType(memory.revivedAffix, memory.type, memory.revivedTier, memory.revivedRoll) || "";
@@ -138,6 +140,15 @@ function commonRevivedAffixCoverage(planner, memory) {
   if (!revivedAffixCounts(hero, memory)) return { status: "Inactive", reason: "Only one revived memory counts: another equipped revived memory comes first (slot order)" };
   const lines = revivedFamilyText(memory, hero).split("\n").map((line) => line.trim()).filter(Boolean);
   if (!lines.length) return null;
+  // Approaching Nightfall (src/approaching-nightfall.js): the settlement decides the badge (Provisional where it runs), the duration joins its reason.
+  if (name === "Approaching Nightfall") {
+    const parts = lines.map((line) => nightfallLineStatus(line, planner)).filter(Boolean);
+    const settle = parts.find((part, index) => /^Additionally settles/i.test(lines[index])) ?? parts[parts.length - 1], duration = parts.find((part) => part !== settle);
+    const durationNote = duration ? `-50% additional Ailment Duration: ${duration.status}${duration.reason ? ` (${duration.reason})` : ""}` : "";
+    if (settle?.status === "Provisional") return { status: "Provisional", reason: [settle.reason, durationNote].filter(Boolean).join(" ") };
+    if (duration?.status === "In calc") return { status: "In calc", reason: `The settlement on Reaping is Inactive: ${settle?.reason || "no Reap"}.` };
+    return { status: "Inactive", reason: [settle?.reason, duration?.reason].filter(Boolean).join("; ") };
+  }
   const model = planner?.heroMemories || { lines: [], intakeOnly: [] };
   return { status: combineStatuses(lines.map((line) => heroMemoryLineCoverage(model, memory.id, line, true))), reason: "" };
 }

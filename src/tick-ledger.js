@@ -241,7 +241,7 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
     if (!onReaps && !item.hitPlaced && general) general.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: Infinity, layered: true });
   }
   const { actions, periodics, triggers } = ailments ?? { actions: allActions, periodics: allPeriodics, triggers: allTriggers };
-  const onLoop = ailments ? { ailments: ailments.ailments, reaps: ailments.reaps, derived: ailments.derived, ...(ailmentProgram.affliction ? { affliction: ailmentProgram.affliction } : {}) } : {};
+  const onLoop = ailments ? { ailments: ailments.ailments, reaps: ailments.reaps, derived: ailments.derived, ...(ailmentProgram.affliction ? { affliction: ailmentProgram.affliction } : {}), ...(ailments.nightfall ? { nightfall: ailments.nightfall } : {}) } : {};
   const averaged = averagedSources(planner, paths, new Set([...(ailments?.reaps || []), ...(ailments?.derived || []), ...(minions?.minions || [])].map((item) => item.key)));
   assumptions.push(...averaged.map((item) => ({ id: `tick:averagedSource:${item.key}`, value: item.dps, text: `${item.label}: ${item.reason}.` })), ...(ailments?.assumptions || []));
   // The bus's event on every hit path of yours (its strike hits, crit share, event tags), and its run state through the spec.

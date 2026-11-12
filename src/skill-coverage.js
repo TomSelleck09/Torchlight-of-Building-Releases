@@ -641,7 +641,7 @@ function refineSupportClause(planner, setup, supportName, clause, base) {
   // Deepened Curse (src/support-effects.js curseTaken → src/planner.js): In calc while the planner carries its derived line.
   if (clause.family === "curseTaken") {
     const carried = (planner?.modifierTexts || []).find((line) => line.origin === "derived" && String(line.source || "").startsWith(`${skillName}: ${supportName} (curse on the dummy`));
-    return carried ? result("In calc", `${carried.text} on the dummy (skill hits; the DoT and ailment ledgers do not read it yet): the curse stays on it, so sustained figures hold it; the 5 s / 20 s windows and the recount start it ${clause.delaySeconds} s after engagement`) : result("Inactive", `${skillName} is not on the dummy (inactive, or over the curse limit)`);
+    return carried ? result("In calc", `${carried.text} on the dummy (skill hits, the beam's hits, a skill's own DoT, Ignite, Trauma and Wilt, and so their Reaps): the curse stays on it, so sustained figures hold it; the 5 s / 20 s windows and the recount start it ${clause.delaySeconds} s after engagement`) : result("Inactive", `${skillName} is not on the dummy (inactive, or over the curse limit)`);
   }
   // Youga's trait skills deal no damage of their own (reference data texts of Stasis Vault, Supreme Descent, Selves of All Realms), so a
   // support's damage clauses on them change nothing (2026-10-18: Increased Area's "+X% additional damage" read Not modeled).
