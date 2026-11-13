@@ -18,7 +18,7 @@
 //   Terra skills now grants 32% Damage Bonus to that Terra skill" replaces the skill text's 26% per charge.
 // - The Paradise I Curse: "Enemies within the Main Terra Skill's area are cursed with Lv. 1 Ominous": with an active Main
 //   Terra Skill (centred on you and following you, the dummy within 10 m inside it: best case) the dummy is Cursed, so
-//   "against Cursed enemies" lines hold. Ominous's Ill Omen is modeled in src/ill-omen.js (best-case Elite loop, condition illOmen).
+//   "against Cursed enemies" lines hold. Ominous's Ill Omen is modeled in src/ill-omen.js (once on the Boss dummy, left out: no dummy Max Life; user decision 2026-11-13).
 
 import { activationMediumDotTrigger } from "./trigger-interval.js";
 import { classifyHitLine } from "./skill-hit-lines.js";
@@ -201,7 +201,7 @@ export function resolveDanceOfTheDeep({ state, modifierTexts = [], resolvedMain 
   const assumptions = !selected ? [] : [
     { id: "dance:mainTerra", value: mainIsTerra, text: `Dance of the Deep: ${mainIsTerra ? `Main Terra Skill ${resolvedMain.name} centred on you and following you, the dummy inside its area (best case: you stand within 10 m)` : "no active Main Terra Skill, so the Main Terra clauses are inactive"}; Terra skills that are not the Main Skill deal no damage.` },
     !charges.isDefault && { id: "dance:terraCharges", value: charges.maxCharges, text: `Terra Charge: +${charges.perChargePercent}% per charge consumed${charges.perChargeSource ? " (Artificial Moon)" : ""}, Max Terra Charge ${charges.maxCharges}${charges.maxSources.length ? ` (${charges.maxSources.map((item) => `${item.source}: +${item.value}`).join(", ")})` : ""}; a cast consumes all charges gained since the last cast, up to the max (keyword), at the planner's recast cadence; charge every ${round(charges.chargeIntervalSeconds)} s${charges.gash ? ` (Gash: ${charges.gash.stacks} stacks held, ${GASH.recoveryPercent}% Terra Charge Recovery Speed each)` : ""}.` },
-    paradiseLine && { id: "dance:paradise", value: cursed, text: `The Paradise I Curse: the dummy is ${cursed ? "Cursed (Lv. 1 Ominous inside the Main Terra Skill's area; Ill Omen is counted separately in the Ill Omen line (best case, Elite loop); the curse does not take a curse slot: user-confirmed 2026-10-13)" : "not Cursed by it (no active Main Terra Skill)"}.` }
+    paradiseLine && { id: "dance:paradise", value: cursed, text: `The Paradise I Curse: the dummy is ${cursed ? "Cursed (Lv. 1 Ominous inside the Main Terra Skill's area; Ill Omen fires once on the Boss dummy and is left out, see the Ill Omen line; the curse does not take a curse slot: user-confirmed 2026-10-13)" : "not Cursed by it (no active Main Terra Skill)"}.` }
   ].filter(Boolean);
   return { selected, mainIsTerra, charges, cursed, paradiseSource: paradiseLine?.source || null, blocksNonMainTerra, assumptions };
 }

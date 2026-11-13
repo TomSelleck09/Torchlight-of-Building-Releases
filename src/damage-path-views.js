@@ -530,7 +530,8 @@ export function combinedPathModel(paths, { format: rawFormat, recountTotalDps = 
 export function illOmenCardMarkup(illOmen, { format = (n) => String(n) } = {}) {
   if (!illOmen) return "";
   const efficiency = illOmen.efficiency;
-  const tag = illOmen.main?.applied ? "Theoretical · Elite loop in the dummy figures (best case)" : "Theoretical · not in dummy figures";
+  // User decision 2026-11-13: once on the Boss dummy, left out (no dummy Max Life); only Reap Purification's provisional reading is in the figures.
+  const tag = illOmen.main?.applied ? "Theoretical · Reap Purification in the dummy figures (best case)" : illOmen.main?.reason ? "Theoretical · once on the Boss dummy, not in dummy figures" : "Theoretical · not in dummy figures";
   const subline = [
     `Ominous: ${illOmen.ominousSource}`,
     `Cumulative Efficiency ${efficiency.rawPercent >= 0 ? "+" : ""}${format(efficiency.rawPercent)}%${efficiency.capped ? " (capped at 100%)" : ""}`,

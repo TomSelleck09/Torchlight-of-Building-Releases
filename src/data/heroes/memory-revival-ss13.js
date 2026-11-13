@@ -98,19 +98,27 @@ export function baseTraitMemoryReductionRange(rarity) {
   return rarity?.toLowerCase() === "legendary" ? { min:-60, max:-55 } : { min:-35, max:-30 };
 }
 
+// The slot's reduction is the opening memory's own revived roll (its text reads "Base Stats and the additional value of Random Affixes
+// of the Memory installed in this slot: -57%"), clamped to the tier's range, the range's max when the roll is missing (user report
+// 2026-11-13: a separate hero.baseTraitMemoryRoll had been set to the max on equip and read instead). Artificial Moon is fixed at -60.
+function withSlotReduction(slot) {
+  const range = slot.reductionRange, roll = slot.source?.revivedRoll;
+  const value = roll === null || roll === undefined || roll === "" || !Number.isFinite(Number(roll)) ? range.max : Number(roll);
+  return { ...slot, reduction: Math.max(range.min, Math.min(range.max, value)) };
+}
 const memoryRarityOrder = ["normal", "magic", "epic", "legendary", "ultimate"];
 export function baseTraitSlotFromMemory(memory) {
   if (!memory) return null;
   const name = normalizeRevivedAffix(memory.revivedAffix || "");
   const moon = name === "Artificial Moon" ? memory.type?.replace(/^Memory of /, "") : name.match(/^Artificial Moon: (Origin|Progress|Discipline)$/)?.[1];
-  if (moon) return { source:memory, memoryType:`Memory of ${moon}`, maxRarity:"ultimate", reductionRange:baseTraitMemoryReductionRange("ultimate") };
+  if (moon) return withSlotReduction({ source:memory, memoryType:`Memory of ${moon}`, maxRarity:"ultimate", reductionRange:baseTraitMemoryReductionRange("ultimate") });
   const regular = name.match(/^(Origin|Progress|Discipline) Base Trait Slot$/);
   if (!regular) return null;
   const tier = Number(memory.revivedTier) === 2 ? 2 : 1;
   // The caps are the game's quality numbers (rows 500101600 "10035{P1:4…}", 500101601 "10045{P1:3…}"; Artificial Moon P1:5): 4 is the
   // game's Epic, stored "legendary", and 3 the game's Rare, stored "epic" (src/affix-tier-eligibility.js MEMORY_RARITIES). Chunk 2,
   // 2026-11-01: they read one rarity too low since the stored keys kept their older names.
-  return { source:memory, memoryType:`Memory of ${regular[1]}`, maxRarity:tier === 1 ? "legendary" : "epic", reductionRange:tier === 1 ? {min:-60,max:-55} : {min:-35,max:-30} };
+  return withSlotReduction({ source:memory, memoryType:`Memory of ${regular[1]}`, maxRarity:tier === 1 ? "legendary" : "epic", reductionRange:tier === 1 ? {min:-60,max:-55} : {min:-35,max:-30} });
 }
 export function equippedBaseTraitSlot(hero = {}) {
   const ids = new Set(Object.values(hero.equippedMemoryIds || {}));

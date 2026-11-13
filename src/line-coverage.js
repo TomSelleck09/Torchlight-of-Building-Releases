@@ -138,8 +138,9 @@ const noDpsRules = [
 
 /**
  * Status of an Ill Omen line (src/ill-omen.js), or null for other lines (and without a planner, where the generic
- * "Not on dummy" rule answers). No Ominous in the build: Inactive. Nether King's extra effect: Not modeled. With the
- * illOmen condition on the lines are In calc (best case beyond the dummy); off, Not on dummy.
+ * "Not on dummy" rule answers). No Ominous in the build: Inactive. Nether King's extra effect: Not modeled. Ill Omen fires once on the
+ * Boss dummy and its burst is left out (no dummy Max Life; user decision 2026-11-13): Not on dummy. With Reap Purification and the illOmen
+ * condition on, the provisional continuous reading is in the figures: In calc.
  */
 export function illOmenLineStatus(text, planner = context) {
   const clean = normalizePercentageText(String(text || "")).trim();
@@ -464,9 +465,11 @@ function takenBodyStatus(body, planner, engines = plannerEngines(planner)) {
   // Every damage component of the hit counts (added Lightning on an Erosion spell takes Lightning Damage taken).
   const hitTypes = (hit) => new Set([...(hit.dealtTypes || [hit.damageType]), ...(hit.components || []).flatMap((component) => [component.type, component.originalType])].filter(Boolean));
   const hitReads = engines.hits.some((hit) => !typed || (typed === "Spell" ? (planner.activation?.setups?.find((setup) => setup.setupKey === hit.setupKey)?.tags || []).includes("Spell") : hitTypes(hit).has(typed)));
-  const dotReads = typed && engines.dotTypes.has(typed);
-  // "Spell Damage taken" (Frail, the follower's Lightning Beam) never reads on a DoT: dotTypes holds damage types only, so a
-  // DoT-only build reads Inactive (2026-10-18 user-supplied: Spell Damage taken is hit-only; not DoT, ailments or Reaps).
+  // "Spell Damage taken" (Frail, the follower's Speed Phantom / Lightning Beam: Spell tag, no Hit tag) reads on a Spell skill's own DoT
+  // and so its Reaps (user decision 2026-11-13, 8 T Thornfield audit G8; supersedes the 2026-10-18 hit-only reading there), never on
+  // ailments (src/skill-dot-model.js typedLines).
+  const spellDot = typed === "Spell" && (engines.dots || []).some((dot) => (planner?.activation?.setups?.find((setup) => setup.setupKey === dot.setupKey)?.tags || []).includes("Spell"));
+  const dotReads = typed && (engines.dotTypes.has(typed) || spellDot);
   // The beam (a Fire Spell) reads Spell Damage taken (Frail) and, with its Ignite, Fire Damage taken (Melting Flames; pact
   // scripted-effects batch 2026-10-13) through build-mechanics.
   // The beam's added parts of other types read their own taken lines (src/scorching-beam-hit.js typed; planner.beamTypedTypes): a

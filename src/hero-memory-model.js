@@ -52,8 +52,8 @@ export function calculateHeroMemories(hero = {}, options = {}) {
   const ceaselessTide = hero.selectedHeroId === "selena-sing-with-the-tide" && inventory.some(memory => ids.has(memory.id) && memory.revivedAffix === "Ceaseless Tide" && revivedAffixCounts(hero, memory));
   const lines = [], unsupported = [], intakeOnly = [];
   for (const memory of inventory.filter(memory => ids.has(memory.id))) {
-    const range = slot?.reductionRange || {min:0,max:0};
-    const reduction = validBase && memory.id === base.id ? Math.max(range.min, Math.min(range.max, hero.baseTraitMemoryRoll ?? range.max)) : null;
+    // The slot's own reduction (the opening memory's revived roll); hero.baseTraitMemoryRoll is no longer read (2026-11-13).
+    const reduction = validBase && memory.id === base.id ? slot.reduction : null;
     const reduce = text => reduction === null ? text : reduceBaseTraitMemoryStat(text, reduction);
     const texts = [reduce(memoryScaledBaseStat(memory.baseStat, memory.type, memory.enhancementLevel, memory.waxAndWane, memory.rarity)),
       ...(memory.fixedAffixes || []).map((_, index) => resolvedMemoryAffix(memory, "fixedAffixes", index)),

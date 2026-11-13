@@ -122,7 +122,7 @@ function terraRecast(name) {
     perSecond: (castSpeedFactor = 1) => 1 / Math.max(speedType === "cast-speed" && castSpeedFactor > 0 ? useTimeSeconds / castSpeedFactor : useTimeSeconds, chargeIntervalSeconds)
   });
 }
-function dotProfile(name, { groupId, durationSeconds, delivery, channeled = false, castIntervalSeconds = null, refreshPerSecond = null, extraAdditional = [], perAdditionalMaxStackAdditionalPercent = null, notes = [], gameNote = "", unmodeled = [], randomRoll = null, linked = false }) {
+function dotProfile(name, { groupId, durationSeconds, delivery, channeled = false, castIntervalSeconds = null, refreshPerSecond = null, extraAdditional = [], perAdditionalMaxStackAdditionalPercent = null, notes = [], gameNote = "", unmodeled = [], randomRoll = null, linked = false, maxLifeAdditional = null, area = null }) {
   const table = skillHitDamageSs13[name] || skillHitDamageNewSkills[name];
   const group = (table?.groups || []).find((item) => item.id === groupId) || null;
   const row = (level) => group?.levels?.[String(Math.max(1, Math.min(20, Math.floor(level || 20))))]?.entries?.[0] || null;
@@ -132,9 +132,9 @@ function dotProfile(name, { groupId, durationSeconds, delivery, channeled = fals
   return Object.freeze({
     name, kind: "dot", engine: group ? "skill-dot" : null, damageType, spell: tags.includes("Spell"), tags,
     delivery, castIntervalSeconds, channeled, beam: tags.includes("Beam"), maxChanneledStacks: channeled ? skillTimingSs13[name]?.channel?.maxStacks ?? 5 : null,
-    dot: { durationSeconds, perSecondAtLevel, stacking: "strongest", referenceLevel: 20, referencePerSecond: perSecondAtLevel(20) },
+    dot: { durationSeconds, perSecondAtLevel, stacking: "strongest", referenceLevel: 20, referencePerSecond: perSecondAtLevel(20), ...(area ? { areaSeconds: area.seconds, areaSource: area.source } : {}) },
     refreshPerSecond, recast: delivery === "spell-terra" ? terraRecast(name) : null, extraAdditional, perAdditionalMaxStackAdditionalPercent,
-    builtInReaping: null, canInflictHitAilments: false, randomRoll: randomRoll ? Object.freeze({ ...randomRoll }) : null, ...(linked ? { linked: true } : {}),
+    builtInReaping: null, canInflictHitAilments: false, randomRoll: randomRoll ? Object.freeze({ ...randomRoll }) : null, ...(linked ? { linked: true } : {}), ...(maxLifeAdditional ? { maxLifeAdditional: Object.freeze({ ...maxLifeAdditional }) } : {}),
     notes, unmodeled, reason: group ? null : `no game DoT row linked for ${name}`,
     sources: { refdata: table?.refdata || null, gameData: group ? `config_skill_damage group ${groupId} (levels 1–20, DoT row${gameNote ? `; ${gameNote}` : ""})` : null, timing: skillTimingSs13[name] ? `SkillEditor Split ${skillTimingSs13[name].splitId}` : null }
   });
@@ -156,8 +156,17 @@ const SKILL_DOT_PROFILES = Object.freeze(Object.fromEntries([
   // is kept for the skill-hit Terras (src/skill-hit-profiles.js); the two runs disagree for the DoT share (see the test).
   dotProfile("Frost Terra", { groupId: 271, durationSeconds: 2, delivery: "spell-terra", extraAdditional: [{ ...TERRA_CHARGE_DOT, source: "Frost Terra: Terra Charge" }],
     notes: ["Frost Terra: per the reference data, the Terra lasts 6 s (one at a time); 484 Persistent Cold Damage every second for 2 s. Best case: recast whenever a Terra Charge is available (1 per 0.5 s, use time 1 s fixed), so each new Terra re-applies the 2 s status and it stays up. \"Inflicts Frostbite when this skill deals damage\": the dummy is Frostbitten (Base Frostbite Rating 10: +10% additional Cold Damage taken, src/combat-states.js)."] }),
+  // Thornfield's own "+P2% additional damage for this skill for every P1 Max Life, up to +P3%" (2026-11-13, research/build-8t-thornfield-audit-2026-11-13.md
+  // G1): game record 683267456 on Thornfield's stone 2870, arguments [100, 1.25, 100]: node 119 from stat source 92 (Max Life) into attr 57191
+  // (damage, all) mod 4 (additional: its own factor) on the skill itself (tag 5000002), capped at P3 (`useMaxValueLimit`). No GetFloorInt: linear,
+  // as the other node 119 lines (chunk 12, inferred). Source 92 is read as the Max Life attribute (1001), the full pool: Sealed Life reserves Life,
+  // it does not lower the attribute (the client's missing-Life stat divides by the same full Max Life). The planner settles it in src/planner.js.
   dotProfile("Thornfield", { groupId: 1201, durationSeconds: 2, delivery: "spell-terra", extraAdditional: [{ ...TERRA_CHARGE_DOT, source: "Thornfield: Terra Charge" }],
-    notes: ["Thornfield: per the reference data, the Terra lasts 6 s (one at a time); 486 Persistent Physical Damage every second for 2 s. Best case: recast whenever a Terra Charge is available (as Frost Terra; not checked in game for Thornfield), so the 2 s status stays up. \"1.25% additional damage for this skill for every 100 Max Life, up to +100%\" is not applied (the character's Max Life is not read here); the self True Damage has no DPS effect."] }),
+    maxLifeAdditional: { record: 683267456, perMaxLife: 100, percent: 1.25, capPercent: 100 },
+    // The area (Split 411245, component buffArea "jisiArea": time 6 × attr 3402 with tag 5100310, bufftime 2, one at a time by field 2403100): the
+    // 2 s status holds while the dummy stands in it (G6, 2026-11-13; src/skill-dot-model.js heldSeconds).
+    area: { seconds: 6, source: "Split 411245 buffArea" },
+    notes: ["Thornfield: per the reference data, the Terra lasts 6 s (one at a time); 486 Persistent Physical Damage every second for 2 s. Best case: recast whenever a Terra Charge is available (as Frost Terra; not checked in game for Thornfield); the 6 s area (Split 411245, × Skill Effect Duration) keeps giving the dummy inside it the 2 s status, so one cast holds the DoT for the area's life and its 2 s after (game Split; the re-application inside the area inferred from its buffArea component). \"1.25% additional damage for this skill for every 100 Max Life, up to +100%\" is read from game record 683267456 (stone 2870: node 119 on Max Life, linear, capped; one additional factor on the skill's damage, so its DoT and the Reaps that settle it); the self True Damage has no DPS effect of its own."] }),
   // Black Hole (Empower): a 4 s area ticking every 0.5 s (game description; DoT row 561), one per 10 s cooldown (game Split 430451).
   dotProfile("Black Hole", { groupId: 561, durationSeconds: 4, delivery: "spell-area", refreshPerSecond: 1 / 10,
     notes: ["Black Hole: game Split 430451: 0.8 s cast, 10 s cooldown (the reference data's \"Effect Cooldown: 1 s\" is the Affliction effect's); the dummy sits in the hole for its 4 s, so the DoT runs 4 s of every 10 s. Cooldown Recovery Speed is not applied to this cadence. Its Euphoria (+3.5% additional DoT per 10 Affliction) is read by src/empower-buffs.js; its 100 Affliction per second is not joined to the Affliction rate."], gameNote: "ticks every 0.5 s for 4 s" }),

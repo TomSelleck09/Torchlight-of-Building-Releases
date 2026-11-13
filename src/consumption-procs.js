@@ -81,6 +81,9 @@ export function blurGainRate(sources = [], facts = null) {
     const chanceMatch = text.match(/([\d.]+)% chance to (?:gain|regain) Blur/i);
     const chance = chanceMatch ? Number(chanceMatch[1]) / 100 : 1;
     if (source.trigger === "Reaping") return facts?.reapsPerSecond != null ? { ...source, rate: chance * facts.reapsPerSecond, how: `${round(chance * 100)}% of Reaps (${round(facts.reapsPerSecond)}/s)` } : { ...source, rate: Infinity, how: "per Reap (rate measured by the hit pass)" };
+    // Phantom Trace (recipe 309615840, trigger 1000030 once per frame on the supported skill's DoT; 8 T Thornfield audit G7, 2026-11-13):
+    // one gain per server tick while the DoT ticks (src/support-buff-effects.js phantomTraceBlurSources `ticksPerSecond`).
+    if (source.trigger === "Dealing Damage Over Time" && Number.isFinite(source.ticksPerSecond)) return { ...source, rate: chance * source.ticksPerSecond, how: `${source.ticksHow || "one gain per server tick while the DoT ticks"}: ${round(chance * source.ticksPerSecond)}/s (trigger 1000030, once per frame; game recipe 309615840)` };
     const wilt = text.match(/per (\d+) stacks of Wilt inflicted/i);
     if (wilt) return facts?.wiltSuccessesPerSecond != null ? { ...source, rate: facts.wiltSuccessesPerSecond / Number(wilt[1]), how: `1 per ${wilt[1]} Wilt stacks (${round(facts.wiltSuccessesPerSecond)} stacks/s)` } : { ...source, rate: Infinity, how: "per Wilt stacks (rate measured by the hit pass)" };
     return { ...source, unmodeled: `${source.trigger}: its Blur gain rate is not modeled` };

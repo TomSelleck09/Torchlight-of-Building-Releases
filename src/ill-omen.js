@@ -13,9 +13,13 @@
 // - With Reap Purification ("Ill Omen Effect is converted to: Enemies take True Damage equal to 2.5% of Max Life when
 //   gaining 1 stack"): every stack deals 2.5% Max Life, continuous on every tier (the user's source says it bypasses the
 //   Boss lockout: provisional); no elimination for normals.
-// - Main damage figures (user 2026-10-13: "add Ill Omen to the main DPS stat"): a best-case combat condition (`illOmen`)
-//   adds True Damage = (DoT + Reaping damage) × the Elite-loop factor 0.4 × (1 + e), or 2.5 × (1 + e) / 5 with Reap
-//   Purification. True Damage: no further multipliers. The training dummy itself never triggers Ill Omen.
+// - Main damage figures. User decision 2026-11-13 ("Ill Omen is once against the dummy"; 8 T Thornfield audit G10), replacing the 2026-10-13
+//   Elite loop ("add Ill Omen to the main DPS stat"): the training dummy is a Boss (src/dummy-target.js), so without Reap Purification Ill Omen
+//   fires once, 20% of the dummy's Max Life after 10 × 5% ÷ (1 + e) of its Life dealt, and then stops: nothing in the sustained figure. The one
+//   burst would belong in the 5 s / 20 s windows and the 60 s recount, but it is a share of the dummy's Max Life and the planner models no
+//   dummy Max Life (nor the Life dealt that triggers it), so it is left out and the line says so (`main.reason`). With Reap Purification the
+//   provisional continuous reading stays (open question ill-omen-reap-purification): True Damage = (DoT + Reaping damage) × 2.5 × (1 + e) / 5,
+//   behind the best-case condition `illOmen`. True Damage: no further multipliers.
 
 export const ILL_OMEN_MAX_STACKS = 10;
 export const ILL_OMEN_NORMAL_THRESHOLD_PERCENT = 8;
@@ -111,10 +115,13 @@ export function resolveIllOmen({ modifierTexts = [], activeNames = new Set(), da
     inactive.length ? `Not counted: ${inactive.join("; ")}.` : "",
     notModeled.length ? `Not modeled: ${notModeled.map((item) => `${item.source}: ${item.text} (${item.reason})`).join("; ")}.` : ""
   ].filter(Boolean).join(" ");
-  const applied = enabled !== false;
+  // The dummy is a Boss: without Reap Purification Ill Omen fires once and the burst is left out (no dummy Max Life is modeled); with it, the
+  // provisional continuous reading behind the `illOmen` condition.
+  const applied = perStack != null && enabled !== false;
+  const onceReason = `the training dummy is a Boss: Ill Omen fires once, +20% of its Max Life after ${fmt(eliteFull)}% of its Life dealt (10 × 5% ÷ (1 + ${fmt(percent)}%)), and then stops (user decision 2026-11-13); the planner models no dummy Max Life, so that one burst is left out of the dummy figures`;
   const mainText = perStack != null
     ? `Ill Omen: Reap Purification, +${fmt(perStack)}% Max Life True Damage per stack every ${fmt(eliteStack)}% of life dealt (Elite; ×${fmt(eliteFactor)} of DoT + Reaping)`
-    : `Ill Omen: Elite loop, +20% Max Life True Damage every ${fmt(eliteFull)}% of life dealt = 50% ÷ (1 + ${fmt(percent)}%) (×${fmt(eliteFactor)} of DoT + Reaping)`;
+    : `Ill Omen on the dummy: ${onceReason}`;
   return {
     sources,
     ominousSource: sourceText,
@@ -126,11 +133,13 @@ export function resolveIllOmen({ modifierTexts = [], activeNames = new Set(), da
     working,
     main: {
       applied,
-      tier: "Elite",
+      tier: perStack != null ? "Elite" : "Boss",
       factor: applied ? eliteFactor : 0,
       eliteFactor,
-      short: perStack != null ? `Reap Purification, +${fmt(perStack)}% Max Life per stack every ${fmt(eliteStack)}% of life dealt` : `Elite loop, +20% Max Life every ${fmt(eliteFull)}% of life dealt`,
-      text: applied ? `${mainText} (best case; the training dummy never triggers it).` : "Ill Omen: off (condition off); the dummy figures leave it out."
+      // The once-only Boss burst, as a share of the dummy's Max Life and the Life dealt before it (not in the figures: no dummy Max Life).
+      ...(perStack == null ? { once: { trueDamagePercentOfMaxLife: ILL_OMEN_ELITE_TRUE_DAMAGE_PERCENT, afterLifeDealtPercent: eliteFull, dummyMaxLife: null }, reason: onceReason } : {}),
+      short: perStack != null ? `Reap Purification, +${fmt(perStack)}% Max Life per stack every ${fmt(eliteStack)}% of life dealt` : `once on the Boss dummy, +20% Max Life after ${fmt(eliteFull)}% of life dealt: left out (no dummy Max Life)`,
+      text: perStack == null ? `${mainText}.` : applied ? `${mainText} (best case, provisional).` : "Ill Omen: off (condition off); the dummy figures leave it out."
     }
   };
 }

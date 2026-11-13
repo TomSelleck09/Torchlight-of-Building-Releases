@@ -722,11 +722,15 @@ function buildLineConditionState({ state, requestedConditions, conditions, lowRe
     beamActive: beam,
     // Grudge's Paralysis chance (src/support-effects.js family "paralysis") on each active, modeled skill hit, with that skill's
     // measured hit rate once the planner's first pass has it (calculatePlannerOnce debuffHitRates; src/combat-states.js).
-    chanceParalysis: setups.filter((setup) => setup.enabled !== false && activeNames.has(setup.name) && skillHitSources.some((source) => source.setupKey === setup.setupKey)).flatMap((setup) => (setup.supportEffects?.paralysis || []).map((clause) => ({
+    // Grudge's row (record 369609664) opens on trigger 1000030, your damage of the supported skill: its hits and its damage over time, one event
+    // per server tick while the DoT ticks (wiring audit W2 gap 4; 8 T Thornfield audit G4, 2026-11-13), so a skill whose damage is only a DoT
+    // (Path of Flames) holds it too; `dotTicksPerSecond` is that share of the event rate. Cripple's fissure stays on the fissure's hits.
+    chanceParalysis: setups.filter((setup) => setup.enabled !== false && activeNames.has(setup.name) && (skillHitSources.some((source) => source.setupKey === setup.setupKey) || damageSources.some((source) => source.status === "modeled" && source.setupKey === setup.setupKey && source.profile?.engine === "skill-dot"))).flatMap((setup) => (setup.supportEffects?.paralysis || []).filter((clause) => !clause.fissure || skillHitSources.some((source) => source.setupKey === setup.setupKey)).map((clause) => ({
       setupKey: setup.setupKey, skill: setup.name, support: clause.support, source: clause.source, text: clause.text, level: clause.level, chancePercent: clause.chancePercent,
       // Cripple's fissure Paralysis needs no Curse and follows the fissure's own hit rate (Demolisher-gated).
       ...(clause.fissure ? { fissure: true, needsCurse: false } : {}),
-      hitsPerSecond: debuffHitRates?.get(setup.setupKey)?.[clause.fissure ? "fissureHitsPerSecond" : "hitsPerSecond"] ?? null, firstHitSeconds: debuffHitRates?.get(setup.setupKey)?.firstHitSeconds ?? null
+      hitsPerSecond: debuffHitRates?.get(setup.setupKey)?.[clause.fissure ? "fissureHitsPerSecond" : "hitsPerSecond"] ?? null, firstHitSeconds: debuffHitRates?.get(setup.setupKey)?.firstHitSeconds ?? null,
+      ...(clause.fissure ? {} : { dotTicksPerSecond: debuffHitRates?.get(setup.setupKey)?.dotTicksPerSecond ?? 0 })
     }))),
     // Tags of the active damage skills the build uses on the dummy (the beam and every modeled damage source), for "if you
     // have used a <Tag> Skill recently" (chunk 4).
@@ -864,6 +868,8 @@ function withRecountConditionAssumptions(recount, groups, planner) {
     flag("blur", "Blur"), { ...flag("blurRecentlyEnded", "Within 3 s after Blur ends"), ...(conditions.blur && conditions.blurRecentlyEnded ? { value: false, text: "Within 3 s after Blur ends: inactive (Blur is active)." } : {}) },
     flag("aim", "Aim", conditions.aim && planner.aim?.active ? ` (${planner.aim.uptimeLabel})` : ""),
     flag("idyll", "Idyll", conditions.idyll ? ` (${combat.idyllStacks} stacks)` : ""),
+    // Ill Omen on the Boss dummy (user decision 2026-11-13; src/ill-omen.js): once, its burst left out (no dummy Max Life).
+    ...(planner.illOmen && !planner.illOmen.reapPurification?.active ? [{ id: "illOmen", value: "once (left out)", text: `${planner.illOmen.main.text} Ominous from ${planner.illOmen.ominousSource}; Cumulative Efficiency ${planner.illOmen.efficiency.percent}%${planner.illOmen.efficiency.capped ? " (capped at 100%)" : ""}.` }] : []),
     // Curse slots (user-confirmed 2026-10-19): skill bar curses in bar order, then gear, then pacts and other triggers.
     ...curseSlotAssumptions(planner),
     // Pressed skills sharing one action timeline (src/planner.js pressRotation, 2026-11-05).
@@ -1040,7 +1046,9 @@ export function bestCaseAssumptions(planner) {
     items.push({ id: `condition:${effect.id}`, toggle: effect.id, label: `${effect.label}${effect.source && effect.source !== effect.label ? ` (${effect.source})` : ""}`, on, value: active, note: !on ? off : active ? `Best case: ${effect.summary}` : `Not applied: ${effect.reason}`,
       text: `${effect.label} (${effect.source}): ${!on ? "inactive (condition off)" : active ? `best case, ${effect.summary || "applied"}` : `not applied: ${effect.reason}`}${on && active ? `; ${effect.reason}` : ""}.` });
   }
-  if (planner.illOmen) items.push({ id: "condition:illOmen", toggle: "illOmen", label: "Ill Omen beyond the dummy (Elite loop)", on: requested.illOmen !== false, value: planner.illOmen.main.applied, note: requested.illOmen === false ? off : `Best case: ${planner.illOmen.main.short || "Elite loop"} (the dummy never triggers it)`, text: `${planner.illOmen.main.text} Ominous from ${planner.illOmen.ominousSource}; Cumulative Efficiency ${planner.illOmen.efficiency.percent}%${planner.illOmen.efficiency.capped ? " (capped at 100%)" : ""}.` });
+  // Ill Omen (user decision 2026-11-13: once on the Boss dummy, left out with no dummy Max Life; src/ill-omen.js): a best-case switch only for
+  // Reap Purification's provisional continuous reading. Without it the recount assumptions state the once-only rule (withRecountConditionAssumptions).
+  if (planner.illOmen?.reapPurification?.active) items.push({ id: "condition:illOmen", toggle: "illOmen", label: "Ill Omen with Reap Purification (every stack, a Boss included)", on: requested.illOmen !== false, value: planner.illOmen.main.applied, note: requested.illOmen === false ? off : `Best case: ${planner.illOmen.main.short || "Reap Purification"} (provisional)`, text: `${planner.illOmen.main.text} Ominous from ${planner.illOmen.ominousSource}; Cumulative Efficiency ${planner.illOmen.efficiency.percent}%${planner.illOmen.efficiency.capped ? " (capped at 100%)" : ""}.` });
   // Iris Nourishment (src/minion-damage-model.js): the Trait Skill pressed on cooldown; a trait that auto-triggers it forces it on.
   const nourishment = (planner.minions || []).map((minion) => minion.magus?.nourishment).find(Boolean);
   if (nourishment && !nourishment.autoTrait) items.push({ id: "condition:traitSkillOnCooldown", toggle: "traitSkillOnCooldown", label: "Trait Skill pressed on cooldown (Nourishment)", on: requested.traitSkillOnCooldown !== false, value: requested.traitSkillOnCooldown !== false, note: requested.traitSkillOnCooldown === false ? "Off: never cast, no Nourishment" : `Best case: cast every ${nourishment.traitCooldownSeconds ?? 5} s for Nourishment stacks`, text: `Trait Skill: ${requested.traitSkillOnCooldown !== false ? `best case, cast every ${nourishment.traitCooldownSeconds ?? 5} s for Nourishment stacks` : "never cast (condition off)"}.` });
@@ -2035,7 +2043,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     const hasReapingEarly = collectAllReapingSources(modifierTexts).length > 0 || cycleResistReaps(modifierTexts, resolvedMain, activeNames);
     const earlyBlurSources = [...collectBlurSources({ equipment, talents: levelSources.talents, slates: levelSources.slates, setups, activeNames, hasReaping: hasReapingEarly, inflictsWilt: enemyBuffSet(mechanics.enemyAilments)?.holds("Wilt", { by: BY_YOU_OR_FOLLOWER }) ?? mechanics.enemyAilments.types.filter((type) => !type.byMinions).some((type) => type.name === "Wilt") }), ...followerBlurSources(followerSelection(state)),
       // Phantom Trace's Blur grant (census item #2; src/support-buff-effects.js).
-      ...phantomTraceBlurSources({ setups, activeNames, damageSources, enemyAilments: enemyBuffSet(mechanics.enemyAilments)?.types("Ailment", { by: BY_YOU_OR_FOLLOWER }) ?? mechanics.enemyAilments.types.filter((type) => !type.byMinions).map((type) => type.name) })];
+      ...phantomTraceBlurSources({ setups, activeNames, damageSources, enemyAilments: enemyBuffSet(mechanics.enemyAilments)?.types("Ailment", { by: BY_YOU_OR_FOLLOWER }) ?? mechanics.enemyAilments.types.filter((type) => !type.byMinions).map((type) => type.name), ailmentShare: (name) => enemyBuffSet(mechanics.enemyAilments)?.share(name, { by: BY_YOU_OR_FOLLOWER }) ?? 1 })];
     lineConditionState.consumption = resolveConsumption({ texts: modifierTexts.filter((line) => line.origin !== "derived" && !line.lineEffect).map((line) => String(line.text ?? "").replace(/\s+/g, " ").trim()),
       agility: earlyBlessings.entries.find((entry) => entry.name === "Agility") || null, blurSources: earlyBlurSources, blurActive: requestedConditions.blur !== false && earlyBlurSources.some((source) => source.available),
       castsPerSecond: hitRateFacts?.consumption?.mainUsesPerSecond ?? lineConditionState.mainUsesPerSecond,
@@ -2278,7 +2286,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const dealtTypeRates = skillHitSources.length > 0;
   // Other active skills pressed on the dummy (src/press-schedule.js): the second pass reads their classification (hitRateFacts.pressInputs).
   const pressRates = requestedConditions[PRESS_SWITCH] !== false && setups.some((setup) => setup.enabled !== false && activeNames.has(setup.name) && setup.setupKey !== resolvedMain?.setupKey && setup.role !== "support" && setupBoardTab(setup) === "skills");
-  const probeDebuffHitRates = !debuffHitRates && (pressRates || dealtTypeRates || firstPassFacts || revivedNumbedRates ||motoRates || amEventRates || empowerRates || censusSupportRates || lineConditionState.chanceParalysis.length > 0 || critNumbedBuffs.entries.length > 0 || multistrikeTriggered || consumptionCores || rateDebuffCores || frostfireCasts || yougaIllusionRates || erikaRates || sageRates || carinoRates || rehanRates || rosaRates || bingRates || resourceRates || recentEventRates || ccChanceRates || minionAilmentRates || useSourceRates || spellBurstBlessingRates || mainCastRates || Boolean(trueFlameSetup));
+  // Thornfield: Sacrifice (record 778012032 row 3): a stack chance on each Reap of yours, so its held stacks read the Reaps per second the
+  // measuring pass found (src/support-conditional-batch4.js sacrificeStacks; 8 T Thornfield audit G2, 2026-11-13).
+  const sacrificeRates = setups.some((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.supports || []).some((support) => support?.enabled !== false && support?.name === "Thornfield: Sacrifice (Magnificent)"));
+  const probeDebuffHitRates = !debuffHitRates && (sacrificeRates || pressRates || dealtTypeRates || firstPassFacts || revivedNumbedRates ||motoRates || amEventRates || empowerRates || censusSupportRates || lineConditionState.chanceParalysis.length > 0 || critNumbedBuffs.entries.length > 0 || multistrikeTriggered || consumptionCores || rateDebuffCores || frostfireCasts || yougaIllusionRates || erikaRates || sageRates || carinoRates || rehanRates || rosaRates || bingRates || resourceRates || recentEventRates || ccChanceRates || minionAilmentRates || useSourceRates || spellBurstBlessingRates || mainCastRates || Boolean(trueFlameSetup));
   if (probeDebuffHitRates) skipVariation = true;
   // Census batch 6 (src/minion-sentry-batch6.js): Maniacal Army's Command gain (buff 10960, "+15 Command per second" while its Synthetic
   // Troop Minions deal damage) as a derived Command source line, before the first Command read (src/minion-cores.js commandState).
@@ -2298,6 +2309,16 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // The summoner's Command (a resource) as a level on your unit buff set (W9 step 2), where the line state holds it.
   if (lineConditionState.commandPoints !== undefined) lineConditionState.playerBuffs?.setLevel("Command", lineConditionState.commandPoints);
   const lineEffects = resolveLineEffects(modifierTexts, lineConditionState);
+  // Stab In The Back (game record 112064: trigger 1000069 on the Main tag, gate Blur (state 4000060), node 302 removes Blur, node 624 aFL
+  // 57191 bOnlyNextLoopAction / bOnceToSkill; user decision 2026-11-13, 8 T Thornfield audit G7, a user-pasted AI answer agreeing with the
+  // records, provisional: open question stab-in-the-back-terra-dot): the cast's "+X% additional damage" reaches that cast's whole skill
+  // instance: the Main Skill's own hits, and a Terra's damage over time for that area's life (so the Reaps settling it). Only casts that find
+  // Blur take it: share = min(1, Blur gain rate ÷ Main Skill casts per second) (Q5, src/consumption-procs.js settle); Blur's own lines hold
+  // blurHeldShare below. One additional line on the Main Skill's own ledger (src/line-conditions.js consumeBlurPerCast: no build-wide line).
+  const stabInTheBackLines = (setupKey) => !setupKey || setupKey !== resolvedMain?.setupKey ? [] : (lineEffects.lines || []).filter((entry) => entry.condition === "consumeBlurPerCast" && entry.active && entry.ownSkillOnly).flatMap((entry) => entry.bodies.map((item) => {
+    const value = Number(String(item.derivedText || "").match(/^\+?([\d.]+)% additional damage$/i)?.[1]);
+    return Number.isFinite(value) && value > 0 ? { source: /Stab In The Back/.test(entry.source) ? entry.source : `${entry.source}: Stab In The Back`, text: `${item.derivedText} for each Main Skill cast that finds Blur (${Math.round((entry.factor ?? 1) * 1000) / 10}% of casts; game record 112064 node 624: the cast's own hits and damage over time; provisional)`, value, category: "Additional damage" } : null;
+  })).filter(Boolean);
   // Prophecy of Punishment (Thea – Wisdom of The Gods; src/thea-traits.js): Lucky Damage (label 3000090) for the share of time Focus
   // equals Agility: a part-time Lucky window, which the luck count reads (src/lucky-damage.js luckyRollFraction; a fractional roll count
   // no longer reaches it since the count replaced the rolls).
@@ -2602,7 +2623,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // The follower's Tartarus: Thunder Spike "Grants you Blur when the Shadows of this skill hit" (src/follower-model.js, 2026-10-17).
   blurSources.push(...followerBlurSources(followerSelection(state)));
   // Phantom Trace: "Gains Blur when the supported skill deals Damage Over Time" (census item #2; src/support-buff-effects.js).
-  blurSources.push(...phantomTraceBlurSources({ setups, activeNames, damageSources, enemyAilments: enemyBuffSet(mechanics.enemyAilments)?.types("Ailment", { by: BY_YOU_OR_FOLLOWER }) ?? mechanics.enemyAilments.types.filter((type) => !type.byMinions).map((type) => type.name) }));
+  blurSources.push(...phantomTraceBlurSources({ setups, activeNames, damageSources, enemyAilments: enemyBuffSet(mechanics.enemyAilments)?.types("Ailment", { by: BY_YOU_OR_FOLLOWER }) ?? mechanics.enemyAilments.types.filter((type) => !type.byMinions).map((type) => type.name), ailmentShare: (name) => enemyBuffSet(mechanics.enemyAilments)?.share(name, { by: BY_YOU_OR_FOLLOWER }) ?? 1 }));
   conditions.blur = requestedConditions.blur !== false && blurSources.some(source => source.available);
   // Automatic mode resolves Blur active vs within 3 s after it ends (exclusiveConditionGroups); report the resolved pair.
   if (state.combat.conditionMode !== "manual" && conditions.blur) conditions.blurRecentlyEnded = false;
@@ -2743,6 +2764,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     aimOnBoard: setups.some((setup) => setup.name === "Aim" && setup.enabled !== false && activeNames.has(setup.name)),
     hasProfane: Boolean(lineEffects.combat?.buffs?.hasProfane), deteriorationActive: Boolean(lineEffects.combat?.deterioration),
     hasReapSource: modifierTexts.some((line) => /\bReaps? [\d.]+ ?s\b/i.test(String(line.text ?? ""))),
+    // Your Reaps per second (the measuring pass; null before it): Thornfield: Sacrifice's Reap gain (src/support-conditional-batch4.js).
+    reapsPerSecond: Number.isFinite(hitRateFacts?.reapsPerSecond) ? hitRateFacts.reapsPerSecond : null,
     splitQuantityBuild: modifierTexts.reduce((total, line) => { const match = String(line.text ?? "").replace(/\s+/g, " ").trim().match(/^\+(\d+(?:\.\d+)?) (?:to )?(?:Parabolic Projectile Splits? quantity|(?:Parabolic Projectile )?Split Quantity)$/i); return total + (match ? Number(match[1]) * (line.multiplier ?? 1) : 0); }, 0)
   };
   for (const setup of setups) setup.supportEffects = resolveSupportEffects(setup, { ...supportEffectsContext(setup, focusBlessingStacks), conditions: supportConditions });
@@ -2757,6 +2780,27 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     const enemyLines = chunk8EnemyLines(setup, { modifierTexts, nearTarget: conditions.nearTarget !== false, usesPerSecond: hitRateFacts?.bySetup?.get?.(setup.setupKey)?.usesPerSecond ?? null, infiltrationTypes: enemyBuffSet(lineConditionState)?.types({ tag: 5200086 }, { stage: "debuff" }) ?? [...(lineEffects.combat?.debuffs?.infiltration || [])] });
     modifierTexts.push(...enemyLines);
     lateResistanceLines.push(...enemyLines.filter((line) => line.resistanceTypes));
+    // An untagged enemy damage-taken debuff (Path of Flames: Spontaneous Combustion, buff 10155: attr 5720 mod 4, no tag; 8 T Thornfield audit G3,
+    // 2026-11-13) lands after the last mechanics pass: the DoT / ailment damage-taken bucket and the beam's hits take it here, as Deepened Curse's.
+    for (const line of enemyLines.filter((item) => item.allDamageTaken)) addLateDamageTakenLine(mechanics, line, activeNames);
+  }
+  // Thornfield: Sacrifice's stacks on the clean dummy (8 T Thornfield audit G2, 2026-11-13; src/support-conditional-batch4.js sacrificeStacks):
+  // the self-damage stacks need no event on the dummy (your Terra's True Damage), so with own buffs built before engaging they are held at
+  // engagement (as Thornfield: Retribution's stacks); the Reap stacks need a Reap of yours on the dummy, so they build from 0 at engagement (the
+  // 2026-11-02 rule for a buff gained only from the dummy). Without pre-built own buffs both build from 0. A timed own-buff part on the skill's
+  // DoT (fixed at each application, so the Reaps settle it): level (1 + p)^stacks(t) − 1 per frame, sustained the ledger's held stacks.
+  for (const setup of setups.filter((item) => item.enabled !== false && activeNames.has(item.name))) {
+    for (const clause of (setup.supportEffects?.clauses || []).filter((item) => item.condition === "sacrificeStacks" && item.active && item.sacrifice)) {
+      const { lifeStacksPerSecond, reapStacksPerSecond, durationSeconds, cap, steadyStacks, perStackPercent } = clause.sacrifice;
+      const prebuilt = requestedConditions.prebuiltSelfBuffs !== false;
+      const stacksAt = (time) => Math.min(cap, lifeStacksPerSecond * (prebuilt ? durationSeconds : Math.min(time, durationSeconds)) + reapStacksPerSecond * Math.min(time, durationSeconds));
+      const level = (stacks) => (1 + perStackPercent / 100) ** stacks - 1;
+      const frames = Math.ceil(durationSeconds * 30 - 1e-9);
+      const points = Array.from({ length: frames + 1 }, (_, index) => [index / 30, level(stacksAt(index < frames ? (index + 0.5) / 30 : durationSeconds))]);
+      const source = `${setup.name}: ${clause.support}`;
+      (lineEffects.combat.timedEffects ||= []).push({ id: `sacrifice:${setup.setupKey}`, label: `${source} stacks`, source, text: clause.text, target: "self", toggle: false, enabled: true, active: true, provisional: true,
+        parts: [{ type: null, reach: "dot", keys: [`skill:${setup.setupKey}`], percent: 100, schedule: { kind: "steps", points, sustained: level(steadyStacks) } }] });
+    }
   }
   // Empower Skill effects on the build's other damage (src/empower-effects.js; frost-terra audit 2026-10-13): Ice Bond's
   // Euphoria and a skill's hit debuff (Blizzard), scaled by Empower Effect. A hit debuff shared here leaves that skill's own
@@ -3162,7 +3206,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     const hitOnlyLines = [...blessingHitLines, ...singWithTheTide.hitLines, ...(pureHeart?.hitLines || []), ...afflictionFire.lines];
     // A buff for the character's "other skills" (Ice Bond's Euphoria, src/empower-effects.js) skips the skill that grants it.
     const ownLines = sourceTexts.some((line) => line.exceptSetupKey === setup.setupKey) ? sourceTexts.filter((line) => line.exceptSetupKey !== setup.setupKey) : sourceTexts;
-    const common = { rotation: pressRotationState?.bySetup?.get(source.setupKey) || firstPassMobilityRotation.get(source.setupKey) || null, spellTagOnAttack: spellToAttack.sources.length > 0, measuredDealtTypes: hitRateFacts?.bySetup?.get(source.setupKey)?.scopeTypes || null, setup, profile: source.profile, modifierTexts: hitOnlyLines.length ? [...ownLines, ...hitOnlyLines] : ownLines, castSpeed, burstChargeTrigger: resolvedMain?.setupKey && source.setupKey === resolvedMain.setupKey ? solidRiverTriggers(modifierTexts)[0] || null : null, takenConversion: lineEffects.hero?.takenConversion || null, movedRecently: requestedConditions.movedRecently !== false, multistrikeEventsPerSecond: hitRateFacts?.multistrikeEventsPerSecond ?? null,luckyDamageRolls: lineEffects.combat?.lucky?.damageRolls || 1, luckyState: lineEffects.combat?.lucky || null, deterioration: lineEffects.combat?.deterioration || null, auraEntries: aura.entries.filter((entry) => activeNames.has(entry.name)), aim, intelligenceAdditionalPercent: intelligenceLine?.percent || 0, mainStatPoints: mechanics.intelligence?.removed ? null : lineEffects.state?.stats || null, intelligenceSource: intelligenceLine?.source || null, target: { resistancePercent: { Fire: damageCombat.targetFireResistancePercent, Cold: damageCombat.targetColdResistancePercent ?? 30, Lightning: damageCombat.targetLightningResistancePercent ?? 30, Erosion: damageCombat.targetErosionResistancePercent ?? 30 }, ...(juggernaut ? { armourPercent: juggernaut.armourPercent, nonPhysicalArmourPercent: juggernaut.nonPhysicalArmourPercent } : {}), frostbiteRating: Number(enemyBuffSet(lineConditionState)?.level("Frostbite") ?? lineEffects.combat?.debuffs?.frostbiteRating) || 0 }, targetCursed,
+    const common = { rotation: pressRotationState?.bySetup?.get(source.setupKey) || firstPassMobilityRotation.get(source.setupKey) || null, spellTagOnAttack: spellToAttack.sources.length > 0, measuredDealtTypes: hitRateFacts?.bySetup?.get(source.setupKey)?.scopeTypes || null, setup, profile: stabInTheBackLines(source.setupKey).length ? { ...source.profile, grantedAdditional: [...(source.profile.grantedAdditional || []), ...stabInTheBackLines(source.setupKey)] } : source.profile, modifierTexts: hitOnlyLines.length ? [...ownLines, ...hitOnlyLines] : ownLines, castSpeed, burstChargeTrigger: resolvedMain?.setupKey && source.setupKey === resolvedMain.setupKey ? solidRiverTriggers(modifierTexts)[0] || null : null, takenConversion: lineEffects.hero?.takenConversion || null, movedRecently: requestedConditions.movedRecently !== false, multistrikeEventsPerSecond: hitRateFacts?.multistrikeEventsPerSecond ?? null,luckyDamageRolls: lineEffects.combat?.lucky?.damageRolls || 1, luckyState: lineEffects.combat?.lucky || null, deterioration: lineEffects.combat?.deterioration || null, auraEntries: aura.entries.filter((entry) => activeNames.has(entry.name)), aim, intelligenceAdditionalPercent: intelligenceLine?.percent || 0, mainStatPoints: mechanics.intelligence?.removed ? null : lineEffects.state?.stats || null, intelligenceSource: intelligenceLine?.source || null, target: { resistancePercent: { Fire: damageCombat.targetFireResistancePercent, Cold: damageCombat.targetColdResistancePercent ?? 30, Lightning: damageCombat.targetLightningResistancePercent ?? 30, Erosion: damageCombat.targetErosionResistancePercent ?? 30 }, ...(juggernaut ? { armourPercent: juggernaut.armourPercent, nonPhysicalArmourPercent: juggernaut.nonPhysicalArmourPercent } : {}), frostbiteRating: Number(enemyBuffSet(lineConditionState)?.level("Frostbite") ?? lineEffects.combat?.debuffs?.frostbiteRating) || 0 }, targetCursed,
       // Curses on the dummy (skill curses within the limit + gear-triggered curses) and the enemy-ailment model's types, for
       // components gated on a Cursed target (Shackles of Malice) and triggers gated on an ailment (Ice Focus: Frostbite).
       targetCurseCount: curseLimit.active.length + mechanics.curses.active.length, enemyAilments: mechanics.enemyAilments,
@@ -3964,6 +4008,18 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const bardDotLines = (source) => singWithTheTide.channeledLine && (source.profile?.tags || []).includes("Channeled") ? [singWithTheTide.channeledLine] : [];
   // Gash on a Terra's own DoT, at the stacks its recast cadence holds (src/selena-dance.js gashDamageLine).
   const gashDotLines = (source, interval, minimum = 1) => { if (!(source.profile?.tags || []).includes("Terra") || !(interval > 0)) return []; const line = gashDamageLine(terraChargesAtInterval(terraChargesFor(source.setup), interval, { minimum })); return line ? [line] : []; };
+  // A DoT skill's own "+X% additional damage for this skill for every N Max Life, up to +C%" (Thornfield, game record 683267456, 2026-11-13;
+  // src/skill-damage-profiles.js maxLifeAdditional): min(C, X × Max Life ÷ N), linear (node 119, no GetFloorInt), on the character's Max Life
+  // (the stat sheet's pool, attribute 1001: the full pool, Sealed Life not taken off). One additional factor on the skill's damage.
+  const maxLifeDotLines = (source) => {
+    const rule = source.profile?.maxLifeAdditional;
+    if (!rule) return [];
+    const maxLife = Math.max(0, Number(lineConditionState.stats?.maxLife) || 0);
+    const value = Math.min(rule.capPercent, rule.percent * maxLife / rule.perMaxLife);
+    if (!(value > 0)) return [];
+    const r4 = (number) => Math.round(number * 10000) / 10000;
+    return [{ source: `${source.name}: Max Life`, text: `+${r4(value)}% additional damage for this skill (${rule.percent}% for every ${rule.perMaxLife} Max Life: ${r4(maxLife)} Max Life${value >= rule.capPercent ? `, capped at +${rule.capPercent}%` : ""}; game record ${rule.record}, node 119 on Max Life, linear)`, value, category: "Additional damage" }];
+  };
   const skillDots = skillDotSources.map((source) => calculateSkillDot({
     setup: source.setup, profile: source.profile, modifierTexts,
     shared: skillDotShared(source),
@@ -3973,8 +4029,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     // the channel rate. Channel profiles with a per-additional-max-stack line read the build's channel stacks
     // (src/build-mechanics.js follows the resolved main skill's supports, so other setups keep the base count).
     // The channel rate is the DoT setup's own (its Quick Decision), not the Scorching Beam setup's (B5).
-    castsPerSecond: dotCastsPerSecond(source), firstApplicationSeconds: dotFirstApplication(source), crit: beamCritical, aim, triggered: Boolean(windRhythmFor(source)), lucky: lineEffects.combat?.lucky || null,
-    extraAdditional: [...grantedSetupLines(source.setupKey).filter((line) => !line.increased), ...bardDotLines(source), ...gashDotLines(source, 1 / Math.max(1e-9, dotCastsPerSecond(source)), windRhythmFor(source) ? 0 : 1), ...(windRhythmFor(source) || (tangles.setups || []).some((item) => item.setupKey === source.setupKey) ? (lineEffects.combat?.buffs?.triggeredSkillAdditional || []).filter((line) => !line.increased) : []), ...(source.profile.extraAdditional || []).map((line) => { if (!(source.profile.recast && /Terra Charge/.test(line.source || ""))) return line; if (terraSupportsFor(source).dropsChargeLine) return null; const interval = 1 / Math.max(1e-9, dotCastsPerSecond(source)), minimum = windRhythmFor(source) ? 0 : 1; const charges = terraChargesAtInterval(terraChargesFor(source.setup), interval, { minimum }); return terraChargeLine(line, charges, terraChargesConsumed(charges, interval, { minimum })); }).filter(Boolean), ...terraSupportsFor(source).lines, ...(source.profile.perAdditionalMaxStackAdditionalPercent && source.setupKey === resolvedMain?.setupKey && mechanics.channel.additionalMaxStacks > 0 ? [{ source: `${source.name}: additional Max Channeled Stacks`, text: `+${source.profile.perAdditionalMaxStackAdditionalPercent}% additional damage for every +1 additional Max Channeled Stack(s) (${mechanics.channel.additionalMaxStacks} additional; skill text)`, value: source.profile.perAdditionalMaxStackAdditionalPercent * mechanics.channel.additionalMaxStacks, category: "Additional damage" }] : [])]
+    castsPerSecond: dotCastsPerSecond(source), firstApplicationSeconds: dotFirstApplication(source), crit: beamCritical, aim, triggered: Boolean(windRhythmFor(source)), lucky: lineEffects.combat?.lucky || null, dotTicksPerSecond: DOT_TICKS_PER_SECOND, skillEffectDurationPercent: lineConditionState.skillEffectDurationPercent || 0,
+    extraAdditional: [...grantedSetupLines(source.setupKey).filter((line) => !line.increased), ...stabInTheBackLines(source.setupKey), ...bardDotLines(source), ...maxLifeDotLines(source), ...gashDotLines(source, 1 / Math.max(1e-9, dotCastsPerSecond(source)), windRhythmFor(source) ? 0 : 1), ...(windRhythmFor(source) || (tangles.setups || []).some((item) => item.setupKey === source.setupKey) ? (lineEffects.combat?.buffs?.triggeredSkillAdditional || []).filter((line) => !line.increased) : []), ...(source.profile.extraAdditional || []).map((line) => { if (!(source.profile.recast && /Terra Charge/.test(line.source || ""))) return line; if (terraSupportsFor(source).dropsChargeLine) return null; const interval = 1 / Math.max(1e-9, dotCastsPerSecond(source)), minimum = windRhythmFor(source) ? 0 : 1; const charges = terraChargesAtInterval(terraChargesFor(source.setup), interval, { minimum }); return terraChargeLine(line, charges, terraChargesConsumed(charges, interval, { minimum })); }).filter(Boolean), ...terraSupportsFor(source).lines, ...(source.profile.perAdditionalMaxStackAdditionalPercent && source.setupKey === resolvedMain?.setupKey && mechanics.channel.additionalMaxStacks > 0 ? [{ source: `${source.name}: additional Max Channeled Stacks`, text: `+${source.profile.perAdditionalMaxStackAdditionalPercent}% additional damage for every +1 additional Max Channeled Stack(s) (${mechanics.channel.additionalMaxStacks} additional; skill text)`, value: source.profile.perAdditionalMaxStackAdditionalPercent * mechanics.channel.additionalMaxStacks, category: "Additional damage" }] : [])]
   }));
   // Ground-effect DoTs of generic spell hits (src/skill-hit-profiles.js skillHitDotComponents): a status refreshed
   // while the dummy stands in the area (refresh rate from the profile), with the skill's Terra Charge line.
@@ -3983,7 +4039,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     shared: skillDotShared(source),
     auraEntries: aura.entries.filter((entry) => activeNames.has(entry.name)),
     // A DoT laid by every use of a cast skill (Corrosive Shot's Corrosion Terra) is applied at the hit's own use rate.
-    castsPerSecond: source.profile.refreshPerSecond ?? modeledSkillHits.find((hit) => hit.setupKey === source.setupKey)?.rate.usesPerSecond ?? 0, crit: beamCritical, aim, lucky: lineEffects.combat?.lucky || null, extraAdditional: [...grantedSetupLines(source.setupKey).filter((line) => !line.increased), ...bardDotLines(source), ...gashDotLines(source, modeledSkillHits.find((hit) => hit.setupKey === source.setupKey)?.profile?.useModel?.durationSeconds || 6), ...(source.profile.extraAdditional || [])]
+    castsPerSecond: source.profile.refreshPerSecond ?? modeledSkillHits.find((hit) => hit.setupKey === source.setupKey)?.rate.usesPerSecond ?? 0, crit: beamCritical, aim, lucky: lineEffects.combat?.lucky || null, dotTicksPerSecond: DOT_TICKS_PER_SECOND, skillEffectDurationPercent: lineConditionState.skillEffectDurationPercent || 0, extraAdditional: [...grantedSetupLines(source.setupKey).filter((line) => !line.increased), ...stabInTheBackLines(source.setupKey), ...bardDotLines(source), ...gashDotLines(source, modeledSkillHits.find((hit) => hit.setupKey === source.setupKey)?.profile?.useModel?.durationSeconds || 6), ...(source.profile.extraAdditional || [])]
   })));
   for (const dot of skillDots) { const wind = windRhythmTerra.get(dot.setupKey) || dotTriggers.get(dot.setupKey); if (wind) dot.notes?.push(wind.text); }
   for (const dot of skillDots) dot.notes?.push(...(terraSupportCache.get(dot.setupKey)?.notes || []));
@@ -4115,7 +4171,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   conditions.illOmen = Boolean(illOmen?.main.applied);
   // Timed effects on the other sources (timedParts above): a DoT by its damage type, a skill hit by its per-type components, a
   // Minion's hit by its skill's type. Ice Cage: 1 stack per second from t = 0 (tooltip at Ice Puppet Lv2, user 2026-10-13).
-  const dotShare = (key) => ({ hit: false, types: ailments[key]?.damageType ? { [ailments[key].damageType]: 1 } : key === "ignite" ? { Fire: 1 } : {} });
+  // The source key lets a timed part reach one skill's DoT only (`keys`: Thornfield: Sacrifice's stacks); parts without keys ignore it.
+  const dotShare = (key) => ({ hit: false, types: ailments[key]?.damageType ? { [ailments[key].damageType]: 1 } : key === "ignite" ? { Fire: 1 } : {}, key });
   const minionEventShare = (minion) => { const types = new Map((minion.skills || []).map((item) => [item.name, item.type])); return (event) => ({ hit: true, types: types.get(event.skill) ? { [types.get(event.skill)]: 1 } : {} }); };
   const minionWindowDps = (minion, seconds) => {
     if (!timedParts.length) return seconds === 5 ? minion.combat.fiveSecondAverageDps : minion.combat.twentySecondAverageDps;
@@ -4386,8 +4443,15 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   if (probeDebuffHitRates) {
     const rates = new Map(lineConditionState.chanceParalysis.map((item) => {
       const hit = skillHits.find((entry) => entry.setupKey === item.setupKey && entry.modeled);
+      // Trigger 1000030 (Grudge): the setup's hits and its own DoT's damage events, one per server tick while it ticks (its uptime), from its first
+      // application (8 T Thornfield audit G4, 2026-11-13).
+      const dot = (skillDots || []).find((entry) => entry.setupKey === item.setupKey && entry.modeled && entry.applicationsPerSecond > 0);
+      const dotTicksPerSecond = dot ? DOT_TICKS_PER_SECOND * Math.min(1, Number(dot.combat?.uptime ?? 1)) : 0;
+      const dotFirst = dot ? dot.firstApplicationSeconds ?? 1 / dot.applicationsPerSecond : null;
+      const hitFirst = hit ? hit.rate.firstUseSeconds ?? null : null;
+      const firsts = [hitFirst, dotFirst].filter(Number.isFinite);
       // The fissure (Groundshaker) lands once per use that consumes a Demolisher Charge: uses/s × that share.
-      return [item.setupKey, { hitsPerSecond: hit ? hit.rate.hitsPerSecond || 0 : 0, fissureHitsPerSecond: hit ? (hit.rate.usesPerSecond || 0) * (hit.rate.demolisherShare || 0) : 0, firstHitSeconds: hit ? hit.rate.firstUseSeconds ?? null : null }];
+      return [item.setupKey, { hitsPerSecond: (hit ? hit.rate.hitsPerSecond || 0 : 0) + dotTicksPerSecond, dotTicksPerSecond, fissureHitsPerSecond: hit ? (hit.rate.usesPerSecond || 0) * (hit.rate.demolisherShare || 0) : 0, firstHitSeconds: firsts.length ? Math.min(...firsts) : null }];
     }));
     // Tremble's crit buff (crit hits per second, Lightning hits) and Activation Medium: Multistrike (the build's Max Multistrike
     // Count events per second over every modeled multistriking hit).
@@ -4576,6 +4640,11 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     if (sageRates) {
       const reapSources = damagePaths?.sustained?.reaping?.sources || theoretical.combat.reaping?.sources || [];
       facts.sage = { reapsPerSecond: reapSources.reduce((sum, source) => sum + (source.reapsPerSecond || 0), 0) };
+    }
+    // Thornfield: Sacrifice: every Reap of yours (trigger 1000032), the sources' Reaps per second.
+    if (sacrificeRates) {
+      const reapSources = damagePaths?.sustained?.reaping?.sources || theoretical.combat.reaping?.sources || [];
+      facts.reapsPerSecond = reapSources.reduce((sum, source) => sum + (source.reapsPerSecond || 0), 0);
     }
     // Carino (hero trait audit B9): every modeled Projectile skill's uses per second (one ammo per cast, Q-H8), measured without the
     // ammo factor (this pass applies none).

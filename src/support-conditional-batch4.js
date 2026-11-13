@@ -134,6 +134,16 @@ export const BATCH4_SUPPORT_RULES = [
   // ---- Not modeled, with the reason (a hit the profile does not carry) ----
   // Burning Shot: Fiery Blast (Magnificent; recipe 797540160: field 2600051, the explosion's damage per Ignite stack): the explosion is
   // Burning Shot's True Damage burst on Ignited enemies: not modeled, the profile has no explosion hit (src/attack-hit-profiles.js note).
+  // Thornfield: Sacrifice (Magnificent; 8 T Thornfield audit G2, 2026-11-13). Records: 778012032 [P1 20, P2 10, P3 1, P4 5, P5 10]: row 1
+  // node 612 collects the damage you take (data type 10000021, in % of Max Life + Max Energy Shield) and runs row 2 once per P1% (activeAffixType
+  // 2: floor(total ÷ P1) runs, the remainder carried), adding P3 stack(s) of buff 11762 for P4 s; row 3 on each Reap of yours (trigger 1000032)
+  // against an Elite (gate 10, tag 5001990) inside this skill's Terra (gate 184, buff 371) adds one at P2% (gate 188). Buff 11762
+  // (s_jisidimian_huagui; header subtype 2, cap 10, stack mode 1, as the Blessings' records whose layers keep their own duration: inferred
+  // alike) carries 943068736 [1]: attr 5902 (damage over time) mod 4 = 1 × GetEffectScale on the skill, one write per layer, so the layers
+  // multiply; 852783808 [P1] adds (P1 − 1) × 100% additional effect to the buffs tagged [this skill, 5100330]: 1% × P1 per layer, the clause's
+  // printed value. The damage you take is your Terra's own True Damage (Thornfield's buff 11761: 435840128 [20]; Thornfield: Retribution's
+  // 575469120 while you stand inside the Terra), (Life + Energy Shield) × P% a second: P ÷ P1 stacks a second whatever the pools.
+  rule(new RegExp(`^${N}% additional damage for the supported skill for each stack of buff \\(multiplies\\)$`, "i"), (m) => ({ value: num(m[1]), condition: "sacrificeStacks", recipe: 852783808 })),
   rule(new RegExp(`^When a Projectile of the supported skill hits, ${N}% additional damage for the explosion for every stack of Ignite the enemy has$`, "i"), (m) => ({ value: num(m[1]), condition: "unmodeledHit", unmodeled: true, conditionText: "Not modeled: Burning Shot's explosion (its True Damage burst on an Ignited enemy, game field 2600051) is not a modeled hit of the Burning Shot profile", reason: "Burning Shot's explosion (its True Damage burst on an Ignited enemy, game field 2600051) is not a modeled hit of the Burning Shot profile", recipe: 797540160 }))
 ];
 
@@ -177,8 +187,46 @@ export const BATCH4_NEUTRAL_RULES = [
   { family: "nonDamage", pattern: /^If the supported skill is not used within [\d.]+\s*s, lose [\d.]+ Fervor Rating every [\d.]+\s*s$/i, build: () => ({ reason: "the dummy figures use the skill continuously, so the Fervor Rating loss never starts" }) },
   // Shackles of Malice: Spite (Noble; recipe 916043584: label 3100283 makes the skill count the Curses on yourself, field 2600281 per Curse):
   // the training dummy never attacks or curses, so no Curse affects you.
-  { family: "notOnDummy", pattern: new RegExp(`^When the chain hits and explodes, the explosion deals ${N}% additional Hit Damage \\(multiplies\\) for every Curse affecting you$`, "i"), build: () => ({ reason: "it counts the Curses affecting you (game recipe 916043584, label 3100283); the training dummy never attacks or curses, so none does" }) }
+  { family: "notOnDummy", pattern: new RegExp(`^When the chain hits and explodes, the explosion deals ${N}% additional Hit Damage \\(multiplies\\) for every Curse affecting you$`, "i"), build: () => ({ reason: "it counts the Curses affecting you (game recipe 916043584, label 3100283); the training dummy never attacks or curses, so none does" }) },
+  // Thornfield: Sacrifice's stack gains and lifetime (record 778012032), read by the per-stack line above (sacrificeStacks), and its Life
+  // Restoration (buff 11762's 515242688, recovery). Thornfield: Retribution's self True Damage (575469120) is a Sacrifice gain on the same setup.
+  { family: "sacrifice", pattern: new RegExp(`^Gains (\\d+) stack\\(s\\) of buff for every ${N}% of Max Life lost to damage$`, "i"), build: (m) => ({ kind: "lifeLost", stacks: num(m[1]), every: num(m[2]), recipe: 778012032 }) },
+  { family: "sacrifice", pattern: new RegExp(`^When Reaping Elites inside the supported skill's Terra, there's a ${N}% chance to grant (\\d+) stack\\(s\\) of buff$`, "i"), build: (m) => ({ kind: "reap", chance: num(m[1]), stacks: num(m[2]), recipe: 778012032 }) },
+  { family: "sacrifice", pattern: new RegExp(`^Buff lasts ${N}\\s*s\\.? Stacks up to (\\d+) time\\(s\\)$`, "i"), build: (m) => ({ kind: "lifetime", seconds: num(m[1]), cap: num(m[2]), recipe: 778012032 }) },
+  { family: "nonDamage", pattern: new RegExp(`^${N}% Life Restoration Speed for each stack of buff$`, "i"), build: () => ({ reason: "Life Restoration Speed (buff 11762's affix 515242688) is recovery" }) },
+  { family: "sacrifice", pattern: new RegExp(`^You take True Damage equal to ${N}% of Max Life and Energy Shield every second if you are inside the supported skill's Terra$`, "i"), build: (m) => ({ kind: "selfDamage", percent: num(m[1]), recipe: 575469120 }) }
 ];
+
+/**
+ * Thornfield: Sacrifice's held stacks (record 778012032; 8 T Thornfield audit G2): its gains from this setup's clauses and the skill's own text.
+ * `clauseTexts` the setup's support clause texts, `skillName` the supported skill, `inside` you stand inside its Terra (Distance group Nearby),
+ * `reapsPerSecond` your Reaps a second (null: not measured). Stacks gained a second: Σ self True Damage % ÷ P1 × P3 + Reaps × P2% × P3; held
+ * min(cap, gains × lifetime) (each layer its own lifetime: inferred). Null when the support's clauses are not all there.
+ */
+export function sacrificeState({ clauseTexts = [], skillName = null, inside = true, reapsPerSecond = null } = {}) {
+  const tidy = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+  const read = (kind) => { for (const text of clauseTexts) { const rule = BATCH4_NEUTRAL_RULES.find((item) => item.family === "sacrifice" && item.pattern.test(tidy(text))); if (!rule) continue; const parsed = rule.build(tidy(text).match(rule.pattern)); if (parsed.kind === kind) return parsed; } return null; };
+  const lifeLost = read("lifeLost"), reap = read("reap"), lifetime = read("lifetime");
+  if (!lifeLost || !lifetime) return null;
+  const selfSources = [];
+  // The skill's own self True Damage (Thornfield's buff 11761: 435840128 "while this skill's Terra is active"; no gate).
+  for (const text of allSkillEffectsSs13[skillName] || []) for (const line of String(text).split("\n")) {
+    const match = tidy(line).match(new RegExp(`^You take True Damage equal to ${N}% of Max Life and Energy Shield every second while this skill's Terra is active$`, "i"));
+    if (match) selfSources.push({ source: `${skillName} (buff 11761, record 435840128)`, percent: num(match[1]), held: true });
+  }
+  // Thornfield: Retribution's (575469120: gate 184 on buff 371, you inside the supported skill's Terra).
+  for (const text of clauseTexts) {
+    const selfDamage = tidy(text).match(new RegExp(`^You take True Damage equal to ${N}% of Max Life and Energy Shield every second if you are inside the supported skill's Terra$`, "i"));
+    if (selfDamage) selfSources.push({ source: "Thornfield: Retribution (record 575469120)", percent: num(selfDamage[1]), held: Boolean(inside) });
+  }
+  const selfPercent = selfSources.filter((item) => item.held).reduce((sum, item) => sum + item.percent, 0);
+  const lifeStacksPerSecond = lifeLost.every > 0 ? selfPercent / lifeLost.every * lifeLost.stacks : 0;
+  // Row 3's gates: the Reaped enemy is an Elite (the training dummy is a Boss, so an Elite: src/dummy-target.js) inside the Terra (the dummy
+  // stands in it whenever the Terra's DoT reaches it).
+  const reapStacksPerSecond = reap && dummyTarget.elite && Number.isFinite(reapsPerSecond) ? reapsPerSecond * reap.chance / 100 * reap.stacks : 0;
+  const steadyStacks = Math.min(lifetime.cap, (lifeStacksPerSecond + reapStacksPerSecond) * lifetime.seconds);
+  return { selfSources, selfPercent, every: lifeLost.every, lifeStacksPerSecond, reapChance: reap?.chance ?? 0, reapsPerSecond: Number.isFinite(reapsPerSecond) ? reapsPerSecond : null, reapStacksPerSecond, durationSeconds: lifetime.seconds, cap: lifetime.cap, steadyStacks };
+}
 
 export const BATCH4_RULES = [...BATCH4_SUPPORT_RULES, ...BATCH4_COMBO_RULES, ...BATCH4_MINION_RULES, ...BATCH4_NEUTRAL_RULES];
 // Supports whose clauses read the hit pass's rates (uses, hits, another skill's hits): src/planner.js runs the rate pass for them.
@@ -317,6 +365,19 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
     case "atCentre":
       if (!hits) return off("the supported skill deals no hits");
       return apply(clause.value, `the dummy at the centre of the skill's area (best case): its full +${clause.value}% (attr 5901 Center Damage Bonus, ${recipe}; read on the skill's hits: provisional)`, { provisional: true });
+    case "sacrificeStacks": {
+      // Buff 11762's write is attr 5902, damage over time, on the supported skill: its own DoT and the Reaps that settle it.
+      if (full.engine !== "skill-dot") return off("the buff raises the supported skill's damage over time (attr 5902); the supported skill deals none modeled");
+      const sacrifice = sacrificeState({ clauseTexts: full.setupClauseTexts?.() || siblings, skillName: full.skillName, inside: state.nearTarget !== false, reapsPerSecond: state.reapsPerSecond });
+      if (!sacrifice) return off("the support's stack gains are not readable");
+      if (!(sacrifice.steadyStacks > 0)) return off(`no stack gain: no damage taken from the Terra's self True Damage${sacrifice.reapsPerSecond === 0 ? " and no Reap of yours" : ""}`);
+      const factor = (1 + clause.value / 100) ** sacrifice.steadyStacks;
+      const gains = [
+        sacrifice.selfSources.length ? `${sacrifice.selfSources.map((item) => `${item.percent}% (${item.source}${item.held ? "" : `: not held, standing ${DISTANT_STANDING_METERS} m away (Distance group: Distant) is read as outside the Terra`})`).join(" + ")} of Max Life and Energy Shield a second taken as True Damage ÷ ${sacrifice.every}% = ${round(sacrifice.lifeStacksPerSecond)} stacks/s (the True Damage read as skipping your damage-taken modifiers, record field skipIncr: inferred)` : null,
+        sacrifice.reapsPerSecond == null ? "the Reaps not measured yet on this pass" : `${round(sacrifice.reapsPerSecond)} Reaps/s × ${sacrifice.reapChance}% = ${round(sacrifice.reapStacksPerSecond)} stacks/s (an Elite inside the Terra)`
+      ].filter(Boolean).join(" + ");
+      return apply((factor - 1) * 100, `${gains}; each stack ${sacrifice.durationSeconds} s, up to ${sacrifice.cap}: ${round(sacrifice.steadyStacks)} held; ×(1 + ${clause.value}%)^${round(sacrifice.steadyStacks)} = ×${round(factor)} on the skill's damage over time (buff 11762, attr 5902, layers multiplying; ${recipe} and 778012032; the self-damage stacks pre-built with own buffs, the Reap stacks from 0 on the clean dummy in the windows; provisional)`, { provisional: true, sacrifice: { ...sacrifice, perStackPercent: clause.value } });
+    }
     case "withinOwnTerra": {
       if (state.nearTarget === false) return off(`standing ${DISTANT_STANDING_METERS} m away (Distance group: Distant): read as outside the skill's Terra under the dummy`);
       const held = ownStacks(clause.cap, 1 / clause.every, prebuilt);

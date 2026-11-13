@@ -33,7 +33,7 @@ import { focusBuffRecordLines, focusBuffId, readsFocusBuffRecord } from "./focus
 //                   and its reaps through the ailment model's typed "taken" bucket, not Fire hits or Ignite.)
 //   Entangled Pain — "+39% additional Damage Over Time taken by Cursed enemies" (Lv.20; the skill
 //                   record's databaseLevel20 in selena-complete-skill-loadout-ss13.js)
-//   Ominous       — "Cursed enemies can gain Ill Omen" (modeled in src/ill-omen.js as a best-case Elite loop)
+//   Ominous       — "Cursed enemies can gain Ill Omen" (modeled in src/ill-omen.js: once on the Boss dummy, left out with no dummy Max Life; user decision 2026-11-13)
 //   Torment       — "+5% additional Damage Over Time per stack for 4 s, up to 3 stacks"
 //   Precise: Acuteness Focus Buff (Lv20) — 15.6% additional Physical Damage,
 //                   +15% chance to inflict Trauma, Adds 5 - 5 Base Trauma Damage
@@ -672,7 +672,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   // the last collection.
   for (const line of modifierTexts) {
     if (line.origin !== "derived" || !(["combatState", "heroModule", "follower"].includes(line.lineEffect?.key) || line.allDamageTaken)) continue;
-    // Frail's "+X% additional Spell Damage taken" reaches the beam's Spell hits (never DoTs: Spell Damage taken).
+    // Frail's "+X% additional Spell Damage taken" reaches the beam's Spell hits (never its Ignite: an ailment record carries no Spell tag).
     const spell = String(line.text).match(/^\+(\d+(?:\.\d+)?)% additional Spell Damage taken$/i);
     if (spell) { if (activeNames.has("Scorching Beam")) hit.push({ source: line.source, bucket: "additional", percent: number(spell[1]), text: `${line.text} (enemy debuff)` }); continue; }
     // A Fire debuff on the dummy (Melting Flames, pact scripted-effects batch 2026-10-13) reaches the beam's Fire hits and its
@@ -700,7 +700,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     const match = String(line.text).match(/^([+-]\d+(?:\.\d+)?)% (?:additional )?damage taken$/i);
     if (!match) continue;
     const value = number(match[1]);
-    combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: line.lineEffect?.conditionText ?? (line.allDamageTaken ? "target cursed by the supported skill for its delay or more" : undefined) });
+    combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: line.lineEffect?.conditionText ?? (line.allDamageTaken ? line.takenCondition ?? "target cursed by the supported skill for its delay or more" : undefined) });
     if (activeNames.has("Scorching Beam")) hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)` });
   }
   // Own timed buffs with an "additional Max Damage" body (Bitter Thunder; src/combat-states.js): the beam's upper hit roll.
@@ -879,12 +879,13 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
  * Element, 446081152), and `resistanceTypes` (Corrosion Focus: Infection's enemy Resistance, 762108224, read as an equal Penetration).
  */
 export function addLateDamageTakenLine(mechanics, line, activeNames) {
-  // An enemy debuff on all damage pushed after the last collection (Deepened Curse's `allDamageTaken` line, src/planner.js; 2026-11-12):
+  // An enemy debuff on all damage pushed after the last collection (Deepened Curse's `allDamageTaken` line, src/planner.js; 2026-11-12; Path of
+  // Flames: Spontaneous Combustion's, 2026-11-13, src/support-chunk8.js chunk8EnemyLines; `takenCondition` names its condition):
   // the Ignite ledger's damage-taken bucket (Paralysis's), which the generic Ignite, Trauma, Wilt and skill-DoT layers read
   // (src/ailment-shared.js `taken`), and so their Reaps; the beam's hits too. One additional factor per line, like Paralysis.
   const value = number(String(line.text).match(/^([+-]\d+(?:\.\d+)?)% (?:additional )?damage taken$/i)?.[1] || 0) * (line.multiplier ?? 1);
   if (!value) return;
-  mechanics.ignite.combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: "target cursed by the supported skill for its delay or more" });
+  mechanics.ignite.combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: line.takenCondition ?? "target cursed by the supported skill for its delay or more" });
   if (activeNames?.has?.("Scorching Beam")) mechanics.hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)` });
 }
 

@@ -704,8 +704,9 @@ export function followerModifierTexts(state) {
 // ---- Modeled buffs and debuffs ---------------------------------------------------------------------------------------
 // Each buff reads its value from the skill text (patch-note values applied by the importer), is held at its best case on the
 // dummy and has its own best-case switch (`id`, a combat condition). `engine` names what takes it (src/follower-panel.js badge):
-// "dot" every damage over time, "spell" Spell hits and a Spell skill's own damage over time, "spellTaken" Spell hits only (an
-// enemy "Spell Damage taken" debuff; 2026-10-18 user-supplied: Spell Damage taken is hit-only), "steep" Steep Strike hits,
+// "dot" every damage over time, "spell" Spell hits and a Spell skill's own damage over time, "spellTaken" Spell hits and a Spell skill's own
+// damage over time and its Reaps, never ailments (an enemy "Spell Damage taken" debuff: Spell tag, no Hit tag; user decision 2026-11-13, 8 T Thornfield
+// audit G8, superseding the 2026-10-18 hit-only reading for a Spell skill's own DoT), "steep" Steep Strike hits,
 // "affliction" damage over time with Affliction, "reaping" Reaps, "stat" a stat with no damage of its own. Stacks multiply
 // ("(multiplies)"): n stacks of X% give (1 + X%)^n − 1 additional; stacks without "(multiplies)" add up.
 // derive(match, ctx) → { text, origin, summary, texts?, parts?, inactive?, noDps? }: `ctx` has the selection, the cadence of
@@ -820,7 +821,7 @@ export const FOLLOWER_BUFFS = [
     // Game affix 19669: attr 57201 (damage taken, buff layer) mod 4 against Spell-tagged damage, a timed buff (mode 3, 4 s, count P2).
     recipe: { 1: { concept: "damageTaken", bucket: "additional" }, 2: { concept: "damageTaken", field: "count" } },
     derive: (match) => { const value = round(((1 + Number(match[1]) / 100) ** Number(match[2]) - 1) * 100); return { text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `${match[2]} stacks × ${round(Number(match[1]))}% (multiplies): +${value}% additional Spell Damage taken` }; },
-    reason: "best case: the follower casts Lightning Beam (3 beams, no cooldown) at the dummy, so the stacks stay at max, held from t = 0 in the 5 s / 20 s windows; Spell hits only, not DoT, ailments or Reaps (2026-10-18 user-supplied: Spell Damage taken is hit-only)"
+    reason: "best case: the follower casts Lightning Beam (3 beams, no cooldown) at the dummy, so the stacks stay at max, held from t = 0 in the 5 s / 20 s windows; Spell hits and a Spell skill's own damage over time (and its Reaps), not ailments (the record writes the Spell tag, no Hit tag; user decision 2026-11-13)"
   },
   {
     id: "followerThunderSlash", skill: "Origin Tartarus: Thunder Slash", label: "Thunder Slash: Steep Strike Damage", target: "self", needsNear: true, engine: "steep",
@@ -847,14 +848,14 @@ export const FOLLOWER_BUFFS = [
   },
   {
     // Stone 90049's own affix 3578901 (chunk 14): on hit, a 4 s buff (node 306, mode 3, count 1) of attr 57201 mod 4 on the Spell tag: an enemy Spell Damage
-    // taken debuff, so Spell hits only (2026-10-18 rule). One buff: a new hit renews it. At a 4.29 s period it holds 93% of the time.
+    // taken debuff (Spell tag, no Hit tag): Spell hits and a Spell skill's own DoT (user decision 2026-11-13). One buff: a new hit renews it. At a 4.29 s period it holds 93% of the time.
     id: "followerSpeedPhantom", skill: "Tartarus: Speed Phantom", label: "Speed Phantom: Spell Damage taken", target: "enemy", needsNear: false, engine: "spellTaken",
     pattern: /^Enemies take \+(\d+(?:\.\d+)?)% additional Spell Damage when this skill hits$/i,
     derive: (match, ctx) => {
       const entry = ctxEntry(ctx), uptime = uptimeOf(SPEED_PHANTOM_DEBUFF_SECONDS, entry), value = round(Number(match[1]) * uptime);
       return { text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `+${round(Number(match[1]))}% additional Spell Damage taken for ${SPEED_PHANTOM_DEBUFF_SECONDS} s per hit (game affix 3578901), ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` };
     },
-    reason: "best case: the follower's Remnants reach the dummy each cast; Spell hits only, not DoT, ailments or Reaps (2026-10-18 user-supplied: Spell Damage taken is hit-only); time-averaged in the 5 s / 20 s windows"
+    reason: "best case: the follower's Remnants reach the dummy each cast; Spell hits and a Spell skill's own damage over time (and its Reaps), not ailments (the record writes the Spell tag, no Hit tag; user decision 2026-11-13); time-averaged in the 5 s / 20 s windows"
   },
   // ---- 2026-10-17 (research/followers/wilting-beam-follower-ranking.md): the rest of the Tartarus / Origin Tartarus Skills and
   // follower traits that change your damage on one dummy. All provisional.
@@ -1363,7 +1364,7 @@ const AFFIX_MARKERS = [
   {
     pattern: /^Inflicts Frail on the enemy when this skill deals damage$/i,
     texts: (match, ctx) => dealsDamage(ctx) ? ["The Follower inflicts Frail on the dummy"] : [],
-    read: (match, ctx) => dealsDamage(ctx) ? { status: "In calc", reason: "Frail on the dummy while the follower hits it: +15% additional Spell Damage taken, Spell hits only (src/combat-states.js; one Frail whoever inflicts it)" } : { status: "Inactive", reason: NO_DAMAGE }
+    read: (match, ctx) => dealsDamage(ctx) ? { status: "In calc", reason: "Frail on the dummy while the follower hits it: +15% additional Spell Damage taken, Spell hits and a Spell skill's own damage over time (src/combat-states.js; one Frail whoever inflicts it)" } : { status: "Inactive", reason: NO_DAMAGE }
   },
   {
     pattern: /^Inflicts Frail on enemies and \+(\d+(?:\.\d+)?)% Frail Effect taken by enemies when casting this skill$/i,
@@ -1485,7 +1486,7 @@ function affixBuffReading(buff, match, ctx) {
 //     damage reduction from the reference data Armor formula as for Juggernaut (followerArmourShreds → enemyArmourWithFollower, read by
 //     src/planner.js on every hit's target); Wound Ravager's Armor Break reads the Armor those shreds remove;
 //   - damage taken (Ailment Catalysis, Medium Penetration's Infiltration Effect taken, Weakness Insight's Frail Effect taken):
-//     "+X% additional … Damage taken" lines (Frail's Spell Damage taken reaches Spell hits only: 2026-10-18 rule);
+//     "+X% additional … Damage taken" lines (Frail's Spell Damage taken reaches Spell hits and a Spell skill's own DoT: user decision 2026-11-13);
 //   - Blessings (Overload, Tenacious Warcry): a timed gain source for the Blessing model (followerBlessingLines);
 //   - Hasten, Profane, Spell / Attack Aggression for part of the time: their keyword values × uptime (src/combat-states.js
 //     BUFF_VALUES: Hasten 8%, Profane 7%, Attack Aggression 5%, Spell Aggression 7%); held all the time they reach the generic
@@ -1660,7 +1661,7 @@ export const AFFIX_EFFECTS = [
     derive: (match, ctx) => {
       if (!(cadenceOf(ctx)?.castsPerSecond > 0)) return { inactive: "the follower never casts it" };
       const base = FOLLOWER_KEYWORD_VALUES.frail, value = round(((1 + base * (1 + Number(match[1]) / 100) / 100) / (1 + base / 100) - 1) * 100);
-      return { text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `Frail on the dummy each cast (src/combat-states.js) with +${match[1]}% Frail Effect taken: ${base}% × ${round(1 + Number(match[1]) / 100)} over its ${base}% = +${value}% additional Spell Damage taken, Spell hits only (2026-10-18 rule); held as Frail is (its duration is not in the text)` };
+      return { text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `Frail on the dummy each cast (src/combat-states.js) with +${match[1]}% Frail Effect taken: ${base}% × ${round(1 + Number(match[1]) / 100)} over its ${base}% = +${value}% additional Spell Damage taken, Spell hits and a Spell skill's own DoT (user decision 2026-11-13); held as Frail is (its duration is not in the text)` };
     },
     reason: "best case: the follower casts it at its cadence; the Frail Effect taken lasts as long as the Frail it comes with (provisional)" },
   { id: "followerAffixRepeatedRoars", label: "Repeated Roars: Attack Critical Strike Rating", target: "self", needsNear: true, engine: "attack",
@@ -2285,7 +2286,7 @@ export function missingFollowerEngine(engine, planner, engines) {
   if (engine === "affliction" && !engines.anyDot) return "no damage over time (so no Affliction damage) on the dummy in this build";
   if (engine === "reaping" && !engines.anyDot) return "no damage over time to Reap on the dummy in this build";
   if (engine === "spell" && !engines.spellHit && !spellDot) return "no Spell hit or Spell skill damage over time in this build";
-  if (engine === "spellTaken" && !engines.spellHit && !minionSpellHit(planner)) return "no Spell hit in this build (Spell Damage taken reaches Spell hits only; not DoT, ailments or Reaps)";
+  if (engine === "spellTaken" && !engines.spellHit && !spellDot && !minionSpellHit(planner)) return "no Spell hit or Spell skill damage over time in this build (Spell Damage taken reaches Spell hits and a Spell skill's own DoT, never ailments)";
   if (engine === "spellHit" && !engines.spellHit && !minionSpellHit(planner)) return "no Spell hit in this build (Double Damage reaches hits only)";
   if (engine === "attack" && !engines.attackRate) return "no modeled attack hit in this build";
   if (engine === "shadow" && !(engines.hits || []).some((hit) => (hit.components || []).some((component) => component.shadow && component.hitsPerUse > 0))) return "no Shadow Strike skill with Shadows in this build (the line reaches Shadows' hits only, tag 6020014)";

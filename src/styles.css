@@ -278,6 +278,12 @@ body.unified-planner .change-hero-button:hover,body.unified-planner .change-hero
 .hero-memory-preview [data-memory-trait-preview]{color:#e9e7e6}
 .hero-memory-preview .memory-trait-bonus{color:#70d88a;font-weight:700}
 .hero-memory-preview .memory-implicit.wax-applied{color:#72df92;font-weight:700}
+/* Base trait slot reduction (2026-11-13): the game's "(−57%)" tag after a reduced line, in the crafting preview and the hover tooltip. */
+.memory-base-reduction-tag{margin-left:3px;color:var(--muted);font-size:.86em;font-weight:400;text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--muted) 60%,transparent);text-underline-offset:2px;white-space:nowrap}
+.hero-memory-preview .memory-base-slot-line{color:#c5cdd6}.hero-memory-preview .memory-base-slot-line b{color:#f1f4f7}
+.hero-memory-preview .memory-base-slot-note{color:var(--muted);font-style:italic}
+.hero-memory-preview.memory-rarity-normal .memory-base-reduction-tag,.hero-memory-preview.memory-rarity-normal .memory-base-slot-note,.hero-memory-preview.memory-rarity-normal .memory-base-slot-line,.planner-tooltip.memory-tooltip[data-rarity="normal"] .memory-base-reduction-tag{color:#2a3036}
+.hero-memory-preview.memory-rarity-normal .memory-base-slot-line b{color:#15191d}
 .hero-memory-socket.filled[class*="memory-rarity-"] .hero-memory-art{border-color:var(--memory-accent);box-shadow:0 0 10px color-mix(in srgb,var(--memory-accent) 40%,transparent)}
 .hero-memory-socket.filled[class*="memory-rarity-"] .hero-memory-art{background:var(--memory-accent)}
 .hero-memory-socket.filled[class*="memory-rarity-"] em{color:var(--memory-accent)}

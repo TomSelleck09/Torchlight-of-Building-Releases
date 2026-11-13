@@ -1386,9 +1386,12 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     // A certain Paralysis on each fissure hit is periodic: 4 s every 1 / rate s (full uptime once the fissure lands every ≤ 4 s).
     const schedule = !active ? null : rateKnown && item.fissure ? { kind: "periodic", durationSeconds: BUFF_VALUES.paralysisDurationSeconds, periodSeconds: 1 / hitsPerSecond, startSeconds: Number.isFinite(item.firstHitSeconds) ? item.firstHitSeconds : 0 } : rateKnown ? { kind: "chance", chancePercent, hitsPerSecond, durationSeconds: BUFF_VALUES.paralysisDurationSeconds, ...(Number.isFinite(item.firstHitSeconds) ? { firstHitSeconds: item.firstHitSeconds } : {}) } : { kind: "full" };
     const uptime = schedule ? sustainedLevel(schedule) : 0;
-    const target = item.fissure ? "fissure hit on the dummy" : "hit on the Cursed dummy";
-    const rateLabel = item.fissure ? "fissure hits/s (one per Demolisher Charge consumed; skill-hit model, provisional)" : "hits/s (skill-hit model)";
-    const reason = !cursedOk ? "the dummy is not Cursed" : !(chancePercent > 0) ? "no Paralysis chance" : !active ? `${item.skill} deals no modeled ${item.fissure ? "fissure hits" : "hits"}` : rateKnown && item.fissure
+    // Trigger 1000030 (Grudge, record 369609664): the skill's hits and its own DoT's damage events, one per server tick while it ticks (8 T Thornfield
+    // audit G4, 2026-11-13; provisional, open question dot-damage-trigger-events).
+    const dotTicks = !item.fissure && Number(item.dotTicksPerSecond) > 0 ? Number(item.dotTicksPerSecond) : 0;
+    const target = item.fissure ? "fissure hit on the dummy" : dotTicks ? "damage event on the Cursed dummy" : "hit on the Cursed dummy";
+    const rateLabel = item.fissure ? "fissure hits/s (one per Demolisher Charge consumed; skill-hit model, provisional)" : dotTicks ? `damage events/s (trigger 1000030: the skill's hits, and its damage over time once per server tick, ${round(dotTicks)}/s)` : "hits/s (skill-hit model)";
+    const reason = !cursedOk ? "the dummy is not Cursed" : !(chancePercent > 0) ? "no Paralysis chance" : !active ? `${item.skill} deals no modeled ${item.fissure ? "fissure hits" : "hits or damage over time"}` : rateKnown && item.fissure
       ? `Paralysis on every ${target} at ${round(hitsPerSecond)} ${rateLabel}: ${BUFF_VALUES.paralysisDurationSeconds} s every ${round(1 / hitsPerSecond)} s = ${round(uptime * 100)}% uptime, from the first fissure on the clean dummy (provisional)`
       : rateKnown ? `${chancePercent}% chance per ${target} at ${round(hitsPerSecond)} ${rateLabel}: 1 − (1 − ${round(chancePercent / 100)})^(${round(hitsPerSecond)} × ${BUFF_VALUES.paralysisDurationSeconds} s) = ${round(uptime * 100)}% uptime; the 5 s / 20 s windows build it from zero, hit by hit (provisional)`
       : "hit rate not measured yet (held for this pass)";
@@ -1796,6 +1799,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       if (line === addedLines[0] && active) for (const effect of find(PATTERNS.intimidatingEffect)) entry(effect, true, `scales Wings of Light's added Intimidated effect: +${round(perType)}% × ${round(count)} × (1 + ${round(intimidatingEffect)}%) = +${value}% (game affix 21655: attr 3401 on Intimidated's tag 5100212; provisional)`, { provisional: true, enemyDebuff: true });
       if (active) {
         derive(`+${value}% additional Spell Damage taken`, line.source, `Intimidated with ${round(count)} crowd control types on the dummy`, true);
+        // Its Spell half is {Spell, hit} in record 611468864 (alt [6001100, 5000003]): hits only, so a Spell skill's own DoT does not read it
+        // as Spell Damage taken (src/skill-dot-model.js; it takes the DoT half below). 8 T Thornfield audit G8, 2026-11-13.
+        derived[derived.length - 1].spellHitOnly = true;
         derive(`+${value}% additional Damage Over Time`, line.source, `Intimidated with ${round(count)} crowd control types on the dummy (the enemy's Damage Over Time taken)`, true);
         busCounters.push({ kind: "intimidated", source: line.source, perType, cap, effectFactor: 1 + intimidatingEffect / 100, type: null, bodies: [`+${value}% additional Spell Damage taken`, `+${value}% additional Damage Over Time`], timedId: null });
       }

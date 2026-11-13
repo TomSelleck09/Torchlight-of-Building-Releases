@@ -107,7 +107,8 @@ import { heroMemoryTierAffixesSs13 } from "./data/heroes/hero-memory-tiers-ss13.
 import { heroMemoryFixedT0AffixesSs13 } from "./data/heroes/hero-memory-fixed-t0-ss13.js";
 import { regularRevivedAffixesSs13, regularRevivedAffixNamesSs13, lunarPhaseRevivedAffixesSs13, normalizeRevivedAffix, revivedAffixForMemoryType, revivedAffixTiers, revivedAffixRollRange, equippedBaseTraitSlot, memoryFitsBaseTraitSlot } from "./data/heroes/memory-revival-ss13.js";
 import { lunarPhaseRevivedAffixDetailsSs13 } from "./data/heroes/memory-revival-details-ss13.js";
-import { baseTraitDescriptionForLevel, withoutArtificialMoonLines, baseTraitLevelForMemory, slotTraitLevel, nonBaseTraitLevelExtras, artificialMoonGate, clampMemoryEnhancement, closestMemoryTier, memoryBaseStatLabel, memoryScaledBaseStat, rolledMemoryAffixText, memoryMaxEnhancementForRarity, memoryTierNumericValue, traitLevelBonusForEnhancement, memoryTraitLevelContribution, reduceBaseTraitMemoryStat, waxAndWaneLabel } from "./hero-memory-rules.js";
+import { baseTraitDescriptionForLevel, withoutArtificialMoonLines, baseTraitLevelForMemory, slotTraitLevel, nonBaseTraitLevelExtras, artificialMoonGate, clampMemoryEnhancement, closestMemoryTier, memoryBaseStatLabel, memoryScaledBaseStat, rolledMemoryAffixText, memoryMaxEnhancementForRarity, memoryTierNumericValue, traitLevelBonusForEnhancement, memoryTraitLevelContribution, waxAndWaneLabel } from "./hero-memory-rules.js";
+import { baseTraitReducedLine, baseTraitReductionLabel, baseTraitSlotFit, baseTraitSlotNoteHtml, baseTraitSlotReduction } from "./base-trait-memory-preview.js";
 import { MAX_TALENT_POINTS, TALENT_THRESHOLDS, allocateTalentToMaxWithPrerequisites, allocateTalentWithPrerequisites, canAllocateTalent, pruneInvalidTalentRanks, removeTalentWithDependents, talentEffectText, talentPointTotals } from "./talent-rules.js";
 import { godTalentTreesSs13, talentFamiliesSs13, talentOptionsForSlot } from "./talent-selection-rules.js";
 import { SLATE_BOARD_ROWS, adjacentSlateIds, autoPlaceSlates, canPlaceSlate, isCopySlate, netherKingPreviewGrowth, slateArtTransform, slateGrownIndexes, slateOffsets, slateSize, slateTransformRules } from "./slate-board.js";
@@ -133,6 +134,7 @@ import { upgradeLegacyCapturedCorrosion } from "./legacy-corrosion-migration.js"
 import { corrosionEditorChoice, corrosionEntryRanges, corrosionEntryValues, corrosionPoolForItem } from "./corrosion-implicit-options.js";
 import { AEMBER_MAX_LINES, AEMBER_SOURCE, FIRST_AEMBER_ID, aemberPool, aemberTransformTargets, canAddAemberLine, craftTransformedAember, isFirstAember, isTransformedAember, legendaryGameBase } from "./first-aember.js";
 import { installPageScale, toPagePx } from "./page-scale.js";
+import { installTooltipAnchorWatch } from "./tooltip-anchor-watch.js";
 import { affixSearchMatches, affixSearchTokens, chooseTierForValue, rangeContains } from "./affix-editor-input.js";
 // Windows larger than 1920 × 950 draw the design-size layout bigger (CSS zoom on the root; src/page-scale.js).
 // Rects and pointer coordinates are window pixels; lengths written to style go through toPagePx.
@@ -1967,8 +1969,7 @@ function canEquipBaseTraitMemory(memory){
 function baseTraitReduction(){
   const slot=equippedBaseTraitSlot(plannerState.hero),target=baseTraitMemory();
   if(!target||!memoryFitsBaseTraitSlot(target,slot,Object.values(plannerState.hero.equippedMemoryIds||{}))||heroMemoryIsRevived(target))return null;
-  const range=slot.reductionRange;
-  return Math.max(range.min,Math.min(range.max,plannerState.hero.baseTraitMemoryRoll??range.max));
+  return slot.reduction;
 }
 function clearInvalidBaseTraitMemory(){
   if(plannerState.hero.baseTraitMemoryId&&baseTraitReduction()===null){plannerState.hero.baseTraitMemoryId="";plannerState.hero.baseTraitMemoryRoll=null;}
@@ -2075,6 +2076,25 @@ function draftMemoryTraitLevelText(){
   const fixedAffixes=(memoryDraft.fixedAffixes||[]).map((value,index)=>value?memoryResolvedAffix("fixedAffixes",index):"");
   return memoryTraitLevelText({...memoryDraft,fixedAffixes},nonBase);
 }
+// The base trait slot in the crafting preview (user request 2026-11-13): opened from the base slot's inventory dialog, or editing the
+// memory in that slot. A draft that fits shows its implicit and random affixes reduced, each with the game's "(−57%)" tag, at the
+// slot's own reduction: the opening memory's revived roll (slot.reduction). Display only.
+function draftBaseTraitContext(){
+  const slot=equippedBaseTraitSlot(plannerState.hero);
+  if(!slot||!memoryDraft)return null;
+  if(activeHeroMemoryTier!=="base"&&!(editingMemoryId&&editingMemoryId===plannerState.hero.baseTraitMemoryId))return null;
+  const fit=baseTraitSlotFit({...memoryDraft,id:editingMemoryId||memoryDraft.id},slot);
+  const slotReduction=baseTraitSlotReduction(slot);
+  return {fit,slotReduction,reduction:fit.fits?slotReduction:null};
+}
+function draftImplicitHtml(){
+  const line=baseTraitReducedLine(memoryScaledBaseStat(memoryDraft.baseStat,memoryDraft.type,memoryDraft.enhancementLevel,memoryDraft.waxAndWane,memoryDraft.rarity),draftBaseTraitContext()?.reduction??null);
+  return escapeHtml(line.text)+line.tagHtml;
+}
+function draftAffixRowHtml(group,index){
+  const effect=memoryResolvedAffix(group,index),line=group==="randomAffixes"?baseTraitReducedLine(effect,draftBaseTraitContext()?.reduction??null):{text:effect,tagHtml:""};
+  return memoryAffixRowContent(line.text,memoryDraft[group==="fixedAffixes"?"fixedTiers":"randomTiers"][index],line.tagHtml);
+}
 function memoryResolvedAffix(group,index){
   const effect=memoryDraft[group][index];if(!effect)return "";
   const tierGroup=group==="fixedAffixes"?"fixedTiers":"randomTiers",rollGroup=group==="fixedAffixes"?"fixedRolls":"randomRolls";
@@ -2109,14 +2129,15 @@ function memoryRevivalControls(draft){
 }
 function renderHeroMemoryCraft(){
   const draft=memoryDraft,maxEnhancement=memoryMaxEnhancementForRarity(draft.rarity),pool=(kind)=>{const base=heroMemoryAffixesSs13.filter((entry)=>entry.type===draft.type&&entry.kind===kind);return kind==="Fixed Affix"&&draft.risingMoon?[...base,...heroMemoryFixedT0AffixesSs13.filter((entry)=>entry.type===draft.type&&!base.some((item)=>memoryAffixKey(item.effect)===memoryAffixKey(entry.baseEffect))).map((entry)=>({...entry,effect:entry.baseEffect}))]:base;}, select=(field,value,entries,label)=>`<select data-memory-field="${field}" aria-label="${label}"><option value="">None</option>${entries.map((entry)=>`<option value="${escapeHtml(entry.effect)}" ${value===entry.effect?"selected":""}>${escapeHtml(entry.label||entry.effect)}</option>`).join("")}</select>`;
+  const baseContext=draftBaseTraitContext();
   $("#hero-memory-title").textContent=editingMemoryId?"Edit Memory":"Craft Memory";
-  $("#hero-memory-content").innerHTML=`<div class="hero-memory-craft"><section class="hero-memory-form"><label>Memory Type</label><div class="hero-memory-choice-row memory-types">${Object.values(memoryTypesByTier).map((type)=>`<button type="button" class="${draft.type===type?"active":""}" data-memory-type="${type}"><img src="${heroMemoryIcon(type)}" alt="">${type}</button>`).join("")}</div><label>Crafting Rarity *</label><div class="hero-memory-choice-row rarities">${MEMORY_RARITIES.map(({key,label})=>`<button type="button" class="memory-rarity-${key} ${draft.rarity===key?"active":""}" data-memory-rarity="${key}">${label}</button>`).join("")}</div><label>Base Stat *${select("baseStat",draft.baseStat,pool("Base Stats").map((entry)=>({...entry,label:memoryBaseStatLabel(entry.effect)})),"Base stat")}</label><label>Enhancement Level <strong>Lv.${draft.enhancementLevel}</strong><span class="memory-roll-controls memory-enhancement-controls"><input type="range" min="1" max="${maxEnhancement}" value="${draft.enhancementLevel}" data-memory-field="enhancementLevel" aria-label="Enhancement level slider"><input type="number" min="1" max="${maxEnhancement}" step="1" value="${draft.enhancementLevel}" data-memory-field="enhancementLevel" aria-label="Enhancement level value"></span></label>${memoryRevivalControls(draft)}<h3>Fixed Affixes (${draft.fixedAffixes.filter(Boolean).length}/2)</h3>${draft.fixedAffixes.map((value,index)=>memoryAffixControl("fixedAffixes",index,value,pool("Fixed Affix"),`Fixed ${index+1}`)).join("")}<h3>Random Affixes (${draft.randomAffixes.filter(Boolean).length}/2)</h3>${draft.randomAffixes.map((value,index)=>memoryAffixControl("randomAffixes",index,value,pool("Random Affix"),`Random ${index+1}`)).join("")}</section><aside><span>Preview</span><div class="hero-memory-preview memory-rarity-${escapeHtml(draft.rarity||"normal")}">${draft.baseStat?`<header><img src="${heroMemoryIcon(draft.type)}" alt=""><div><strong>${escapeHtml(draft.type)}</strong><small>${escapeHtml(draft.rarity||"normal")} · HERO MEMORY</small></div></header>${memoryRevivalBadge(draft)}<p><span data-memory-enhancement-preview>Enhancement Level ${draft.enhancementLevel}/${maxEnhancement}</span><br><span data-memory-trait-preview>Trait Level ${draftMemoryTraitLevelText()}</span></p><h4>Implicit</h4><div class="memory-implicit ${draft.waxAndWane?"wax-applied":""}">${escapeHtml(memoryScaledBaseStat(draft.baseStat,draft.type,draft.enhancementLevel,draft.waxAndWane,draft.rarity))}</div>${draft.waxAndWane?`<h4>Memory Revival</h4><div>Wax and Wane · ${waxAndWaneLabel(draft.rarity,draft.enhancementLevel)}</div>`:""}${draft.revivedAffix?`<h4>Revived Affix${lunarPhaseRevivedAffixesSs13.includes(draft.revivedAffix)?" · Lunar Phase":""}</h4>${memoryRevivedAffixMarkup(draft)}`:""}${draft.fixedAffixes.some(Boolean)?`<h4>Fixed Affixes</h4>${draft.fixedAffixes.map((value,index)=>value?`<div data-memory-preview-affix="fixedAffixes.${index}">${escapeHtml(memoryResolvedAffix("fixedAffixes",index))}</div>`:"").join("")}`:""}${draft.randomAffixes.some(Boolean)?`<h4>Random Affixes</h4>${draft.randomAffixes.map((value,index)=>value?`<div data-memory-preview-affix="randomAffixes.${index}">${escapeHtml(memoryResolvedAffix("randomAffixes",index))}</div>`:"").join("")}`:""}`:'<p class="hero-memory-preview-empty">Select a base stat to preview memory</p>'}</div><div class="hero-memory-craft-actions"><button type="button" class="button button-secondary" data-back-hero-memory>Cancel</button><button type="button" class="button" data-save-crafted-memory ${draft.rarity&&draft.baseStat?"":"disabled"}>${editingMemoryId?"Save Changes":"Craft"}</button></div></aside></div>`;
+  $("#hero-memory-content").innerHTML=`<div class="hero-memory-craft"><section class="hero-memory-form"><label>Memory Type</label><div class="hero-memory-choice-row memory-types">${Object.values(memoryTypesByTier).map((type)=>`<button type="button" class="${draft.type===type?"active":""}" data-memory-type="${type}"><img src="${heroMemoryIcon(type)}" alt="">${type}</button>`).join("")}</div><label>Crafting Rarity *</label><div class="hero-memory-choice-row rarities">${MEMORY_RARITIES.map(({key,label})=>`<button type="button" class="memory-rarity-${key} ${draft.rarity===key?"active":""}" data-memory-rarity="${key}">${label}</button>`).join("")}</div><label>Base Stat *${select("baseStat",draft.baseStat,pool("Base Stats").map((entry)=>({...entry,label:memoryBaseStatLabel(entry.effect)})),"Base stat")}</label><label>Enhancement Level <strong>Lv.${draft.enhancementLevel}</strong><span class="memory-roll-controls memory-enhancement-controls"><input type="range" min="1" max="${maxEnhancement}" value="${draft.enhancementLevel}" data-memory-field="enhancementLevel" aria-label="Enhancement level slider"><input type="number" min="1" max="${maxEnhancement}" step="1" value="${draft.enhancementLevel}" data-memory-field="enhancementLevel" aria-label="Enhancement level value"></span></label>${memoryRevivalControls(draft)}<h3>Fixed Affixes (${draft.fixedAffixes.filter(Boolean).length}/2)</h3>${draft.fixedAffixes.map((value,index)=>memoryAffixControl("fixedAffixes",index,value,pool("Fixed Affix"),`Fixed ${index+1}`)).join("")}<h3>Random Affixes (${draft.randomAffixes.filter(Boolean).length}/2)</h3>${draft.randomAffixes.map((value,index)=>memoryAffixControl("randomAffixes",index,value,pool("Random Affix"),`Random ${index+1}`)).join("")}</section><aside><span>Preview</span><div class="hero-memory-preview memory-rarity-${escapeHtml(draft.rarity||"normal")}">${draft.baseStat?`<header><img src="${heroMemoryIcon(draft.type)}" alt=""><div><strong>${escapeHtml(draft.type)}</strong><small>${escapeHtml(draft.rarity||"normal")} · HERO MEMORY</small></div></header>${memoryRevivalBadge(draft)}<p><span data-memory-enhancement-preview>Enhancement Level ${draft.enhancementLevel}/${maxEnhancement}</span><br><span data-memory-trait-preview>Trait Level ${draftMemoryTraitLevelText()}</span>${baseContext?`<br>${baseTraitSlotNoteHtml(baseContext.fit,baseContext.slotReduction)}`:""}</p><h4>Implicit</h4><div class="memory-implicit ${draft.waxAndWane?"wax-applied":""}">${draftImplicitHtml()}</div>${draft.waxAndWane?`<h4>Memory Revival</h4><div>Wax and Wane · ${waxAndWaneLabel(draft.rarity,draft.enhancementLevel)}</div>`:""}${draft.revivedAffix?`<h4>Revived Affix${lunarPhaseRevivedAffixesSs13.includes(draft.revivedAffix)?" · Lunar Phase":""}</h4>${memoryRevivedAffixMarkup(draft)}`:""}${draft.fixedAffixes.some(Boolean)?`<h4>Fixed Affixes</h4>${draft.fixedAffixes.map((value,index)=>value?`<div data-memory-preview-affix="fixedAffixes.${index}">${escapeHtml(memoryResolvedAffix("fixedAffixes",index))}</div>`:"").join("")}`:""}${draft.randomAffixes.some(Boolean)?`<h4>Random Affixes</h4>${draft.randomAffixes.map((value,index)=>value?`<div data-memory-preview-affix="randomAffixes.${index}">${escapeHtml(memoryResolvedAffix("randomAffixes",index))}</div>`:"").join("")}`:""}`:'<p class="hero-memory-preview-empty">Select a base stat to preview memory</p>'}</div><div class="hero-memory-craft-actions"><button type="button" class="button button-secondary" data-back-hero-memory>Cancel</button><button type="button" class="button" data-save-crafted-memory ${draft.rarity&&draft.baseStat?"":"disabled"}>${editingMemoryId?"Save Changes":"Craft"}</button></div></aside></div>`;
   const traitPreview=$("#hero-memory-content [data-memory-trait-preview]");
   if(traitPreview)traitPreview.innerHTML=`Trait Level <b class="memory-trait-bonus">${draftMemoryTraitLevelText()}</b>`;
   $("#hero-memory-content").querySelectorAll("[data-memory-preview-affix]").forEach((preview)=>{
     const [group,indexText]=preview.dataset.memoryPreviewAffix.split("."),index=Number(indexText);
     preview.classList.add("memory-affix-row");
-    preview.innerHTML=memoryAffixRowContent(memoryResolvedAffix(group,index),memoryDraft[group==="fixedAffixes"?"fixedTiers":"randomTiers"][index]);
+    preview.innerHTML=draftAffixRowHtml(group,index);
   });
 }
 function updateMemoryDraftField(input){
@@ -2154,7 +2175,7 @@ function updateMemoryDraftField(input){
 }
 function updateMemoryAffixPreview(group,index){
   const preview=$("#hero-memory-content .hero-memory-preview")?.querySelector(`[data-memory-preview-affix="${group}.${index}"]`);
-  if(preview)preview.innerHTML=memoryAffixRowContent(memoryResolvedAffix(group,index),memoryDraft[group==="fixedAffixes"?"fixedTiers":"randomTiers"][index]);
+  if(preview)preview.innerHTML=draftAffixRowHtml(group,index);
 }
 document.addEventListener("input",(event)=>{
   const tierSlider=event.target.closest("#hero-memory-content [data-memory-tier-slider]");
@@ -2179,7 +2200,7 @@ document.addEventListener("input",(event)=>{
     const level=$("#hero-memory-content [data-memory-enhancement-preview]"),trait=$("#hero-memory-content [data-memory-trait-preview]");
     if(level)level.textContent=`Enhancement Level ${memoryDraft.enhancementLevel}/${memoryMaxEnhancementForRarity(memoryDraft.rarity)}`;
     if(trait)trait.innerHTML=`Trait Level <b class="memory-trait-bonus">${draftMemoryTraitLevelText()}</b>`;
-    const implicit=$("#hero-memory-content .memory-implicit");if(implicit)implicit.textContent=memoryScaledBaseStat(memoryDraft.baseStat,memoryDraft.type,memoryDraft.enhancementLevel,memoryDraft.waxAndWane,memoryDraft.rarity);
+    const implicit=$("#hero-memory-content .memory-implicit");if(implicit)implicit.innerHTML=draftImplicitHtml();
   }
 });
 document.addEventListener("change",(event)=>{
@@ -3458,8 +3479,8 @@ function savedMemoryAffix(memory,group,index){
   const tierEffect=match?.effect||effect,range=memoryRollRange(tierEffect);
   return rolledMemoryAffix(tierEffect,range&&Number.isFinite(roll)?Math.max(range.min,Math.min(range.max,roll)):roll);
 }
-function memoryAffixRowContent(effect,tier){
-  return `${Number.isInteger(tier)?affixTierBadge(`T${tier}`):""}<span>${modifierTextMarkup(effect)}</span>`;
+function memoryAffixRowContent(effect,tier,tagHtml=""){
+  return `${Number.isInteger(tier)?affixTierBadge(`T${tier}`):""}<span>${modifierTextMarkup(effect)}${tagHtml}</span>`;
 }
 // The memory's contribution to its slot's trait level, from the same rule the calculation uses (hero-memory-rules.js).
 function memoryTraitLevelText(memory,nonBase){
@@ -3474,13 +3495,13 @@ function heroMemoryTooltipContent(element){
   const memoryModel=currentPlanner().heroMemories;
   const equipped=Object.values(plannerState.hero.equippedMemoryIds||{}).includes(id)||(baseSlotted&&reduction!==null);
   const status=(text)=>heroMemoryLineCoverage(memoryModel,id,text,equipped);
-  const section=(label,entries)=>entries.length?`<section${label==="Implicit"?` class="memory-implicit ${memory.waxAndWane?"wax-applied":""}"`:""}><h4>${label}</h4>${entries.map((entry)=>typeof entry==="string"?`<p>${modifierTextMarkup(entry)} ${coverageBadge(status(entry))}</p>`:`<div class="memory-affix-row">${memoryAffixRowContent(entry.effect,entry.tier)} ${coverageBadge(entry.status||status(entry.effect))}</div>`).join("")}</section>`:"";
+  const section=(label,entries)=>entries.length?`<section${label==="Implicit"?` class="memory-implicit ${memory.waxAndWane?"wax-applied":""}"`:""}><h4>${label}</h4>${entries.map((entry)=>typeof entry==="string"?`<p>${modifierTextMarkup(entry)} ${coverageBadge(status(entry))}</p>`:entry.plain?`<p>${modifierTextMarkup(entry.effect)}${entry.tagHtml||""} ${coverageBadge(status(entry.effect))}</p>`:`<div class="memory-affix-row">${memoryAffixRowContent(entry.effect,entry.tier,entry.tagHtml)} ${coverageBadge(entry.status||status(entry.effect))}</div>`).join("")}</section>`:"";
   const fixed=(memory.fixedAffixes||[]).map((_,index)=>({effect:savedMemoryAffix(memory,"fixedAffixes",index),tier:memory.fixedTiers?.[index]})).filter((entry)=>entry.effect);
-  const random=(memory.randomAffixes||[]).map((_,index)=>({effect:savedMemoryAffix(memory,"randomAffixes",index),tier:memory.randomTiers?.[index]})).filter((entry)=>entry.effect).map((entry)=>({...entry,effect:reduction===null?entry.effect:reduceBaseTraitMemoryStat(entry.effect,reduction)}));
+  const random=(memory.randomAffixes||[]).map((_,index)=>({effect:savedMemoryAffix(memory,"randomAffixes",index),tier:memory.randomTiers?.[index]})).filter((entry)=>entry.effect).map((entry)=>{const line=baseTraitReducedLine(entry.effect,reduction);return {...entry,effect:line.text,tagHtml:line.tagHtml};});
   const implicitText=memoryScaledBaseStat(memory.baseStat,memory.type,memory.enhancementLevel,memory.waxAndWane,memory.rarity);
-  const implicit=reduction===null?implicitText:reduceBaseTraitMemoryStat(implicitText,reduction);
+  const implicitLine=baseTraitReducedLine(implicitText,reduction),implicit=reduction===null?implicitText:{plain:true,effect:implicitLine.text,tagHtml:implicitLine.tagHtml};
   const revival=[memory.waxAndWane?`Wax and Wane · ${waxAndWaneLabel(memory.rarity,memory.enhancementLevel)}`:"",memory.risingMoon?"Rising Moon · fixed affix tier increased":""].filter(Boolean);
-  return {memoryHtml:`<div class="memory-tooltip-head"><img src="${heroMemoryIcon(memory.type)}" alt=""><div><strong>${escapeHtml(memory.name||memory.type)}</strong><small>${escapeHtml(memoryRarityLabel(memory.rarity||"normal")).toUpperCase()} · HERO MEMORY</small></div></div>${memoryRevivalBadge(memory)}<div class="memory-tooltip-body"><p>Enhancement Level <b>${memory.enhancementLevel}/${memoryMaxEnhancementForRarity(memory.rarity)}</b></p><p>Trait Level <b>${memoryTraitLevelText(memory,!baseSlotted&&Object.values(plannerState.hero.equippedMemoryIds||{}).includes(id))}</b></p>${reduction===null?"":`<p>Base Trait Slot <b>${reduction}% to base stats and random affixes</b></p>`}${section("Implicit",[implicit])}${section("Memory Revival",revival.map(effect=>({effect,status:equipped?"Applied to rolls":"Not equipped"})))}${memory.revivedAffix?`<section><h4>Revived Affix${lunarPhaseRevivedAffixesSs13.includes(normalizeRevivedAffix(memory.revivedAffix))?" · Lunar Phase":""}</h4>${memoryRevivedAffixMarkup(memory)}${memory.revivedAffix==="Ceaseless Tide"?`<p>When equipped on Sing with the Tide: +80% additional Tide Effect and ×0.8 cast speed while in Bard. Movement is not simulated.</p>`:""}${coverageBadge(!equipped?"Not equipped":memory.revivedAffix==="Ceaseless Tide"&&memoryModel.ceaselessTide?"In calc":equippedBaseTraitSlot(plannerState.hero)?.source.id===memory.id?"Enables base slot":(catsNightSafariStatus(currentPlanner(),memory)||revivedAffixCoverage(currentPlanner(),memory))?.status||"Not modeled",(catsNightSafariStatus(currentPlanner(),memory)||revivedAffixCoverage(currentPlanner(),memory))?.reason||"")}</section>`:""}${section("Fixed Affixes",fixed)}${section("Random Affixes",random)}</div><small>${element.dataset.memoryInventoryId?"Right-click to equip or unequip":"Right-click to unequip"}</small>`,rarity:memory.rarity||"normal"};
+  return {memoryHtml:`<div class="memory-tooltip-head"><img src="${heroMemoryIcon(memory.type)}" alt=""><div><strong>${escapeHtml(memory.name||memory.type)}</strong><small>${escapeHtml(memoryRarityLabel(memory.rarity||"normal")).toUpperCase()} · HERO MEMORY</small></div></div>${memoryRevivalBadge(memory)}<div class="memory-tooltip-body"><p>Enhancement Level <b>${memory.enhancementLevel}/${memoryMaxEnhancementForRarity(memory.rarity)}</b></p><p>Trait Level <b>${memoryTraitLevelText(memory,!baseSlotted&&Object.values(plannerState.hero.equippedMemoryIds||{}).includes(id))}</b></p>${reduction===null?"":`<p>Base Trait Slot <b>${baseTraitReductionLabel(reduction)} to base stats and random affixes</b></p>`}${section("Implicit",[implicit])}${section("Memory Revival",revival.map(effect=>({effect,status:equipped?"Applied to rolls":"Not equipped"})))}${memory.revivedAffix?`<section><h4>Revived Affix${lunarPhaseRevivedAffixesSs13.includes(normalizeRevivedAffix(memory.revivedAffix))?" · Lunar Phase":""}</h4>${memoryRevivedAffixMarkup(memory)}${memory.revivedAffix==="Ceaseless Tide"?`<p>When equipped on Sing with the Tide: +80% additional Tide Effect and ×0.8 cast speed while in Bard. Movement is not simulated.</p>`:""}${coverageBadge(!equipped?"Not equipped":memory.revivedAffix==="Ceaseless Tide"&&memoryModel.ceaselessTide?"In calc":equippedBaseTraitSlot(plannerState.hero)?.source.id===memory.id?"Enables base slot":(catsNightSafariStatus(currentPlanner(),memory)||revivedAffixCoverage(currentPlanner(),memory))?.status||"Not modeled",(catsNightSafariStatus(currentPlanner(),memory)||revivedAffixCoverage(currentPlanner(),memory))?.reason||"")}</section>`:""}${section("Fixed Affixes",fixed)}${section("Random Affixes",random)}</div><small>${element.dataset.memoryInventoryId?"Right-click to equip or unequip":"Right-click to unequip"}</small>`,rarity:memory.rarity||"normal"};
 }
 // A linked slate's Judgment boost as the calc reads it (40 + its Effect Increase Multipliers; src/nether-king-authority.js).
 function judgmentLinkPercentOf(id){return currentPlanner()?.resolvedSlates?.find((item)=>item.id===id)?.judgmentLinkPercent??JUDGMENT_LINK_EFFECT_PERCENT;}
@@ -3899,6 +3920,9 @@ function hidePlannerTooltip() {
   $("#planner-tooltip").classList.remove("visible");
   $("#planner-tooltip").setAttribute("aria-hidden", "true");
 }
+// A re-render that removes the hovered element fires no pointerout: hide the tooltip once its anchor is gone
+// (src/tooltip-anchor-watch.js; e.g. equipping a slate from the open Slate Inventory).
+installTooltipAnchorWatch({ getAnchor: () => tooltipAnchorElement, getTooltip: () => $("#planner-tooltip"), hide: hidePlannerTooltip });
 function setRevivalAltDetails(visible){
   document.body.classList.toggle("revival-alt-held",visible);
   if($("#planner-tooltip").classList.contains("visible"))requestAnimationFrame(()=>positionPlannerTooltip(tooltipAnchorX,tooltipAnchorY));
@@ -4269,7 +4293,7 @@ document.addEventListener("contextmenu", (event) => {
     if(openSlot==="base"){
       const slot=equippedBaseTraitSlot(plannerState.hero);
       plannerState.hero.baseTraitMemoryId=id;
-      plannerState.hero.baseTraitMemoryRoll=slot.reductionRange.max;
+      plannerState.hero.baseTraitMemoryRoll=slot.reduction;
       hidePlannerTooltip();persistPlannerState();renderHeroTraitTree();renderHeroMemoryInventory();showToast(`${toastText(memory.name)} equipped in base trait slot`);
     }else if(openSlot)equipHeroMemory(memory);
     else showToast("No open compatible memory slot");
@@ -4594,7 +4618,7 @@ document.addEventListener("click", (event) => {
     const memory=plannerState.hero.memoryInventory?.find((item)=>item.id===equipBaseMemoryButton.dataset.equipBaseMemory),slot=equippedBaseTraitSlot(plannerState.hero);
     if(!slot||!canEquipBaseTraitMemory(memory)&&plannerState.hero.baseTraitMemoryId!==memory?.id)return;
     if(plannerState.hero.baseTraitMemoryId===memory.id){plannerState.hero.baseTraitMemoryId="";plannerState.hero.baseTraitMemoryRoll=null;}
-    else{plannerState.hero.baseTraitMemoryId=memory.id;plannerState.hero.baseTraitMemoryRoll=slot.reductionRange.max;}
+    else{plannerState.hero.baseTraitMemoryId=memory.id;plannerState.hero.baseTraitMemoryRoll=slot.reduction;}
     persistPlannerState();renderHeroTraitTree();renderHeroMemoryInventory();return;
   }
   if(event.target.closest("[data-clear-hero-memory]")){ unequipHeroMemory(activeHeroMemoryTier); return; }

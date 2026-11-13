@@ -423,9 +423,11 @@ function classifySkill(planner, skillName, setup) {
       const reads = (planner?.modifierTexts || []).some((line) => line.origin === "derived" && String(line.source).startsWith(`${skillName} curse`));
       return reads ? result("Inactive", `+${taken.value}% additional ${taken.type} Damage taken: the build deals no ${taken.type === "Hit" ? "hit" : taken.type} damage that reads it`) : result("Not modeled", "curse effect is not applied");
     }
-    // Ominous's Ill Omen line is in the dummy figures as the best-case Elite loop (src/ill-omen.js, switch illOmen); Scorch reaches a Fire Minion through the planner's
+    // Ominous's Ill Omen line: once on the Boss dummy, its burst left out (no dummy Max Life; user decision 2026-11-13, src/ill-omen.js); with Reap
+    // Purification its provisional continuous reading is in the figures (switch illOmen). Scorch reaches a Fire Minion through the planner's
     // own curse value, with no ledger row of its name (chunk 9: the two rule B fails of the badge probe, since 2026-10-27).
-    if (skillName === "Ominous" && planner?.illOmen?.main?.applied) return result("In calc", `Ill Omen beyond the dummy, best case (switch "Ill Omen"): ${planner.illOmen.main.factor}× the DoT and Reap damage as True Damage (src/ill-omen.js)`);
+    if (skillName === "Ominous" && planner?.illOmen?.main?.applied) return result("In calc", `Ill Omen with Reap Purification, best case (switch "Ill Omen"): ${planner.illOmen.main.factor}× the DoT and Reap damage as True Damage (src/ill-omen.js; provisional)`);
+    if (skillName === "Ominous" && planner?.illOmen?.main?.reason) return result("Not on dummy", `Ill Omen: ${planner.illOmen.main.reason} (src/ill-omen.js)`);
     if (skillName === "Scorch" && planner?.conditions?.scorch !== false && (planner?.minions || []).some((minion) => minion.modeled && (minion.skills || []).some((skill) => skill.type === "Fire" || skill.baseType === "Fire"))) return result("In calc", "+Fire Damage taken on the Minions' Fire hits");
     if (NO_DUMMY_EFFECT_CURSES[skillName]) return result("Not on dummy", NO_DUMMY_EFFECT_CURSES[skillName]);
   }

@@ -22,7 +22,11 @@ const hasSupport = (setup, name) => (setup.supports || []).some((support) => sup
 const clausesOf = (setup, kind) => (setup.supportEffects?.censusBuff || []).filter((line) => line.kind === kind && line.status === "Provisional");
 
 /** Phantom Trace's Blur grant as src/blur-sources.js entries. */
-export function phantomTraceBlurSources({ setups = [], activeNames = new Set(), damageSources = [], enemyAilments = [] } = {}) {
+// Its gain rate (8 T Thornfield audit G7, 2026-11-13): recipe 309615840's trigger 1000030 on [this skill, DoT process] with `once` fires
+// once per frame per target while the DoT record ticks (W2, proven), so one gain per server tick: 30 a second × the share of the time
+// it ticks (its own DoT: held; an attributed ailment: that ailment's share on the dummy, `ailmentShare`).
+const DOT_TICKS_PER_SECOND = 30;
+export function phantomTraceBlurSources({ setups = [], activeNames = new Set(), damageSources = [], enemyAilments = [], ailmentShare = null } = {}) {
   const result = [];
   const ailment = DAMAGING_AILMENTS.find((name) => enemyAilments.includes(name));
   for (const setup of setups) {
@@ -30,7 +34,9 @@ export function phantomTraceBlurSources({ setups = [], activeNames = new Set(), 
     // Its own DoT: a skill-dot profile, or a skill-hit profile with a DoT component (Flame Jet's burn; src/skill-hit-profiles.js).
     const ownDot = damageSources.some((source) => source.setupKey === setup.setupKey && source.status === "modeled" && (source.profile?.engine === "skill-dot" || (source.profile?.components || []).some((component) => component.kind === "dot" && component.group)));
     const available = ownDot || Boolean(ailment);
-    result.push({ source: `${setup.name}: Phantom Trace`, text: "Gains Blur when the supported skill deals Damage Over Time", trigger: "Dealing Damage Over Time", available,
+    const share = ownDot ? 1 : ailment ? Math.max(0, Math.min(1, Number(typeof ailmentShare === "function" ? ailmentShare(ailment) : 1) || 0)) : 0;
+    result.push({ source: `${setup.name}: Phantom Trace`, text: "Gains Blur when the supported skill deals Damage Over Time", trigger: "Dealing Damage Over Time", available, setupKey: setup.setupKey,
+      ticksPerSecond: DOT_TICKS_PER_SECOND * share, ticksHow: ownDot ? `${setup.name}'s own DoT, one gain per server tick while it ticks` : ailment ? `${ailment} on the dummy ${round(share * 100)}% of the time, one gain per server tick` : "",
       reason: ownDot ? `${setup.name} deals Damage Over Time (game recipe 309615840)` : ailment ? `the dummy carries ${ailment}, read as inflicted by ${setup.name} (provisional attribution; game recipe 309615840)` : `${setup.name} deals no Damage Over Time` });
   }
   return result;

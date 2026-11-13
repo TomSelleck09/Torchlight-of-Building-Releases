@@ -69,7 +69,7 @@ export const HERO_MODULES = Object.freeze([
   { key: "terraCharge", heroes: /^selena-dance-of-the-deep$/, label: "Selena: Terra Charge", status: "Provisional",
     rule: "Keyword 151 / manual 1001011320: a Terra cast consumes all its charges, each enhancing the skill. Charges consumed per cast = min(Max Terra Charge Stacks, charges gained over one cast interval) at the planner's recast cadence; Max Terra Charge = 1 + \"Max Terra Charge Stacks +N\" + Layered Hem's share of the Max Spell Burst increase; Terra Charge Recovery Speed shortens the 0.5 s charge interval; Artificial Moon sets 32% per charge (src/selena-dance.js)." },
   { key: "paradise", heroes: /^selena-dance-of-the-deep$/, label: "Selena: The Paradise I Curse", status: "Provisional",
-    rule: "\"Enemies within the Main Terra Skill's area are cursed with Lv. 1 Ominous\": with an active Main Terra Skill the dummy is Cursed, so \"against Cursed enemies\" lines hold. Ill Omen is modeled in src/ill-omen.js (best-case Elite loop). This Ominous does not take a curse slot (user-confirmed 2026-10-13)." },
+    rule: "\"Enemies within the Main Terra Skill's area are cursed with Lv. 1 Ominous\": with an active Main Terra Skill the dummy is Cursed, so \"against Cursed enemies\" lines hold. Ill Omen is modeled in src/ill-omen.js (once on the Boss dummy, left out: no dummy Max Life; user decision 2026-11-13). This Ominous does not take a curse slot (user-confirmed 2026-10-13)." },
   { key: "danceStep", heroes: /^selena-dance-of-the-deep$/, label: "Selena: Dance Step", status: "Not modeled",
     rule: "Crimson Endless Dance: \"Enters a random Dance Step state when casting a Main Terra Skill\" (game text 345425120: Crimson Dash, Agonizing Revival, Eternal Sleep). Left unmodeled by user decision (2026-10-13): the step is random. Only Eternal Sleep would touch damage (\"+X% additional damage taken ... Ends after taking damage equal to Y% of Max Life\"; X, Y and the stay time are not published)." },
   // Selena leftovers (hero trait audit B13, 2026-10-19; src/selena-leftover-traits.js settles the states, src/skill-hit-model.js applies
@@ -1044,7 +1044,7 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
       entry(line, module, Boolean(terra), terra ? "Terra Charge consumption per cast (src/selena-dance.js; provisional)" : "no active Terra skill");
       continue;
     }
-    if (module.key === "paradise") { const active = Boolean(state.mainIsTerra); entry(line, module, active, active ? "the dummy inside the Main Terra Skill's area is Cursed (Lv. 1 Ominous; Ill Omen counted in the Ill Omen line)" : "no active Main Terra Skill"); continue; }
+    if (module.key === "paradise") { const active = Boolean(state.mainIsTerra); entry(line, module, active, active ? "the dummy inside the Main Terra Skill's area is Cursed (Lv. 1 Ominous; Ill Omen in its own line: once on the Boss dummy, left out)" : "no active Main Terra Skill"); continue; }
   }
   return { entries, derived, illusion, spacetime, timedEffects, takenConversion, gemma: { frostfire: gemma.frostfire ? { ...gemma.frostfire } : null, advancedElementalImpact: gemma.advancedElementalImpact || null, coldPulse: gemma.coldPulse?.pulse ? { intervalSeconds: gemma.coldPulse.intervalSeconds, pulsesPerSecond: gemma.coldPulse.pulse.pulsesPerSecond, stacks: gemma.coldPulse.pulse.stacks, blooming: gemma.coldPulse.blooming } : null }, modules: HERO_MODULES.filter((module) => module.heroes.test(heroId)) };
 }

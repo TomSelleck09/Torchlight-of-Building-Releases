@@ -809,6 +809,19 @@ function clauseStatus(clause, support, ctx) {
     if (clause.family === "perJump") return s("Provisional", `×(1 + ${clause.value}%) per Jump on each hit, at the lance's Jump count when it hits (0, 2, 4 … with Rebound: inferred; record 103560002, attr 5722)`, ["skill-hit"]);
     return s("Provisional", clause.kind === "shotgun" ? "each return to the dummy keeps 20% (Split 225028's hit rule table [(1, 20)]; provisional, open question ice-lances-rebound-repeat-share)" : "the lance returns to the dummy: 1 + floor(Jumps ÷ 2) hits per lance (labels 3001065 / 3001069, the client's jump step; each return keeps 20%: provisional)", ["skill-hit"]);
   }
+  // Thornfield: Sacrifice's gains and lifetime, and Thornfield: Retribution's self True Damage (8 T Thornfield audit G2, 2026-11-13): read by the
+  // per-stack line's held stacks (src/support-conditional-batch4.js sacrificeStacks), on the supported skill's damage over time.
+  if (clause.family === "sacrifice") {
+    const sacrifice = !ctx.setupSupportNames || ctx.setupSupportNames.has("Thornfield: Sacrifice (Magnificent)");
+    if (clause.kind === "selfDamage") {
+      if (!sacrifice) return s("No DPS effect", "defence or recovery: the True Damage you take (it feeds Thornfield: Sacrifice's stacks when that support is on the skill)");
+      if (ctx.conditions && ctx.conditions.nearTarget === false) return s("Inactive", `standing ${DISTANT_STANDING_METERS} m away (Distance group: Distant) is read as outside the skill's Terra: no True Damage taken, so no Sacrifice stack from it`);
+      return s("Provisional", "the True Damage you take inside the Terra feeds Thornfield: Sacrifice's stacks (one per 20% of Max Life and Energy Shield taken; record 778012032), read on the skill's damage over time", ["skill-dot"]);
+    }
+    if (engine !== "skill-dot") return s("Inactive", "the buff raises the supported skill's damage over time (attr 5902); the supported skill deals none modeled");
+    const what = clause.kind === "lifeLost" ? "a stack per P1% of Max Life and Energy Shield taken, from the Terra's own True Damage" : clause.kind === "reap" ? "a stack chance on each Reap of yours against the dummy (an Elite inside the Terra)" : "each stack's lifetime and the cap";
+    return s("Provisional", `${what}: read in the per-stack line's held stacks (src/support-conditional-batch4.js sacrificeStacks; record 778012032; each stack its own lifetime: inferred)`, ["skill-dot"]);
+  }
   // Census item #2 build-wide buffs and Thrive in Adversity's Empower Effect: read whatever engine the supported skill has.
   if (clause.census && (clause.family === "censusBuff" || clause.family === "empower")) return censusStatus(clause, ctx);
   // Empower skills whose buff the planner models without a damage engine of their own (src/empower-effects.js: Bull's Rage's
@@ -1170,9 +1183,14 @@ function clauseStatus(clause, support, ctx) {
           ? s("Provisional", "Paralysis (+15% damage taken, 4 s, 1 stack; manual rule 1002020420) on each fissure hit: the skill model lands the fissure on the dummy once per Demolisher Charge consumed (src/attack-hit-profiles.js, provisional), so the uptime follows that rate (src/combat-states.js)", ["combat-states"])
           : s("Not on dummy", "the skill model has no fissure that hits the dummy; a spreading fissure needs other enemies");
       }
-      return engine === "skill-hit" ? s("Provisional", "Paralysis (+15% damage taken, 4 s, 1 stack; manual rule 1002020420) on the Cursed dummy: expected uptime 1 − (1 − chance)^(hits in 4 s) at the skill's hit rate (src/combat-states.js)", ["combat-states"]) : s("Not modeled", "read for skill hits only (the hit rate drives the uptime)");
+      // Grudge's row (record 369609664) opens on trigger 1000030: the skill's hits and its damage over time (one event per server tick while it
+      // ticks; 8 T Thornfield audit G4, 2026-11-13).
+      return engine === "skill-hit" || engine === "skill-dot" ? s("Provisional", `Paralysis (+15% damage taken, 4 s, 1 stack; manual rule 1002020420) on the Cursed dummy: expected uptime 1 − (1 − chance)^(events in 4 s) at the skill's damage events (trigger 1000030 of record 369609664: its hits${engine === "skill-dot" ? ", and its damage over time once per server tick" : ""}; src/combat-states.js)`, ["combat-states"]) : s("Not modeled", "read for skill hits and skill DoTs only (their damage events drive the uptime)");
+    // Tendonslicer's row (record 13336589) opens on trigger 1000030: the skill's hits and its damage over time (one event per server tick while
+    // it ticks; 8 T Thornfield audit G5, 2026-11-13).
     case "selfDebuff":
-      return engine === "skill-hit" ? s("Provisional", "expected uptime from the skill's hit rate: 1 − (1 − chance)^(hits in the duration)", ["skill-hit"]) : s("Not modeled", "read for skill hits only");
+      if (engine === "skill-dot") return s("Provisional", "expected uptime from the skill's damage events: 1 − (1 − chance)^(events in the duration), its damage over time raising one per server tick while it ticks (trigger 1000030 of record 13336589); one damage-taken factor on the skill's DoT and so its Reaps (src/skill-dot-model.js)", ["skill-dot"]);
+      return engine === "skill-hit" ? s("Provisional", "expected uptime from the skill's hit rate: 1 − (1 − chance)^(hits in the duration)", ["skill-hit"]) : s("Not modeled", "read for skill hits and skill DoTs only");
     case "targetTaken":
       return s("Provisional", "enemy debuff while the supported skill deals damage (uptime 1: provisional)", ["planner"]);
     case "reaping":

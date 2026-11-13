@@ -46,8 +46,8 @@ const suffix = (clause) => clause.origin === "leveled" ? ` (Lv.${clause.level})`
 // the supported skill", Overload per Focus Blessing stack, increased lines, Passivation, Cataclysm. Never: crit-only
 // lines (damage over time never crits; manual "Damage Over Time"; B1), Hit-only, Area (user-confirmed), Projectile /
 // Melee / Attack scopes (provisional), added flat damage (manual: addition of damage does not affect DoT).
-function supportLayers(setup, damageType, profile = null, { triggered = false } = {}) {
-  const additional = [], increased = [], additionalAffliction = [], notes = [], afflictionPerSecond = [], maxAffliction = [];
+function supportLayers(setup, damageType, profile = null, { triggered = false, damageEventsPerSecond = 0 } = {}) {
+  const additional = [], increased = [], additionalAffliction = [], notes = [], afflictionPerSecond = [], maxAffliction = [], taken = [];
   const tags = new Set(profile?.tags || setup?.tags || []);
   const effects = supportEffectsFor(setup, { profile, engine: "skill-dot", damageType, tags: [...tags] });
   const typedReaches = (typed) => typed === damageType || (typed === "Elemental" && ELEMENTAL.includes(damageType)) || (typed === "Spell" && tags.has("Spell"));
@@ -71,6 +71,15 @@ function supportLayers(setup, damageType, profile = null, { triggered = false } 
     // Elemental Impact (2026-10-15 patch update): the skill's own Elemental DoT while the skill deals all three Elemental types
     // (src/support-effects.js; the planner settles `active` from the hit parts for hitting skills).
     if (clause.family === "allElementalAdditional") { if (clause.active && clause.value && typedReaches("Elemental")) additional.push({ source: label, text: `${signedText(clause.value)}% additional Elemental Damage for the supported skill${suffix(clause)} — the skill deals Fire, Cold and Lightning`, value: clause.value, category: "Additional damage", condition: "the skill deals all three Elemental types" }); continue; }
+    // Tendonslicer's debuff (record 13336589: trigger 1000030 on the skill, gate 188 P1%, node 306 for P3 s on the enemy, attr 57201 mod 3 on
+    // the attacker's skill): the skill's own damage over time raises the event once per server tick while it ticks (wiring audit W2 gap 4), so
+    // the debuff holds 1 − (1 − P1%)^(events in P3 s) of the time (the hit model's rule; 8 T Thornfield audit G5, 2026-11-13). One damage-taken
+    // factor on this skill's DoT, as on its hits (the record writes increased damage taken, attr 57201 mod 3; provisional).
+    if (clause.family === "selfDebuff") {
+      const uptime = damageEventsPerSecond > 0 ? 1 - Math.pow(1 - Math.min(100, clause.chancePercent) / 100, damageEventsPerSecond * clause.durationSeconds) : 0;
+      if (uptime > 0 && clause.value) taken.push({ source: label, text: `${clause.text} — uptime ${round(uptime * 100)}% at ${round(damageEventsPerSecond)} damage events/s (the DoT once per server tick; trigger 1000030; provisional)`, value: clause.value * uptime, category: "Additional damage taken (from this skill)" });
+      continue;
+    }
     if (clause.family === "dotAdditional" && clause.value) { additional.push({ source: label, text: `${signedText(clause.value)}% additional Damage Over Time for the supported skill${suffix(clause)}`, value: clause.value, category: "Additional damage" }); continue; }
     // Pain Amplification (reference data): "+X% additional Damage Over Time against enemies with Max Affliction for the supported skill".
     // Held while the dummy's Affliction rating is 100 (frost-terra audit 2026-10-13); the recount gates it on the simulated rating.
@@ -91,7 +100,7 @@ function supportLayers(setup, damageType, profile = null, { triggered = false } 
       else if (clause.value) additionalAffliction.push({ source: label, text: `Affliction grants an additional ${clause.value}% effect to the supported skill (Lv.${clause.level ?? "?"})`, value: clause.value, category: "Additional Affliction effect" });
     }
   }
-  return { additional, increased, additionalAffliction, afflictionPerSecond, maxAffliction, notes };
+  return { additional, increased, additionalAffliction, afflictionPerSecond, maxAffliction, notes, taken };
 }
 
 // Affliction per second the setup's own supports add (Cataclysm), independent of the ledger.
@@ -109,13 +118,19 @@ function typedLines(damageType, modifierTexts, { spell = false } = {}) {
     ["increased", new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% ${T} Damage(?: Over Time)?$`, "i")],
     ["additional", new RegExp(`^([+-]?\\d+(?:\\.\\d+)?)% additional ${T} Damage(?: Over Time)?$`, "i")],
     ["taken", new RegExp(`^\\+(\\d+(?:\\.\\d+)?)% additional ${T} Damage taken$`, "i")],
-    // Enemy "Spell Damage taken" debuffs (Frail, keyword 10000102; the follower's Lightning Beam) reach Spell HITS only, never
-    // a Spell skill's own DoT, ailments or Reaps (2026-10-18 user-supplied: Spell Damage taken is hit-only). The player's
-    // "+X% Spell Damage" still reaches a Spell skill's own DoT (user-confirmed 2026-10-11; spellLines below).
+    // Enemy "Spell Damage taken" debuffs (Frail, record 665425600; the follower's Speed Phantom, 3578901, and Lightning Beam) write damage
+    // taken with the Spell tag on the damage side and no Hit tag, so they reach a Spell skill's own DoT and the Reaps that settle it (user
+    // decision 2026-11-13, "Yes" after a user-pasted AI answer agreeing with the records; 8 T Thornfield audit G8; supersedes the 2026-10-18
+    // hit-only reading for a Spell skill's own DoT). Never ailments: an ailment's DoT record keeps only whitelisted tags, no Spell
+    // (src/ailment-record-tags.js), and this reader is the skill-DoT ledger's only. Each debuff holds where the build holds it on the dummy
+    // (src/combat-states.js Frail, src/follower-model.js): no uptime is added here.
+    // A line whose record writes the Spell half on {Spell, hit} (Wings of Light's Intimidated, 611468864: `spellHitOnly`) stays off it.
+    ...(spell ? [["taken", /^\+(\d+(?:\.\d+)?)% additional Spell Damage taken$/i, "spellTaken"]] : [])
   ];
   const result = { increased: [], additional: [], taken: [] };
   for (const line of modifierTexts) {
-    for (const [bucket, pattern] of rules) {
+    for (const [bucket, pattern, kind] of rules) {
+      if (kind === "spellTaken" && line.spellHitOnly) continue;
       const match = line.text.match(pattern);
       if (!match) continue;
       result[bucket].push({ source: line.source, text: line.text, value: number(match[1]) * (line.multiplier ?? 1), category: bucket === "increased" ? "Increased damage" : bucket === "additional" ? "Additional damage" : "Additional damage taken" });
@@ -184,7 +199,7 @@ export function textSkillDotReading(line, profile) {
  * @param {boolean} [p.triggered] an Activation Medium triggers the skill (src/trigger-interval.js): triggered-only lines apply
  * @param {object} [p.lucky] the build's Lucky state (src/lucky-damage.js readLuckyDamage, via src/combat-states.js)
  */
-export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTexts = [], shared, auraEntries = [], castsPerSecond = 0, firstApplicationSeconds = null, crit = {}, aim = null, sustainedWindowSeconds = 20, extraAdditional = [], triggered = false, lucky = null }) {
+export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTexts = [], shared, auraEntries = [], castsPerSecond = 0, firstApplicationSeconds = null, crit = {}, aim = null, sustainedWindowSeconds = 20, extraAdditional = [], triggered = false, lucky = null, dotTicksPerSecond = 0, skillEffectDurationPercent = 0 }) {
   // A buff for the character's "other skills" (Ice Bond's Euphoria, src/empower-effects.js) skips the skill that grants it.
   const ownKey = setup?.setupKey || setup?.instanceId;
   // The setup's stone-filter tag changes are the skill's own tags (wiring audit W1 gap 1; src/planner.js applies them to the sources too).
@@ -200,7 +215,15 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
   const recipeInputs = shared?.recipe?.inputs || null;
   const withCategory = (list, category) => (list || []).map((line) => line.category ? line : { ...line, category });
   const typed = recipeInputs ? { increased: withCategory(recipeInputs.typed.increased, "Increased damage"), additional: withCategory(recipeInputs.typed.additional, "Additional damage"), taken: withCategory(recipeInputs.typed.taken, "Additional damage taken") } : typedLines(damageType, modifierTexts, { spell: (profile.tags || []).includes("Spell") });
-  const supports = supportLayers(setup, damageType, profile, { triggered });
+  // The DoT's damage events (trigger 1000030): one per server tick (`dotTicksPerSecond`, the planner's DOT_TICKS_PER_SECOND) while it ticks.
+  // A DoT a lasting area keeps applying (profile.dot.areaSeconds: Thornfield's buffArea, Split 411245: the area lasts 6 s × Skill Effect Duration,
+  // attr 3402, and gives units inside its 2 s status, "bufftime" 2): the status holds while the area lasts and its 2 s after, so one cast keeps
+  // the DoT up for area + status seconds (8 T Thornfield audit G6, 2026-11-13; the area re-applying its status while the dummy stands in it is
+  // read from the buffArea component: inferred). One area at a time (Max Terra quantity 1): a recast replaces it.
+  const areaSeconds = profile.dot.areaSeconds > 0 ? profile.dot.areaSeconds * Math.max(0, 1 + (Number(skillEffectDurationPercent) || 0) / 100) : 0;
+  const heldSeconds = profile.dot.durationSeconds + areaSeconds;
+  const tickingShare = Math.min(1, heldSeconds * castsPerSecond);
+  const supports = supportLayers(setup, damageType, profile, { triggered, damageEventsPerSecond: dotTicksPerSecond * tickingShare });
   const ledger = shared?.ledger || {};
   // A recipe-placed entry already passed the recipe's scope (the DoT's damage types, DoT / skill tags; never ailment-only tags).
   const keep = keepForSkillDot;
@@ -267,7 +290,7 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
   // An enemy debuff on all damage (an untagged attr 5720 write on the enemy: Deepened Curse, record 611820480; src/planner.js marks its derived line
   // `allDamageTaken`) reaches the skill's own DoT, and so its Reaps (2026-11-12, research/build-20t-mind-control-audit-2026-11-12.md G6): it
   // arrives in the shared `taken` list (src/build-mechanics.js addLateDamageTakenLine, with Ignite / Trauma / Wilt), counted once there.
-  const taken = [...sharedTaken, ...typed.taken];
+  const taken = [...sharedTaken, ...typed.taken, ...supports.taken];
   const increasedPercent = increased.reduce((sum, line) => sum + line.value, 0);
   const afflictionEffectPercent = shared?.afflictionEffectPercent || 0;
   const additionalAfflictionEffectFactor = (shared?.additionalAfflictionEffectFactor ?? 1) * product(supports.additionalAffliction.map((line) => line.value));
@@ -283,7 +306,7 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
 
   const roll = { min: base.min, max: base.max, chancePercent: 100, critChancePercent: 0, critFactor: 1 };
   const steadyStrongest = expectedStrongestApplication({ ...roll, attempts: castsPerSecond * sustainedWindowSeconds });
-  const durationSeconds = profile.dot.durationSeconds;
+  const durationSeconds = heldSeconds;
   // Uptime: a status applied less often than it lasts (a cooldown-bound area; a skill-hit Terra's 2 s DoT once per 6 s
   // Terra) is active duration × applications/s of the time; a channeled beam refreshing every use, or a DoT Terra recast
   // whenever a Terra Charge is available (at least every 2 s), keeps it at 1.
@@ -319,7 +342,7 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
     ledger: { base: [{ source: `${profile.name} Lv.${level}`, text: `${perSecond} ${damageType} damage per second (${profile.sources?.gameData || "Reference data"}${level > 20 ? "; base frozen past Lv.20" : ""})`, value: perSecond, min: perSecond, max: perSecond, category: `Base ${profile.name} damage` }], increased, additional: townAdditional, combatAdditional: [...sharedCombat, ...maxAfflictionLines], taken, affliction: [...supports.additionalAffliction, ...supports.afflictionPerSecond.map((line) => ({ ...line, category: "Affliction per second" }))] },
     sources: {
       typed: { base: [{ source: `${profile.name} Lv.${level}`, text: `${perSecond} ${damageType} damage per second`, min: perSecond, max: perSecond }], chance: [], duration: [], increased: [...typed.increased, ...spell.increased, ...supports.increased], additional: [...typed.additional, ...spell.additional, ...supports.additional, ...levelLine], taken: typed.taken, critOnlyAdditional: [], perRecentCritAdditional: [], perCritDamageAdditional: [], stackLimit: [], reapingDuration: [] },
-      chance: [{ source: profile.name, text: "Applied by every use of the skill", value: 100 }], duration: [{ source: profile.name, text: `Lasts ${durationSeconds} s, refreshed by each use`, value: 0 }],
+      chance: [{ source: profile.name, text: "Applied by every use of the skill", value: 100 }], duration: [{ source: profile.name, text: areaSeconds > 0 ? `Lasts ${profile.dot.durationSeconds} s, applied while the dummy stands in the skill's ${round(areaSeconds)} s area (${profile.dot.areaSeconds} s × Skill Effect Duration; ${profile.dot.areaSource || "its Split"}): held ${round(heldSeconds)} s per cast` : `Lasts ${durationSeconds} s, refreshed by each use`, value: 0 }],
       increasedPercent, townAdditional: townAdditional.map((line) => line.value), combatAdditional: combatAdditional.map((line) => line.value), perCritDamageTown: [], perCritDamageCombat: []
     },
     notes: randomRoll ? [...supports.notes, randomRoll.text] : supports.notes,

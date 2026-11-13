@@ -628,6 +628,23 @@ export const OPEN_QUESTIONS = Object.freeze([
     }
   },
   {
+    id: "stab-in-the-back-terra-dot",
+    title: "Stab In The Back: does its +30% reach the cast's damage over time?",
+    question: "Stab In The Back (Pedigree of Gods / Lich core: 'While Blur is active, loses Blur after casting a Main Skill, and +30% additional damage for that cast') consumes Blur on every Main Skill cast. Does the +30% reach the cast's own damage over time (a Terra's area, Thornfield's DoT) and the Reaps that settle it, or only that cast's hits?",
+    evidence: "user-supplied",
+    current: "User decision 2026-11-13 (a user-pasted Google AI Mode answer that agrees with the records; not an in-game test; 8 T Thornfield audit G7): game record 112064 (trigger 1000069 on the Main tag 6020000, gate Blur state 4000060, node 302 removes buff 220, node 624 aFL 57191 with bOnlyNextLoopAction / bOnceToSkill) gives the cast's whole skill instance +30% additional damage: its hits and its Terra's damage over time for that area's life, so the Reaps settling it; the planner reads the same node 624 on the Terra Charge line (974028). Only casts that find Blur take it: share = min(1, Blur gain rate ÷ Main Skill casts per second) (Q5); each cast ends Blur, so Blur's own lines (Subtle Impact, Blur's damage lines) hold blurHeldShare = 1 − casts ÷ (2 × gains) of the time (even spacing). Phantom Trace's gain: one per server tick while its DoT (or the attributed ailment) ticks, 30 a second (recipe 309615840, trigger 1000030 once per frame). The Main Skill's own ledger takes it, never other skills. The 5 s / 20 s windows and the 60 s loop read the steady share (the first cast before the first Phantom Trace gain is not on the loop).",
+    alternatives: [
+      { reading: "Hits only: the cast's damage over time does not take it", effect: "×1/1.3 on a Terra main (8 T Thornfield ×0.769)" },
+      { reading: "The first cast at engagement finds no Blur (Phantom Trace needs the dummy's DoT ticking first)", effect: "the first area of the fight without the +30% (8 T Thornfield 5 s window about ×0.9)" }
+    ],
+    test: "Dummy run with a Terra Main Skill, Stab In The Back and a Blur source: the Terra's DoT number with and without Stab In The Back on the slate.",
+    source: "research/build-8t-thornfield-audit-2026-11-13.md G7; game record 112064; src/consumption-procs.js; src/planner.js stabInTheBackLines",
+    appliesWhen: (ctx) => {
+      const blur = ctx.planner.lineEffects?.state?.consumption?.blur;
+      return Boolean(blur?.active) && (ctx.planner.skillDots || []).some((dot) => dot?.modeled);
+    }
+  },
+  {
     id: "core-keep-it-up-loop",
     title: "Keep It Up: how many stacks does the build hold?",
     question: "Each Keep It Up stack lowers Critical Strike Rating by 25%, and stacks come from crits. Where do the two settle for a build near the 0.5 s gate, and does a new stack refresh the older ones?",
@@ -957,7 +974,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Ill Omen with Reap Purification on a Boss",
     question: "With Reap Purification, does every Ill Omen stack deal 2.5% Max Life as True Damage on a Boss continuously, bypassing the once-only Boss rule?",
     evidence: "provisional",
-    current: "Provisional (the user's source): yes, continuous on every tier.",
+    current: "Provisional (the user's source): yes, continuous on every tier, in the dummy figures behind the best-case switch \"illOmen\". Without Reap Purification Ill Omen fires once on the Boss dummy and is left out of the dummy figures (no dummy Max Life; user decision 2026-11-13).",
     alternatives: [{ reading: "The Boss lockout still applies", effect: "Ill Omen fires once on a Boss" }],
     test: "A long Boss or dummy run with Reap Purification, watching for repeated True Damage numbers.",
     source: "src/ill-omen.js; research/google-ai-mode-answers-2026-10-13.md",
@@ -1078,16 +1095,19 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     // Recipe interpreter step 4 (2026-10-25, research/recipe-interpreter-step1-2026-10-25.md §16): the recipe and the user-supplied
-    // hit-only rule disagree; the rule stays (the recipe cannot show which tags a DoT event carries).
+    // hit-only rule disagree; the rule stays. 8 T Thornfield audit G8 (2026-11-13, SS14 client): the DoT damage branch reads the
+    // enemy's 5720 with the DoT record's own tags, so the open link is only whether that record carries its skill's Spell tag.
     id: "follower-spell-taken-dot",
-    title: "Lightning Beam (follower): does its Spell Damage taken reach a Spell skill's own damage over time?",
-    question: "Tartarus: Lightning Beam's '+6% additional Spell Damage taken by enemies (multiplies) for each time this skill hits recently. Stacks up to 3' is written in the game data against Spell-tagged damage, with no hit tag. Does it raise your Spell skill's own damage over time (Wilting Beam's, a Terra's), or only your Spell hits?",
-    evidence: "game data (partial)",
-    current: "User-supplied (2026-10-18, an AI answer, provisional): enemy 'Spell Damage taken' debuffs reach Spell hits only, so the stacks raise no damage over time. Game data (affix 19669): attribute 57201 (damage taken) mod 4 against the Spell tag 6001100 only, while 611468864 'Spell and Ailment Damage taken' writes its Spell half as {Spell, hit}; the player's '+X% Spell Damage' (the same tag) reaches a Spell skill's own DoT (user-confirmed 2026-10-11). Kept on the user-supplied rule: whether a DoT event carries its skill's Spell tag is code.",
-    alternatives: [{ reading: "It reaches a Spell skill's own damage over time (not ailments or Reaps)", effect: "×1.19 (1.06³) on Wilting Beam's or a Spell Terra's own DoT while the follower casts Lightning Beam" }],
-    test: "Dummy run with Wilting Beam: the Witch Rat with Tartarus: Lightning Beam against without it, comparing the Wilting Beam DoT number (not the hits).",
-    source: "research/recipe-interpreter-step1-2026-10-25.md §16",
-    appliesWhen: (ctx) => (ctx.planner.follower?.selection?.skills || []).some((entry) => entry.skill?.name === "Tartarus: Lightning Beam")
+    title: "Enemy Spell Damage taken (Frail, Speed Phantom, Lightning Beam): does it reach a Spell skill's own damage over time?",
+    question: "Frail ('Additionally increases Spell Damage taken by 15%', record 665425600), the follower's Tartarus: Speed Phantom ('+12% additional Spell Damage taken', record 3578901) and Tartarus: Lightning Beam ('+6% additional Spell Damage taken by enemies (multiplies) for each time this skill hits recently', affix 19669) are written against Spell-tagged damage with no hit tag. Do they raise your Spell skill's own damage over time (a Terra's, Thornfield's, Wilting Beam's), or only your Spell hits?",
+    evidence: "user-supplied",
+    current: "User decision 2026-11-13 (\"Yes\" after a user-pasted Google AI Mode answer that agrees with the records; not an in-game test; 8 T Thornfield audit G8), superseding the 2026-10-18 user-supplied hit-only reading for a Spell skill's own DoT: enemy 'Spell Damage taken' debuffs reach your Spell hits and a Spell skill's own damage over time (a skill DoT whose skill carries the Spell tag: a Terra's, Thornfield's, Mind Control's, Wilting Beam's) and the Reaps that settle it; never Ignite, Trauma or Wilt (an ailment's DoT record keeps only whitelisted tags, no Spell: src/ailment-record-tags.js). Each debuff applies only where the build holds it on the dummy (Frail by its trigger 1000030 on Spell damage, the follower's debuffs by its hits: src/combat-states.js, src/follower-model.js). Wings of Light's Intimidated is not one of them: record 611468864 writes its Spell half on {Spell, hit} (hits only; a DoT takes its DoT half). Game records: each of these writes attribute 5720 / 57201 (damage taken) mod 4 with only the Spell tag 6001100 on the damage side and no Hit tag 5000003. SS14 client (2026-11-13): the damage pass (0x141fba9b0 → 0x141f97150) reads the enemy's 5720 with the damage record's tags in both the DoT branch (0x141fc2bf0, × 5813 Damage Over Time taken) and the hit branch (0x141fc1950), so a DoT tick takes these debuffs exactly when its record carries the Spell tag; the DoT record's tags are the attacking unit's (component 0x8e) plus the application request's (0x141f9bdf0; SkillUtils 0x1423e1320 adds Persistent 6000140, then component 0x85's list at +0x168), and whether one holds the skill's Spell tag was not read: that is the link the decision settles.",
+    alternatives: [{ reading: "Spell hits only (the 2026-10-18 reading): a Spell skill's own DoT and its Reaps do not take them", effect: "Frail ÷1.15 and Speed Phantom ÷1.12 on a Spell skill's DoT and its Reaps (8 T Thornfield and 20 T Mind Control ×0.7764; Frost Terra builds ×0.8696); Lightning Beam ÷1.19 (1.06³)" }],
+    test: "Dummy run with a Spell DoT skill (Wilting Beam, a Terra): with and without a Frail source (Eternal Sun, or the follower's Speed Phantom / Lightning Beam), comparing the DoT number, not the hits.",
+    source: "research/recipe-interpreter-step1-2026-10-25.md §16; research/build-8t-thornfield-audit-2026-11-13.md G8",
+    appliesWhen: (ctx) => (ctx.planner.skillDots || []).some((dot) => dot?.modeled && (dot.profile?.tags || []).includes("Spell"))
+      && ((ctx.planner.follower?.selection?.skills || []).some((entry) => ["Tartarus: Lightning Beam", "Tartarus: Speed Phantom"].includes(entry.skill?.name))
+        || ctx.texts.some((entry) => /\bFrail\b/i.test(String(entry.text))))
   },
   {
     id: "follower-affix-catalyst",
@@ -1504,7 +1524,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     // Shown where a board skill clears curses (Shackles of Malice's explosion) and Deepened Curse is carried. The follower's Origin Tartarus:
     // Shackles of Malice runs the same graph (Split 595806, 2026-11-12: on a Cursed target, state 4000560, its chain explodes and removes the
     // target's curse buffs 0.04 s later unless a support's label 3100281 keeps them), so it clears them too, once per follower cast.
-    appliesWhen: (ctx) => (ctx.planner?.modifierTexts || []).some((line) => line.allDamageTaken) && (ctx.setups.some((setup) => setup.name === "Shackles of Malice" && setup.enabled !== false) || (ctx.planner?.follower?.selection?.skills || []).some((entry) => entry.skill?.name === "Origin Tartarus: Shackles of Malice"))
+    appliesWhen: (ctx) => (ctx.planner?.modifierTexts || []).some((line) => line.allDamageTaken && /Deepened Curse/.test(String(line.source))) && (ctx.setups.some((setup) => setup.name === "Shackles of Malice" && setup.enabled !== false) || (ctx.planner?.follower?.selection?.skills || []).some((entry) => entry.skill?.name === "Origin Tartarus: Shackles of Malice"))
   },
   // Approaching Nightfall (lunar revived memory affix, record 10140181; 2026-11-12, research/build-20t-mind-control-audit-2026-11-12.md G5;
   // src/approaching-nightfall.js, src/tick-engine.js nightfallOnReap). Shown where the settlement runs (a Reap of yours and a DoT on the dummy).
@@ -5036,6 +5056,36 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "With Lightchaser on Chromatic Shot, read another Strength skill's damage on the panel with and without the support.",
     source: "game recipe 651717 (config_affix_effect rows 1 to 3); src/skill-hit-model.js",
     appliesWhen: (ctx) => ctx.supports.has("Chromatic Shot: Lightchaser (Magnificent)")
+  },
+  {
+    id: "thornfield-max-life-source",
+    title: "Thornfield: which Max Life does \"+1.25% additional damage for every 100 Max Life\" read, and does its area keep the DoT up?",
+    question: "Thornfield's own line \"1.25% additional damage for this skill for every 100 Max Life, up to +100%\" reads the stat source its record names. Is that the full Max Life, or the Life left after Sealed Life (the workable maximum), and is it linear below the cap? And does the 6 s Terra keep giving the dummy standing in it the 2 s DoT status, so one cast holds the DoT for 8 s?",
+    evidence: "game data (partial)",
+    current: "Game record 683267456 (Thornfield's stone 2870, arguments [100, 1.25, 100]): node 119 from stat source 92 into attr 57191 (damage, all) mod 4 on the skill, capped at P3, no GetFloorInt. Read (2026-11-13) as the full Max Life (attribute 1001; Sealed Life reserves Life without lowering the attribute), linear: min(100%, 1.25% × Max Life ÷ 100), one additional factor on the skill's damage over time and so its Reaps. Source 92 = Max Life is inferred from the templates that use it; the full pool and the linear reading are inferred too. At 8,000 Max Life or more the cap holds and the reading does not matter. The DoT (2026-11-13, G6): Split 411245's buffArea lasts 6 s × Skill Effect Duration and gives units inside its 2 s status (bufftime 2); read as re-applied while the dummy stands in it, so one cast holds the DoT area + 2 s (inferred from the component; on the 8 T build a recast every 2.065 s keeps it up either way but for 3.1%).",
+    alternatives: [
+      { reading: "Source 92 is the Max Life left after Sealed Life", effect: "lower on a build that seals Life and has under 8,000 Max Life left; none on the 8 T Thornfield build (no Life sealed, 15,540 Max Life)" },
+      { reading: "Whole steps of 100 Max Life", effect: "at most 1.25% lower below the cap" },
+      { reading: "The area applies its status once, on landing", effect: "the DoT lapses between recasts: ×0.969 on the 8 T Thornfield build" }
+    ],
+    test: "With Thornfield on a character below 8,000 Max Life, compare the dummy's DoT DPS (or the panel's Additional Damage Bonus hover) with and without a +Max Life item; with Sealed Life, seal some Life and watch whether the bonus drops.",
+    source: "research/build-8t-thornfield-audit-2026-11-13.md G1; src/skill-damage-profiles.js (Thornfield maxLifeAdditional); src/planner.js maxLifeDotLines",
+    appliesWhen: (ctx) => ctx.setups.some((setup) => setup.name === "Thornfield" && setup.enabled !== false)
+  },
+  {
+    id: "thornfield-sacrifice-stacks",
+    title: "Thornfield: Sacrifice: how many stacks does the buff hold?",
+    question: "Thornfield: Sacrifice gains a stack for every 20% of Max Life lost to damage (Thornfield's own True Damage, 20% of Max Life and Energy Shield a second, plus Retribution's 10% inside the Terra) and a 10% chance on each Reap of an Elite inside the Terra; each stack lasts 5 s, up to 10, +2% additional damage over time per stack. Does each stack keep its own 5 s, does the self True Damage count in full (no damage-taken reduction), and are the self-damage stacks already built when the fight starts?",
+    evidence: "game data (partial)",
+    current: "Read from records 778012032 / 852783808 and buff 11762 (2026-11-13): stacks gained a second = (self True Damage % a second ÷ 20%) + Reaps a second × 10%; held min(10, gains × 5 s), each layer its own 5 s (buff 11762's header, subtype 2 and stack mode 1, equals the Blessings' records, whose layers keep their own duration: inferred alike); ×1.02^stacks on the skill's damage over time (one attr 5902 write per layer, so they multiply). The self True Damage (records 435840128 / 575469120, skipIncr) is read as skipping your damage-taken modifiers (inferred). With own buffs built before engaging, the self-damage stacks (7.5) are held at engagement (as Thornfield: Retribution's stacks) and the Reap stacks build from 0 on the clean dummy. On the 8 T Thornfield build: 1.5 + 0.37 stacks a second, 9.35 held, ×1.2034.",
+    alternatives: [
+      { reading: "Your damage-taken reductions reach the self True Damage (Eternal Sun's −30%, Shadowdancer's −4%)", effect: "×0.952 on the 8 T Thornfield build (×1.146 for ×1.203)" },
+      { reading: "The stacks share one timer refreshed by each gain (they reach 10)", effect: "×1.013 on the 8 T Thornfield build" },
+      { reading: "The stacks add (one +2% × stacks term)", effect: "×0.986 on the 8 T Thornfield build" }
+    ],
+    test: "With Thornfield + Sacrifice on the dummy, read the buff's stack count over a few seconds of standing in the Terra before attacking, then while Reaping; compare the DoT number with 0 and with full stacks.",
+    source: "research/build-8t-thornfield-audit-2026-11-13.md G2; src/support-conditional-batch4.js sacrificeState; src/planner.js (the timed own-buff part)",
+    appliesWhen: (ctx) => ctx.supports.has("Thornfield: Sacrifice (Magnificent)")
   }
 ]);
 

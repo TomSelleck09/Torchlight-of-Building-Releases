@@ -184,7 +184,7 @@ export function resettleLineEffects(lineEffects, key, state, modifierTexts = [])
     const multiplier = line.multiplier ?? 1;
     const bodies = entry.bodies.map((item, index) => ({ ...item, derivedText: resolved.active ? scaleBody(item.body, resolved.bodyFactors?.[index] !== undefined ? resolved.bodyFactors[index] : resolved.factor, resolved.power, multiplier) : null }));
     const old = (lineEffects.derived || []).filter((item) => item.lineEffect?.key === key && item.source === line.source && item.derivedFrom === line.text);
-    const fresh = resolved.active ? bodies.filter((item) => item.derivedText && item.readers.length).map((item) => derivedLineOf(line, item, split, resolved)) : [];
+    const fresh = resolved.active && !resolved.ownSkillOnly ? bodies.filter((item) => item.derivedText && item.readers.length).map((item) => derivedLineOf(line, item, split, resolved)) : [];
     Object.assign(entry, { active: resolved.active === true, conditionText: resolved.conditionText, provisional: Boolean(resolved.provisional), factor: resolved.factor ?? null, bodies, status: entryStatus(resolved, bodies) });
     if (old.map((item) => item.text).join("\n") === fresh.map((item) => item.text).join("\n")) { for (const item of old) item.lineEffect = { ...item.lineEffect, conditionText: resolved.conditionText }; continue; }
     changed = true;
@@ -263,7 +263,9 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
     const status = entryStatus(resolved, bodies);
     const entry = { source: line.source, origin: line.origin, text, condition: split.condition.key, params: split.condition.params, group: resolved.group, active: resolved.active === true, conditionText: resolved.conditionText, provisional: Boolean(resolved.provisional), factor: resolved.factor ?? null, bodies, status };
     lines.push(entry);
-    if (!resolved.active) continue;
+    // A body the owning skill's own ledger reads (Stab In The Back: src/planner.js stabInTheBackLines): no build-wide derived line.
+    if (resolved.ownSkillOnly) entry.ownSkillOnly = true;
+    if (!resolved.active || resolved.ownSkillOnly) continue;
     for (const item of bodies) {
       if (!item.derivedText || !item.readers.length) continue;
       // `timeShare` (2026-10-27, research/lucky-crit-mechanics-2026-10-27.md): the body holds this share of the time / uses (its value is

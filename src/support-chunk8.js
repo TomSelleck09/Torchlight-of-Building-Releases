@@ -126,7 +126,10 @@ export function chunk8BuildLines({ setups = [], activeNames = new Set() } = {}) 
 export function chunk8EnemyLines(setup, { modifierTexts = [], nearTarget = true, usesPerSecond = null, infiltrationTypes = [] } = {}) {
   const lines = [];
   for (const clause of setup?.supportEffects?.clauses || []) {
-    if (clause.family === "conditionalAdditional" && clause.condition === "reapOnTerra" && clause.active) lines.push({ text: `+${clause.value}% additional damage taken`, source: `${setup.name}: ${clause.support} (on the dummy from the first Reap on the Fire Terra)`, origin: "derived", multiplier: 1 });
+    // Spontaneous Combustion's buff 10155 (affix 47822504: attr 5720 mod 4 with no tag, so all damage taken by the dummy): `allDamageTaken`, so src/planner.js
+    // joins it to the DoT / ailment damage-taken bucket (addLateDamageTakenLine) as Deepened Curse's: a skill's own DoT, Ignite, Trauma, Wilt
+    // and their Reaps, the beam's hits (2026-11-13, 8 T Thornfield audit G3; before, only the skill hits read it).
+    if (clause.family === "conditionalAdditional" && clause.condition === "reapOnTerra" && clause.active) lines.push({ text: `+${clause.value}% additional damage taken`, source: `${setup.name}: ${clause.support} (on the dummy from the first Reap on the Fire Terra)`, origin: "derived", multiplier: 1, allDamageTaken: true, takenCondition: "the dummy Reaped on the Fire Terra (buff 10155, held from the first Reap)" });
     // Heartpiercer: stacks on your own uses, 4 s each: min(cap, uses in 4 s) × the Mark Effect line, read by src/mark-effect.js.
     if (clause.family === "conditionalAdditional" && clause.condition === "markEffectUses" && clause.active) {
       const stacks = usesPerSecond == null ? clause.cap : Math.min(clause.cap, usesPerSecond * 4);
@@ -224,7 +227,7 @@ export function resolveChunk8Condition(clause, full, siblings = [], setupKey = n
       return applied > 0 ? on(`${round(Number(state.maxMana) || 0)} Max Mana ÷ ${clause.every}: +${round(applied)}% Steep Strike chance (up to +${clause.cap}%; whole steps)`, { value: applied, appliedValue: 0, provisional: true }) : off(`Max Mana under ${clause.every}`);
     }
     case "reapOnTerra":
-      return state.hasReapSource ? on(`a Reap source and the dummy on the Fire Terra (best case): +${clause.value}% additional damage taken held from the first Reap (${recipe}; src/planner.js)`, { provisional: true }) : off("the build has no Reap source");
+      return state.hasReapSource ? on(`a Reap source and the dummy on the Fire Terra (best case): +${clause.value}% additional damage taken held from the first Reap (${recipe}: buff 10155, attr 5720 mod 4 with no tag, so every damage the dummy takes: your hits, your DoTs and ailments and their Reaps; the 5 s / 20 s windows hold it from engagement; src/planner.js)`, { provisional: true }) : off("the build has no Reap source");
     case "markEffectUses":
       // Read on the debuff in src/planner.js (chunk8EnemyLines).
       return hits ? on(`read on the debuff the build holds on the dummy (${recipe}; src/planner.js)`, { provisional: true }) : off("the supported skill deals no hits");

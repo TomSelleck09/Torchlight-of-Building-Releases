@@ -1057,6 +1057,10 @@ function resolveKey(condition, state) {
       const pending = state.consumption.measured ? "" : "; the cast rate is the early estimate until the hit pass measures it";
       if (item.active === null) return { active: false, unmodeled: true, conditionText: `Not modeled: ${item.reason}` };
       if (!item.active) return off(item.reason);
+      // Stab In The Back (game record 112064: node 624 aFL 57191, bOnlyNextLoopAction / bOnceToSkill; user decision 2026-11-13, 8 T
+      // Thornfield audit G7): the bonus belongs to that cast's own skill instance, so the Main Skill's own damage reads it (its hits and
+      // its damage over time, src/planner.js stabInTheBackLines), not every skill: no build-wide derived line (`ownSkillOnly`).
+      if (key === "consumeBlurPerCast") return on(`${item.reason}; that Main Skill cast's own damage (its hits, and a Terra's damage over time for that area's life, so the Reaps settling it) deals the bonus, so ×${round(item.share)} of the value (share = min(1, Blur gain rate ÷ Main Skill casts): Q5, user-confirmed 2026-10-18; reaching the cast's DoT: user-supplied AI answer 2026-11-13, provisional, open question stab-in-the-back-terra-dot)${pending}`, { factor: item.share, timeShare: true, ownSkillOnly: true, provisional: true });
       return on(`${item.reason}; the cast that consumes it deals the bonus, so ×${round(item.share)} of the value (share = min(1, gain rate ÷ cast rate): Q5, user-confirmed 2026-10-18)${pending}`, { factor: item.share, timeShare: true });
     }
     case "consumeAllAgility": {
