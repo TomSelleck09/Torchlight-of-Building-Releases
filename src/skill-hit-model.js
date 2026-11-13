@@ -134,6 +134,23 @@ const DURING_MULTISTRIKE_ADDED_AS = /^Adds (\d+(?:\.\d+)?)% of (Physical|Fire|Co
 // the use's hits again × (1 + 30% × (Shadows − 1)), as their own hits. Shadow Quantity: "Shadow Quantity +N"
 // (game field 2012000), Haunt's "+2 Shadow Quantity for the supported skill", a skill's own (`ownShadowQuantity`, Wilt Spike).
 // "+X% additional Shadow Damage" (game affix 24304: attr 5719 additional with the Shadows tag 6020014) reaches the Shadows only.
+/**
+ * The Auras' Melee-scoped lines (gear-pact batch G4; game-data aura records, src/data/skills/aura-scaling-ss13.js) for a skill with these tags:
+ * Fearless "+X% Critical Strike Rating for Melee Skills" (record 538865344: attr 4802 on the Melee tag 6001120) and Precise: Fearless "+X%
+ * Melee Attack Speed" (record 707968: attr 6001 mod 3; its write carries no tag, the text names Melee: read on Melee attack-speed skills),
+ * each as a support line of the same kind. Also read for a trigger skill's own use time (src/vendetta-model.js, the 9 T Double Thrusts follow-up).
+ */
+export function auraTagLines(auraEntries = [], scopeTags = new Set(), speedType = "cast-speed") {
+  const speed = [], crit = [];
+  if (!scopeTags.has("Melee")) return { speed, crit };
+  for (const entry of auraEntries) {
+    const effects = entry.effectiveEffects || {};
+    if (effects.meleeAttackSpeedPercent && speedType === "attack-speed") speed.push({ source: `Aura: ${entry.name} / Melee Attack Speed`, text: `+${round(effects.meleeAttackSpeedPercent)}% Melee Attack Speed`, value: effects.meleeAttackSpeedPercent, additional: false });
+    if (effects.meleeCriticalStrikeRatingPercent) crit.push({ kind: "ratingPercent", source: `Aura: ${entry.name} / Melee Critical Strike Rating`, text: `+${round(effects.meleeCriticalStrikeRatingPercent)}% Critical Strike Rating for Melee Skills`, value: effects.meleeCriticalStrikeRatingPercent });
+  }
+  return { speed, crit };
+}
+
 export const SHADOW_FALLOFF = 0.3;
 export const SHADOW_QUANTITY_LINE = /^(?:Shadow Quantity \+(\d+)|\+(\d+) (?:to )?Shadow Quantity)$/i;
 export const SHADOW_DAMAGE_LINE = /^([+-]?\d+(?:\.\d+)?)% additional Shadow Damage$/i;
@@ -158,6 +175,23 @@ export function shadowState({ profile = null, modifierTexts = [], supportClauses
   }
   const expectedCount = count + chances.reduce((total, item) => total + item.chance * item.extra, 0);
   return { count, expectedCount, chances, weight: chances.length ? weight : weightOf(count), sources, damage };
+}
+/**
+ * Double Thrusts: Recourse (Noble) (record 801293952; 9 T Double Thrusts audit G4, 2026-11-13) as an expected additional term on the Shadows'
+ * hits. User decisions 2026-11-13: (a) every landing hit of the skill adds a stack (row 1, trigger 1000033 on this skill): each use lands its
+ * thrusts and N Shadow hits per thrust (stacks count landing hits, not the Shadows' 1 + 30% × (N − 1) damage weight), so a Shadow is
+ * N / (1 + N) of the landings; (b) the bonus is the support's rolled value (741% at T0), not row 3's constant 1000. Inferred: row 3
+ * (trigger 1000031 on [this skill, Shadow, Hit]) reads the stacks after the hit's own (row 1 first), so a detonation needs `threshold`
+ * stacks and then the next Shadow hit: a cycle of threshold + q ÷ (1 − q) landings, q = 1 ÷ (1 + N) the thrusts' share (geometric wait,
+ * order within a use not traced); the detonating Shadow takes the Shadows' mean falloff share (the +X% multiplies that hit as dealt);
+ * the stacks never expire between uses (buff 10832's duration not read). Per Shadow landing: X × ((1 + N) ÷ N) ÷ cycle.
+ */
+export function recourseShadowLine(clause, shadowCount) {
+  const n = Number(shadowCount) || 0, threshold = Number(clause?.threshold) || 0, value = Number(clause?.value) || 0;
+  if (!(n > 0) || !(threshold > 0) || !value) return null;
+  const cycle = threshold + 1 / n;
+  const percent = value * ((1 + n) / n) / cycle;
+  return { source: clause.source, text: `+${Math.round(percent * 10000) / 10000}% additional Shadow Damage on average: +${value}% on one Shadow hit every ${Math.round(cycle * 10000) / 10000} landings (${threshold} stacks, a stack per landing hit, the thrusts and ${Math.round(n * 100) / 100} Shadows per thrust; Double Thrusts: Recourse, record 801293952; provisional)`, value: percent, recourse: { cycleLandings: cycle, shadowShare: n / (1 + n), detonationsPerShadowLanding: (1 + n) / n / cycle } };
 }
 export const SHADOW_CHANCE_LINE = /^(\d+(?:\.\d+)?) ?% chance to gain \+(\d+) Shadows when using the Shadow Strike skill$/i;
 // Barrage waves (manual 1001011421: "The number of repetitions of the effect created by a Barrage Skill, including the initial
@@ -203,6 +237,8 @@ export const DEMOLISHER_CONSUMED_LINE = /^\+?(-?\d+(?:\.\d+)?)% additional (?:sk
 const average = (range) => (range.min + range.max) / 2;
 // Per-hand ranges of an alternate dual-wield component (src/skill-hit-profiles.js), scaled with the component's own share.
 const scaleHands = (hands, share) => hands ? hands.map((hand) => ({ ...hand, min: hand.min * share, max: hand.max * share })) : hands;
+// Joined Force's off-hand share inside a weapon component (G3), scaled with the component through conversions.
+const scaleJoined = (component, share) => component.joinedShare ? { joinedShare: { min: component.joinedShare.min * share, max: component.joinedShare.max * share } } : {};
 
 const signedText = (value) => `${value >= 0 ? "+" : ""}${value}`;
 const cap = (word) => String(word || "").charAt(0).toUpperCase() + String(word || "").slice(1).toLowerCase();
@@ -213,7 +249,7 @@ const UNMODELED_WARNING_SKIP = /Minion|Ailment|Ignite|Trauma|Wilt|Over Time|Curs
 // Supports on the setup, read from the shared resolver (src/support-effects.js): leveled reference data progression values
 // at the effective level (a,b pairs and a/b fractions), fixed base lines, Magnificent / Noble star bonuses and rolled
 // affixes. Each additional line keeps its own multiplier (the star bonus and the roll of one support are two lines).
-function supportLayers(setup, { dealtTypes, skillTags, profile, speedType }) {
+export function supportLayers(setup, { dealtTypes, skillTags, profile, speedType }) {
   const effects = supportEffectsFor(setup, { profile, engine: "skill-hit", dealtTypes, tags: [...skillTags], speedType, channeled: Boolean(profile?.useModel && /channel/.test(profile.useModel.kind || "")) });
   const additional = [], increased = [], critOnlyAdditional = [], added = [], castSpeed = [], castFrequency = [], critRating = [], conversion = [], addedAs = [], cooldown = [], unmodeled = [], notes = [], maxStacks = [];
   const attack = speedType === "attack-speed";
@@ -578,13 +614,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // Fearless "+X% Critical Strike Rating for Melee Skills" joins the attack crit rating's increased pool and Precise:
   // Fearless "+X% Melee Attack Speed" the attack-speed pool, like the supports' lines of the same kind. Melee skills only;
   // a Melee skill without an attack crit base (no weapon model) does not read the crit line (provisional).
-  const auraTagSpeed = [], auraTagCrit = [];
-  for (const entry of auraEntries) {
-    const effects = entry.effectiveEffects || {};
-    if (!scopeTags.has("Melee")) continue;
-    if (effects.meleeAttackSpeedPercent && speedTypeForSupports === "attack-speed") auraTagSpeed.push({ source: `Aura: ${entry.name} / Melee Attack Speed`, text: `+${round(effects.meleeAttackSpeedPercent)}% Melee Attack Speed`, value: effects.meleeAttackSpeedPercent, additional: false });
-    if (effects.meleeCriticalStrikeRatingPercent) auraTagCrit.push({ kind: "ratingPercent", source: `Aura: ${entry.name} / Melee Critical Strike Rating`, text: `+${round(effects.meleeCriticalStrikeRatingPercent)}% Critical Strike Rating for Melee Skills`, value: effects.meleeCriticalStrikeRatingPercent });
-  }
+  const { speed: auraTagSpeed, crit: auraTagCrit } = auraTagLines(auraEntries, scopeTags, speedTypeForSupports);
   // Passive build-wide conversion, added-as, Multistrike and Projectile Quantity lines (src/passive-support-lines.js; gear-pact
   // batch chunk 2) join the support arrays they share their rules with.
   const passive = passiveSupportLines(modifierTexts);
@@ -1785,6 +1815,11 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // Shadows (shadowState): each use's hits again × (1 + 30% × (Shadows − 1)) as the Shadows' own hits, with the Shadow-only lines;
   // added flat damage is already on the parts, so the copies carry it (added-only parts included).
   const shadows = skillTags.has("Shadow Strike") ? shadowState({ profile, modifierTexts, supportClauses: supports.effects.clauses }) : null;
+  // Double Thrusts: Recourse (Noble) (G4): its detonation as an expected additional term on the Shadows' hits.
+  if (shadows?.weight > 0) for (const clause of supports.effects.clauses.filter((item) => item.family === "recourse" && ["In calc", "Provisional"].includes(item.status))) {
+    const line = recourseShadowLine(clause, shadows.expectedCount);
+    if (line) shadows.damage.push(line);
+  }
   if (shadows?.weight > 0) {
     for (const component of [...components]) {
       if (!(component.hitsPerUse > 0)) continue;
@@ -1834,7 +1869,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     // audit gap 2: Mind Blade's "30% of Physical as Cold" on Frost Spike's Physical → Cold weapon base; a Cold gain no longer reads it).
     for (const component of components.filter((item) => preConversionType(item) === line.from)) {
       const share = line.percent / 100;
-      components.push({ ...component, componentKey: `${component.componentKey}+as:${line.to}`, label: `${component.label} (${line.percent}% of ${line.from} as ${line.to})`, type: line.to, originalType: line.from, converted: true, min: component.min * share, max: component.max * share, hands: scaleHands(component.hands, share), added: { min: component.added.min * share, max: component.added.max * share }, addedSources: [], addedOnly: true, addedAs: line, scopeTypes: [...new Set([...(component.scopeTypes || [component.originalType, component.type]), line.to])] });
+      components.push({ ...component, componentKey: `${component.componentKey}+as:${line.to}`, label: `${component.label} (${line.percent}% of ${line.from} as ${line.to})`, type: line.to, originalType: line.from, converted: true, min: component.min * share, max: component.max * share, hands: scaleHands(component.hands, share), ...scaleJoined(component, share), added: { min: component.added.min * share, max: component.added.max * share }, addedSources: [], addedOnly: true, addedAs: line, scopeTypes: [...new Set([...(component.scopeTypes || [component.originalType, component.type]), line.to])] });
       notes.push(`${profile.name}: ${line.source} — ${line.text} adds a ${line.to} part to ${component.label} (game code: X% of its roll before conversion).`);
     }
   }
@@ -1850,10 +1885,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       const parts = lines.map((line) => {
         const share = line.percent * scale / 100;
         const priorTypes = component.scopeTypes || (component.converted ? [component.originalType, component.type] : [component.type]);
-        return { ...component, componentKey: `${component.componentKey}>${line.to}`, label: `${component.label} (${round(line.percent * scale)}% ${from} → ${line.to})`, type: line.to, originalType: component.originalType || from, converted: true, min: component.min * share, max: component.max * share, hands: scaleHands(component.hands, share), added: { min: component.added.min * share, max: component.added.max * share }, addedSources: component.addedSources, supportConversion: line, scopeTypes: [...new Set([...priorTypes, line.to])] };
+        return { ...component, componentKey: `${component.componentKey}>${line.to}`, label: `${component.label} (${round(line.percent * scale)}% ${from} → ${line.to})`, type: line.to, originalType: component.originalType || from, converted: true, min: component.min * share, max: component.max * share, hands: scaleHands(component.hands, share), ...scaleJoined(component, share), added: { min: component.added.min * share, max: component.added.max * share }, addedSources: component.addedSources, supportConversion: line, scopeTypes: [...new Set([...priorTypes, line.to])] };
       });
       const kept = 1 - total * scale / 100;
-      const remaining = kept > 1e-9 ? [{ ...component, min: component.min * kept, max: component.max * kept, hands: scaleHands(component.hands, kept), added: { min: component.added.min * kept, max: component.added.max * kept } }] : [];
+      const remaining = kept > 1e-9 ? [{ ...component, min: component.min * kept, max: component.max * kept, hands: scaleHands(component.hands, kept), ...scaleJoined(component, kept), added: { min: component.added.min * kept, max: component.added.max * kept } }] : [];
       // A converted share is part of the same hit, not another hit (manual: conversion changes the damage type of Hit
       // Damage): only one piece of each split counts towards hits per use, ailment applications and on-hit triggers.
       // Before 2026-10-12 every piece counted as a hit, so a partial conversion doubled the skill's ailment applications.
@@ -2040,6 +2075,11 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // Main-hand-only additional lines (src/weapon-damage-model.js `hand: "main"`): per-hand in alternate dual wielding (2026-10-14).
   const mainHandOnlyLines = handCrits ? weaponAdditional.filter((line) => line.hand === "main") : [];
   const mainHandOnlyFactor = product(mainHandOnlyLines);
+  // Joined Force (G3): every attack is a main-hand attack, but the off-hand's share in it skips the main-hand weapon's own lines.
+  const joinedMainHandLines = !handCrits && weapon?.dualWieldMode === "main-hand-only" && weapon?.joinedShareByType ? weaponAdditional.filter((line) => line.hand === "main") : [];
+  const joinedMainHandFactor = product(joinedMainHandLines);
+  const joinedMainHand = (component) => joinedMainHandLines.length > 0 && Boolean(component.joinedShare);
+  if (joinedMainHandLines.length) notes.push(`${profile.name}: Joined Force: ${joinedMainHandLines.map((line) => `"${line.text}" (${line.source})`).join(", ")} ×${round(joinedMainHandFactor)} on the main-hand weapon's own damage and the added flat only; the off-hand's ${weapon.joinedForce?.offHandSharePercent ?? ""}% share does not take it (the Hero Ranking panel's hand rows, 9 T Double Thrusts audit G3).`);
   if (mainHandOnlyLines.length) notes.push(`${profile.name}: ${mainHandOnlyLines.map((line) => `"${line.text}" (${line.source})`).join(", ")} applies to the main-hand swings only (alternate dual wielding: half the swings), ×${round(mainHandOnlyFactor)} on those.`);
   const critFactor = handCrits ? handCrits.reduce((total, hand) => total + hand.share * hand.factor, 0) : (1 - critChance) + critChance * critDamage * critOnlyFactor;
   const townCritFactor = handCrits ? handCrits.reduce((total, hand) => total + hand.share * hand.townFactor, 0) : (1 - critChance) + critChance * townCritDamage * critOnlyFactor;
@@ -2120,7 +2160,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const componentIncreased = (component.extraIncreased || []).map((line) => ({ ...line, category: "Increased damage", origin: "skill" }));
     const increased = [...(increasedRead ? increasedRead.entries : [...damageLines.filter((line) => line.layer === "increased" && applies(line)), ...supports.increased.filter((line) => applies(line))]), ...(channelState?.increased || []), ...weaponIncreased, ...componentIncreased, ...galeLines.filter((line) => line.layer === "increased")];
     const componentLines = (component.extraAdditional || []).map((line) => ({ ...line, category: "Additional damage", origin: "skill" }));
-    const additional = [...(additionalRead ? additionalRead.entries : [...damageLines.filter((line) => line.layer === "additional" && appliesAdditional(line)), ...supports.additional.filter((line) => !line.scopeTypes || line.scopeTypes.some((type) => additionalTypes.includes(type)))]), ...levelLine, ...sentryNearbyLines, ...terraLine, ...grantedLines, ...speedBonusLine.filter((line) => line.value > 0), ...galeLines.filter((line) => line.layer === "additional"), ...(channelState?.additional || []), ...componentLines, ...auraLines.filter((line) => !line.types || line.types.some((type) => additionalTypes.includes(type))), ...mainStatLines, ...doubleDamageLines, ...weaponAdditional.filter((line) => !(handCrits && line.hand === "main")), ...(restrictionLine(typeRestriction, component.type, "hit damage") ? [restrictionLine(typeRestriction, component.type, "hit damage")] : []), ...(trinityLine(trinity, trinityByType, component.type) ? [trinityLine(trinity, trinityByType, component.type)] : [])];
+    const additional = [...(additionalRead ? additionalRead.entries : [...damageLines.filter((line) => line.layer === "additional" && appliesAdditional(line)), ...supports.additional.filter((line) => !line.scopeTypes || line.scopeTypes.some((type) => additionalTypes.includes(type)))]), ...levelLine, ...sentryNearbyLines, ...terraLine, ...grantedLines, ...speedBonusLine.filter((line) => line.value > 0), ...galeLines.filter((line) => line.layer === "additional"), ...(channelState?.additional || []), ...componentLines, ...auraLines.filter((line) => !line.types || line.types.some((type) => additionalTypes.includes(type))), ...mainStatLines, ...doubleDamageLines, ...weaponAdditional.filter((line) => !((handCrits || joinedMainHand(component)) && line.hand === "main")), ...(restrictionLine(typeRestriction, component.type, "hit damage") ? [restrictionLine(typeRestriction, component.type, "hit damage")] : []), ...(trinityLine(trinity, trinityByType, component.type) ? [trinityLine(trinity, trinityByType, component.type)] : [])];
     // Combo Finisher crit and Double Damage extras (census item #9; src/combo-points.js comboExtraState), on the Finisher's hits only:
     // "+X% Critical Strike Damage for Combo Finishers" (727988544, flat crit damage) and "+X% additional damage for every 1 Combo Point
     // consumed on Critical Strike from Combo Finishers" (157017744, X × consumed points on the crit share) change the crit factor
@@ -2181,7 +2221,12 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     // Chain Lightning: Lucky (Noble) makes the supported skill's own rolls Lucky.
     const luckyFraction = hitLuckyState || ownLuckyRolls > 1 ? luckyRollFraction(hitLuckyState || { damageRolls: luckyDamageRolls }, { damageType: component.type, tags: [...scopeTags], hit: true }, { ownRolls: ownLuckyRolls }) : null;
     const rollAverageOf = (range) => luckyFraction != null ? range.min + (range.max - range.min) * luckyFraction : luckyDamageRolls > 1 ? range.min + (range.max - range.min) * luckyDamageRolls / (luckyDamageRolls + 1) : average(range);
-    const rollAverage = rollAverageOf(roll);
+    // Joined Force (G3, 9 T Double Thrusts audit 2026-11-13): the off-hand's share inside this component (component.joinedShare) does
+    // not take the main-hand weapon's own lines; the main weapon's own damage and the added flat do. Same min / max / Lucky rolls.
+    const joined = joinedMainHand(component) ? component.joinedShare : null;
+    const rollAverage = joined
+      ? rollAverageOf({ min: (component.min - joined.min + component.added.min) * minFactor, max: (component.max - joined.max + component.added.max) * maxFactor }) * joinedMainHandFactor + rollAverageOf({ min: joined.min * minFactor, max: joined.max * maxFactor })
+      : rollAverageOf(roll);
     // Alternate dual wielding: ½ (main-hand roll + shared added flat) × main crit + ½ (off-hand roll + shared added flat) × off
     // crit; a component without per-hand ranges (added flat only) rolls the same in both hands.
     // "+X% additional damage for Main-Hand Weapons" (2026-10-14): in alternate dual wielding only the main-hand swings take it
@@ -2209,7 +2254,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     })() : null;
     const targetFactor = converted ? (1 - converted.share) * takenFactor * armourFactor * resistanceFactor + converted.share * converted.factor : takenFactor * armourFactor * resistanceFactor;
     const perHit = perHitBeforeTarget * targetFactor;
-    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, label: component.label, ...(component.recalled ? { recalled: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.rebound ? { rebound: true, landingsPerUse: component.landingsPerUse } : {}), type: component.type, originalType: component.originalType, converted: component.converted, ...(component.scopeTypes ? { scopeTypes: [...component.scopeTypes] } : {}), addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
+    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, label: component.label, ...(component.recalled ? { recalled: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.rebound ? { rebound: true, landingsPerUse: component.landingsPerUse } : {}), type: component.type, originalType: component.originalType, converted: component.converted, ...(component.scopeTypes ? { scopeTypes: [...component.scopeTypes] } : {}), addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, ...(joined ? { joinedShare: { ...joined }, joinedMainHandFactor } : {}), townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
   });
 
   if (typeRestriction) {
@@ -2428,6 +2473,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     ledger: {
       base: perType.filter((component) => !component.addedOnly).map((component) => ({ source: `${profile.name} · ${component.label} Lv.${base.level}`, text: component.weaponPercent != null ? `${component.weaponPercent}% Weapon Attack Damage × ${round(component.weaponDamage.min)}–${round(component.weaponDamage.max)} ${component.converted ? `${component.originalType} → ${component.type}` : component.type} weapon damage = ${round(component.base.min)}–${round(component.base.max)} × ${round(component.hitsPerUse)} hits per use (${profile.sources.gameData}${level > 20 ? "; base frozen past Lv.20" : ""})` : `${component.base.min}–${component.base.max} ${component.converted ? `${component.originalType} → ${component.type}` : component.type} damage × ${round(component.hitsPerUse)} hits per use (${profile.sources.gameData}${level > 20 ? "; base frozen past Lv.20" : ""})`, min: component.base.min, max: component.base.max, value: average(component.base), category: `Base ${profile.name} damage`, origin: "base" })),
       added: perType.flatMap((component) => component.addedSources.map((line) => ({ ...line, text: `${line.text} × ${round(line.effectiveness ?? 100)}% effectiveness`, category: `Added ${component.type} damage` }))),
+      // Joined Force (G3): the main-hand weapon's own lines, on the main weapon's damage and the added flat only (not in `additional`).
+      ...(joinedMainHandLines.length ? { joinedMainHand: joinedMainHandLines.map((line) => ({ ...line, text: `${line.text} (the main-hand weapon's own damage and the added flat; Joined Force's off-hand share skips it)` })) } : {}),
       increased: primary?.increased || [], additional: primary?.additional || [], combatAdditional: primary?.combatAdditional || [], taken: primary?.taken || [], penetration: primary?.penetration || [], armourPenetration: primary?.armourPenetration || [], maxOnly: primary?.maxOnly || [], minOnly: primary?.minOnly || []
     },
     scopeLabel,

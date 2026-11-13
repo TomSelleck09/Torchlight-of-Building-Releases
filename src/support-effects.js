@@ -494,6 +494,9 @@ export const SUPPORT_CLAUSE_RULES = [
   { family: "empower", pattern: new RegExp(`^The cooldown of the supported skill becomes ${N} s, and the duration of inflicted debuffs becomes ${N} s$`, "i"), build: (m) => ({ cooldown: num(m[1]), duration: num(m[2]), kind: "timing" }) },
   { family: "empower", pattern: /^The supported skill becomes an Empower Skill(?: and no longer has a casting action)?$/i, build: () => ({ kind: "becomes" }) },
   { family: "ailmentAdditional", pattern: new RegExp(`^${N}% additional (Ailment|Ignite|Trauma|Wilt|Deterioration) Damage for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), ailment: m[2].toLowerCase() }) },
+  // Elemental Duo "+1 to Max Summonable Minions for the supported skill" (record 200000390: node 108 field 2006100 on the supported skill; G3
+  // 2026-11-12): one more of the summon's Spirit Magus, within the map cap (src/planner.js).
+  { family: "minionCount", pattern: /^\+?(\d+) to Max Summonable Minions for the supported skill$/i, build: (m) => ({ value: num(m[1]) }) },
   { family: "minion", pattern: /for Minions summoned by the supported skill|Minions summoned by the supported skill/i, build: (m, text) => ({ value: num(text.match(new RegExp(`^${N}% additional damage for Minions summoned by the supported skill$`, "i"))?.[1] ?? NaN) }) },
   { family: "increased", pattern: new RegExp(`^${N}% (?:(Spell|Area|Projectile|Elemental|Physical|Fire|Cold|Lightning|Erosion|Hit) )?damage for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), typed: m[2] || null, scope: m[2] ? scopeFor(m[2]) : {} }) },
   { family: "added", pattern: new RegExp(`^(?:Adds|The supported skill adds|Supported skills add) ${N} - ${N} (Physical|Fire|Cold|Lightning|Erosion) Damage(?: to the supported skill)?$`, "i"), build: (m) => ({ min: num(m[1]), max: num(m[2]), type: m[3][0].toUpperCase() + m[3].slice(1).toLowerCase() }) },
@@ -597,6 +600,10 @@ export const SUPPORT_CLAUSE_RULES = [
   // Gear affix batch B (2026-10-22): Haunt's Shadow Quantity (game field 2012000) and Carpet Bombardment's per-wave damage (field
   // 2501029), read by src/skill-hit-model.js shadowState / barrageWaveState with the gear lines of the same stat.
   { family: "shadow", pattern: new RegExp(`^${N} (?:to )?Shadow Quantity for (?:the supported skill|this skill)$`, "i"), build: (m) => ({ value: num(m[1]), kind: "quantity" }) },
+  // Double Thrusts: Recourse (Noble) (record 801293952; 9 T Double Thrusts audit G4, user decisions 2026-11-13): row 1 a debuff stack (buff
+  // 10832) on every landing hit of the supported skill, thrusts and Shadows alike; row 3 on a Shadow hit at more than (threshold − 1) stacks
+  // the roll as additional damage on that hit and the stacks removed. Read by src/skill-hit-model.js recourseShadowLine.
+  { family: "recourse", pattern: new RegExp(`^Inflicts 1 stack of debuff when the supported skill hits\. ${N}% additional hit damage for this hit and removes all debuff stacks when the supported skill's Shadows hit an enemy with ${N} or more stacks of debuffs$`, "i"), build: (m) => ({ value: num(m[1]), threshold: num(m[2]) }) },
   { family: "barrage", pattern: new RegExp(`^The supported skill ${N}% damage increase per wave$`, "i"), build: (m) => ({ value: num(m[1]), kind: "perWave" }) },
   // Gear affix batch C (2026-10-22): supports gear lines grant ("Main Skill is supported by Lv. N <Support>"), reference data texts.
   // Attack Focus: Fervor Rating on hit (game affix 201391632: +P1 to resource 1, Fervor Rating, when the supported skill hits) and
@@ -840,9 +847,29 @@ function clauseStatus(clause, support, ctx) {
   if (clause.batch5 && clause.family === "hitCount") return batch5Status(clause, ctx);
   // Census batch 6: Minion, Spirit Magus, module and Sentry clauses (src/minion-sentry-batch6.js).
   if (clause.batch6) return batch6Status(clause, ctx);
+  // Elemental Duo's Max Summonable Minions (G3): settled by the planner across the Magus skills (src/planner.js; the badge reads the result).
+  if (clause.family === "minionCount") return engine === "minion" ? s("In calc", `+${clause.value} of this summon's Spirit Magus, within the map cap of one per Magus skill + the "Max Spirit Magi In Map" lines (the free slots go to the Magi with the highest DPS per Magus; src/planner.js; provisional)`, ["minion"]) : s("Not modeled", "read on a Spirit Magus summon only");
   // Activation Medium: Energy Shield at Max Energy Shield 0 (src/support-effects.js resolveSupportEffects): a skill with no damage engine of
   // its own (a curse held on the dummy, a Defensive skill) keeps the effect the planner already holds; the trigger only sets when it is cast.
   if (clause.family === "trigger" && clause.esZero && !["scorching-beam", "skill-hit", "skill-dot", "minion"].includes(engine)) return s("No DPS effect", `triggered whenever ready, every max(${clause.interval} s, effective cooldown) (Max Energy Shield 0 keeps Energy Shield under the threshold; game affix 331003744): the skill's effect is held as before (a curse stays on the dummy)`);
+  // Vendetta / Endless Vendetta (engine "trigger-main", an attack-speed use: Split 363570; src/vendetta-model.js): the skill deals no damage
+  // of its own, but its own supports' Attack Speed divides its use time and so its trigger rate (9 T Double Thrusts audit G1, record 75564).
+  if (engine === "trigger-main" && clause.family === "speed") {
+    if (clause.kind === "attack" || clause.kind === "both") return s("In calc", "the trigger skill's own use time (an attack-speed use, Split 363570), so its trigger rate (src/vendetta-model.js ownSupportSpeedFactor)", ["trigger-main"]);
+    return s("No DPS effect", clause.kind === "cast" ? "the trigger skill's use is an attack-speed use" : "the skill deploys no Sentry");
+  }
+  // Multistrike on Vendetta / Endless Vendetta (9 T Double Thrusts audit G7, closed): user-stated 2026-11-13, "Multistrike doesn't work on
+  // Vendetta". Its clauses change no figure (the trigger model never read them).
+  if (engine === "trigger-main" && (clause.family === "multistrike" || name === "Multistrike")) return s("No DPS effect", "Multistrike has no effect on Vendetta (user-stated 2026-11-13)");
+  // Vendetta's own crit (G2): Feline Fury's extra triggers and Excess roll GetCurSkillCritValue on Vendetta's use (record 401776160), so
+  // its supports' Critical Strike Rating lines (Critical Strike Rating Increase, record 101010452; Attack Focus per Fervor Rating, record
+  // 348216192) set them (src/vendetta-model.js vendettaCritChances). Without Feline Fury nothing reads Vendetta's crit: it deals no damage.
+  if (engine === "trigger-main" && (clause.family === "crit" || (clause.family === "fervorScaled" && clause.kind === "crit"))) {
+    const reader = ctx.conditions ? Boolean(ctx.conditions.vendettaCritReader) : true;
+    if (!reader) return s("No DPS effect", "Vendetta deals no damage of its own; its crit is read only by Erika's Feline Fury (not selected)");
+    if (clause.family === "fervorScaled") return s("Provisional", `${clause.value}% Critical Strike Rating × ${clause.steps} (every ${clause.every} of ${clause.ratingSource}) = +${clause.appliedValue}% on Vendetta's own crit, which Feline Fury rolls (record 401776160; the held Rating provisional)`, ["trigger-main"]);
+    return s("In calc", "Vendetta's own crit: Feline Fury's extra Main Skill triggers and Excess roll it (record 401776160, GetCurSkillCritValue on Vendetta's use; src/vendetta-model.js vendettaCritChances)", ["trigger-main"]);
+  }
   if (!["scorching-beam", "skill-hit", "skill-dot", "minion"].includes(engine)) return s("Not modeled", "the setup's own damage has no engine that reads support clauses");
   // Residual (C) wordings with no dummy-damage effect (src/line-families.js; residual batch 2026-10-12 §6).
   const residual = residualNonDamageStatus(clause.text);
@@ -1116,6 +1143,10 @@ function clauseStatus(clause, support, ctx) {
       if (!tags.has("Shadow Strike")) return s("Inactive", "the supported skill is not a Shadow Strike skill (only Shadow Strike skills summon Shadows: game manual 1001010820)");
       if (engine !== "skill-hit") return s("Not modeled", "Shadows are read for skill hits only");
       return s("Provisional", "each Shadow repeats the skill's attack on the dummy; on one target each Shadow after the first keeps 30% (the Shadow hit rule's table [(1, 30)]; the manual's −70% and Phantom's 70% coefficient are the share lost; research/oq-shadows-seal-client-2026-11-05.md), as the Shadows' own hits (src/skill-hit-model.js shadowState; provisional)", ["skill-hit"]);
+    case "recourse":
+      if (!tags.has("Shadow Strike")) return s("Inactive", "the supported skill is not a Shadow Strike skill (no Shadows)");
+      if (engine !== "skill-hit") return s("Not modeled", "Shadows are read for skill hits only");
+      return s("Provisional", `a stack on every landing hit (the thrusts and every Shadow hit: user decision 2026-11-13), and at ${clause.threshold} stacks the next Shadow hit takes +${clause.value}% additional damage (the support's roll, not row 3's constant 1000: user decision 2026-11-13) and clears them; an expected value per use on the Shadows' hits, the detonating Shadow at the Shadows' mean falloff share (inferred; open question double-thrusts-recourse)`, ["skill-hit"]);
     case "barrage":
       if (!tags.has("Barrage")) return s("Inactive", "the supported skill is not a Barrage skill");
       if (engine !== "skill-hit") return s("Not modeled", "Barrage waves are read for skill hits only");

@@ -77,7 +77,10 @@ function advancedHtml(planner, combat, probe) {
   const manualAffliction = combat.conditionMode === "manual" && probe?.conditions?.affliction === true;
   const inputs = [
     planner.firesAllure?.active ? number("Scorch stacks for resistance reduction (best case by default)", "firesAllureScorchStacks", combat.firesAllureScorchStacks ?? planner.igniteLimit, { min: 0, max: planner.igniteLimit }) : "",
-    safetyInNumbersOnBoard(planner) ? number("Allies affected by aura (Safety in Numbers)", "auraAffectedAllies", combat.auraAffectedAllies ?? 1, { min: 0, max: 7 }) : "",
+    // With Minions out the count is derived (G13, user decision 2026-11-12: your Minions are allies, up to 7; src/planner.js auraAllies).
+    safetyInNumbersOnBoard(planner) ? (planner.auraAllies?.derived
+      ? number("Allies affected by aura (Safety in Numbers, derived)", "", planner.auraAllies.count, { readonly: true, title: `Your Minions out: ${planner.auraAllies.minionsOut}, all inside the Aura (best case), up to 7` })
+      : number("Allies affected by aura (Safety in Numbers)", "auraAffectedAllies", combat.auraAffectedAllies ?? 1, { min: 0, max: 7 })) : "",
     manualAffliction ? number("Average Affliction", "afflictionAverage", combat.afflictionAverage, { min: 0, max: 100 }) : "",
     planner.aim?.active ? number("Aim Max Charges (derived)", "", planner.aim?.maxCharges ?? 0, { readonly: true, title: (planner.aim?.chargeSources || []).map((entry) => `${entry.source}: +${entry.value}`).join(" · ") }) : "",
     planner.aim?.active ? number("Aim uptime % (auto)", "", aimUptime.value, { readonly: true, title: aimUptime.label }) : ""

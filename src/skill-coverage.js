@@ -1,5 +1,5 @@
 import { enemyBuffSet } from "./unit-buff-set.js";
-import { auraScopeCoverage } from "./aura-damage.js";
+import { auraMinionReachText, auraScopeCoverage, isAuraMinionLineSource } from "./aura-damage.js";
 import { supportClauseSummary, resolveSupportEffects } from "./support-effects.js";
 import { aegisOfFireState, AEGIS_OF_FIRE } from "./aegis-of-fire.js";
 import { isFireOnlyLedgerLine } from "./ailment-shared.js";
@@ -385,7 +385,8 @@ function classifySkill(planner, skillName, setup) {
   if (role === "aura") {
     const entry = planner?.aura?.entries?.find((item) => item.name === skillName);
     const matches = matchingContributions(planner, skillName);
-    if (matches.length) return result("In calc", auraEffectReason(entry) || contributionReason(matches));
+    // Its buff on your Minions (G1, src/aura-damage.js auraAllyMinionLines) is named apart: the Minion's copy is not yours (Selfless).
+    if (matches.length) { const own = matches.filter((item) => !isAuraMinionLineSource(item.source)); return result("In calc", [own.length ? auraEffectReason(entry) || contributionReason(own) : "", auraMinionReachText(entry, planner)].filter(Boolean).join("; ") || contributionReason(matches)); }
     // No ledger line names this aura: decide per stat whether it can reach the dummy at all
     // (src/aura-damage.js), e.g. Weapon Amplification without a Physical ailment, Swiftness.
     const scoped = entry ? auraScopeCoverage(entry, planner) : null;
@@ -460,7 +461,7 @@ function classifySupport(planner, supportName, skillName, setup) {
     const entry = planner?.aura?.entries?.find((item) => item.name === skillName);
     const source = entry?.supportEffectSources?.find((item) => item.source === supportName);
     if (source) {
-      const parts = [source.increasedPercent ? `${signed(source.increasedPercent)}% Aura Effect` : "", source.additionalPercent ? `${signed(source.additionalPercent)}% additional Aura Effect` : ""].filter(Boolean);
+      const parts = [source.increasedPercent ? `${signed(source.increasedPercent)}% Aura Effect` : "", source.additionalPercent - (source.receivedPercent || 0) ? `${signed(source.additionalPercent - (source.receivedPercent || 0))}% additional Aura Effect` : "", source.receivedPercent ? `${signed(source.receivedPercent)}% additional Aura Effect received (yours only: your Minions take the Aura's full effect)` : ""].filter(Boolean);
       return result("In calc", `${parts.join(", ") || "Aura Effect"} on ${skillName}`);
     }
     if ((entry?.unsupportedSupportEffects || []).some((item) => (item?.source ?? item?.name ?? item) === supportName)) return result("Not modeled", `its Aura Effect on ${skillName} is not applied`);
@@ -549,7 +550,7 @@ function auraClauseStatus(planner, setup, supportName, clause) {
   if (/Aura effect/i.test(text)) {
     const source = entry.supportEffectSources?.find((item) => item.source === supportName);
     if (source) {
-      const parts = [source.increasedPercent ? `${signed(source.increasedPercent)}% Aura Effect` : "", source.additionalPercent ? `${signed(source.additionalPercent)}% additional Aura Effect` : ""].filter(Boolean);
+      const parts = [source.increasedPercent ? `${signed(source.increasedPercent)}% Aura Effect` : "", source.additionalPercent - (source.receivedPercent || 0) ? `${signed(source.additionalPercent - (source.receivedPercent || 0))}% additional Aura Effect` : "", source.receivedPercent ? `${signed(source.receivedPercent)}% additional Aura Effect received (yours only: your Minions take the Aura's full effect)` : ""].filter(Boolean);
       return result("In calc", `${parts.join(", ")} on ${setup.name} (its effects scale with Aura Effect)`);
     }
     if ((entry.unsupportedSupportEffects || []).some((item) => (item?.source ?? item) === supportName)) return result("Not modeled", `its Aura Effect on ${setup.name} is not applied`);
@@ -566,7 +567,7 @@ function auraClauseStatus(planner, setup, supportName, clause) {
       : result("Counted in stats", `${value} → ${seal}; the build has no line that turns it into damage`);
   }
   if (/Replaces Sealed Mana .*Sealed Life/i.test(text)) return result("Counted in stats", `${setup.name} seals Life instead of Mana (${round(entry.reservation?.reservedPercent ?? 0)}% reserved); Full Life and "Life sealed" lines read the sealed Life`);
-  if (/other allies/i.test(text)) return result("No DPS effect", "allies only; the planner models no allies");
+  if (/other allies/i.test(text)) return entry.alliesExcluded && (planner?.minions || []).some((minion) => minion?.modeled) ? result("In calc", `${setup.name}'s buff does not reach your Minions (allies; src/aura-damage.js auraAllyMinionLines, provisional)`) : result("No DPS effect", "allies only; no Minion is modeled in this build");
   // A Focus Aura with its own hits (Acuteness / Thunder / Corrosion / Ice Focus: src/skill-hit-profiles.js rate models) deals damage, so
   // its damage clauses keep their own status (batch 7 damage fixes 2026-10-28: Acuteness Focus: Sharpening's and Thunder Focus: Tremor's
   // additional damage moved the Focus strikes ×1.2 / ×1.14 while reading "deals none").
@@ -620,6 +621,11 @@ function refineSupportClause(planner, setup, supportName, clause, base) {
   if (skillName === AEGIS_OF_FIRE) return aegisClauseStatus(planner, supportName, clause);
   if (setup?.role === "aura") { const status = auraClauseStatus(planner, setup, supportName, clause); if (status) return status; }
   if (setup?.role === "empower" && skillName === "Aim") return aimClauseStatus(planner, supportName, clause);
+  // Elemental Duo's Max Summonable Minions (G3, src/planner.js): In calc when the map cap gave this Magus skill its extra Magus.
+  if (clause.family === "minionCount" && keep.status === "In calc") {
+    const minion = (planner?.minions || []).find((item) => item?.modeled && (item.setupKeys || []).includes(setup?.setupKey));
+    if (minion) return minion.extraMinions?.count > 0 ? result("In calc", `${minion.count} × ${minion.name} out (+${minion.extraMinions.count} from ${minion.extraMinions.sources.join(", ") || supportName}), within the map cap of one per Magus skill + the "Max Spirit Magi In Map" lines (provisional)`) : result("Inactive", `the map cap (one per Magus skill + the "Max Spirit Magi In Map" lines) leaves ${minion.name} no free slot`);
+  }
   // A chance or extra stacks for a damaging ailment the dummy never carries (no base damage for it in the build, the support's own
   // clauses included): the chance inflicts nothing (batch 7, 2026-10-28: Improved Corrosion, Deep Wounds, Enhanced Ailment and
   // Additional Ignite read In calc on skills with no base and moved nothing). src/enemy-ailments.js: a damaging ailment needs a base.

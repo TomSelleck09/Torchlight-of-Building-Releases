@@ -912,6 +912,39 @@ export const FOLLOWER_BUFFS = [
     reason: "the follower leaps at the dummy and hits it each cast"
   },
   {
+    // Frost Spike (9 T Double Thrusts audit G5, 2026-11-13): record 1033360306, trigger 1000033 on the follower's skill → node 306 buff for
+    // p1 = 4 s on filter [20] (the holder's allies: you), b-write attr 57191 mod 4 +p0 on tag 6020014 (Shadow): additional Shadow Damage,
+    // read by your Shadow Strike skills' Shadows (src/skill-hit-model.js shadowState). Uptime min(1, 4 s × its casts per second),
+    // time-averaged into one additional term (provisional at part uptime).
+    id: "followerFrostSpikeShadow", skill: "Tartarus: Frost Spike", label: "Frost Spike: Shadow Damage", target: "self", needsNear: true, engine: "shadow",
+    pattern: /^\+(\d+(?:\.\d+)?)% additional Shadow Damage for nearby allies for (\d+(?:\.\d+)?) ?s when this skill hits$/i,
+    derive: (match, ctx) => { const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[2]), entry); return { text: `+${round(Number(match[1]) * uptime)}% additional Shadow Damage`, origin: "buff", summary: `+${match[1]}% additional Shadow Damage for ${match[2]} s, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime (record 1033360306; your Shadows' hits only, tag 6020014)` }; },
+    reason: "the follower's Frost Spike hits the dummy next to you; your Shadow Strike skills' Shadows take it"
+  },
+  {
+    // Origin Frost Spike (2026-11-13, the 9 T Double Thrusts audit's follow-up): record 7483005, trigger 1000033 with no tag (every hit the
+    // follower lands; bTriggerOnceWithSameSourceEntity: one per frame per target) → two node-306 carriers, mode 3 (each layer its own 4 s, the
+    // least-remaining renewed at the count, research/oq-aeterna-stack-modes-2026-11-04.md), count p1, on the follower ([1]) and its allies ([20],
+    // you; condition 324 alive), each a b-write attr 57191 mod 4 +p0 on tag 6020014 (Shadow): (1 + p0%)^layers additional Shadow Damage on your
+    // Shadows' hits. Layers = min(cap, N), N the follower's hits in the last 4 s, Poisson with mean 4 s × its hits per second (followerHitsPerSecond:
+    // each damaging skill's uses × the hits its text names on one dummy; its Shadow Strike skills' own Shadows not counted, as in its damage:
+    // provisional, follower-frost-spike-shadow-stacks), the factor taken as an expectation, E[(1 + v)^min(cap, N)] (as Thunder Slash's layers).
+    id: "followerOriginFrostSpikeShadow", skill: "Origin Tartarus: Frost Spike", label: "Frost Spike: Shadow Damage per hit", target: "self", needsNear: true, engine: "shadow",
+    pattern: /^\+?(\d+(?:\.\d+)?)% additional Shadow Damage \(multiplies\) for the Follower and nearby allies for each hit recently\. Stacks up to (\d+) time\(s\)$/i,
+    derive: (match, ctx) => {
+      const v = Number(match[1]) / 100, cap = Number(match[2]);
+      const hits = followerHitsPerSecond(ctx?.selection);
+      if (!(hits.perSecond > 0)) return { inactive: "the follower lands no hit on the dummy, so it gains no layer (record 7483005: one per hit of the follower)" };
+      const mean = FOLLOWER_RECENT_SECONDS * hits.perSecond;
+      let expected = 0, p = Math.exp(-mean), below = 0;
+      for (let k = 0; k < cap; k += 1) { expected += p * (1 + v) ** k; below += p; p *= mean / (k + 1); }
+      expected += (1 - below) * (1 + v) ** cap;
+      const value = round((expected - 1) * 100);
+      return { text: `+${value}% additional Shadow Damage`, origin: "buff", summary: `the follower's hits on the dummy (${hits.sources.map((item) => `${item.shortName} ${round(item.hitsPerSecond)}/s`).join(", ")}): ${round(mean)} layers on average in ${FOLLOWER_RECENT_SECONDS} s (each its own timer, up to ${cap}), E[(1 + ${round(Number(match[1]))}%)^layers] = +${value}% additional Shadow Damage (record 7483005; your Shadows' hits only, tag 6020014; provisional: the follower's hits per use)` };
+    },
+    reason: "game record 7483005: a layer per hit the follower lands (4 s each, up to the cap) on the follower and you; your Shadow Strike skills' Shadows take it; the 5 s / 20 s windows read the steady expectation (provisional)"
+  },
+  {
     id: "followerSwiftShadowRaid", skill: "Tartarus: Swift Shadow Raid", label: "Swift Shadow Raid: Projectile Speed", target: "self", needsNear: false, engine: "stat", noDps: "Projectile Speed: counted in your stats; it has no damage effect on one dummy",
     pattern: /^\+(\d+(?:\.\d+)?)% Projectile Speed for this unit and allies for (\d+(?:\.\d+)?) ?s when casting this skill$/i,
     derive: (match, ctx) => { const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[2]), entry); return { text: `+${round(Number(match[1]) * uptime)}% Projectile Speed`, origin: "buff", summary: `+${match[1]}% Projectile Speed for ${match[2]} s, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` }; },
@@ -1196,8 +1229,6 @@ export const FOLLOWER_LINE_RULES = [
   { skill: "Tartarus: Thunder Spike", pattern: /^Grants you Blur when the Shadows of this skill hit$/i, status: "In calc", reason: "a Blur source for you (src/blur-sources.js), like your own: Blur is assumed up while the Blur condition is on" },
   { skill: "Tartarus: Focused Slash", pattern: /gain Fervor for \d+ ?s when this skill launches a Steep Strike$/i, status: "Inactive", reason: NO_STEEP },
   { skill: "Tartarus: Icy Blade", pattern: /Frostbite Effect for nearby allies for \d+ ?s when this skill launches a Steep Strike$/i, status: "Inactive", reason: NO_STEEP },
-  { skill: "Tartarus: Frost Spike", pattern: /additional Shadow Damage for nearby allies/i, status: "Not modeled", reason: "your Shadow damage is not modeled (your Shadow Strike skills' Shadows are not modeled)" },
-  { skill: "Origin Tartarus: Frost Spike", pattern: /additional Shadow Damage \(multiplies\)/i, status: "Not modeled", reason: "your Shadow damage is not modeled (your Shadow Strike skills' Shadows are not modeled); at 60 stacks it would be +71.2% additional Shadow Damage" },
   { skill: "Origin Tartarus: Black Hole", pattern: /gains Synergy Shift$/i, status: "Not modeled", reason: "Synergy Shift (-2% resistance to the type the holder inflicts per stack, +1% to the others, up to 30) needs the follower's own Fire / Cold / Lightning / Erosion damage events per second (its damage-over-time tick rate is not published) and whether the shift reaches your damage" },
   { skill: "Origin Tartarus: Split Firebolt", pattern: /Elemental Resonance/i, status: "Not modeled", reason: "Elemental Infiltration needs 3 types of Elemental Resonance (Ignite, a Lightning crit and Cold Infiltration by the follower); the follower's Ignite chance is not published" },
   { skill: "Origin Tartarus: Raging Warcry", pattern: /\+\d+% additional Attack Hit Damage taken/i, status: "Partly modeled", reason: "its 50 Physical hit is counted with the follower's own damage; the 5-stack debuff (+50% additional Attack Hit Damage taken, one stack lost per attack hit) needs your attack-hit rate per 4 s and is not modeled" },
@@ -1896,6 +1927,13 @@ const OWN_DAMAGE = {
   "Origin Tartarus: Spiral Strike": { type: "Erosion", perCast: 50, text: "one damage instance" },
   "Origin Tartarus: Flame Core": { type: "Fire", perShockwave: (498 + 925) / 2, text: "shockwaves of 498–925 (average 711.5) every 1 s, plus one per Spell Skill the follower casts" }
 };
+// Hits per use on one dummy (the hits each skill's text above names; default 1): a damage-over-time area 0 (its ticks are no hits), several
+// thrusts, strikes, Torrents, grasps, beams or explosions their count; a Shadow Strike skill's own Shadows not counted, as in its damage.
+const OWN_HITS_PER_USE = Object.freeze({
+  "Tartarus: Black Hole": 0, "Tartarus: Frost Terra": 0, "Origin Tartarus: Black Hole": 0,
+  "Tartarus: Lightning Storm": 6, "Tartarus: Double Thrusts": 2, "Tartarus: Blazing Meteor": 2, "Tartarus: Speed Phantom": 2, "Tartarus: Nether Grasp": 12,
+  "Tartarus: Frost Spike": 3, "Tartarus: Tidewell": 8, "Tartarus: Lightning Beam": 3
+});
 const OWN_DAMAGE_LINE = /\b(?:Deals?|dealing)\b[^.]*?\d+(?:\.\d+)? ?- ?\d+(?:\.\d+)?|^\d+(?:\.\d+)? ?- ?\d+(?:\.\d+)? (?:Attack|Spell|Hit|Persistent)|Shockwaves deal \d|reaps? \d|Strikes once every|Creates a Nether Grasp/i;
 
 /**
@@ -1920,6 +1958,19 @@ export function followerDamageSources(selection, { resistanceFor = (type) => (ty
     return [{ key: `follower:${skill.id}`, name: `${selection.follower.displayName}: ${skill.shortName} (follower)`, skill: skill.name, type: model.type, perUse, usesPerSecond, firstUseSeconds: entry.firstUseSeconds, dps: perUse * usesPerSecond, resistanceFactor: factor,
       text: `${skill.shortName}: ${model.text} = ${round(sentry ? model.perShockwave : model.perCast)} ${model.type} ${sentry ? "per shockwave" : "per cast"}${crit !== 1 ? " × 1.5 (always a crit: its support affix)" : ""} × ${round(factor)} resistance × ${round(usesPerSecond)} per second (${sentry ? `1 + ${round(spellCasts)} follower Spell casts` : `${cadenceText(entry)}${entry.extraTrigger ? `; ${entry.extraTrigger.text}` : ""}`}) = ${round(perUse * usesPerSecond)} DPS (reference data Lv.20 numbers, no follower scaling: provisional)` }];
   });
+}
+
+/**
+ * The follower's hits on the dummy per second (record 7483005's trigger 1000033 with no tag: every hit it lands): each damaging skill's uses per
+ * second (followerDamageSources: an area held once, a Flame Core's shockwaves) × its hits per use (OWN_HITS_PER_USE). { perSecond, sources }.
+ */
+export function followerHitsPerSecond(selection) {
+  const sources = followerDamageSources(selection).map((source) => {
+    const skill = (selection?.skills || []).find((entry) => entry.skill.name === source.skill)?.skill;
+    const perUse = OWN_HITS_PER_USE[source.skill] ?? 1;
+    return { skill: source.skill, shortName: skill?.shortName || source.skill, hitsPerUse: perUse, hitsPerSecond: source.usesPerSecond * perUse };
+  }).filter((item) => item.hitsPerSecond > 0);
+  return { perSecond: sources.reduce((sum, item) => sum + item.hitsPerSecond, 0), sources };
 }
 
 /** A damage source's average DPS over the first `seconds` (0: sustained): uses from its first one on. */
@@ -2234,12 +2285,20 @@ export function missingFollowerEngine(engine, planner, engines) {
   if (engine === "affliction" && !engines.anyDot) return "no damage over time (so no Affliction damage) on the dummy in this build";
   if (engine === "reaping" && !engines.anyDot) return "no damage over time to Reap on the dummy in this build";
   if (engine === "spell" && !engines.spellHit && !spellDot) return "no Spell hit or Spell skill damage over time in this build";
-  if (engine === "spellTaken" && !engines.spellHit) return "no Spell hit in this build (Spell Damage taken reaches Spell hits only; not DoT, ailments or Reaps)";
-  if (engine === "spellHit" && !engines.spellHit) return "no Spell hit in this build (Double Damage reaches hits only)";
+  if (engine === "spellTaken" && !engines.spellHit && !minionSpellHit(planner)) return "no Spell hit in this build (Spell Damage taken reaches Spell hits only; not DoT, ailments or Reaps)";
+  if (engine === "spellHit" && !engines.spellHit && !minionSpellHit(planner)) return "no Spell hit in this build (Double Damage reaches hits only)";
   if (engine === "attack" && !engines.attackRate) return "no modeled attack hit in this build";
+  if (engine === "shadow" && !(engines.hits || []).some((hit) => (hit.components || []).some((component) => component.shadow && component.hitsPerUse > 0))) return "no Shadow Strike skill with Shadows in this build (the line reaches Shadows' hits only, tag 6020014)";
   if (engine === "steep" && !(engines.hits || []).some((hit) => (hit.components || []).some((component) => /^Steep Strike/.test(component.label || "") && component.hitsPerUse > 0))) return "no modeled hit lands Steep Strikes in this build";
   if (engine === "resistance" && !["Erosion", "Fire", "Cold", "Lightning"].some((type) => dealtDamageTypes(engines, planner).has(type))) return "no Erosion, Fire, Cold or Lightning damage on the dummy in this build (Ill Will changes only those resistances)";
   return "";
+}
+
+// A modeled Minion that deals Spell hits (a Spirit Magus's skills carry Spell): an enemy "Spell Damage taken" debuff reaches them (G7,
+// 2026-11-12, src/minion-damage-model.js takenLines), and Tidewell's Spell Double Damage for allies in the Water Area (G9, src/planner.js
+// followerTidewellMinionLines).
+function minionSpellHit(planner) {
+  return (planner?.minions || []).some((minion) => minion?.modeled && (minion.skills || []).some((skill) => (skill.tags || []).includes("Spell") && skill.steadyDps > 0));
 }
 
 // The damage types dealt on the dummy: your modeled hits' parts, the DoTs' types (Ignite Fire, Wilt Erosion, skill DoTs), the beam's Fire,

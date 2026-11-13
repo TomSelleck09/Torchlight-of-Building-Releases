@@ -15,6 +15,7 @@ import { partFactorAt, sourceFactorAt } from "./timed-effects.js";
 import { enemyBuffSet, playerBuffSet } from "./unit-buff-set.js";
 import { plainUseKind } from "./tick-plain-skills.js";
 import { blessingDurationSeconds } from "./blessing-layers.js";
+import { incisiveLayer } from "./tick-trigger-main.js";
 // Your buffs from your unit buff set (W9 step 2, planner.playerBuffs): the Blessings' entries in the Blessing model's shape (name "Focus",
 // stacks, maxStacks, gainSources, consumptionCycle …), and Aim's and Periodic Burst's series (the planner's own model objects); the
 // planner's fields with TLI_BUFF_SET=off.
@@ -53,6 +54,7 @@ export const GENERAL_LAYERS = Object.freeze([
   { key: "mark", label: "Mark" },
   { key: "penetrationStacks", label: "Penetration stacks" },
   { key: "trueFlame", label: "True Flame Immolation's Blessing cycle" },
+  { key: "incisive", label: "Incisive (Vendetta's casts)" },
   { key: "timed", label: "Timed effects (the recount's series)" }
 ]);
 
@@ -961,7 +963,7 @@ export function trueFlameLayer(ctx) {
 }
 
 /** The general builders in their order; the Youga program interleaves its own among them (src/tick-youga-layers.js). */
-export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, timedLayer, followerProgram]);
+export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, incisiveLayer, timedLayer, followerProgram]);
 
 /** What stays held on purpose on any build, with why. */
 export function generalHeldLayers(ctx) {

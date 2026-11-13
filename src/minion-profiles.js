@@ -108,8 +108,15 @@ const SPIRIT_MAGI = [
   magus("erosion-magus", "Erosion Magus", "Summon Erosion Magus", "cast-speed", conv("Physical", "Erosion", "Summon Erosion Magus: Converts 100% of Physical Damage to Erosion Damage for Spirit Magi"), [
     skill("Scattered Mud", "basic", magusTiming("Scattered Mud", 0.8, "cast-speed")),
     skill("Bleak Grass", "enhanced", { ...ENHANCED_NOTE("Bleak Grass", "; the Spike and its Spike Explosion (both 162% of Base Damage in the reference data, one game row) are read as two hits per cast"), ...magusTiming("Bleak Grass", 0.8, "cast-speed"), hitsPerUse: 2 }),
-    skill("Withering Payback", "special", { ...EMPOWER_NOTE("Withering Payback", "+20% additional Erosion Damage; its damage-taken trigger never fires on the dummy"), ...magusTiming("Withering Payback", 0.6, "cast-speed", EMPOWER_COOLDOWN), buffOnly: true, selfBuff: { additionalPercent: 20, types: ["Erosion"], durationSeconds: 6, source: "Withering Payback: +20% additional Erosion Damage while the skill lasts (6 s)" } }),
-    skill("World of Thorns", "ultimate", { ...ULTIMATE_NOTE("World of Thorns"), ...magusTiming("World of Thorns", 1.5, "cast-speed") })
+    skill("Withering Payback", "special", { ...EMPOWER_NOTE("Withering Payback", "+20% additional Erosion Damage; its damage-taken trigger never fires on the dummy"), ...magusTiming("Withering Payback", 0.6, "cast-speed", EMPOWER_COOLDOWN), buffOnly: true, selfBuff: { additionalPercent: 20, types: ["Erosion"], durationSeconds: 6, source: "Withering Payback: +20% additional Erosion Damage while the skill lasts (6 s)",
+      // "While the skill lasts, when at Stage 4 or higher, +50% additional Ultimate Damage" (G5 2026-11-12; buff 11170 carries record 384105952
+      // [4, 50]: gate node 300 GetFightResource(12) ≥ 4 × 100, resource 12 read as Growth (inferred from the Stage), then attr 5719 mod 4 = p1 on
+      // the Ultimate tag 6000403; a fixed value, no Effect scale).
+      parts: [{ additionalPercent: 50, skillTags: ["Ultimate"], minStage: 4, fixed: true, source: "Withering Payback: +50% additional Ultimate Damage while the skill lasts at Stage 4 or higher (record 384105952)" }] } }),
+    // World of Thorns lands three thorns on one dummy (G11, 2026-11-12; research/build-10t-iris2-erosion-magus-audit-2026-11-12.md): Split 818170
+    // repeats over targets (10, shrunk to the targets found, at least 3), hit rule bHitBrother 1 in brother group 1 with table (1, 5), so by
+    // the client repeat multiplier (user decision 2026-11-05) the first deals 100% and each later one 5%: 1 + 0.05 × 2.
+    skill("World of Thorns", "ultimate", { ...text(`${ULTIMATE_NOTE("World of Thorns").note}; Split 818170: at least 3 thorns (repeat over targets 10, shrunk to the targets found, minimum 3), bHitBrother 1, hit rule table 5: the first deals 100%, each later one keeps 5% (client repeat multiplier, user decision 2026-11-05) → 1 + 0.05 × 2 = 1.1 hits per cast`), ...magusTiming("World of Thorns", 1.5, "cast-speed"), hitsPerUse: 1 + 0.05 * 2 })
   ], ["Bleak Grass: the Stage 3 \"+4% additional Erosion Damage taken\" stacks and the Stage 4 extra spike are not applied."])
 ];
 

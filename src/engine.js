@@ -361,7 +361,16 @@ export function calculateAuraLedger(setups, options) {
       [key, auraStatUsesEffectScale(setup.name, key)
         ? round(value * (1 + auraEffectPercent / 100) * additionalAuraEffectFactor, 4)
         : value]));
-    return { name: setup.name, context: town ? "town" : "dummy", effectiveLevel: setup.effectiveLevel ?? setup.baseLevel ?? 20, reservation, supportEffectSources: supportEffects.sources, unsupportedSupportEffects: supportEffects.unsupported, excludedSupportEffects: supportEffects.excluded, excludedConditionalAuraEffectPercent: excludedConditionalPercent, sealedManaCompensation, additionalAuraEffectFactor, ownStackEffect: ownStack ? { ...ownStack, stacks: ownStack.maxStacks, factor: ownStackFactor } : null, auraEffectPercent, globalAuraEffectPercent, deepPainAuraEffectPercent, namedAuraEffectPercent, auraAmplificationPercent, baseEffects, effectiveEffects, gainedEffects };
+    // The Aura's buff on an ally (a Minion; G1 2026-11-12, provisional open question aura-ally-minion-scale): "you and allies within a
+    // certain area gain the following buff". A buff's scale is the caster's attr 3401 for its tags × the holder's attr 3410 (client
+    // 0x141d22dd0, research/build-25t-open-items-2026-11-09.md Q6): your Aura Effect, without the "received" terms only you hold
+    // (Precise: Selfless's -90%). A support that keeps the Aura off other allies (Precise: Selfishness) leaves it none.
+    const allyAdditionalAuraEffectFactor = supportEffects.allyAdditionalFactor * ownStackFactor;
+    const allyEffects = supportEffects.alliesExcluded ? {} : Object.fromEntries(Object.entries(baseEffects).map(([key, value]) =>
+      [key, auraStatUsesEffectScale(setup.name, key)
+        ? round(value * (1 + auraEffectPercent / 100) * allyAdditionalAuraEffectFactor, 4)
+        : value]));
+    return { name: setup.name, context: town ? "town" : "dummy", effectiveLevel: setup.effectiveLevel ?? setup.baseLevel ?? 20, reservation, supportEffectSources: supportEffects.sources, unsupportedSupportEffects: supportEffects.unsupported, excludedSupportEffects: supportEffects.excluded, excludedConditionalAuraEffectPercent: excludedConditionalPercent, sealedManaCompensation, additionalAuraEffectFactor, ownStackEffect: ownStack ? { ...ownStack, stacks: ownStack.maxStacks, factor: ownStackFactor } : null, auraEffectPercent, globalAuraEffectPercent, deepPainAuraEffectPercent, namedAuraEffectPercent, auraAmplificationPercent, baseEffects, effectiveEffects, gainedEffects, allyEffects, allyAdditionalAuraEffectFactor, receivedAuraEffectFactor: supportEffects.receivedFactor, ...(supportEffects.alliesExcluded ? { alliesExcluded: `${supportEffects.alliesExcluded}: the supported skill does not take effect on other allies` } : {}) };
   });
   const manaReservedPercent = round(entries.filter((entry) => entry.reservation.resource === "mana").reduce((sum, entry) => sum + entry.reservation.reservedPercent, 0), 4);
   const lifeReservedPercent = round(entries.filter((entry) => entry.reservation.resource === "life").reduce((sum, entry) => sum + entry.reservation.reservedPercent, 0), 4);

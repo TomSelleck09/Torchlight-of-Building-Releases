@@ -71,7 +71,7 @@ import { selenaScorchingBeamSlatesSs13 as slates } from "./data/slates/selena-sc
 import { supportValidationBaseline } from "./data/stats/support-validation-2026-09-08.js";
 import { selenaCompleteSkillLoadoutSs13 as skills } from "./data/skills/selena-complete-skill-loadout-ss13.js";
 import { auraScalingSs13 } from "./data/skills/aura-scaling-ss13.js";
-import { auraDamageModifierTexts } from "./aura-damage.js";
+import { auraAllyMinionLines, auraDamageModifierTexts } from "./aura-damage.js";
 import { collectSkillDamageSources, inferDamageProfile } from "./skill-damage-profiles.js";
 import { MINION_PROFILES } from "./minion-profiles.js";
 import { resolveModuleProtocols, savedModuleAffixes } from "./module-protocols.js";
@@ -79,7 +79,7 @@ import { calculateSkillDot, skillDotAfflictionPerSecond } from "./skill-dot-mode
 import { cataclysmHitAilments, cataclysmEffectPercent } from "./cataclysm-hit-ailments.js";
 import { afflictionFireHitState, afflictionFireHitLines } from "./affliction-fire-hits.js";
 import { AFFLICTION_DAMAGE_PER_POINT } from "./game-attribute-defaults.js";
-import { calculateSkillHit } from "./skill-hit-model.js";
+import { auraTagLines, calculateSkillHit, supportLayers } from "./skill-hit-model.js";
 import { skillHitDotComponents, skillHitTiming } from "./skill-hit-profiles.js";
 import { DOT_TICKS_PER_SECOND } from "./trigger-rows.js";
 import { regainBlessingSpends, supportRecipeCrowdControl } from "./crowd-control-recipes.js";
@@ -1317,6 +1317,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // Dual Kismet: Hatch Out's "-5 to Aura Skill Level" (game affix 916287744: field 2006400 = p0 on the Aura tag 6000160, behind the same gate
   // as its +30% Sealed Mana Compensation): a level source for Aura skills while the build has no Energy Shield (2026-11-05). Kismet lines are
   // not level sources otherwise (src/skill-level-bonuses.js reads gear, talents and slates).
+  // Pact spirit lines are skill level sources too (G6, 2026-11-12; research/build-10t-iris2-erosion-magus-audit-2026-11-12.md): Scale of
+  // Original Sin's "+2 Spirit Magus Skill Level" (record 557054: field 2006400 on the Spirit Magus tag 6000330) is the same write as the
+  // talent's "+1 Spirit Magus Skill Level". Kismet lines stay out (Hatch Out's gated level below; "-3 to Defensive Skill Level" unread).
+  levelSources.pacts = modifierTexts.filter((line) => line.origin === "pact");
   levelSources.gatedLevels = pageSealedManaCompensation(modifierTexts, { noEnergyShield: () => noEnergyShieldGate().none }).gated.filter((entry) => entry.active && entry.auraLevels).map((entry) => ({ name: entry.source, text: entry.text, levels: entry.auraLevels, tag: "Aura", note: "no Energy Shield (game affix 916287744, gate 217 Not)" }));
   // Recipe step 3 (2026-10-25, research/recipe-interpreter-step1-2026-10-25.md §15; src/recipe-hit-aggregates.js): the crit and cast-rate
   // ledgers read each line's game recipe where it places the line (TLI_CRIT_PATH / TLI_SPEED_PATH=text keep the text readers).
@@ -1756,8 +1760,26 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     return { percent: values.length ? Math.min(...values) : 100, lines: lines.map((item) => item.line) };
   })();
   const conditionalAura = conditionalAuraEffect(modifierTexts, { auraCount: new Set([...boardActiveAuraNames, ...grantedAuraSetups.map((setup) => setup.name)].filter(isAuraTaggedName)).size, auraEntryCount: new Set([...boardActiveAuraNames, ...grantedAuraSetups.map((setup) => setup.name)]).size, nearTarget: requestedConditions.nearTarget !== false, sealedManaCompensationPercent: globalSealedManaCompensationPercent, nonExclusiveSupports });
+  // Precise: Safety in Numbers "+X% Aura Effect for each ally affected by the supported skill, stacking up to 7 time(s)" (record 637226432):
+  // your Minions are allies (G13, user decision 2026-11-12; research/build-10t-iris2-erosion-magus-audit-2026-11-12.md), so with modeled
+  // Minions the count is the Minions out (the profiles' counts, as the Minion counters read them: minionCountOut), all inside the Aura
+  // (best case), up to the support's cap of 7; automatic, listed in the assumptions, the Config allies field shows it. Without Minions the
+  // saved Config value as before (other allies are not modeled). Not counted: Elemental Duo's / Socialite's extra Spirit Magi (settled
+  // later, with the Minion damage).
+  const auraAllies = (() => {
+    const levels = new Map();
+    for (const source of damageSources) {
+      if (source.status !== "modeled" || source.profile?.engine !== "minion") continue;
+      const level = setups.find((setup) => setup.setupKey === source.setupKey)?.effectiveLevel ?? 20;
+      levels.set(source.profile.minionKey, Math.max(levels.get(source.profile.minionKey) || 0, level));
+    }
+    const halveTroops = levels.size ? Boolean(troopHalvingSource({ setups, activeNames })) : false;
+    const minionsOut = [...levels].reduce((total, [key, level]) => total + minionCountOut(MINION_PROFILES[key], level, modifierTexts, { troopMaxMinions: (requestedConditions?.troopMaxMinions ?? requestedConditions?.moduleMaxMinions) !== false, halveTroops }), 0);
+    return minionsOut > 0 ? { derived: true, count: Math.min(7, minionsOut), minionsOut, saved: state.combat.auraAffectedAllies ?? 1 } : { derived: false, count: state.combat.auraAffectedAllies, minionsOut: 0 };
+  })();
+  const safetyInNumbersActive = setups.some((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.supports || []).some((support) => support.enabled !== false && support.name === "Precise: Safety in Numbers"));
   const auraOptions = {
-    nearbyElite: requestedConditions.nearbyElite === true, affectedAllies: state.combat.auraAffectedAllies,
+    nearbyElite: requestedConditions.nearbyElite === true, affectedAllies: auraAllies.count,
     // Cruelty / Precise: Cruelty's own stacks held at the cap on the Elite dummy (best-case switch; src/aura-effects.js auraOwnStackEffect).
     crueltyStacks: requestedConditions.crueltyStacks !== false,
     baseSealedPercent: 50, fixedSupportMultiplierPercent: fixedSupportManaMultiplier.percent,
@@ -1848,6 +1870,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   aura.pageSealedManaCompensation = { percent: pageSealedCompensation.percent, sources: pageSealedCompensation.sources, gated: pageSealedCompensation.gated, ...(energyShieldGateState ? { energyShield: energyShieldGateState } : {}) };
   aura.grantedChoices = grantedAuraChoices;
   aura.conditionalGrants = conditionalAuraGrants;
+  // The active Auras' buffs on your Minions, allies in the area (G1, 2026-11-12; src/aura-damage.js auraAllyMinionLines, provisional
+  // open question aura-ally-minion-scale): Minion damage lines for every modeled Minion (computeMinion below) and Minion Max Life lines
+  // (Precise: Radical Order's +10%: the Hero Ranking panel's Minion Life 4,950 = 4,500 × 1.1 on the 10 T Iris build).
+  aura.allyMinionLines = auraAllyMinionLines(aura.entries, { classify: classifyMinionLine });
   aura.offTheBeatenTrack = { active: offTheBeatenTrack, source: offTheBeatenTrackTalent ? "Lich talent" : offTheBeatenTrackSlate ? "Divinity Slate / Pedigree" : offTheBeatenTrackGear ? grantedCores.get("Off The Beaten Track") : null, supportSkillLevels: offTheBeatenTrack ? 4 : 0, fixedManaMultiplierPercent: offTheBeatenTrack ? 95 : null };
   // "+1 Ignite limit for Numbed enemies" (Everburn Thunderfire, Illusory Chimera; legendary audit batch 2): while the build keeps the
   // dummy Numbed (the enemy-ailment model's own reading, run here ahead of the build mechanics).
@@ -2651,6 +2677,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // The state conditional support lines resolve against (src/support-effects.js resolveCondition): the dummy (one enemy, a
   // Boss within 10 m), its curses, the enemy-ailment model's types, the held weapons, movement and distance groups.
   const supportConditions = {
+    // Vendetta's own crit has a reader (G2): Erika's Feline Fury (extra triggers or Excess) on the build.
+    vendettaCritReader: Boolean(lineConditionState.erikaVendetta?.extraTrigger || lineConditionState.erikaVendetta?.excess),
     cursed: targetCursed, enemyAilments: mechanics.enemyAilments.types.map((type) => type.name), enemyAilmentTypeCount: mechanics.enemyAilments.count,
     // The board's Spirit Magus summons (Friend of Spirit Magi's gate; src/origin-of-spirit-magus.js).
     spiritMagusSummons: lineConditionState.spiritMagusSummons || [],
@@ -3460,7 +3488,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     if (!hit?.modeled) mechanics.recognized.set(normalizeLineText(String(source.itemTrigger.text)).trim(), `Inactive: ${source.setup.name} deals no damage here${hit?.inactiveReason ? ` (${hit.inactiveReason})` : " (no weapon damage or no hits)"}`);
   }
   // Scorching Beam's hits apply and take the Mark like the generic hits (2026-10-14); Minion hits take it once settled.
-  const mark = settleMark(markState, [...skillHits, ...(nativeHitCycle ? [{ modeled: true, name: "Scorching Beam", crit: { chancePercent: beamCritical.criticalChancePercent } }] : [])]);
+  // A follower Mark source (Forking Thunder's spear) is held by the follower's own hits (G10, 2026-11-12).
+  const mark = settleMark(markState, [...skillHits, ...(nativeHitCycle ? [{ modeled: true, name: "Scorching Beam", crit: { chancePercent: beamCritical.criticalChancePercent } }] : [])], markState?.sources?.some((line) => line.origin === "follower") ? followerDamageSources(followerSelection(state)) : []);
   // The Mark on the dummy (buff 330, Marked 4010010) joins its unit buff set (W8 step 2; an entry only: its readers keep `mark`).
   if (mark?.active && lineConditionState.enemyBuffs?.add) lineConditionState.enemyBuffs.add({ name: "Mark", source: "Mark (src/mark-effect.js)", reason: mark.reason || null, stage: "debuff" });
   // A Combo skill's own Mark (Spectral Slash: Mark, buff 11340; src/skill-hit-model.js ownMark) joins the set as its own record: no Marked
@@ -3536,7 +3565,19 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const minionBatch6 = batch6MinionContext({ setups, activeNames, modifierTexts, stats: lineEffects.state?.stats || lineConditionState.stats || {}, blessings, darkGate: lineConditionState.darkGate,
     commandPoints: minionCommand?.points || 0, enemyAilments: enemyBuffSet(mechanics.enemyAilments)?.types() ?? mechanics.enemyAilments.types.map((type) => type.name), minionsOwned: Number(lineConditionState.minionCount) || 0,
     prebuilt: requestedConditions.prebuiltSelfBuffs !== false, wicked: batch6Build.wicked });
-  const computeMinion = ({ profile, sources }, heroInput = {}) => {
+  // Indifference's Minion half (G4, 2026-11-12; research/build-10t-iris2-erosion-magus-audit-2026-11-12.md): record 759880384 writes attr 5719
+  // mod 4 twice with the same clamp(0, (max - used Energy) ÷ 5, 50), the second on the Minion tag 5002060, so the Minions take "+1% additional
+  // Minion Damage for every 5 remaining Energy, up to +50%" at the board's Energy left, the value the player half reads (src/core-talent-model.js;
+  // no GetFloorInt: linear). Its raw line is then read, not "unread", in the Minion model.
+  const indifferenceValue = coreTalents.lines.find((line) => line.source === "Indifference")?.value || 0;
+  // Tidewell's Water Area (G9, 2026-11-12; research/build-10t-iris2-erosion-magus-audit-2026-11-12.md): "Spell Skills of the allies within the
+  // Water Area have a +20% chance to deal Double Damage": your Minions are allies, so their Spell skills take the chance you hold (the
+  // follower buff's time-averaged line), best case: the area sits on the dummy and the Minions stand in it (inferred position; open question
+  // follower-tidewell-minion-allies).
+  const tidewellMinionLines = modifierTexts.filter((line) => line.origin === "buff" && /Tidewell/.test(String(line.source || "")) && /^\+[\d.]+% chance for Spells to deal Double Damage$/i.test(String(line.text ?? "").trim()))
+    .map((line) => ({ kind: "doubleDamage", skillTag: "Spell", value: Number(String(line.text).match(/[\d.]+/)[0]) * (line.multiplier ?? 1), source: line.source, text: `${String(line.text).trim()} (the Minions' Spell skills: allies inside the follower's Water Area, best case; provisional)` }));
+  const indifferenceMinion = indifferenceValue ? { line: { kind: "additional", value: indifferenceValue, source: "Indifference core (its Minion half)", text: `+${indifferenceValue}% additional Minion Damage (+1% per 5 remaining Energy: ${Math.round(allocation.remaining * 100) / 100} left, up to +50%; game record 759880384, its write on the Minion tag)` }, texts: modifierTexts.filter((line) => /^(?:\[Indifference\]\s*)?\+1% additional damage and \+1% additional Minion Damage for every 5 remaining Energy/i.test(String(line.text ?? "").trim())).map((line) => line.text) } : null;
+  const computeMinion = ({ profile, sources }, { extraMinions = null, ...heroInput } = {}) => {
     const minionSetups = sources.map((source) => setups.find((setup) => setup.setupKey === source.setupKey)).filter(Boolean);
     // Main stats of the summoning skill (manual keyword text: "+0.5% additional Skill Damage and Minion Damage" per point;
     // "This includes … the damage of Minions summoned by the skill"; several main stats add). Stat-sheet totals (provisional:
@@ -3564,37 +3605,56 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
       // The Marked dummy (src/mark-effect.js, settled above): its crit-damage-taken reaches the Minion hits' crit share (2026-10-14).
       extraCritOnly: [...(mark?.active && mark.critOnlyLine ? [mark.critOnlyLine] : []), ...(lineConditionState.sage?.ingredientRead?.["Razor Leaf"]?.active ? [{ source: "Razor Leaf (Basic Scent Bottle)", text: lineConditionState.sage.ingredientRead["Razor Leaf"].body, value: lineConditionState.sage.ingredientRead["Razor Leaf"].value }] : [])],
       // Conditional lines the shared resolver reads (src/line-effects.js) are not "unread" Minion lines (core audit B7).
-      handledTexts: lineEffects.lines.map((line) => line.text),
-      extraLines: [...(commanderGambit?.lines || []), ...(blessings.minionLines || []), ...minionCritShareLines, ...(COMMAND_FAMILIES.includes(profile.family) ? minionCommand?.lines || [] : []), ...(isomorphicArms?.lines || []), ...(comradeship?.lines || [])], bond: minionBond, summonCastSpeed: minionSummonCast,
+      handledTexts: [...lineEffects.lines.map((line) => line.text), ...(indifferenceMinion?.texts || [])],
+      extraLines: [...(aura.allyMinionLines?.damage || []), ...(indifferenceMinion ? [indifferenceMinion.line] : []), ...tidewellMinionLines, ...(commanderGambit?.lines || []), ...(blessings.minionLines || []), ...minionCritShareLines, ...(COMMAND_FAMILIES.includes(profile.family) ? minionCommand?.lines || [] : []), ...(isomorphicArms?.lines || []), ...(comradeship?.lines || [])], bond: minionBond, summonCastSpeed: minionSummonCast,
       // The resolved Scorch curse on the dummy (as for skill hits); derived debuff lines arrive through modifierTexts.
       // Selena: the enemy-on-Tide entry is a target attribute (5720), so Minion hits take it too (src/selena-tide.js takenLines).
       extraTaken: [...(conditions.scorch ? [{ source: "Scorch curse", text: `+${curses.scorchDamagePercent}% additional Fire Damage taken (Scorch on the dummy)`, value: curses.scorchDamagePercent, types: ["Fire"] }] : []), ...singWithTheTide.takenLines],
-      heroTraits: minionHeroTraits(motoIris, { family: profile.family, setupKeys: minionSetups.map((setup) => setup.setupKey), mainSetupKey: resolvedMain?.setupKey ?? null, merging: mergingOrigins, ...heroInput }), batch6: minionBatch6 });
+      heroTraits: minionHeroTraits(motoIris, { family: profile.family, setupKeys: minionSetups.map((setup) => setup.setupKey), mainSetupKey: resolvedMain?.setupKey ?? null, merging: mergingOrigins, ...heroInput }), batch6: minionBatch6, ...(extraMinions ? { extraMinions } : {}) });
   };
   const minionGroups = groupMinionSources(damageSources);
   const magusGroups = minionGroups.filter((group) => group.profile.family === "spirit-magus");
   const results = new Map();
   // Vigilant Breeze (Q-H13): without Happiest Reunion one Magus is Merged: the one whose merging gains the most (best case).
   const vigilantHeld = Boolean(motoIris?.vigilant?.held);
+  const mergedOf = new Map();
   if (vigilantHeld && magusGroups.length > 1 && !motoIris.vigilant.allMerged) {
     const apart = magusGroups.map((group) => computeMinion(group, { merged: false, magiCount: magusGroups.length }));
     const together = magusGroups.map((group) => computeMinion(group, { merged: true, magiCount: magusGroups.length }));
     const gains = magusGroups.map((_, index) => (together[index]?.combat?.dps || 0) - (apart[index]?.combat?.dps || 0));
     const best = gains.indexOf(Math.max(...gains));
-    magusGroups.forEach((group, index) => results.set(group, index === best ? together[index] : apart[index]));
-  } else for (const group of magusGroups) results.set(group, computeMinion(group, { merged: vigilantHeld, magiCount: magusGroups.length }));
-  // Socialite (B6, provisional): +N Max Summonable Spirit Magi per Magus skill, within the map cap (one per Magus skill + the "Max
-  // Spirit Magi In Map" lines): the extra Magi go to the Magi with the highest DPS per Magus.
+    magusGroups.forEach((group, index) => { mergedOf.set(group, index === best); results.set(group, index === best ? together[index] : apart[index]); });
+  } else for (const group of magusGroups) { mergedOf.set(group, vigilantHeld); results.set(group, computeMinion(group, { merged: vigilantHeld, magiCount: magusGroups.length })); }
+  // Extra Spirit Magi within the map cap (one per Magus skill + the "+N to Max Spirit Magi In Map" lines): Socialite's "+N Max Summonable
+  // Spirit Magi" per Magus skill (B6, provisional) and a summon support's "+N to Max Summonable Minions for the supported skill"
+  // (Elemental Duo, record 200000390: field 2006100 on the supported skill; G3 2026-11-12, the 10 T Iris panel's Max Summonable Minions
+  // 2.0 and Max Omni Spirit Magus 3.0). The free map slots go to the Magi with the highest DPS per Magus; Happiest Reunion's "for every
+  // Spirit Magus there is" then counts the Magi out, not the Magus skills.
   const socialite = motoIris?.growing;
-  if (socialite?.summonable > 0 && socialite.mapCap > 0 && magusGroups.length) {
-    let slots = Math.min(magusGroups.length * socialite.summonable, socialite.mapCap);
-    const ranked = magusGroups.filter((group) => results.get(group)?.modeled).sort((a, b) => (results.get(b).combat.perMinionDps || 0) - (results.get(a).combat.perMinionDps || 0));
-    for (const group of ranked) {
+  const socialiteWant = socialite?.summonable > 0 && socialite.mapCap > 0 ? socialite.summonable : 0;
+  const mapSlots = (socialite?.mapCap || 0) + (motoIris?.vigilant?.mapCap || 0);
+  const supportSummonable = (group) => {
+    const found = group.sources.map((source) => setups.find((setup) => setup.setupKey === source.setupKey)).filter(Boolean).flatMap((setup) => (setup.supportEffects?.clauses || []).filter((clause) => clause.family === "minionCount" && clause.value > 0));
+    return { count: found.length ? Math.max(...found.map((clause) => clause.value)) : 0, sources: [...new Set(found.map((clause) => clause.support))] };
+  };
+  const extraWants = magusGroups.map((group) => ({ group, socialite: socialiteWant, support: supportSummonable(group) })).filter((item) => item.socialite + item.support.count > 0);
+  const magusExtras = new Map();
+  if (mapSlots > 0 && extraWants.length) {
+    let slots = Math.min(extraWants.reduce((total, item) => total + item.socialite + item.support.count, 0), mapSlots);
+    const ranked = extraWants.filter((item) => results.get(item.group)?.modeled).sort((a, b) => (results.get(b.group).combat.perMinionDps || 0) - (results.get(a.group).combat.perMinionDps || 0));
+    for (const item of ranked) {
       if (slots <= 0) break;
-      const extra = Math.min(socialite.summonable, slots);
+      const extra = Math.min(item.socialite + item.support.count, slots);
       slots -= extra;
-      results.set(group, computeMinion(group, { merged: vigilantHeld, magiCount: magusGroups.length, extraCount: extra }));
+      const fromSocialite = Math.min(item.socialite, extra);
+      magusExtras.set(item.group, { socialite: fromSocialite, support: extra - fromSocialite, sources: item.support.sources });
     }
+  }
+  const magiOut = magusGroups.length + [...magusExtras.values()].reduce((total, item) => total + item.socialite + item.support, 0);
+  for (const group of magusGroups) {
+    const extra = magusExtras.get(group);
+    if (!extra && (magiOut === magusGroups.length || !motoIris?.vigilant?.reunion)) continue;
+    results.set(group, computeMinion(group, { merged: mergedOf.get(group), magiCount: magiOut, ...(extra?.socialite ? { extraCount: extra.socialite } : {}), ...(extra?.support ? { extraMinions: { count: extra.support, sources: extra.sources } } : {}) }));
   }
   const magiResults = magusGroups.map((group) => results.get(group)).filter((minion) => minion?.modeled && minion.magus);
   const magiFacts = magiResults.length ? { present: true, maxGrowth: Math.max(...magiResults.map((minion) => minion.magus.growth || 0)), maxEnhancedChance: Math.max(...magiResults.map((minion) => minion.magus.enhancedChancePercent || 0)) } : null;
@@ -4030,7 +4090,18 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // plain attacking (the Main Skill's own rate is already counted above).
   const triggerSkills = calculateVendettaTriggers({ sources: damageSources.filter((source) => source.status === "modeled" && source.profile.engine === "trigger-main"), setups, resolvedMain, skillHits: modeledSkillHits, weaponAttack, modifierTexts, erika: lineConditionState.erikaVendetta, hasHasten: Boolean((ownCombatHeld(playerBuffs) ?? lineEffects.combat?.buffs)?.hasHasten),
     // Bard Song (hero trait audit B13): the trigger skill's own cast becomes a Bard Song bubble in the Bard state.
-    bardSong: singWithTheTide.bardSong?.heroEffects || null });
+    bardSong: singWithTheTide.bardSong?.heroEffects || null,
+    // The trigger skill's own supports (9 T Double Thrusts audit G1 / G2): the hit model's support reader on the trigger setup (its
+    // supports key, trait:Vendetta), as an attack-speed skill with the trigger profile's tags. Its use time also takes the Attack Speed lines
+    // scoped to tags it carries (2026-11-13, the audit's follow-up): the Auras' Melee Attack Speed (Precise: Fearless, record 707968: attr 6001
+    // mod 3 with no tag, so no restriction leaves Vendetta out) and the build's tag-scoped Attack Speed lines, as the Main Skill's hit reads them.
+    setupSupports: (setup, spec) => {
+      const tags = new Set(skillTagsWithSupportChanges(spec.tags, setup)), speedType = spec.timing?.speedType || "attack-speed";
+      const own = supportLayers(setup, { dealtTypes: [], skillTags: tags, profile: spec, speedType });
+      const auraSpeed = auraTagLines(aura.entries.filter((entry) => activeNames.has(entry.name)), tags, speedType).speed;
+      const scoped = speedType === "attack-speed" ? scopedAttackSpeedFor(tags).lines.map((line) => ({ source: line.source, text: line.text, value: line.value, additional: line.additional })) : [];
+      return { ...own, castSpeed: [...own.castSpeed, ...auraSpeed, ...scoped] };
+    } });
   const modeledTriggers = triggerSkills.filter((trigger) => trigger.modeled);
   // A Minion main skill (e.g. a Module's Overstrike): the player casts nothing on the dummy, so the schedule runs at the
   // Minion's basic-skill rate and starts at its first hit; the Minion's own hits arrive as scheduled events.
@@ -4259,6 +4330,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     // Provisional line readings of talent batch chunk 1 (Q13): per-level lines and "additional damage for Weapons".
     inputs.assumptions.push(...provisionalLineReadings);
     for (const choice of grantedAuraChoices) inputs.assumptions.push({ id: `grantedAura:${choice.name}`, value: choice.kept, text: choice.text });
+    if (auraAllies.derived && safetyInNumbersActive) inputs.assumptions.push({ id: "safetyInNumbersAllies", value: auraAllies.count, text: `Precise: Safety in Numbers counts your Minions as allies affected by the Aura: ${auraAllies.minionsOut} Minion${auraAllies.minionsOut === 1 ? "" : "s"} out, all inside the Aura (best case), ${auraAllies.count} counted (up to 7; user decision 2026-11-12). The Config allies value is not used while Minions are out.` });
     if (modeledSkillHits.some((hit) => hit.rate?.speedType === "attack-speed")) for (const line of weaponAttack.additional.filter((item) => item.provisional)) inputs.assumptions.push({ id: `weaponsDamage:${line.source}`, value: line.value, text: `${line.source}: "${line.text}" applied to every Weapon Attack Damage hit (provisional, talent batch Q13).` });
     for (const minion of modeledMinions) inputs.assumptions.push(...minion.assumptions);
     if (inputs.hits && nativeHitCycle?.beams > 1) inputs.assumptions.push({ id: "beams", value: nativeHitCycle.beams, text: `${nativeHitCycle.beams} Beams hit the dummy, beam ticks and explosions alike: the first at 100%, each further one keeping 30% (×${Math.round(nativeHitCycle.shotgunFactor * 1000) / 1000}; skill text "beams and explosions can hit the same enemy", "Shotgun Effect falloff coefficient 70%", the share lost by the client's repeat multiplier, user decision 2026-11-05).` });
@@ -4484,10 +4556,12 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     // Erika (hero trait audit B5): the Main Skill's crit chance (Charging Tail, Feline Fury) and the Vendetta cycle (Incisive).
     if (erikaRates) {
       const mainHit = skillHits.find((hit) => hit.modeled && hit.setupKey === resolvedMain?.setupKey) || null;
-      const crit = mainHit ? hitCritChances(mainHit) : null;
+      const mainCrit = mainHit ? hitCritChances(mainHit) : null;
       const vendetta = triggerSkills.find((trigger) => trigger.setupKey && /^trait:/.test(trigger.setupKey)) || triggerSkills[0] || null;
+      // Feline Fury's rolls read Vendetta's own crit (G2; src/vendetta-model.js vendettaCritChances), the Main Skill's as before for the rest.
+      const crit = vendetta?.modeled && vendetta.erika?.crit ? vendetta.erika.crit : mainCrit;
       facts.erika = {
-        mainCritChancePercent: crit ? crit.effective : 0,
+        mainCritChancePercent: mainCrit ? mainCrit.effective : 0,
         vendetta: vendetta ? (vendetta.modeled ? { modeled: true, cycleSeconds: vendetta.rate.cycleSeconds, sequenceSeconds: vendetta.rate.sequenceSeconds, repeatTimes: vendetta.rate.repeatTimes, critEffectivePercent: crit?.effective ?? 0, critRawPercent: crit?.raw ?? 0 } : { modeled: false, reason: vendetta.inactiveReason || null }) : null
       };
     }
@@ -4639,7 +4713,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     return calculatePlannerOnce(input, conditionOverrides, { skipVariation: requestedSkipVariation, debuffHitRates: rates, hitRateFacts: facts, deferDisplayTail });
   }
   const { effectivePacts: _effectivePacts, ...pactLimitsSummary } = pactLimits;
-  const result = { pressRotation: pressRotationState ? { assumptions: pressRotationState.assumptions, bySetup: Object.fromEntries(pressRotationState.bySetup) } : null, state, playerBuffs, playerMoveSpeed: lineConditionState.playerMoveSpeed || null, prophecyOfRevelation, minionAilmentTypes, beamTypedTypes: [...new Set(beamTypedAdded.flatMap((part) => part.chain))], levelFacts: hitRateFacts?.levelFacts || null,pactLimits: pactLimitsSummary, moduleProtocols: moduleProtocols.modules, coreCopies: { active: Object.fromEntries([...coreCopies.active].map(([name, copy]) => [name, { kind: copy.kind, source: copy.source, label: copy.label }])), duplicates: coreCopies.duplicates.map(({ name, kind, source, activeFrom, affix, lines, slot, slateId }) => ({ name, kind, source, activeFrom, affix: affix ?? null, lines: lines ?? null, slot: slot ?? null, slateId: slateId ?? null })) }, damageTypeRestriction, enemyDebuffCores, weaponToSpells, critNumbedBuffs, periodicBurst, hitRateFacts, modifierTexts, lineEffects, follower: lineEffects.follower, mechanics: mechanicsSummary, supportEffects, afflictionRating, initialAffliction, cataclysmAilments: cataclysmAilments.setups, afflictionFireHits: { state: afflictionFireState, bySetup: Object.fromEntries(skillHits.filter((hit) => hit.setupKey).map((hit) => { const setup = setups.find((item) => item.setupKey === hit.setupKey); return [hit.setupKey, setup ? afflictionFireHitLines(afflictionFireState, { ownAdditionalPercent: cataclysmEffectPercent(setup), label: setup.name }).entries : []]; })) }, ailments, igniteAppliers, igniteAttemptsPerSecond, skillDots, skillHits, triggerSkills, minions, minionCores: { commanderGambit, spiritMagiLimit, darkGate: lineConditionState.darkGate, bond: { canObtain: minionBond.canObtain, maxStacks: minionBond.maxStacks, intervalSeconds: minionBond.intervalSeconds, prebuilt: minionBond.prebuilt, any: minionBond.any, lineCounts: Object.fromEntries(Object.entries(minionBond.sources).map(([key, list]) => [key, list.length])) }, summonCastSpeed: minionSummonCast, overlyModified, isomorphicArms: isomorphicArms ? { weapon: isomorphicArms.weapon, read: isomorphicArms.read || [], unread: isomorphicArms.unread, lines: isomorphicArms.lines.length, reason: isomorphicArms.reason } : null, comradeship: comradeship ? { belt: comradeship.belt, read: comradeship.read, unread: comradeship.unread, lines: comradeship.lines.length, reason: comradeship.reason } : null, command: minionCommand ? { perSecond: minionCommand.perSecond, full: minionCommand.full, points: minionCommand.points, value: minionCommand.value, sources: minionCommand.sources.map((item) => item.source), gated: minionCommand.gated || [] } : null }, weaponAttack, damageSources, mainSkill: resolvedMain, timedDotLayers, fullLife, damagePaths, dummyRecount, firesAllure, lowResources, resistances, curseLimit, resolvedSlates: slate.setup.slates, netherKingAuthority: slate.setup.netherKingAuthority || null, blessings, aim, block, barrierSources, blurSources, blurEffects, effectiveTargetFireResistancePercent: damageCombat.targetFireResistancePercent, coreTalents, murmursTideEffectPercent, seaFoamNocturne, tideEffectFactor, singWithTheTide, danceOfTheDeep, windStalker, yougaUltimateOne: yougaPlainState(yougaUltimateOne), mark, pureHeart, activationMediumTerra, cycleResist, illOmen, tangles, miraculousGain, igniteIllOmen, windRhythmTerra: Object.fromEntries([...windRhythmTerra].filter(([, value]) => value)), dotTriggers: Object.fromEntries([...dotTriggers].filter(([, value]) => value)), empowerEffects, heroMemories, support, townSupportPrediction, talentSlate, equipment, pact, activation, aura, igniteLimit, igniteRecipe: ignitePatchSummary(ignitePatch), skillLevelFactor, sourceDamageMultiplier, theoretical, directHit, beamCastRate, beamCritical, beamAddedDamage, nativeHitCycle, bardDelivery, beamDelivery, combatProjection, recountFiveSeconds, recountOpening, recountVariation, configured, conditions, warnings: [...new Set(warnings)] };
+  const result = { pressRotation: pressRotationState ? { assumptions: pressRotationState.assumptions, bySetup: Object.fromEntries(pressRotationState.bySetup) } : null, state, playerBuffs, playerMoveSpeed: lineConditionState.playerMoveSpeed || null, prophecyOfRevelation, minionAilmentTypes, beamTypedTypes: [...new Set(beamTypedAdded.flatMap((part) => part.chain))], levelFacts: hitRateFacts?.levelFacts || null,pactLimits: pactLimitsSummary, moduleProtocols: moduleProtocols.modules, coreCopies: { active: Object.fromEntries([...coreCopies.active].map(([name, copy]) => [name, { kind: copy.kind, source: copy.source, label: copy.label }])), duplicates: coreCopies.duplicates.map(({ name, kind, source, activeFrom, affix, lines, slot, slateId }) => ({ name, kind, source, activeFrom, affix: affix ?? null, lines: lines ?? null, slot: slot ?? null, slateId: slateId ?? null })) }, damageTypeRestriction, enemyDebuffCores, weaponToSpells, critNumbedBuffs, periodicBurst, hitRateFacts, modifierTexts, lineEffects, follower: lineEffects.follower, mechanics: mechanicsSummary, supportEffects, afflictionRating, initialAffliction, cataclysmAilments: cataclysmAilments.setups, afflictionFireHits: { state: afflictionFireState, bySetup: Object.fromEntries(skillHits.filter((hit) => hit.setupKey).map((hit) => { const setup = setups.find((item) => item.setupKey === hit.setupKey); return [hit.setupKey, setup ? afflictionFireHitLines(afflictionFireState, { ownAdditionalPercent: cataclysmEffectPercent(setup), label: setup.name }).entries : []]; })) }, ailments, igniteAppliers, igniteAttemptsPerSecond, skillDots, skillHits, triggerSkills, minions, minionCores: { commanderGambit, spiritMagiLimit, darkGate: lineConditionState.darkGate, bond: { canObtain: minionBond.canObtain, maxStacks: minionBond.maxStacks, intervalSeconds: minionBond.intervalSeconds, prebuilt: minionBond.prebuilt, any: minionBond.any, lineCounts: Object.fromEntries(Object.entries(minionBond.sources).map(([key, list]) => [key, list.length])) }, summonCastSpeed: minionSummonCast, overlyModified, isomorphicArms: isomorphicArms ? { weapon: isomorphicArms.weapon, read: isomorphicArms.read || [], unread: isomorphicArms.unread, lines: isomorphicArms.lines.length, reason: isomorphicArms.reason } : null, comradeship: comradeship ? { belt: comradeship.belt, read: comradeship.read, unread: comradeship.unread, lines: comradeship.lines.length, reason: comradeship.reason } : null, command: minionCommand ? { perSecond: minionCommand.perSecond, full: minionCommand.full, points: minionCommand.points, value: minionCommand.value, sources: minionCommand.sources.map((item) => item.source), gated: minionCommand.gated || [] } : null }, weaponAttack, damageSources, mainSkill: resolvedMain, timedDotLayers, fullLife, damagePaths, dummyRecount, firesAllure, lowResources, resistances, curseLimit, resolvedSlates: slate.setup.slates, netherKingAuthority: slate.setup.netherKingAuthority || null, blessings, aim, block, barrierSources, blurSources, blurEffects, effectiveTargetFireResistancePercent: damageCombat.targetFireResistancePercent, coreTalents, murmursTideEffectPercent, seaFoamNocturne, tideEffectFactor, singWithTheTide, danceOfTheDeep, windStalker, yougaUltimateOne: yougaPlainState(yougaUltimateOne), mark, pureHeart, activationMediumTerra, cycleResist, illOmen, tangles, miraculousGain, igniteIllOmen, windRhythmTerra: Object.fromEntries([...windRhythmTerra].filter(([, value]) => value)), dotTriggers: Object.fromEntries([...dotTriggers].filter(([, value]) => value)), empowerEffects, heroMemories, support, townSupportPrediction, talentSlate, equipment, pact, activation, aura, igniteLimit, igniteRecipe: ignitePatchSummary(ignitePatch), skillLevelFactor, sourceDamageMultiplier, theoretical, directHit, beamCastRate, beamCritical, beamAddedDamage, nativeHitCycle, bardDelivery, beamDelivery, combatProjection, recountFiveSeconds, recountOpening, recountVariation, configured, conditions, ...(auraAllies.derived && safetyInNumbersActive ? { auraAllies } : {}), warnings: [...new Set(warnings)] };
   // A comparison pass (deferDisplayTail, final pass only): the display-only tail runs later, on the winner only, from this pass's own
   // values (nothing it reads is reassigned after this point), and gives the planner a full pass would have returned: the two tail
   // fields in their places, and a tail warning where the full pass lists it (after the other recount estimates' warnings).

@@ -364,7 +364,17 @@ function levelledTraitLine(heroId, traitName, line, planner) {
   const pattern = progressionPattern(line);
   return planner.modifierTexts.find((item) => item.origin === "trait" && String(item.source || "").startsWith(`Hero trait: ${traitName} (`) && pattern.test(squash(item.text))) || null;
 }
+// A progression line whose value at this trait level is 0 ("+0% additional Minion Damage" at LV1: Iris's base traits, whose tier record
+// 161000101 has no such row) changes nothing: where it would read In calc it reads No DPS effect (Iris 2 trait audit B2, user-approved
+// 2026-11-12); a neutral status (Inactive, …) stays.
+const zeroValueLine = (text) => { const squashed = squash(text); return /^[+-]?0(?:\.0+)? ?%? /.test(squashed) && !/[1-9]/.test(squashed); };
 function levelledLineState(heroId, traitName, line, planner = coverageContext()) {
+  const state = levelledLineStateRaw(heroId, traitName, line, planner);
+  if (state.status !== "In calc") return state;
+  const levelled = levelledTraitLine(heroId, traitName, line, planner);
+  return levelled && zeroValueLine(levelled.text) ? { status: "No DPS effect", reason: `0 at this trait level (${String(levelled.source || "").replace(/^Hero trait: /, "")}): the tier record carries no such line` } : state;
+}
+function levelledLineStateRaw(heroId, traitName, line, planner) {
   const levelled = levelledTraitLine(heroId, traitName, line, planner);
   if (levelled) {
     const entry = (planner.lineEffects?.lines || []).find((item) => item.source === levelled.source && squash(item.text) === squash(levelled.text));

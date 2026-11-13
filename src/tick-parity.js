@@ -14,30 +14,33 @@
 // each other (Numbed's saw-tooth under Periodic Burst's faster volleys).
 import { pathValueAt } from "./tick-engine.js";
 
-const mean = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
-
 /**
  * @param {object} run runTickEngine(spec, { trace: true })
  * @param {object} path the series' path in the spec (with its modifiers, each with steadyAmount and liveKey)
  * @param {object} planner { damage: the planner's damage for this series over the run, perUse: the planner's value of one hit event }
  * @param {object} [options]
  * @param {number} [options.settledFrame] the tick after which the opening is over; default 60 (2 s: the follower's first casts have landed)
+ * @param {boolean} [options.byCount] weigh each hit by its count (a hit event standing for a fractional number of uses, as a trigger-main cast's
+ *   expected extra triggers, src/tick-trigger-main.js): the count factor is then uses landed ÷ expected, the layers count-weighted means
  * @returns {{ hits, expectedHits, countFactor, valueFactor, layers: [{ key, factor }], covariance, openingOverlap, settledCovariance, total, steady }}
  */
-export function hitBudget(run, path, { damage, perUse }, { settledFrame = 60 } = {}) {
+export function hitBudget(run, path, { damage, perUse }, { settledFrame = 60, byCount = false } = {}) {
   const events = run.trace.filter((entry) => entry.event === "damage" && entry.kind === "hit" && entry.path === path.key);
   const modifiers = path.modifiers || [], steadyAmounts = modifiers.map((modifier) => modifier.steadyAmount ?? 0);
   const steady = pathValueAt(path, steadyAmounts);
   const keys = [...new Set(modifiers.map((modifier) => modifier.liveKey ?? "other"))];
   const layerValue = (key, amounts) => pathValueAt(path, modifiers.map((modifier, index) => (modifier.liveKey ?? "other") === key ? amounts[index] : steadyAmounts[index]));
-  const layers = keys.map((key) => ({ key, factor: mean(events.map((event) => layerValue(key, event.amounts) / steady)) }));
-  const valueFactor = mean(events.map((event) => event.amount / steady));
+  // Each event's weight: 1, or its count (byCount). An event's value per unit is its amount over its weight.
+  const weight = (event) => byCount ? event.count ?? 1 : 1;
+  const weighted = (list, value) => { const total = list.reduce((sum, event) => sum + weight(event), 0); return total ? list.reduce((sum, event) => sum + weight(event) * value(event), 0) / total : 0; };
+  const layers = keys.map((key) => ({ key, factor: weighted(events, (event) => layerValue(key, event.amounts) / steady) }));
+  const valueFactor = weighted(events, (event) => event.amount / weight(event) / steady);
   const product = layers.reduce((total, layer) => total * layer.factor, 1);
   const expectedHits = damage / perUse;
-  const countFactor = events.length / expectedHits;
+  const countFactor = events.reduce((sum, event) => sum + weight(event), 0) / expectedHits;
   const covariance = valueFactor / product;
   const settled = events.filter((event) => event.frame > settledFrame);
-  const settledCovariance = mean(settled.map((event) => event.amount / steady)) / keys.reduce((total, key) => total * mean(settled.map((event) => layerValue(key, event.amounts) / steady)), 1);
+  const settledCovariance = weighted(settled, (event) => event.amount / weight(event) / steady) / keys.reduce((total, key) => total * weighted(settled, (event) => layerValue(key, event.amounts) / steady), 1);
   return { hits: events.length, expectedHits, countFactor, valueFactor, layers, covariance, openingOverlap: covariance / settledCovariance, settledCovariance, total: countFactor * valueFactor, steady };
 }
 

@@ -65,18 +65,26 @@ export function resolveMark({ modifierTexts = [], enabled = true, nearTarget = t
   return { sources, effects, effectPercent, critDamageTakenPercent, enabled, apply, critOnlyLine, keyword: MARK_KEYWORD, active: false, reason: !sources.length ? "no Mark source in the build" : !enabled ? "the Marked dummy assumption is off" : "pending" };
 }
 
-/** Settle `active` from the computed hits: an on-hit source needs a modeled hit, an on-crit source a modeled hit that can crit. */
-export function settleMark(mark, hits = []) {
+/**
+ * Settle `active` from the computed hits: an on-hit source needs a modeled hit, an on-crit source a modeled hit that can crit. A source
+ * of the follower's (origin "follower": Forking Thunder's spear, always a crit, "inflicts Mark on Critical Strike") is held by the
+ * follower's own hits: `followerHits` lists its damaging skills (src/follower-model.js followerDamageSources: { skill, dps }), so a build
+ * whose damage is all Minion damage keeps the dummy Marked from the follower's spear (G10, 2026-11-12; research/build-10t-iris2-erosion-
+ * magus-audit-2026-11-12.md).
+ */
+export function settleMark(mark, hits = [], followerHits = []) {
   if (!mark?.apply) return mark;
   const modeled = hits.filter((hit) => hit.modeled);
   const critting = modeled.filter((hit) => (hit.crit?.chancePercent || 0) > 0);
+  const followerMarking = mark.sources.filter((line) => line.origin === "follower" && followerHits.some((hit) => hit.dps > 0 && hit.skill && String(line.source || "").includes(hit.skill)));
+  const onFollower = followerMarking.length > 0;
   const onHit = mark.sources.some((line) => line.on === "hit") && modeled.length > 0;
   const onCrit = mark.sources.some((line) => line.on === "crit") && critting.length > 0;
   // A source that marks without a hit (Erika's Artificial Moon while Stalker is held) needs only a modeled hit to matter.
   const onStalker = mark.sources.some((line) => line.on === "stalker") && modeled.length > 0;
-  const active = onHit || onCrit || onStalker;
+  const active = onHit || onCrit || onStalker || onFollower;
   const reason = active
-    ? `best case: the dummy stays Marked (${mark.sources.map((line) => `${line.source}: ${line.text}`).join("; ")}${onCrit && !onHit ? `; ${critting.map((hit) => hit.name).join(", ")} can crit` : ""}); duration not sourced (provisional)`
+    ? `best case: the dummy stays Marked (${mark.sources.map((line) => `${line.source}: ${line.text}`).join("; ")}${onCrit && !onHit ? `; ${critting.map((hit) => hit.name).join(", ")} can crit` : ""}${onFollower && !onHit && !onCrit && !onStalker ? "; the follower's own hits apply it" : ""}); duration not sourced (provisional)`
     : modeled.length ? "no modeled hit can Critical Strike, so the on-crit Mark never lands" : "no modeled hit applies the Mark";
   return { ...mark, active, reason };
 }

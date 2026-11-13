@@ -509,11 +509,11 @@ function erikaVendettaEntry(line, module, state, { entry, derive, timedEffects, 
   else if (P.incisiveDuration.test(text)) entry(line, module, Boolean(incisive?.close || incisive?.mortalAttackPercent) && !noVendetta, noVendetta || (incisive?.close || incisive?.mortalAttackPercent ? `Incisive lasts ${incisive.durationSeconds} s, Incisive Effect +${incisive.effectPercent}%` : "Incisive is switched off (beyond 5 m)"));
   else if (P.extraTrigger.test(text)) {
     const effective = facts?.critEffectivePercent;
-    entry(line, module, !noVendetta && effective !== 0, noVendetta || (effective === 0 ? "the Main Skill has no crit chance" : "Vendetta's extra Main Skill triggers read Vendetta's own Critical Strike Chance (game affix 401776160, no whole steps); the planner has none for Vendetta, so the Main Skill's stands in (src/vendetta-model.js; provisional)"));
+    entry(line, module, !noVendetta && effective !== 0, noVendetta || (effective === 0 ? "Vendetta has no crit chance" : `Vendetta's extra Main Skill triggers read Vendetta's own Critical Strike Chance (game affix 401776160, no whole steps): ${Math.round((facts?.critRawPercent ?? effective) * 100) / 100}% from the attack crit with Vendetta's own supports (src/vendetta-model.js vendettaCritChances)`));
   } else if (P.excess.test(text)) {
     const raw = facts?.critRawPercent;
     const excess = raw != null && raw > 100;
-    entry(line, module, !noVendetta && (raw == null || excess), noVendetta || (raw == null ? "read on the Vendetta triggers from the Main Skill's uncapped crit chance" : excess ? `${Math.round((raw - 100) * 100) / 100}% Excess Critical Strike Chance: an expected additional factor on the triggered uses (no whole steps)` : `no Excess Critical Strike Chance (${Math.round(raw * 100) / 100}%)`));
+    entry(line, module, !noVendetta && (raw == null || excess), noVendetta || (raw == null ? "read on the Vendetta triggers from Vendetta's own uncapped crit chance" : excess ? `${Math.round((raw - 100) * 100) / 100}% Excess Critical Strike Chance: an expected additional factor on the triggered uses (no whole steps)` : `no Excess Critical Strike Chance (${Math.round(raw * 100) / 100}%)`));
   } else if (P.mortalTaken.test(text)) {
     // Buff 82169 level 1: +10% × Incisive Effect additional Attack Damage at any distance (127628400 p0), not printed on the line. The
     // +5% is on Erika, who owns the buff (814172800, trigger 1000041; buff text 82169_1), so no dummy figure takes it.

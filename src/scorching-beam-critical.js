@@ -66,7 +66,7 @@ export function classifyTaggedCritLine(text) {
   for (const [pattern, build] of TAGGED_CRIT) { const match = clean.match(pattern); if (match) { const rule = build(match); return { ...rule, tags: scopeTags(rule.scope) }; } }
   return null;
 }
-function taggedCritLines(modifierTexts, main) {
+export function taggedCritLines(modifierTexts, main) {
   const tags = new Set(main?.tags || []);
   const out = { ratingPercent: 0, ratingFlat: 0, damage: [] };
   for (const line of modifierTexts) {

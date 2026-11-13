@@ -2,7 +2,7 @@
 // read-only, no script decryption): the records of the buffs the planner holds on you (src/unit-buff-set.js, W9 step 2).
 // OWN_BUFF_RECORD_TABLE[buff id] = [planner name, game internal name, status tags (51xxxxx), unit states (40xxxxx), rows?]; rows (the keyword
 // buffs only: the skill buffs keep theirs in SKILL_BUFFS) = { level row: [[affix, args]] }, a level map written as [[level, value], …].
-// 164 records.
+// 169 records.
 export const OWN_BUFF_RECORD_TABLE = Object.freeze({
   112: ["Frostbite","bingjie",[5100001,5100002,5100008,5100101,5100112],[4000112,4000580,4000570,4000860]],
   170: ["Numbed","mabi",[5100001,5100002,5100009],[4000121,4000580,4000570]],
@@ -64,6 +64,11 @@ export const OWN_BUFF_RECORD_TABLE = Object.freeze({
   10570: ["Protection Field","s_baohulichang_buff",[5100304,5100310],[4000870]],
   10580: ["Dark Gate","s_heianzhimen_buff",[5100310,5100311],[4000890]],
   10590: ["Elemental Shock","s_yuansuzhendang_buff",[5100310,5100311],[4000890]],
+  10610: ["Summon Frost Magus","s_hanbingzhiyuan",[5100310,5100312],[],{}],
+  10620: ["Summon Fire Magus","s_liehuozhiyuan",[5100310,5100312],[],{}],
+  10630: ["Summon Thunder Magus","s_leitingzhiyuan",[5100310,5100312],[],{}],
+  10640: ["Summon Rock Magus","s_panshizhiyuan",[5100310,5100312],[],{}],
+  10650: ["Summon Erosion Magus","s_fuhuazhiyuan",[5100310,5100312],[],{}],
   10660: ["Machine Army","s_jixiexingjun_buff",[5100310,5100311],[4000890]],
   10681: ["Black Hole","s_heidong_buff",[5100310,5100311],[4000890]],
   10691: ["Corrosive Throw","s_qinshitouzhi_buff2",[5100310],[]],

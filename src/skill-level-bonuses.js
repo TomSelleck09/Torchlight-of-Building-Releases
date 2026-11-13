@@ -162,6 +162,8 @@ export function skillLevelBonus(skill, sources) {
   for (const slate of sources.slates || []) {
     for (const affix of slateTalentLines(slate)) add(affix, slate.name, 1, "slate");
   }
+  // Pact spirit lines (G6, 2026-11-12; src/planner.js levelSources.pacts): "+N Spirit Magus Skill Level" (record 557054), read like a talent's.
+  for (const line of sources.pacts || []) add(line.text, line.source, line.multiplier ?? 1, "pact");
   // Levels the planner settles behind a gate (Dual Kismet: Hatch Out's "-5 to Aura Skill Level" with no Energy Shield, game affix 916287744:
   // field 2006400 on the Aura tag; src/planner.js levelSources.gatedLevels): { name, text, levels, tag }. An Aura skill only, not a support
   // whose catalog tags list Aura (Aura Amplification): the record names the skill tag.

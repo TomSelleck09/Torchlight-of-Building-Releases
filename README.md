@@ -8,6 +8,12 @@ An unofficial, fan-made build planner and damage calculator for **Torchlight: In
 
 > **Calculations are a work in progress.** Many mechanics are modeled, but some are only partly modeled or not modeled yet. Every tooltip line has a badge (*In calc*, *Not modeled*, and so on), so you can see what is counted. Treat the figures as estimates, not exact in-game numbers.
 
+## Modeled builds
+
+![Modeled builds: the planner's damage against each build's claimed or measured figure](docs/dashboard/modeled-builds.svg)
+
+The figures compare the planner's sustained damage on the Lv.85 training dummy against each build creator's claim (unverified) or an in-game run. The planner's figures are estimates.
+
 ## ⭐ Import from game
 
 If the game is installed on the same PC, one click imports the last character you logged into: gear, talents, skills, hero, pacts and more, all read from the game's local log.

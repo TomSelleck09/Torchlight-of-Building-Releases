@@ -341,8 +341,10 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
   };
   const mainDamage = weaponDamage(mainHand, "main");
   const offDamage = weaponDamage(offHand, "off");
-  // Off-hand share (legendary affix): X% of the off-hand weapon's damage joins the main-hand weapon's hits.
-  if (offHandSharePercent && dualWielding) for (const [type, range] of Object.entries(offDamage)) addRange(mainDamage, type, scale(range, offHandSharePercent / 100));
+  // Off-hand share (legendary affix): X% of the off-hand weapon's damage joins the main-hand weapon's hits. The share's own part is kept
+  // apart (`joinedShareByType`) so the main-hand weapon's own lines do not reach it (G3 below).
+  const shareByType = {};
+  if (offHandSharePercent && dualWielding) for (const [type, range] of Object.entries(offDamage)) { const part = scale(range, offHandSharePercent / 100); shareByType[type] = part; addRange(mainDamage, type, part); }
 
   // Joined Force (2026-10-14): while dual wielding, the off-hand weapon does not attack, so every attack is a main-hand attack
   // (main-hand damage, speed and crit rating); the build stays dual wielding (the Dual Wielding status and "while Dual Wielding"
@@ -352,6 +354,10 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
   // 60% is of the off-hand's local base weapon damage (its own flat ranges after its own local modifiers and the Off-Hand
   // base bonus), added to the main hand's base damage before global multipliers; attack speed and crit come from the main
   // hand's local properties only (the off-hand's are dead stats); the Dual Wielding status still applies.
+  // G3 (9 T Double Thrusts audit, 2026-11-13; the Hero Ranking panel's Main- / Off-Hand Attack Damage rows and Attack DPS reproduce to
+  // 0.01% only this way): the 60% is of the off-hand's own final damage, so the main-hand weapon's own lines ("+X% additional damage for
+  // Main-Hand Weapons", record 103210002: node 321 on the item in slot 2) do not reach it; every other multiplier does, as above.
+  // `joinedShareByType` is that part (inside damageByType); src/skill-hit-model.js keeps it out of the main-hand-only factor.
   const joinedForce = dualWielding && offHandNoAttackSources.length > 0 && Boolean(mainHand?.weapon);
   // The damage one Weapon Attack Damage hit scales from.
   let damageByType = {}, mode = "main-hand";
@@ -428,7 +434,8 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
     dualWieldStatus: dualWielding ? DUAL_WIELD_STATUS : null,
     damageByType, damageTypes: Object.keys(damageByType), hands,
     twoHandedBasePercent, offHandBasePercent, offHandSharePercent,
-    joinedForce: joinedForce ? { sources: offHandNoAttackSources, offHandSharePercent, mainHandAttacksPerSecond: mainSpeed, reading: "off-hand share = % of the off-hand's local base damage, added to the main hand's base before global multipliers; main-hand speed and crit only; Dual Wielding status kept", source: "user-supplied (Google AI Mode answer, 2026-10-14; not an in-game test)" } : null,
+    joinedForce: joinedForce ? { sources: offHandNoAttackSources, offHandSharePercent, mainHandAttacksPerSecond: mainSpeed, shareByType, reading: "off-hand share = % of the off-hand's local damage, added to the main hand's damage before the build's multipliers, but not under the main-hand weapon's own lines (the panel, 2026-11-13); main-hand speed and crit only; Dual Wielding status kept", source: "user-supplied (Google AI Mode answer, 2026-10-14; not an in-game test); the main-hand-only exclusion from the Hero Ranking panel rows (9 T Double Thrusts audit G3)" } : null,
+    joinedShareByType: joinedForce && Object.keys(shareByType).length ? shareByType : null,
     addedToAttacks: lines.added, additional: lines.additional, increased: lines.increased,
     attackSpeed, crit, notes, warnings,
     sources: {

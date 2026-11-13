@@ -50,7 +50,10 @@ export function auraBaseEffects(setup) {
  *   context "town" is the in-game panel's view (no target, no combat state): conditional support lines are left out.
  */
 export function auraSupportEffects(supports, { auraCount, nearbyElite = false, affectedAllies = 1, context = "dummy" }) {
-  let increased = 0, additionalFactor = 1;
+  // additionalFactor: the Aura's effect on you (every term, in support order, as before). receivedFactor: its "received" terms
+  // alone, which only the holder takes. allyAdditionalFactor: every term but those, the effect an ally holds (G1, 2026-11-12).
+  // alliesExcluded: a support that keeps the Aura off other allies (Precise: Selfishness).
+  let increased = 0, additionalFactor = 1, receivedFactor = 1, allyAdditionalFactor = 1, alliesExcluded = null;
   const sources = [], unsupported = [], excluded = [];
   for (const support of supports) {
     const level = supportLevel(support);
@@ -61,11 +64,13 @@ export function auraSupportEffects(supports, { auraCount, nearbyElite = false, a
       excluded.push({ source: support.name, reason: support.name === "Precise: Malleable" ? "in-game panel: neither branch (no Elite check in town)" : "conditional Aura Effect: left out of the town panel (provisional)" });
       continue;
     }
-    let increase = 0, additional = 0;
+    let increase = 0, additional = 0, received = 0;
     switch (support.name) {
       // Stone 894802 {1: 5.25, 21: 10.25, 41: 15.25} (= the former fallback 5 + 0.25 × level).
       case "Aura Amplification": increase = Number.isFinite(amount) ? amount : 5 + .25 * level; break;
-      case "Precise: Selfless": increase = amount; additional = -90; break;
+      // "-90% additional Aura Effect received from the supported skill" (record 323252064): attr 3410 "Effect received" mod 4 on the
+      // holder only (filter target 1), with the Aura's tags; not the skill's Aura Effect (3401). You hold it; an ally (a Minion) does not.
+      case "Precise: Selfless": increase = amount; received = -90; break;
       case "Precise: Stand as One": increase = amount * Math.min(5, auraCount); break;
       case "Precise: Disciplined": additional = amount; break;
       case "Precise: Concentrated": increase = auraCount <= 2 ? amount : 0; break;
@@ -73,7 +78,7 @@ export function auraSupportEffects(supports, { auraCount, nearbyElite = false, a
       // reference data: "The supported skill does not take effect on other allies; X% Aura effect for the supported skill" (the leveled
       // column). Its catalog text is one line with level markers, which the default reader below skipped (frost-terra audit
       // 2026-10-13). Its "-12% Sealed Mana Compensation" is read by auraSupportSealedManaCompensation below.
-      case "Precise: Selfishness": increase = amount; break;
+      case "Precise: Selfishness": increase = amount; alliesExcluded = support.name; break;
       case "Precise: Safety in Numbers": increase = amount * Math.min(7, affectedAllies); break;
       default: {
         for (const effect of support.effects || []) for (const line of effect.split("\n")) {
@@ -85,10 +90,16 @@ export function auraSupportEffects(supports, { auraCount, nearbyElite = false, a
     }
     if (!Number.isFinite(increase) || !Number.isFinite(additional)) { unsupported.push({ source: support.name, text: "Aura Effect progression unavailable" }); continue; }
     increased += increase;
-    additionalFactor *= Math.max(0, 1 + additional / 100);
-    if (increase || additional) sources.push({ source: support.name, increasedPercent: increase, additionalPercent: additional });
+    if (received) {
+      additionalFactor *= Math.max(0, 1 + received / 100);
+      receivedFactor *= Math.max(0, 1 + received / 100);
+    } else {
+      additionalFactor *= Math.max(0, 1 + additional / 100);
+      allyAdditionalFactor *= Math.max(0, 1 + additional / 100);
+    }
+    if (increase || additional || received) sources.push({ source: support.name, increasedPercent: increase, additionalPercent: additional + received, ...(received ? { receivedPercent: received } : {}) });
   }
-  return { increased, additionalFactor, sources, unsupported, excluded };
+  return { increased, additionalFactor, receivedFactor, allyAdditionalFactor, alliesExcluded, sources, unsupported, excluded };
 }
 
 const SUPPORT_SMC_LINE = /^([+-]?\d+(?:\.\d+)?)% (additional )?Sealed Mana Compensation(?: for the supported skill)?\.?$/i;

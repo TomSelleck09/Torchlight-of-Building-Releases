@@ -21,6 +21,7 @@ import { compilePlainProgram, plainUseKind, repeatEffects, timerField } from "./
 import { usesPerPlacement } from "./tick-engine.js";
 import { compileAilmentProgram } from "./tick-ailments.js";
 import { compileMinionProgram } from "./tick-minions.js";
+import { compileTriggerMains } from "./tick-trigger-main.js";
 
 const FOLLOWER_REASON = "the follower's casts are not on the loop in this run; the planner's steady DPS, spread over the ticks";
 const OTHER_REASON = "not on the tick loop yet; the planner's steady DPS, spread over the ticks";
@@ -198,6 +199,10 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   const ailmentProgram = live.length ? compileAilmentProgram(planner, { ...readings, targetBlessings }, timerField(readings), { aimBuff: layerContext?.once.has("aim") ? "aim" : null, bus }) : null;
   const plain = live.length ? compilePlainProgram(planner, plainHits, paths, readings, ailmentProgram, layered, bus) : null;
   if (plain) Object.assign(paths, plain.paths);
+  // Main Skill triggers (Vendetta) as loop actions (src/tick-trigger-main.js; chunk 15 §10.4): the casts and the Main Skill's own uses on one
+  // queue, each cast's triggered uses on the Main Skill's layered path.
+  const triggerMain = plain && !program ? compileTriggerMains(planner, { hits: plainHits, paths, actions: plain.actions, layered }) : null;
+  if (triggerMain) { Object.assign(paths, triggerMain.paths); plain.actions = [...plain.actions.map((action) => triggerMain.replaced.get(action.key) ?? action), ...triggerMain.actions]; plain.layers.push(...triggerMain.layers); plain.assumptions.push(...triggerMain.assumptions); }
   if (ailmentProgram) Object.assign(paths, ailmentProgram.paths);
   // A layer's modifiers on the Minions' paths (W10 step 4a: the per-ailment-type Minion bodies, src/tick-layers.js minionTypeModifiers).
   const minionModifiers = layerContext?.ailmentTypeMinion?.length ? (minion, skill) => minionTypeModifiers(layerContext, minion, skill) : null;
@@ -242,7 +247,7 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   }
   const { actions, periodics, triggers } = ailments ?? { actions: allActions, periodics: allPeriodics, triggers: allTriggers };
   const onLoop = ailments ? { ailments: ailments.ailments, reaps: ailments.reaps, derived: ailments.derived, ...(ailmentProgram.affliction ? { affliction: ailmentProgram.affliction } : {}), ...(ailments.nightfall ? { nightfall: ailments.nightfall } : {}) } : {};
-  const averaged = averagedSources(planner, paths, new Set([...(ailments?.reaps || []), ...(ailments?.derived || []), ...(minions?.minions || [])].map((item) => item.key)));
+  const averaged = averagedSources(planner, paths, new Set([...[...(ailments?.reaps || []), ...(ailments?.derived || []), ...(minions?.minions || [])].map((item) => item.key), ...(triggerMain?.seriesKeys || [])]));
   assumptions.push(...averaged.map((item) => ({ id: `tick:averagedSource:${item.key}`, value: item.dps, text: `${item.label}: ${item.reason}.` })), ...(ailments?.assumptions || []));
   // The bus's event on every hit path of yours (its strike hits, crit share, event tags), and its run state through the spec.
   if (bus) {
@@ -257,7 +262,7 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   const shared = general ? { speeds: general.speeds, triggers, collectors: general.collectors, initialBuffs: general.initialBuffs, queueOrder: general.queueOrder } : {};
   if (!program) {
     const generalLayers = general?.liveLayers || [], generalHeld = general && plainProgram ? general.heldLayers : [];
-    return { seconds, program: plainProgram ? "plain" : null, paths, ...shared, ...busSpec, actions, periodics, dots, ...onLoop, ...minionList, averaged, averagedLayers, ...(plainProgram ? { liveLayers: [...generalLayers, ...(plain?.layers || []), ...ailmentLayers, ...(minions?.layers || [])] } : {}), ...(held.length || generalHeld.length ? { heldLayers: [...generalHeld, ...held] } : {}), assumptions };
+    return { seconds, program: plainProgram ? "plain" : null, paths, ...shared, ...busSpec, actions, periodics, dots, ...onLoop, ...minionList, ...(triggerMain ? { triggerMains: triggerMain.items } : {}), averaged, averagedLayers, ...(plainProgram ? { liveLayers: [...generalLayers, ...(plain?.layers || []), ...ailmentLayers, ...(minions?.layers || [])] } : {}), ...(held.length || generalHeld.length ? { heldLayers: [...generalHeld, ...held] } : {}), assumptions };
   }
   const { liveLayers, heldLayers, queueOrder } = program;
   return { seconds, program: "youga", ...shared, ...busSpec, queueOrder, paths, actions, periodics, dots, ...onLoop, ...minionList, averaged, averagedLayers, liveLayers: [...liveLayers, ...(plain?.layers || []), ...ailmentLayers, ...(minions?.layers || [])], heldLayers: [...heldLayers, ...held], assumptions };

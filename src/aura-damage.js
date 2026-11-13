@@ -14,6 +14,8 @@
 //   skillTag  — applies only to skills with the tag (Melee, Attack, Projectile).
 //   resistance — read by the resistance model (src/resistance-model.js).
 //   none      — no effect on damage to the dummy.
+import { auraRecord } from "./data/skills/aura-scaling-ss13.js";
+
 export const AURA_STAT_SCOPES = Object.freeze({
   additionalFireDamagePercent: { kind: "ledger" },
   additionalSpellDamagePercent: { kind: "ledger" },
@@ -43,9 +45,10 @@ export const AURA_STAT_SCOPES = Object.freeze({
   elementalResistancePercent: { kind: "resistance" },
   additionalElementalDamageTakenPercent: { kind: "none", reason: "damage taken by you (defense)" },
   elementalAilmentAvoidancePercent: { kind: "none", reason: "ailment avoidance (defense)" },
-  additionalMinionDamagePercent: { kind: "none", reason: "minion stats (minions are not modeled)" },
-  minionAggressivenessPercent: { kind: "none", reason: "minion stats (minions are not modeled)" },
-  additionalMinionMaxLifePercent: { kind: "none", reason: "minion stats (minions are not modeled)" },
+  // Minion stats: read on your Minions as allies holding the buff (auraAllyMinionLines below; G1 2026-11-12).
+  additionalMinionDamagePercent: { kind: "none", reason: "no modeled Minion takes it" },
+  minionAggressivenessPercent: { kind: "none", reason: "Minion aggressiveness (no DPS effect)" },
+  additionalMinionMaxLifePercent: { kind: "none", reason: "Minion Max Life (defense)" },
   lifeRegenerationPerSecond: { kind: "none", reason: "Life regeneration" },
   lifeRegenerationPercentPerSecond: { kind: "none", reason: "Life regeneration" },
   manaRegenerationPerSecond: { kind: "none", reason: "Mana regeneration" },
@@ -79,6 +82,64 @@ export function auraDamageModifierTexts(auraEntries = [], damageTypes = AILMENT_
     }
   }
   return lines;
+}
+
+// The Auras' buffs on your Minions (G1, 2026-11-12; research/build-10t-iris2-erosion-magus-audit-2026-11-12.md; provisional, open
+// question aura-ally-minion-scale). Every Aura reads "you and allies within a certain area gain the following buff", and the Minions are
+// allies: Steel Vanguard's Reflection (record 79805904) counts, on each Minion, the buffs it holds with the Aura tag 5100305. The buff
+// writes on its holder (Precise: Erosion Amplification 319376192: attr 5402 mod 4, untagged; Precise: Domain Expansion 871242: 5719
+// mod 4 on Area; Precise: Radical Order 749046: 5719 mod 4 on Minion), so a Minion holding it takes it on its own hits. Its value is
+// the entry's `allyEffects` (src/engine.js: your Aura Effect without the "received" terms only you hold). Best case: every Minion stands
+// in the area. Each stat with a Minion reader becomes one line in the Minion model's wording (src/minion-damage-model.js PATTERNS), once
+// per Aura (the board / item copy the ledger kept); a module's Aura Overwrite of the same Aura is that one buff (src/module-protocols.js
+// gives it nothing while the board copy is active). Not read on Minions: Melee-scoped speed and crit (no Minion reader), ailment, DoT
+// and Affliction stats (Minion ailments are not modeled), defences and regeneration (no DPS effect).
+const MINION_TYPE_STATS = { additionalPhysicalDamagePercent: "Physical", additionalFireDamagePercent: "Fire", additionalColdDamagePercent: "Cold", additionalLightningDamagePercent: "Lightning", additionalErosionDamagePercent: "Erosion" };
+const MINION_TAG_STATS = { additionalAreaDamagePercent: "Area", additionalSpellDamagePercent: "Spell", additionalAttackDamagePercent: "Attack", additionalMeleeSkillDamagePercent: "Melee", additionalProjectileDamagePercent: "Projectile" };
+const MINION_SPEED_STATS = { attackSpeedPercent: "Attack", castSpeedPercent: "Cast" };
+/** The Minion-model wording of one Aura buff stat on a Minion, or null when the Minion model has no reader for it. */
+export function auraMinionLineText(stat, value) {
+  if (!Number.isFinite(value) || value === 0) return null;
+  const amount = `${value > 0 ? "+" : ""}${round(value)}%`;
+  if (MINION_TYPE_STATS[stat]) return `${amount} additional ${MINION_TYPE_STATS[stat]} Damage for Minions`;
+  if (MINION_TAG_STATS[stat]) return `${amount} additional ${MINION_TAG_STATS[stat]} Damage for Minions`;
+  if (stat === "additionalMinionDamagePercent") return `${amount} additional Minion Damage`;
+  if (MINION_SPEED_STATS[stat]) return `${amount} Minion ${MINION_SPEED_STATS[stat]} Speed`;
+  return null;
+}
+/**
+ * The active Auras' buffs as Minion lines: { damage: [{ kind, …, source, text, aura, stat }] (for calculateMinion's extraLines),
+ * life: [{ source, text, aura }] (Minion Max Life lines, src/minion-life.js), excluded: [{ aura, reason }] }. `classify` is the Minion
+ * model's line reader (src/minion-damage-model.js classifyMinionLine), passed in to keep this module free of the Minion engine.
+ */
+export function auraAllyMinionLines(auraEntries = [], { classify = null } = {}) {
+  const damage = [], life = [], excluded = [];
+  for (const entry of auraEntries) {
+    // An Aura's own buff record only (the 40 "Activates the Aura" skills): a Spirit Magus summon's buff is its Origin
+    // (src/origin-of-spirit-magus.js) and a Focus skill's its Focus buff (src/focus-buffs.js).
+    if (!entry?.allyEffects || !auraRecord(entry.name)) continue;
+    if (entry.alliesExcluded) { excluded.push({ aura: entry.name, reason: entry.alliesExcluded }); continue; }
+    const source = `Aura: ${entry.name} (its buff on your Minions, allies in the area)`;
+    for (const [stat, value] of Object.entries(entry.allyEffects)) {
+      if (stat === "additionalMinionMaxLifePercent" && Number.isFinite(value) && value !== 0) { life.push({ source, text: `${value > 0 ? "+" : ""}${round(value)}% additional Minion Max Life`, aura: entry.name, origin: "derived", multiplier: 1 }); continue; }
+      const text = auraMinionLineText(stat, value);
+      const parsed = text && classify ? classify(text) : null;
+      if (parsed) damage.push({ ...parsed, source, text, aura: entry.name, stat });
+    }
+  }
+  return { damage, life, excluded };
+}
+/** Whether a Minion line's source is an Aura's buff on the Minions (auraAllyMinionLines). */
+export const isAuraMinionLineSource = (source) => /^Aura: .+ \(its buff on your Minions, allies in the area\)$/.test(String(source || ""));
+/** What one Aura's buff does on the modeled Minions: "+X% <stat> on your Minions (names)", joined; "" when no Minion takes it. */
+export function auraMinionReachText(entry, planner) {
+  const reach = new Map();
+  for (const minion of planner?.minions || []) {
+    if (!minion?.modeled) continue;
+    const lines = [...(minion.skills || []).flatMap((skill) => skill.additional || []), ...(minion.lines?.speed || [])];
+    for (const line of lines) if (line.aura === entry?.name && line.stat) { if (!reach.has(line.stat)) reach.set(line.stat, { value: line.value, minions: new Set() }); reach.get(line.stat).minions.add(minion.name); }
+  }
+  return [...reach].map(([stat, { value, minions }]) => `${signed(value)}% ${stat.replace(/Percent$/, "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()} on your Minions (${[...minions].join(", ")}; allies in the area, provisional)`).join(", ");
 }
 
 const signed = (value) => `${value >= 0 ? "+" : ""}${Number(Number(value).toFixed(2))}`;

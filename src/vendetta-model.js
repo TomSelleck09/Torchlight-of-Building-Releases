@@ -4,6 +4,7 @@ import { refdataSkillCatalogSs13 } from "./data/catalogs/refdata-ss13.js";
 import { classifyHitLine } from "./skill-hit-lines.js";
 import { cooldownRecoveryLines } from "./recipe-hit-layers.js";
 import { incisiveUptime, felineFuryChances } from "./erika-traits.js";
+import { taggedCritLines } from "./scorching-beam-critical.js";
 
 // Vendetta and Endless Vendetta (engine "trigger-main"): player-activated skills that trigger the equipped Main Skill.
 //
@@ -35,8 +36,9 @@ import { incisiveUptime, felineFuryChances } from "./erika-traits.js";
 // felineFuryChances); Leisurely Stroll's no-cooldown and +X% additional Attack Speed while Hasten is held, on tag 6100075, so Endless
 // Vendetta takes both, and its -80% additional damage on the manually used Main Skill while Incisive is up (the manual time's Incisive
 // share, taken off the net gain); Vengeful Night Wraith's Phantom casts (one per 3 Vendetta casts, a triggered use each at +30%
-// additional Phantom Damage, taking no player time). Whose crit: GetCurSkillCritValue is Vendetta's own crit chance; the planner has
-// no Vendetta crit figure, so the Main Skill's stands in (provisional).
+// additional Phantom Damage, taking no player time). Whose crit: GetCurSkillCritValue is Vendetta's own crit chance (record 401776160
+// rolls on trigger 1000069 [6100075], Vendetta's use): vendettaCritChances below (9 T Double Thrusts audit G2, 2026-11-13; it had
+// read the Main Skill's as a stand-in).
 
 const TRIGGER_PENALTY = /^([+-]?\d+(?:\.\d+)?)% additional damage when this skill is triggered$/i;
 const CANNOT_TRIGGER = /^This skill cannot be triggered$/i;
@@ -97,7 +99,49 @@ export function hitCritChances(hit) {
   return { effective, raw: Math.max(raw, effective) };
 }
 
-export function calculateVendettaTriggers({ sources = [], setups = [], resolvedMain = null, skillHits = [], weaponAttack = null, modifierTexts = [], windows = [5, 20], erika = null, hasHasten = false, bardSong = null } = {}) {
+/**
+ * The trigger skill's own supports' Attack Speed (G1, 2026-11-13; the 9 T Double Thrusts audit): Quick Decision on Vendetta (record
+ * 75564: attr 6001 / 6002 mod 4 on the supported skill, tag 5000002) writes the supported skill's own additional Attack Speed, and
+ * Vendetta's use is an attack-speed use (Split 363570 atkSpeedType 1). The lines come from the hit model's support reader
+ * (src/skill-hit-model.js supportLayers: the setup's Attack Speed and "Attack and Cast Speed" lines), and join the weapon Attack
+ * Speed by the hit model's pooled formula: (1 + (I_weapon + I_supports)) ÷ (1 + I_weapon) × Π(1 + additional).
+ */
+export function ownSupportSpeedFactor(lines = [], attackSpeed = null) {
+  const increased = lines.filter((line) => !line.additional).reduce((total, line) => total + line.value, 0);
+  const additional = lines.filter((line) => line.additional).reduce((factor, line) => factor * (1 + line.value / 100), 1);
+  const weaponIncreased = Number.isFinite(attackSpeed?.increasedPercent) ? attackSpeed.increasedPercent : 0;
+  return Math.max(0, 1 + (weaponIncreased + increased) / 100) / Math.max(1e-9, 1 + weaponIncreased / 100) * additional;
+}
+
+/**
+ * Vendetta's own crit chance (G2, 2026-11-13; the 9 T Double Thrusts audit). Feline Fury's extra triggers and Excess roll
+ * GetCurSkillCritValue on Vendetta's use (record 401776160, trigger 1000069 on Vendetta's tag 6100075), so they read Vendetta's crit,
+ * not the Main Skill's. Vendetta is an Attack (Attack, Melee, Area) on the same weapon: the attack crit by the manual's formula, rating
+ * = (weapon + flat) × (1 + Σ%) × Π(1 + additional %), with
+ *   - the Main Skill hit's attack crit base (weapon rating, flat rating, the build's untagged / Attack increased pool, src/skill-hit-model.js
+ *     crit.attackCrit), which every Attack takes;
+ *   - the tag-scoped crit rating lines Vendetta's own tags take (src/scorching-beam-critical.js taggedCritLines on its profile);
+ *   - the Auras' Melee crit rating ("+X% Critical Strike Rating for Melee Skills", Precise: Fearless) when Vendetta is Melee;
+ *   - its own setup's support crit lines (Critical Strike Rating Increase, record 101010452: attr 4802 mod 3 on the supported skill;
+ *     Attack Focus's "+3% per 10 Fervor Rating", record 348216192), from the hit model's support reader.
+ * The Main Skill's own supports' crit lines do not reach it. Without an attack crit base (no weapon model) the Main Skill's stands in.
+ */
+export function vendettaCritChances({ mainHit, spec, ownCrit = [], modifierTexts = [] } = {}) {
+  const crit = mainHit?.crit || {};
+  const base = crit.supportRating?.base || crit.attackCrit || null;
+  if (!base) return { ...hitCritChances(mainHit), standIn: true };
+  const tags = new Set(spec?.tags || []);
+  const tagged = taggedCritLines(modifierTexts, { tags: [...tags] });
+  const aura = tags.has("Melee") ? (crit.supportRating?.sources || []).filter((line) => /^Aura: /.test(line.source || "") && line.kind === "ratingPercent" && /for Melee Skills/i.test(line.text || "")) : [];
+  const flat = ownCrit.filter((line) => line.kind === "ratingFlat").reduce((total, line) => total + line.value, 0) + tagged.ratingFlat;
+  const percent = ownCrit.filter((line) => line.kind === "ratingPercent").reduce((total, line) => total + line.value, 0) + tagged.ratingPercent + aura.reduce((total, line) => total + line.value, 0);
+  const additional = ownCrit.filter((line) => line.kind === "ratingAdditional").reduce((factor, line) => factor * (1 + line.value / 100), 1);
+  const rating = Math.max(0, ((base.weaponRating || 0) + (base.flatRating || 0) + flat) * Math.max(0, 1 + ((base.increasedRatingPercent || 0) + percent) / 100) * additional);
+  const raw = rating / 100;
+  return { effective: Math.max(0, Math.min(100, raw)), raw, rating, standIn: false, sources: [...ownCrit.map((line) => ({ source: line.source, text: line.text, value: line.value, kind: line.kind })), ...aura.map((line) => ({ source: line.source, text: line.text, value: line.value, kind: line.kind })), ...(tagged.ratingPercent || tagged.ratingFlat ? [{ source: "Tag-scoped crit rating lines", text: `+${round(tagged.ratingPercent)}% / +${round(tagged.ratingFlat)} for ${[...tags].join(", ")}`, value: tagged.ratingPercent }] : [])], base: { weaponRating: base.weaponRating || 0, flatRating: base.flatRating || 0, increasedRatingPercent: base.increasedRatingPercent || 0 } };
+}
+
+export function calculateVendettaTriggers({ sources = [], setups = [], resolvedMain = null, skillHits = [], weaponAttack = null, modifierTexts = [], windows = [5, 20], erika = null, hasHasten = false, bardSong = null, setupSupports = null } = {}) {
   if (!sources.length) return [];
   const cooldownLines = cooldownRecoveryLines(modifierTexts, classifyHitLine);
   const cooldownFactor = Math.max(0.0001, 1 + cooldownLines.filter((line) => !line.additional).reduce((sum, line) => sum + line.value, 0) / 100) * cooldownLines.filter((line) => line.additional).reduce((factor, line) => factor * (1 + line.value / 100), 1);
@@ -122,7 +166,9 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
     const combo = Boolean(mainHit.profile?.cycle);
     const mainPerUse = combo ? (mainHit.components.find((component) => !component.addedOnly)?.perUse ?? mainHit.combat.perUse) : mainHit.combat.perUse;
     // Vendetta's Sting (B5): the triggered-skill factors, Feline Fury, Leisurely Stroll, Vengeful Night Wraith.
-    const crit = hitCritChances(mainHit);
+    // Feline Fury rolls Vendetta's own crit (G2): its own supports' crit lines on the attack crit base.
+    const own = setup && typeof setupSupports === "function" ? setupSupports(setup, spec) : null;
+    const crit = vendettaCritChances({ mainHit, spec, ownCrit: own?.critRating || [], modifierTexts });
     const fury = felineFuryChances({ critPercent: crit.raw, extraTrigger: erika?.extraTrigger, excess: erika?.excess });
     const excessChance = fury.excessChance;
     const pool = [...(erika?.triggered || []).map((item) => ({ source: item.source, text: `+${item.value}% additional Attack Damage for skills triggered by Vendetta`, value: item.value })),
@@ -139,7 +185,11 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
     // and its bubble uses it once, every stacks per bubble × 0.8 s ÷ Attack Speed, in place of its own attack time (the Main Skill's
     // hit model applies the same cadence, so the time lost per cycle stays in step).
     const ownTime = bardSong ? bardSong.stacksPerBubble * bardSong.intervalSeconds : spec.timing.useTime;
-    const useTime = ownTime / speedFactor / (hastened ? 1 + erika.hasten.attackSpeedPercent / 100 : 1);
+    // Its own supports (G1): the setup's support speed lines, read by the hit model's reader (setupSupports, from src/planner.js).
+    const ownSpeedLines = own?.castSpeed || [];
+    const ownSpeed = ownSupportSpeedFactor(ownSpeedLines, weaponAttack?.attackSpeed);
+    const useTime = ownTime / speedFactor / ownSpeed / (hastened ? 1 + erika.hasten.attackSpeedPercent / 100 : 1);
+    if (ownSpeed !== 1) notes.push(`${spec.name}: its own supports' Attack Speed ×${round(ownSpeed)} on its use time (${ownSpeedLines.map((line) => `${line.source} ${line.text}`).join("; ")}; G1, record 75564 for Quick Decision).`);
     if (bardSong) notes.push(`${spec.name}: Bard Song (Sing with the Tide, hero trait audit B13, provisional): a bubble every ${bardSong.stacksPerBubble} stack(s) × ${bardSong.intervalSeconds} s ÷ Attack Speed uses it once (its attack takes ${round(spec.timing.useTime)} s).`);
     // Field 2006030 -999 on tag 6100075, which both stones carry (402052, 402053).
     const cooldown = hastened ? 0 : spec.timing.cooldown / cooldownFactor;
@@ -177,7 +227,7 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
     return {
       ...base, modeled: true, inactiveReason: null,
       main: { name: mainName, setupKey: mainHit.setupKey, perUse: mainPerUse, dps: mainDps, combo, triggerPenaltyPercent: penaltyPercent },
-      rate: { useTimeSeconds: spec.timing.useTime, effectiveUseTimeSeconds: useTime, speedFactor, cooldownSeconds: spec.timing.cooldown, effectiveCooldownSeconds: cooldown, cooldownFactor, cooldownSources: cooldownLines, repeats: spec.trigger.repeats, repeatTimes, sequenceSeconds, cycleSeconds, triggersPerSecond: spec.trigger.repeats / cycleSeconds, firstTriggerSeconds: repeatTimes[0] ?? useTime, lastTriggerSeconds: cumulative[cumulative.length - 1] ?? useTime },
+      rate: { useTimeSeconds: spec.timing.useTime, effectiveUseTimeSeconds: useTime, speedFactor, ownSpeedFactor: ownSpeed, ownSpeedSources: ownSpeedLines, cooldownSeconds: spec.timing.cooldown, effectiveCooldownSeconds: cooldown, cooldownFactor, cooldownSources: cooldownLines, repeats: spec.trigger.repeats, repeatTimes, sequenceSeconds, cycleSeconds, triggersPerSecond: spec.trigger.repeats / cycleSeconds, firstTriggerSeconds: repeatTimes[0] ?? useTime, lastTriggerSeconds: cumulative[cumulative.length - 1] ?? useTime },
       erika: erika ? { poolPercent: round(poolPercent), pool, extraChance: round(extraChance), excessChance: round(excessChance), crit, hastened, phantomPerCast: round(phantomPerCast), phantomFactor, usesPerCast: round(usesPerCast), manualIncisive: round(manualIncisive), manualLossPerCycle, manualSeconds } : null,
       combat: { perTrigger, triggerFactor, lostPerCycle, netPerCycle, cycleSeconds, dps, fiveSecondAverageDps: windowDps(windows[0] ?? 5), twentySecondAverageDps: windowDps(windows[1] ?? 20) },
       ledger: [
@@ -185,7 +235,7 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
         { source: `${spec.name}: triggered skill bonus`, text: `+${spec.trigger.additionalAttackDamagePercent}% additional Attack Damage for the triggered skill (skill_des)`, value: spec.trigger.additionalAttackDamagePercent, category: "Additional damage" },
         ...(penaltyPercent ? [{ source: `${mainName}: triggered`, text: `${penaltyPercent}% additional damage when this skill is triggered (skill text)`, value: penaltyPercent, category: "Additional damage" }] : []),
         ...(poolPercent ? [{ source: "Vendetta's Sting: triggered-skill lines", text: `+${round(poolPercent)}% additional damage for skills triggered by Vendetta (${pool.map((item) => `${item.source}: ${item.value}%`).join(" × ")}; each its own factor)`, value: round(poolPercent), category: "Additional damage" }] : []),
-        ...(extraChance ? [{ source: "Hero trait: Feline Fury", text: `${round(extraChance)} expected extra Main Skill triggers per Vendetta cast (${round(crit.raw)}% Critical Strike Chance; the Main Skill's stands in for Vendetta's own)`, value: round(extraChance * 100) }] : []),
+        ...(extraChance ? [{ source: "Hero trait: Feline Fury", text: `${round(extraChance)} expected extra Main Skill triggers per Vendetta cast (${round(crit.raw)}% Critical Strike Chance${crit.standIn ? "; the Main Skill's stands in: no attack crit base" : ": Vendetta's own (record 401776160)"})`, value: round(extraChance * 100) }] : []),
         ...(phantomPerCast ? [{ source: "Vengeful Night Wraith", text: `${round(phantomPerCast)} Phantom Vendetta per cast at +${erika.phantom.additionalPercent}% additional Phantom Damage (no player time)`, value: round(phantomPerCast) }] : []),
         ...(manualLossPerCycle ? [{ source: "Hero trait: Leisurely Stroll", text: `-${erika.manualPenaltyPercent}% additional damage on manual ${mainName} uses while Incisive is up (${round(manualIncisive * 100)}% of the manual time): -${round(manualLossPerCycle)} per cycle`, value: -round(manualLossPerCycle) }] : [])
       ]

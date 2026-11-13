@@ -133,6 +133,7 @@ import { upgradeLegacyCapturedCorrosion } from "./legacy-corrosion-migration.js"
 import { corrosionEditorChoice, corrosionEntryRanges, corrosionEntryValues, corrosionPoolForItem } from "./corrosion-implicit-options.js";
 import { AEMBER_MAX_LINES, AEMBER_SOURCE, FIRST_AEMBER_ID, aemberPool, aemberTransformTargets, canAddAemberLine, craftTransformedAember, isFirstAember, isTransformedAember, legendaryGameBase } from "./first-aember.js";
 import { installPageScale, toPagePx } from "./page-scale.js";
+import { affixSearchMatches, affixSearchTokens, chooseTierForValue, rangeContains } from "./affix-editor-input.js";
 // Windows larger than 1920 × 950 draw the design-size layout bigger (CSS zoom on the root; src/page-scale.js).
 // Rects and pointer coordinates are window pixels; lengths written to style go through toPagePx.
 installPageScale(globalThis.window, globalThis.document);
@@ -428,13 +429,14 @@ function setSlateAffixPool(select,items,fallbackGod,legendary=false){
 }
 function closeSearchableSelect(){ $("#select-search-popover")?.remove(); searchableSelectTarget=null; searchableSelectMatches=[]; }
 function searchableOptions(select,query=""){
-  const needle=query.trim().toLowerCase();
+  // Search tokens (src/affix-editor-input.js): "%" / "+" ignored, every token must match, numbers whole (user request 2026-11-12).
+  const tokens=affixSearchTokens(query), needle=tokens.length>0;
   const pool=slateAffixSelectPools.get(select);
   if(pool){
-    const choices=pool.map((option,index)=>({option:{...option,selected:select.value===option.value},index:index+1,label:option.textContent,group:""})).filter(({label})=>!needle||label.toLowerCase().includes(needle)).slice(0,99);
+    const choices=pool.map((option,index)=>({option:{...option,selected:select.value===option.value},index:index+1,label:option.textContent,group:""})).filter(({label})=>!needle||affixSearchMatches(tokens,label)).slice(0,99);
     return needle?choices:[{option:select.options[0],index:0,label:select.options[0].textContent.trim(),group:""},...choices];
   }
-  return [...select.options].map((option,index)=>({option,index,label:option.textContent.trim(),group:option.parentElement?.tagName==="OPTGROUP"?option.parentElement.label:""})).filter(({option,label,group})=>!option.disabled&&(!needle||`${label} ${group} ${option.dataset.revivedDescription||""} ${option.dataset.optionDescription||""} ${option.dataset.optionMeta||""}`.toLowerCase().includes(needle)));
+  return [...select.options].map((option,index)=>({option,index,label:option.textContent.trim(),group:option.parentElement?.tagName==="OPTGROUP"?option.parentElement.label:""})).filter(({option,label,group})=>!option.disabled&&(!needle||affixSearchMatches(tokens,`${label} ${group} ${option.dataset.revivedDescription||""} ${option.dataset.optionDescription||""} ${option.dataset.optionMeta||""}`)));
 }
 function renderSearchableSelectResults(query=""){
   const results=$("#select-search-results"); if(!results||!searchableSelectTarget)return;
@@ -463,7 +465,7 @@ function chooseSearchableOption(index){
     option.dataset.selectedAffix="";Object.assign(option.dataset,choice.dataset);
     searchableSelectTarget.add(option);
   }else searchableSelectTarget.selectedIndex=Number(index);
-  searchableSelectTarget.dispatchEvent(new Event("input",{bubbles:true})); searchableSelectTarget.dispatchEvent(new Event("change",{bubbles:true})); closeSearchableSelect();
+  affixPickFromSearch=true; try{ searchableSelectTarget.dispatchEvent(new Event("input",{bubbles:true})); searchableSelectTarget.dispatchEvent(new Event("change",{bubbles:true})); } finally { affixPickFromSearch=false; } closeSearchableSelect();
 }
 
 function capturePlannerState() {
@@ -909,7 +911,7 @@ function overviewTraitColumns(hero) {
   // columns, absolute in the spare height, so no block moves. Its trait comes from the tree's fourth selection, which has no column.
   const extraPick = heroTraitTree(hero.id) && heroTreeCapacity(plannerState.hero, hero.id) > TREE_ROW_LEVELS.length ? heroTreeSelections(plannerState.hero, hero.id)[TREE_ROW_LEVELS.length] : null;
   const extraTrait = extraPick ? traits.find((entry) => entry.name === extraPick && entry.level > 1) : null;
-  const extraRow = extraTrait ? `<span class="overview-trait-extra"><span class="overview-trait ov-item" tabindex="0" data-hero-trait-tooltip="${escapeHtml(extraTrait.name)}" aria-label="${escapeHtml(extraTrait.name)}, level ${EXTRA_PICK_LEVEL}">${artwork(extraTrait.icon, extraTrait.name, "hero-choice-art")}<span class="overview-trait-lv" aria-hidden="true">LV.${EXTRA_PICK_LEVEL}</span></span></span>` : "";
+  const extraRow = extraTrait ? `<span class="overview-trait-extra"><span class="overview-trait ov-item" tabindex="0" data-hero-trait-tooltip="${escapeHtml(extraTrait.name)}" data-hero-trait-level-key="${escapeHtml(treeRowLevelKey(hero.id, TREE_ROW_LEVELS.length))}" aria-label="${escapeHtml(extraTrait.name)}, level ${EXTRA_PICK_LEVEL}">${artwork(extraTrait.icon, extraTrait.name, "hero-choice-art")}<span class="overview-trait-lv" aria-hidden="true">LV.${EXTRA_PICK_LEVEL}</span></span></span>` : "";
   return `${extraRow}<div class="overview-trait-grid">${columns.map(([key, label]) => {
     const traitIcons = picks.filter((pick) => pick.levelKey === key).map((pick) => {
       const trait = traits.find((entry) => entry.name === pick.name);
@@ -3768,7 +3770,9 @@ function plannerTooltipContent(element) {
     const description=levelKey==="base"?baseTraitDescriptionForLevel(hero.id,trait.description):trait.description;
     const descriptionLines=description.split("\n").filter(Boolean);
     const visibleLines=withoutArtificialMoonLines(hero.id,descriptionLines);
-    const selected=element.getAttribute("aria-pressed")==="true";
+    // Selected from the build's picks (shared by every view: the Hero tab's buttons, the trait path, the Overview's read-only icons,
+    // search proxies), not only from aria-pressed, which the Overview's spans do not carry (user report 2026-11-12: "Not selected").
+    const selected=heroTraitIsPicked(hero,trait.name,levelKey)||element.getAttribute("aria-pressed")==="true";
     return { traitHtml:`<div class="hero-trait-tooltip-head"><strong>${escapeHtml(trait.name)}</strong>${coverageBadge(heroTraitCoverage(hero.id,trait.name,visibleLines,selected),heroTraitCoverageReason(hero.id,trait.name,descriptionLines,selected))}<em>Level ${traitLevel}</em></div><small class="hero-trait-unlock">Unlocks at hero level ${trait.level}</small><div class="hero-trait-effects">${visibleLines.map((line)=>`<p>${emphasize(line)}</p>`).join("")}${String(levelKey).endsWith(":extra")?`<p>${escapeHtml(EXTRA_ROW_NOTE)}</p>`:""}${trait.name==="Sing with the Tide"?`<p>Damage effects use the current base trait level. Bard state is assumed; bubbles, movement, Tide duration and state switching are excluded from this tag.</p>`:trait.name==="Murmurs of the Distant Tide"?`<p>Additional Tide Effect scales the Tide damage bonuses in the stat sheet and damage path. Bard state is assumed; reduced Tide duration is ignored.</p>`:trait.name==="Idyll of the Tide"?`<p>Stat sheet and damage path use the Idyll stack count set in Combat, defaulting to 15. Stack buildup and loss are not simulated.</p>`:trait.name==="Wave Aria"?`<p>Damage component is included in calculations. Tide placement and duration are outside this badge’s scope.</p>`:""}</div>${traitKeywordDetailsHtml(hero.id,visibleLines)}<small class="hero-trait-source">CURRENT TRAIT LEVEL ${traitLevel}</small>` };
   }
   if(element.matches(".skill-primary-socket,.skill-support-socket,[data-skill-tooltip],[data-support-tooltip]"))return skillTooltipContent(element);
@@ -5505,6 +5509,13 @@ function tooltipSearchLines(content){
 function searchLocationNamer(){ const counts=new Map(); return (location)=>{ const count=(counts.get(location)||0)+1; counts.set(location,count); return count>1?`${location} (${count})`:location; }; }
 function domPathSelector(element,root,rootSelector){ const path=elementPath(element,root); return path?[rootSelector,...path.map((index)=>`:nth-child(${index+1})`)].join(" > "):null; }
 function heroMemoryTierKey(hero,level){ return hero.id==="selena-sing-with-the-tide"?`level${level}`:`${hero.id}:level${level}`; }
+// Whether a trait is the build's pick at this level key: a pickedHeroTraits entry, or a tree hero's row (the fourth row's ":extra" key
+// included, treeRowLevelKey). The hero trait tooltip reads it, so every view of a chosen trait shows the same badge.
+function heroTraitIsPicked(hero,name,levelKey="base"){
+  if(!hero||!name)return false;
+  if(pickedHeroTraits(hero).some((pick)=>pick.name===name&&pick.levelKey===levelKey))return true;
+  return Boolean(heroTraitTree(hero.id))&&heroTreeSelections(plannerState.hero,hero.id).some((pick,row)=>pick===name&&treeRowLevelKey(hero.id,row)===levelKey);
+}
 // The traits the hero panel shows as picked ({ name, levelKey }), as renderHeroTraitTree lays them out.
 function pickedHeroTraits(hero){
   const traits=allHeroTraitsSs13[hero.id]?.traits||[], base=traits.find((trait)=>trait.level===1), picks=[{name:base?.name||hero.trait,levelKey:"base"}];
@@ -6030,6 +6041,125 @@ document.addEventListener("visibilitychange",()=>{
   if(document.visibilityState!=="visible"||!deferredExternalChange)return;
   const change=deferredExternalChange;deferredExternalChange=null;showExternalChange(change);
 });
+// Affix editor input (user request 2026-11-12; src/affix-editor-input.js). (1) Picking an affix focuses and selects that line's
+// first roll number after the pick's re-render. (2) A typed roll outside the line's tier but inside another tier of the same
+// affix switches the tier and keeps the value: on change (Enter, Tab, blur) and on input after a 500 ms pause, in place, so the
+// focused number keeps its text and caret. While a typed value sits outside the current tier its input event stops here (capture)
+// so the editors' own clamps do not rewrite it mid-typing; a value no tier holds falls back to the editor's own clamp on change.
+let affixPickFromSearch=false;
+function rollRangeIndexOf(input){ const slider=input.closest(".affix-roll-inputs")?.querySelector('input[type="range"]'); return Number(slider?.dataset.rangeIndex||0); }
+function clampToRange(range,value){ const low=Math.min(range.min,range.max), high=Math.max(range.min,range.max); return Math.min(high,Math.max(low,Number(value))); }
+// The affixRollInputs rows of one line (gear, legendary): new ends and step on each slider / number pair, the edited pair takes
+// `value`, the others keep theirs clamped. False when the tier has another number of ranges (the caller re-renders).
+function retargetAffixRollInputs(container,ranges,rangeIndex,value,editedInput){
+  const groups=[...(container?.querySelectorAll(".affix-roll-inputs")||[])]; if(!groups.length||groups.length!==ranges.length)return false;
+  let edited=null;
+  groups.forEach((group,index)=>{ const range=ranges[index], slider=group.querySelector('input[type="range"]'), number=group.querySelector("[data-affix-roll-number]"); if(!slider)return; const next=index===rangeIndex?Number(value):clampToRange(range,slider.value), negativeOnly=range.max<=0;
+    for(const input of [slider,number].filter(Boolean)){ input.min=String(range.min); input.max=String(range.max); input.step=String(modifierRollStep(range)); }
+    group.classList.toggle("negative-roll",negativeOnly); slider.classList.toggle("negative-roll-range",negativeOnly); if(!negativeOnly)slider.style.removeProperty("--roll-fill");
+    slider.value=String(next); if(number&&number!==editedInput&&number.value!==String(next))number.value=String(next); updateNegativeRollVisual(slider); group.parentElement?.querySelector("em")?.replaceChildren(String(next)); if(index===rangeIndex)edited=slider; });
+  edited?.dispatchEvent(new Event("input",{bubbles:true}));
+  return true;
+}
+// Two-input roll controls (memory, support affixes): ends on the slider and the number, the slider takes the value.
+function retargetRollPair(container,range,value,editedInput){ for(const input of container?.querySelectorAll("input")||[]){ if(input.type!=="range"&&input.type!=="number")continue; input.min=String(range.min); input.max=String(range.max); if(input.type==="range"||input!==editedInput)input.value=String(value); } }
+function toggleTierButtons(buttons,isActive){ buttons.forEach((button)=>button.classList.toggle("active",isActive(button))); }
+// A re-render replaced the edited number: focus its successor (a number input's caret position cannot be set).
+function refocusRollInput(selector){ const next=document.querySelector(selector); if(next&&!next.disabled)next.focus({preventScroll:true}); }
+const ROLL_TIER_EDITORS=[
+  { // Craft gear and Vorax: prefixes and suffixes (the Tier select of craftAffixControl)
+    selector:"#equipment-crafter-body [data-craft-affix-rolls] [data-affix-roll-number]",
+    read(input){ const body=$("#equipment-crafter-body"), container=input.closest("[data-craft-affix-rolls]"), index=Number(container.dataset.craftAffixRolls), select=body?.querySelector(`[data-craft-affix-tier="${index}"]`), family=select&&craftAffixFamily(body,index); if(!family)return null;
+      const choices=eligibleCraftAffixTiers(body,family,select.value), rangeIndex=rollRangeIndexOf(input);
+      return { currentKey:select.value, rangeIndex, tiers:choices.map((choice)=>({key:choice.tier.tier,ranges:modifierRollRanges(choice.tier.template||""),eligible:choice.allowed})),
+        apply(key,value){ const choice=choices.find((entry)=>entry.tier.tier===key); if(!choice)return; select.value=key; const config=body.querySelector(`[data-craft-affix-config="${index}"]`); if(config)config.dataset.tier=key; config?.querySelector("[data-craft-affix-flag]")?.remove(); if(!choice.allowed)container.insertAdjacentHTML("beforebegin",`<small class="affix-level-warning" data-craft-affix-flag="${index}">Kept as saved: ${escapeHtml(choice.flag)}</small>`);
+          const ranges=modifierRollRanges(choice.tier.template||""); if(!retargetAffixRollInputs(container,ranges,rangeIndex,value,input)){ container.innerHTML=craftAffixRollControls(index,choice.tier); retargetAffixRollInputs(container,ranges,Math.min(rangeIndex,ranges.length-1),value); refocusRollInput(`[data-craft-affix-rolls="${index}"] [data-affix-roll-number]`); }
+          updateCraftPreview(); } }; } },
+  { // Craft Legendary and the inventory item editor: a rolled line's Tier select (legendaryTierControl)
+    selector:"#equipment-crafter-body .legendary-mod-control [data-affix-roll-number],#inventory-item-body .legendary-mod-control [data-affix-roll-number]",
+    read(input){ const row=input.closest(".legendary-mod-control"), craft=Boolean(input.closest("#equipment-crafter-body")), select=row?.querySelector(craft?"[data-legendary-tier]":"[data-edit-legendary-tier]"); if(!select)return null;
+      const index=Number(craft?select.dataset.legendaryTier:select.dataset.editLegendaryTier), editItem=craft?null:inventoryItems().find((entry)=>entry.id===selectedInventoryItemId), source=craft?legendaryGearSs13[selectedLegendaryIndex]:legendaryEditorSource(editItem), tiers=source?legendaryLineTiers(source.id,index):null; if(!tiers)return null;
+      const rangeIndex=rollRangeIndexOf(input);
+      return { currentKey:select.value, rangeIndex, tiers:tiers.map((entry)=>({key:String(entry.tier),ranges:modifierRollRanges(entry.text),eligible:true})),
+        apply(key,value){ select.value=key; if(craft)selectedLegendaryTierChoices.set(index,Number(key)); else { editingTierChoices.set(index,Number(key)); editingLegendaryTexts.delete(index); }
+          const template=craft?legendaryModifierTemplate(source,index):editingLegendaryModifierTemplate(source,index), ranges=modifierRollRanges(template);
+          if(!retargetAffixRollInputs(row,ranges,rangeIndex,value,input)){ if(craft)refreshLegendaryModRow(index); else refreshInventoryModRow(index); const scope=craft?`#equipment-crafter-body [data-toggle-legendary-corrosion="${index}"]`:`#inventory-item-body [data-toggle-edit-corrosion="${index}"]`, next=$(scope)?.closest(".legendary-mod-control"); if(next&&retargetAffixRollInputs(next,ranges,Math.min(rangeIndex,ranges.length-1),value))next.querySelector("[data-affix-roll-number]")?.focus({preventScroll:true}); } } }; } },
+  { // Hero memory fixed / random affixes (the T buttons of memoryAffixControl)
+    selector:'#hero-memory-content input[type="number"][data-memory-field^="fixedRolls."],#hero-memory-content input[type="number"][data-memory-field^="randomRolls."]',
+    read(input){ if(!memoryDraft)return null; const [rollGroup,indexText]=input.dataset.memoryField.split("."), index=Number(indexText), group=rollGroup==="fixedRolls"?"fixedAffixes":"randomAffixes", tierGroup=rollGroup==="fixedRolls"?"fixedTiers":"randomTiers", tiers=memoryTierOptions(group,memoryDraft[group][index],memoryDraft[tierGroup][index]);
+      return { currentKey:memoryDraft[tierGroup][index], rangeIndex:0, tiers:tiers.map((entry)=>({key:entry.tier,ranges:[memoryRollRange(entry.effect)],eligible:!entry.flag})),
+        apply(key,value){ const range=memoryRollRange(tiers.find((entry)=>entry.tier===key)?.effect||""); if(!range)return; memoryDraft[tierGroup][index]=key; memoryDraft[rollGroup][index]=value; const label=input.closest("label"); retargetRollPair(input.closest(".memory-roll-controls"),range,value,input); toggleTierButtons([...(label?.querySelectorAll("[data-memory-tier-choice]")||[])],(button)=>Number(button.dataset.memoryTierChoice.split(".")[2])===key); updateMemoryAffixPreview(group,index); } }; } },
+  { // Hero memory revived affix (the T buttons of memoryRevivalControls)
+    selector:'#hero-memory-content input[type="number"][data-memory-field="revivedRoll"]',
+    read(input){ if(!memoryDraft?.revivedAffix)return null; const tiers=revivedAffixTiers(memoryDraft.revivedAffix);
+      return { currentKey:memoryDraft.revivedTier, rangeIndex:0, tiers:tiers.map((entry)=>({key:entry.tier,ranges:[revivedAffixRollRange(entry.effect)],eligible:true})),
+        apply(key,value){ const range=revivedAffixRollRange(tiers.find((entry)=>entry.tier===key)?.effect); if(!range)return; memoryDraft.revivedTier=key; memoryDraft.revivedRoll=value; const controls=input.closest(".memory-revived-controls"); retargetRollPair(input.closest(".memory-roll-controls"),range,value,input); toggleTierButtons([...(controls?.querySelectorAll("[data-revived-tier]")||[])],(button)=>Number(button.dataset.revivedTier)===key); const preview=$("#hero-memory-content .memory-revived-effect .memory-revived-name"); if(preview)preview.textContent=revivedAffixForMemoryType(memoryDraft.revivedAffix,memoryDraft.type,memoryDraft.revivedTier,memoryDraft.revivedRoll); } }; } },
+  { // Supports with a main affix tier (tierControlHtml): the main affix and an Activation Medium's activation affix
+    selector:"#skill-selector-detail [data-special-roll-number],#skill-selector-detail [data-activation-trigger-roll-number]",
+    read(input){ const name=selectorEntries()[selectorChoiceIndex]?.name, trigger=input.matches("[data-activation-trigger-roll-number]"), tiers=trigger?activationMediumSecondaryTierData(name):configurableSupportTierData(name); if(!tiers||!selectorSpecialConfig)return null;
+      return { currentKey:trigger?selectorSpecialConfig.secondaryTier:selectorSpecialConfig.tier, rangeIndex:0, tiers:tiers.map((entry)=>({key:entry.tier,ranges:[{min:entry.min,max:entry.max}],eligible:true})),
+        apply(key,value){ const tier=tiers.find((entry)=>entry.tier===key); if(!tier)return; selectorSpecialConfig=trigger?{...selectorSpecialConfig,secondaryTier:key,secondaryRoll:value}:{...selectorSpecialConfig,tier:key,roll:value}; const block=input.closest(".special-affix-block"); retargetRollPair(input.closest(".special-roll-control"),tier,value,input); toggleTierButtons([...(block?.querySelectorAll(trigger?"[data-activation-trigger-tier]":"[data-special-tier]")||[])],(button)=>Number(trigger?button.dataset.activationTriggerTier:button.dataset.specialTier)===key); const heading=block?.querySelector(".special-support-heading span"); if(heading)heading.textContent=`Tier ${key}`; const shown=trigger?`${value} s`:`${value>=0?"+":""}${value}%`, output=input.closest(".special-roll-control")?.querySelector("output"); if(output)output.textContent=shown; const strong=block?.querySelector(".special-roll-label strong"); if(strong)strong.textContent=shown; } }; } },
+  { // Magnificent / Noble and other progression supports: the "Affixes" tier (one tier, several values)
+    selector:"#skill-selector-detail [data-progression-roll-number]",
+    read(input){ const name=selectorEntries()[selectorChoiceIndex]?.name, tiers=progressionSupportTierData(name), rangeIndex=Number(input.dataset.progressionRollNumber); if(!tiers||!selectorSpecialConfig)return null;
+      return { currentKey:selectorSpecialConfig.tier, rangeIndex, tiers:tiers.map((entry)=>({key:entry.tier,ranges:entry.ranges,eligible:true})),
+        apply(key,value){ const tier=tiers.find((entry)=>entry.tier===key); if(!tier)return; const old=selectorSpecialConfig.rolls||[], rolls=tier.ranges.map((range,index)=>index===rangeIndex?value:Number.isFinite(old[index])?clampToRange(range,old[index]):range.max), next={...selectorSpecialConfig,tier:key,rolls}; const choice=(selectorSpecialConfig.lines||[]).findIndex((line,index)=>line?.tier!=null&&activationMediumAffixLines(name)?.[index]?.choiceGroup); delete next.lines; const lines=activationMediumLineConfigs(name,next,choice>=0?choice:null); selectorSpecialConfig=lines?{...next,lines}:next;
+          const section=input.closest(".special-support-config"), controls=[...(section?.querySelectorAll("[data-progression-roll-number]")||[])]; if(controls.length!==tier.ranges.length){ renderSkillSelector(); refocusRollInput(`#skill-selector-detail [data-progression-roll-number="${rangeIndex}"]`); return; }
+          controls.forEach((number)=>{ const index=Number(number.dataset.progressionRollNumber), control=number.closest(".special-roll-control"); retargetRollPair(control,tier.ranges[index],rolls[index],input); const output=control?.querySelector("output"); if(output)output.textContent=String(rolls[index]); const strong=control?.previousElementSibling?.querySelector("strong"); if(strong)strong.textContent=String(rolls[index]); });
+          toggleTierButtons([...(section?.querySelectorAll("[data-progression-tier]")||[])],(button)=>Number(button.dataset.progressionTier)===key); const heading=input.closest(".special-affix-block")?.querySelector(".special-support-heading span"); if(heading)heading.textContent=`Tier ${key}`; } }; } },
+  { // Activation Medium affix lines (each line's own T buttons)
+    selector:"#skill-selector-detail [data-affix-roll-number][data-affix-roll-index]",
+    read(input){ const name=selectorEntries()[selectorChoiceIndex]?.name, index=Number(input.dataset.affixRollNumber), rollIndex=Number(input.dataset.affixRollIndex), line=activationMediumAffixLines(name)?.[index], lines=line&&activationMediumLineConfigs(name,selectorSpecialConfig); if(!lines)return null;
+      return { currentKey:lines[index]?.tier, rangeIndex:rollIndex, tiers:line.options.map((option)=>({key:option.tier,ranges:option.ranges,eligible:true})),
+        apply(key,value){ const option=line.options.find((item)=>item.tier===key); if(!option)return; const old=lines[index]?.rolls||[]; lines[index]={tier:key,rolls:option.ranges.map((range,k)=>k===rollIndex?value:Number.isFinite(old[k])?clampToRange(range,old[k]):range.max)}; selectorSpecialConfig={...selectorSpecialConfig,lines:activationMediumLineConfigs(name,{...selectorSpecialConfig,lines},index)};
+          const block=input.closest(".special-affix-block"), controls=[...(block?.querySelectorAll("[data-affix-roll-number]")||[])]; if(controls.length!==option.ranges.length){ renderSkillSelector(); refocusRollInput(`#skill-selector-detail [data-affix-roll-number="${index}"][data-affix-roll-index="${rollIndex}"]`); return; }
+          const rolls=selectorSpecialConfig.lines[index].rolls; controls.forEach((number)=>{ const k=Number(number.dataset.affixRollIndex), control=number.closest(".special-roll-control"), range=option.ranges[k]; retargetRollPair(control,range,rolls[k],input); const output=control?.querySelector("output"); if(output)output.textContent=String(rolls[k]); const label=control?.previousElementSibling; if(label?.querySelector("span"))label.querySelector("span").textContent=`${option.ranges.length>1?`Value ${k+1} · `:""}${range.min}–${range.max}`; if(label?.querySelector("strong"))label.querySelector("strong").textContent=String(rolls[k]); });
+          toggleTierButtons([...(block?.querySelectorAll(`[data-affix-line="${index}"]`)||[])],(button)=>button.dataset.affixTier===String(key)); const heading=block?.querySelector(".special-support-heading span"); if(heading)heading.textContent=`Tier ${key}`; } }; } }
+];
+function rollTierState(input){
+  if(!(input instanceof HTMLInputElement)||input.type!=="number"||input.dataset.rollTierBypass)return null;
+  const editor=ROLL_TIER_EDITORS.find((entry)=>input.matches(entry.selector)); if(!editor)return null;
+  const value=input.value.trim()===""?NaN:Number(input.value); if(!Number.isFinite(value))return null;
+  const state=editor.read(input); if(!state?.tiers?.length)return null;
+  const current=state.tiers.find((tier)=>String(tier.key)===String(state.currentKey));
+  return {...state,value,inside:Boolean(current&&rangeContains(current.ranges?.[state.rangeIndex],value))};
+}
+function applyRollTier(state){ const key=chooseTierForValue({tiers:state.tiers,currentKey:state.currentKey,value:state.value,rangeIndex:state.rangeIndex}); if(key==null||String(key)===String(state.currentKey))return false; state.apply(key,state.value); return true; }
+const rollTierTimers=new WeakMap();
+document.addEventListener("input",(event)=>{
+  const input=event.target, state=rollTierState(input); if(!state)return;
+  clearTimeout(rollTierTimers.get(input)); if(state.inside)return;
+  event.stopImmediatePropagation();
+  rollTierTimers.set(input,setTimeout(()=>{ if(!input.isConnected)return; const later=rollTierState(input); if(later&&!later.inside)applyRollTier(later); },500));
+},true);
+document.addEventListener("change",(event)=>{
+  const input=event.target, state=rollTierState(input); if(!state)return;
+  clearTimeout(rollTierTimers.get(input)); if(state.inside||applyRollTier(state))return;
+  // No tier holds the value: the editor's own input clamp runs (it was held back while typing), then its change handlers.
+  input.dataset.rollTierBypass="1"; try{ input.dispatchEvent(new Event("input",{bubbles:true})); } finally { delete input.dataset.rollTierBypass; }
+},true);
+// (1) The roll number a pick should focus, found after the pick's re-render; null when the select is no affix pick.
+function affixPickRollTarget(select){
+  if(!(select instanceof HTMLSelectElement)||select.value==="")return null;
+  const first=(root)=>root?.querySelector('input[type="number"]:not([disabled])')||null;
+  if(select.matches("#equipment-crafter-body [data-craft-affix-family]")){ const index=select.dataset.craftAffixFamily; return ()=>first($(`#equipment-crafter-body [data-craft-affix-config="${index}"]`)); }
+  if(select.matches("#equipment-crafter-body [data-craft-base-affix]")){ const index=select.dataset.craftBaseAffix; return ()=>first($(`#equipment-crafter-body [data-base-affix-rolls="${index}"]`)); }
+  if(select.matches("#equipment-crafter-body [data-legendary-placeholder]")){ const index=select.dataset.legendaryPlaceholder; return ()=>first($(`#equipment-crafter-body [data-toggle-legendary-corrosion="${index}"]`)?.closest(".legendary-mod-control")); }
+  if(select.matches("#inventory-item-body [data-edit-legendary-placeholder]")){ const index=select.dataset.editLegendaryPlaceholder; return ()=>first($(`#inventory-item-body [data-toggle-edit-corrosion="${index}"]`)?.closest(".legendary-mod-control")); }
+  if(select.matches("#equipment-crafter-body [data-add-aember]"))return ()=>first([...document.querySelectorAll("#equipment-crafter-body [data-aember-row]")].at(-1));
+  if(select.matches("#hero-memory-content [data-memory-field]")){ const field=select.dataset.memoryField, affix=field.match(/^(fixedAffixes|randomAffixes)\.(\d+)$/);
+    if(affix){ const rolls=`${affix[1]==="fixedAffixes"?"fixedRolls":"randomRolls"}.${affix[2]}`; return ()=>$(`#hero-memory-content input[type="number"][data-memory-field="${rolls}"]`)||$(`#hero-memory-content input[type="number"][data-memory-tier-value="${field}"]`); }
+    if(field==="revivedAffix")return ()=>$('#hero-memory-content input[type="number"][data-memory-field="revivedRoll"]');
+    return null; }
+  if(select.matches("#skill-selector-detail [data-affix-choice]")){ const index=select.value; return ()=>$(`#skill-selector-detail [data-affix-roll-number="${index}"]`); }
+  if(select.matches("#skill-selector-detail [data-activation-roll-kind]"))return ()=>$("#skill-selector-detail [data-special-roll-number]");
+  if(select.matches("#skill-selector [data-follower-draft-affix]")){ const slot=select.dataset.followerDraftAffix; return ()=>$(`#skill-selector [data-follower-draft-roll^="${slot}:"]`); }
+  return null;
+}
+function focusAffixRollAfterPick(select){ const find=affixPickRollTarget(select); if(!find)return; setTimeout(()=>{ const input=find(); if(!input||input.disabled)return; input.focus({preventScroll:true}); input.select?.(); },0); }
+// Capture phase: the pick re-renders (a memory select is replaced), so its line is read before the editors handle the change.
+document.addEventListener("change",(event)=>{ if(event.isTrusted||affixPickFromSearch)focusAffixRollAfterPick(event.target); },true);
+
 // First Aember crafting controls in the Craft Legendary dialog (aemberEditorHtml).
 document.addEventListener("input",(event)=>{
   if(!event.target.closest?.("#equipment-crafter-body [data-aember-section]"))return;

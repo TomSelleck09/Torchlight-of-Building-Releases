@@ -1117,12 +1117,13 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     }
   }
   // Spirit Magus core clauses (core audit B7; src/minion-damage-model.js spiritMagusState). Without a modeled Spirit Magus they are
-  // Inactive. Talons of Abyss' Ultimate speed: the Ultimate needs Full Bloom and is not in the cycle (its cooldown is unpublished), so
-  // Not modeled with Full Bloom and No DPS effect without it. "+N initial Growth": In calc only where it changes something (a Stage,
+  // Inactive. Talons of Abyss' Ultimate speed: In calc where a cast Ultimate takes it (G8, 2026-11-12: Iris's Whirlwind Tango casts it
+  // back to back); else the Ultimate needs Full Bloom and is not in the cycle (its cooldown is unpublished), so Not modeled with Full
+  // Bloom and No DPS effect without it. "+N initial Growth": In calc only where it changes something (a Stage,
   // a per-Growth line, Circle of Life). Source's Empower Skill Effect: In calc where a Magus's Empower buff takes it. Circle of Life:
   // In calc with a Magus (the player's Growth follows it).
   const magi = (planner?.minions || []).filter((minion) => minion.modeled && minion.family === "spirit-magus");
-  if (planner?.activation && /^For every \d+ Growth a Spirit Magus has, it \+?[\d.]+% additional Ultimate Attack and Cast Speed$/i.test(text)) return !magi.length ? "Inactive" : magi.some((minion) => minion.magus?.fullBloom) ? "Not modeled" : "No DPS effect";
+  if (planner?.activation && /^For every \d+ Growth a Spirit Magus has, it \+?[\d.]+% additional Ultimate Attack and Cast Speed$/i.test(text)) return !magi.length ? "Inactive" : magi.some((minion) => (minion.skills || []).some((skill) => skill.ultimateSpeedFactor > 1 && skill.steadyDps > 0)) ? "In calc" : magi.some((minion) => minion.magus?.fullBloom) ? "Not modeled" : "No DPS effect";
   if (planner?.activation && /^\+?[\d.]+ initial Growth for Spirit Magi$|^Gains (?:Mini|Big) Tough Guy$|^Gains [\d.]+ Growth for [\d.]+ ?s when Minions land a Critical Strike, up to [\d.]+ ?\.?$/i.test(String(text).trim())) return !magi.length ? "Inactive" : magi.some((minion) => minion.magus?.initialGrowthMatters) ? "In calc" : "No DPS effect";
   if (planner?.activation && /^Spirit Magi \+?[\d.]+% (?:additional )?Empower Skill Effect$/i.test(text)) return magi.some((minion) => minion.magus?.empowerEffect?.applied) ? "In calc" : "Inactive";
   // Bond (src/minion-cores.js bondState; core audit B7): its lines act where Bond can be gained ("Can obtain Bond") and a Minion is
