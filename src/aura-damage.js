@@ -22,6 +22,10 @@ export const AURA_STAT_SCOPES = Object.freeze({
   additionalAreaDamagePercent: { kind: "ledger" },
   // "Ailment Damage dealt by Area Skills": only when the skill inflicting the ailment is an Area skill.
   additionalAreaAilmentDamagePercent: { kind: "ledger", requiresSkillTag: "Area" },
+  // Precise: Domain Expansion's "at least 5 enemies within 10 m" writes (records 263618880 / 687124224; the Boss dummy counts as 5): each its
+  // own additional factor beside the ones above (G1b, 2026-11-13).
+  additionalAreaDamageCrowdPercent: { kind: "ledger" },
+  additionalAreaAilmentDamageCrowdPercent: { kind: "ledger", requiresSkillTag: "Area" },
   additionalAilmentDamagePercent: { kind: "ledger" },
   additionalDamageOverTimePercent: { kind: "ledger" },
   afflictionPerSecond: { kind: "ledger" },
@@ -95,7 +99,7 @@ export function auraDamageModifierTexts(auraEntries = [], damageTypes = AILMENT_
 // gives it nothing while the board copy is active). Not read on Minions: Melee-scoped speed and crit (no Minion reader), ailment, DoT
 // and Affliction stats (Minion ailments are not modeled), defences and regeneration (no DPS effect).
 const MINION_TYPE_STATS = { additionalPhysicalDamagePercent: "Physical", additionalFireDamagePercent: "Fire", additionalColdDamagePercent: "Cold", additionalLightningDamagePercent: "Lightning", additionalErosionDamagePercent: "Erosion" };
-const MINION_TAG_STATS = { additionalAreaDamagePercent: "Area", additionalSpellDamagePercent: "Spell", additionalAttackDamagePercent: "Attack", additionalMeleeSkillDamagePercent: "Melee", additionalProjectileDamagePercent: "Projectile" };
+const MINION_TAG_STATS = { additionalAreaDamagePercent: "Area", additionalAreaDamageCrowdPercent: "Area", additionalSpellDamagePercent: "Spell", additionalAttackDamagePercent: "Attack", additionalMeleeSkillDamagePercent: "Melee", additionalProjectileDamagePercent: "Projectile" };
 const MINION_SPEED_STATS = { attackSpeedPercent: "Attack", castSpeedPercent: "Cast" };
 /** The Minion-model wording of one Aura buff stat on a Minion, or null when the Minion model has no reader for it. */
 export function auraMinionLineText(stat, value) {

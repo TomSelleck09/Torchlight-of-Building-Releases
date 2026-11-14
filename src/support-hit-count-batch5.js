@@ -21,6 +21,7 @@ import { skillHitDamageSs13 } from "./data/skills/skill-hit-damage-ss13.generate
 import { skillHitDamageNewSkills } from "./data/skills/skill-hit-damage-new-skills.generated.js";
 import { WEAPON_WORDS } from "./line-conditions.js";
 import { shotgunTotal, keptShareFromCoefficient } from "./shotgun-effect.js";
+import { BOSS_ENEMY_COUNT } from "./dummy-target.js";
 
 const N = "([+-]?\\d+(?:\\.\\d+)?)";
 const num = (value) => Number(String(value).replace("−", "-"));
@@ -55,6 +56,24 @@ const LIGHTNING_STORM = { interval: 0.5, duration: 5 };
 const FROST_SPIKE_BLADES = 2;
 // Icebound Beam: Chilling Spike's large Icy Blades: Split 127219 reaction_big_shot hit rule, brother group 2, table [(1, 35)] (the share kept).
 const LARGE_BLADE_KEPT = 0.35;
+// Groundshaker: Frequent Quake (2026-11-14; review G2, research/support-revived-review-2026-11-13.md §3). Record 281929984's node 232 mode 3
+// selects the Groundshaker stone's Split slot 3 (stone 1920 slots [177867, 0, 189074, 285839, 895434]; Wrathful Vault's record 774071424
+// picks mode 4, 895434, under label 3100271, the same pulses). In 285839 the fissure's end (its 1 s life, reaction slot 22) no longer fires
+// the row-502 explosion (Fissure Secondary Damage, damage index 1): it creates a buff area of 1.5 s whose duration calculator reads attr
+// 3402 with tag 5100310 (the one Thornfield's area reads: × Skill Effect Duration), holding a timer (struct 345881: repeat −1, interval
+// 0.4 s with no calculator, delay 0, reaction 56) that fires reaction_active_attack: one damage entity with damage index 0 (row 501, the
+// Fission's 227%), hit rule in brother group −1 with an empty table (100% each: client 0x1423e3d40), carrying the fissure tag 6101354.
+// Pulses per fissure: one at the area's start (delay 0) and one every 0.4 s while it lasts: 1 + floor(1.5 s × (1 + Skill Effect Duration)
+// ÷ 0.4 s) = 4 at base. Inferred (open question groundshaker-frequent-quake-pulses): the timer firing at its creation (delay 0; the data
+// pattern of other timers, Lightning Storm's 748982 sets delay = interval, and the record's "activated … once, then triggered once every
+// P2 s"), the calculator's × (1 + bonus) form, and a tick landing on the area's last frame. Slot 57 (reaction_extra_active_attack, +field
+// 2600234 damage) runs only on label 3100272, which the game-only roll 87495568 / 572252544 (config_modifier group 77103079, not in the
+// catalog) sets: not read.
+export const FREQUENT_QUAKE = Object.freeze({ lingerSeconds: 1.5, intervalSeconds: 0.4, row: 501, split: 285839 });
+export function frequentQuakePulses(lingerSeconds, intervalSeconds, skillEffectDurationPercent = 0) {
+  const seconds = Math.max(0, lingerSeconds) * Math.max(0, 1 + (Number(skillEffectDurationPercent) || 0) / 100);
+  return { seconds, pulses: intervalSeconds > 0 ? 1 + Math.floor(seconds / intervalSeconds + 1e-9) : 1 };
+}
 // Ring of Blades: "Generates 1 Projectile for each channeling, up to 5 Projectile(s)" (reference data).
 export const RING_OF_BLADES_MAX_PROJECTILES = 5;
 // Skills whose hit count follows their skill Duration (the storm's strikes over its duration): support "Duration" lines read here.
@@ -137,6 +156,10 @@ export const BATCH5_RULES = [
   rule(/^When the supported skill is triggered by its own Critical Strike, explodes (\d+) additional time\(s\)$/i, (m) => ({ kind: "converge", value: num(m[1]), recipe: 112674344 })),
   // Sparkle: Static Electricity (472151840: field 2600113).
   rule(new RegExp(`^When a Projectile of the supported skill vanishes, ${N}% chance to generate a stationary Projectile where the Projectile vanished\\. The new Projectile will not trigger this effect again$`, "i"), (m) => ({ kind: "stationary", value: num(m[1]), recipe: 472151840 })),
+  // Groundshaker: Frequent Quake (Magnificent; record 281929984 [1.5, 0.4]: node 232 mode 3 selects Split slot 3, 285839, and label 3100271;
+  // 2026-11-14, review G2): the fissure lingers instead of exploding and pulses (FREQUENT_QUAKE below).
+  rule(new RegExp(`^When the fissure created by the supported skill has spread to the max, it lasts for ${N}\\s*s instead of causing explosions$`, "i"), (m) => ({ kind: "fissureLinger", value: num(m[1]), recipe: 281929984 })),
+  rule(new RegExp(`^The fissure will be activated after it has spread to the max and deals fissure damage to enemies once\\. The fissure will be triggered once every ${N}\\s*s after that, dealing damage to enemies within range$`, "i"), (m) => ({ kind: "fissurePulse", value: num(m[1]), recipe: 281929984 })),
   // ---- Combo Finishers ----
   // Serpent Beam: Twin Blaze (406323424: label 3100511), Gale Slash: Soaring (27436140: label 3100531), Spectral Slash: Legion (506057920:
   // node 700 adds Clones (26005922) per entity within P1 m, up to P2).
@@ -181,7 +204,9 @@ export const BATCH5_RULES = [
   neutral("nonDamage", new RegExp(`^The bonus and additional bonus to Cast Speed are also applied to the Interval of Glacial Spikes generated by the supported skill, up to ${N}%$`, "i"), "Ice Focus's Glacial Spikes are bound by the Focus Pts gained (75 Pts/s ÷ 45 per Spike generation, src/skill-hit-profiles.js), not by the 0.5 s interval, so a shorter interval adds no Spike"),
   neutral("nonDamage", new RegExp(`^The max jump distance of the supported skill's Combo Finisher is increased to ${N} m$`, "i"), "jump distance"),
   neutral("nonDamage", /^The supported skill no longer causes explosions on hit$/i, "Burning Shot's explosion (its True Damage burst on an Ignited enemy) is not a modeled hit of its profile, so removing it changes no figure"),
-  neutral("nonDamage", /^Projectiles from the supported skill always Penetrate$/i, "Penetration needs enemies behind the target")
+  neutral("nonDamage", /^Projectiles from the supported skill always Penetrate$/i, "Penetration needs enemies behind the target"),
+  // Groundshaker: Frequent Quake's other stone affix (756675904: node 108 adds p0 to field 2600231, the fissure spread time, on this skill).
+  neutral("nonDamage", new RegExp(`^When the supported skill consumes Demolisher Charge, ${N}\\s*Fissure Spread Time$`, "i"), "the fissure spreads faster (game field 2600231, record 756675904): its hits land sooner after the cast, but one fissure per Demolisher Charge consumed still lands the same hits")
 ];
 
 // The hit pass reads crit rates for these (src/planner.js runs the rate pass for them).
@@ -199,7 +224,7 @@ const NEEDS = {
   pulseDetail: { "Psionic Missile": "hit" }, pulse: { "Psionic Missile": "hit" }, dispersed: { "Psionic Missile": "hit" }, together: { "Psionic Missile": "hit" }, convergence: { "Psionic Missile": "hit" },
   projectileFixed: { "Blazing Bullet": "bomb", "Blazing Meteor": "meteor" }, secondaryExplosion: { "Blazing Bullet": "explosion" }, ashCount: { "Blazing Meteor": "ash" },
   largeBlades: { "Icebound Beam": "blades" }, critRetrigger: { "Fire Burst": "hit" }, critRetriggerDetail: { "Fire Burst": "hit" }, converge: { "Fire Burst": "hit" },
-  stationary: { Sparkle: "hit" }, finisherRepeat: { "Serpent Beam": "finisher", "Gale Slash": "finisher" }, noAttackSpeedDamage: { "Gale Slash": "finisher" }, extraClone: { "Spectral Slash": "finisher" },
+  stationary: { Sparkle: "hit" }, fissureLinger: { Groundshaker: "fissure" }, fissurePulse: { Groundshaker: "fissure" }, finisherRepeat: { "Serpent Beam": "finisher", "Gale Slash": "finisher" }, noAttackSpeedDamage: { "Gale Slash": "finisher" }, extraClone: { "Spectral Slash": "finisher" },
   attackOnce: { Bombard: "explosions" }, triggerable: { Bombard: "explosions" }, setCooldown: { "Burning Shot": "shot" }, addCooldown: { "Shadow Shot": "hit" },
   smash: { "Acuteness Focus": "strike", "Precise: Acuteness Focus": "strike" },
   focusRequired: { "Thunder Focus": "thunderstrike", "Precise: Thunder Focus": "thunderstrike", "Acuteness Focus": "strike", "Precise: Acuteness Focus": "strike" },
@@ -237,6 +262,8 @@ const READINGS = {
   critRetrigger: "each cast that crits triggers one more cast on the dummy (the triggered one cannot trigger again): casts × (1 + crit share of the casts), measured on the hit pass",
   converge: "the crit-triggered casts explode 1 + N times",
   stationary: "this chance of a stationary projectile at the dummy after each projectile vanishes, hitting it for another 1.5 s (no falloff: not simultaneous)",
+  fissureLinger: "the fissure's explosion (row 502, Fissure Secondary Damage) is gone: at max spread the fissure becomes an area lasting this long × (1 + Skill Effect Duration) (Split 285839: its duration reads attr 3402, tag 5100310), whose pulses the clause beside it counts",
+  fissurePulse: "the lingering fissure pulses once when it reaches max spread and once every interval after (Split 285839: a timer, delay 0, interval fixed, no speed scaling), each pulse one hit of row 501 (the Fission's damage) at 100% (brother group −1, empty table): 1 + floor(linger × (1 + Skill Effect Duration) ÷ interval) pulses per Demolisher Charge consumed, replacing the one explosion",
   finisherRepeat: "the Combo Finisher deals its damage once more per cycle",
   noAttackSpeedDamage: "the skill's \"0.2% additional damage per +1% Attack Speed\" is gone (penalty)",
   extraClone: "+5 Clones: the dummy, a Boss within range, counts as 5 enemies (record 506057920 calcCountByRarity; Enemy Count: each Boss counts as 5), up to the clause's 5, each keeping the Clones' 30% (their 70% Shotgun falloff is the share lost)",
@@ -260,9 +287,9 @@ const READINGS = {
   maxProjectiles: "the blades are min(channeled stacks, 5 + min(cap, per × ⌊Projectile Quantity ÷ every⌋)) (skill text: up to 5 Projectiles)",
   steepForced: "the Steep Strike share of attacks"
 };
-// The Enemy Count rule (game text on "each enemy": each Boss counts as 5), read by Legion's calcCountByRarity (record 506057920).
-export const LEGION_BOSS_ENEMY_COUNT = 5;
-const PROVISIONAL = new Set(["smash", "shotgunGained", "volley", "coefficientAdd", "splashProjectiles", "coefficientSet", "chainMerge", "glaciate", "fangVolley", "allLastWave", "waveBonus", "replenishWave", "waveProjectiles", "waveInterval", "starfall", "pulse", "dispersed", "convergence", "secondaryExplosion", "ashCount", "largeBlades", "critRetrigger", "converge", "stationary", "finisherRepeat", "intervalCastSpeed", "durationStacks", "projectileDurationStacks", "maxProjectiles"]);
+// The Enemy Count rule (src/dummy-target.js BOSS_ENEMY_COUNT: each Boss counts as 5), read by Legion's calcCountByRarity (record 506057920).
+export const LEGION_BOSS_ENEMY_COUNT = BOSS_ENEMY_COUNT;
+const PROVISIONAL = new Set(["smash", "shotgunGained", "volley", "coefficientAdd", "splashProjectiles", "coefficientSet", "chainMerge", "glaciate", "fangVolley", "allLastWave", "waveBonus", "replenishWave", "waveProjectiles", "waveInterval", "starfall", "pulse", "dispersed", "convergence", "secondaryExplosion", "ashCount", "largeBlades", "critRetrigger", "converge", "stationary", "fissureLinger", "fissurePulse", "finisherRepeat", "intervalCastSpeed", "durationStacks", "projectileDurationStacks", "maxProjectiles"]);
 
 /** Settle the clauses that read the planner's state (src/support-effects.js resolveSupportEffects). */
 export function resolveBatch5Clause(clause, full, setupKey = null) {
@@ -277,6 +304,12 @@ export function resolveBatch5Clause(clause, full, setupKey = null) {
     // Prairie Fire: one stack per activation, no duration published: held at the cap with own buffs built before engaging (provisional).
     const held = state?.prebuiltSelfBuffs === false ? 1 : clause.cap;
     return { value: round(clause.perActivation * held), conditionText: `${held} stack(s) × +${clause.perActivation}% (one per Spell Burst activation, no duration published: held at the cap with own buffs built before engaging; game recipe ${clause.recipe}; provisional)` };
+  }
+  // Frequent Quake's area duration: the build's Skill Effect Duration (src/planner.js supportConditions, the stat sheet's figure, as
+  // Thornfield's area reads it); null outside the planner (read at +0%).
+  if (clause.kind === "fissureLinger" || clause.kind === "fissurePulse") {
+    const percent = state ? Number(state.skillEffectDurationPercent) : NaN;
+    return { durationPercent: Number.isFinite(percent) ? percent : null };
   }
   if (clause.kind === "critRetrigger" || clause.kind === "converge") {
     const facts = state?.critHitsBySetup?.get?.(setupKey) || null;
@@ -322,6 +355,11 @@ export function batch5Status(clause, full) {
     case "critRetrigger": case "converge":
       if (clause.kind === "converge" && !has(full.setupSupportNames, "Fire Burst: Violent Blast (Magnificent)")) return s("Inactive", "Fire Burst is triggered by its own Critical Strike only with Fire Burst: Violent Blast");
       return clause.critShare == null ? s("Provisional", `${reading}; the crit share is measured on the planner's hit pass (none here)`, ["skill-hit"]) : done(`${reading}: crit share ${round(clause.critShare * 100)}%`);
+    case "fissureLinger": case "fissurePulse": {
+      const linger = clause.kind === "fissureLinger" ? clause.value : FREQUENT_QUAKE.lingerSeconds, interval = clause.kind === "fissurePulse" ? clause.value : FREQUENT_QUAKE.intervalSeconds;
+      const { seconds, pulses } = frequentQuakePulses(linger, interval, clause.durationPercent ?? 0);
+      return done(`${reading}: ${pulses} pulses per fissure (a ${round(seconds)} s area, ${linger} s × (1 + Skill Effect Duration ${clause.durationPercent == null ? "+0%: not known in this context" : `${clause.durationPercent >= 0 ? "+" : ""}${round(clause.durationPercent)}%`}), one at its start and one every ${interval} s)`);
+    }
     case "steepPerChance": return s("Inactive", "with Icy Blade: Hidden Edge the skill obtains no Steep Strike from Steep Strike chance; its other Steep Strike attempts (on Frozen enemies, on inflicting Freeze) are not modeled, so no modeled Steep Strike takes the bonus");
     case "steepForced": return done(clause.value ? "every attack is a Steep Strike (the Steep Strike share is 1)" : clause.chanceOnly ? "Steep Strike chance grants no Steep Strike: the share is 0 (penalty); the skill's Freeze-granted attempts are not modeled" : "no attack is a Steep Strike (the share is 0; penalty)");
     case "projectileFixed": return done(`${reading}; ${skill}'s extra projectiles were not counted on the dummy anyway, so no figure moves unless a Projectile Quantity line would have`);
@@ -471,6 +509,23 @@ export function applyBatch5ProfileEdits(profile, effects, { weapon = null } = {}
       const explosions = 1 + (converge ? converge.value : 0), factor = 1 + clause.critShare * explosions;
       hit.perUse *= factor;
       note(clause, `${round(clause.critShare * 100)}% of casts crit (the hit pass) and trigger one more cast${converge ? ` that explodes ${explosions} times (Converge)` : ""}: hits ×${round(factor)}`);
+    }
+  }
+  // Groundshaker: Frequent Quake: the fissure component (it lands only on uses that consume a Demolisher Charge) becomes the lingering
+  // fissure's pulses: row 501 (damage index 0 in Split 285839) instead of row 502, 1 + floor(1.5 s × (1 + Skill Effect Duration) ÷ 0.4 s)
+  // hits each at 100%. The pulses carry the fissure tag 6101354 in full (the group tags of reaction_active_attack and
+  // reaction_extra_active_attack in Splits 285839 / 895434; `fissureTag` 1), so the lines scoped to it reach them (Cripple's records
+  // 119083224 / 252388064); the row-502 explosion they replace carried no fissure tag (src/attack-hit-profiles.js Groundshaker).
+  if (first("fissurePulse") || first("fissureLinger")) {
+    const pulse = first("fissurePulse"), linger = first("fissureLinger"), fissure = find("fissure"), fission = find("fission");
+    if (fissure && fission?.group) {
+      const lingerSeconds = linger?.value ?? FREQUENT_QUAKE.lingerSeconds, interval = pulse?.value ?? FREQUENT_QUAKE.intervalSeconds;
+      const durationPercent = (pulse ?? linger).durationPercent;
+      const { seconds, pulses } = frequentQuakePulses(lingerSeconds, interval, durationPercent ?? 0);
+      const durationText = durationPercent == null ? "Skill Effect Duration not known here: +0%" : `Skill Effect Duration ${durationPercent >= 0 ? "+" : ""}${round(durationPercent)}%`;
+      Object.assign(fissure, { label: "Fissure pulses (Frequent Quake)", groupId: FREQUENT_QUAKE.row, group: fission.group, perUse: pulses, basis: "provisional", fissureTag: 1,
+        note: `Groundshaker: Frequent Quake: the fissure no longer explodes (row 502); at max spread it lingers ${round(seconds)} s (${lingerSeconds} s × (1 + ${durationText}); Split ${FREQUENT_QUAKE.split}'s buff area reads attr 3402, tag 5100310) and pulses once then every ${interval} s: ${pulses} hits of row 501 (the Fission's damage) per Demolisher Charge consumed, each at 100% (hit rule brother group −1, empty table); the pulses carry the fissure tag 6101354` });
+      note(pulse ?? linger, `the fissure's explosion (row 502) becomes ${pulses} pulses of row 501 per fissure (${round(seconds)} s area at ${durationText}, one at its start and one every ${interval} s), each at 100%`);
     }
   }
   if (first("stationary")) {

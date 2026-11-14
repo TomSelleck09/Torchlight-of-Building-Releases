@@ -151,6 +151,14 @@ function otherAilment({ ailment, retention, count: mainCount, critChancePercent,
     affliction: afflictionLayer(ailment.steps?.afflictionRating, ailment.fullAfflictionScale, ailment.afflictionPerPoint),
     maxAffliction: maxAfflictionAdditionalRatios(ailment, afflictionPerSecond)
   };
+  // A Terra's area layers (src/area-dot-layers.js, 8 T Thornfield audit S1): each layer its own 2 s, no cap. The recount places a recast's layers
+  // at the recast (its expected adds × one layer's value, so the steady mean is the closed form's); the tick engine places each layer on its own
+  // check frame from `areaLayers`.
+  if (ailment.areaLayers) {
+    const layer = ailment.combat.averageApplication ?? ailment.base.min;
+    return { ...common, stacking: "independent", limit: Infinity, averageApplication: layer * ailment.areaLayers.addsPerUse,
+      areaLayers: { layerValue: layer, layerSeconds: ailment.areaLayers.layerSeconds, lifeFrames: ailment.areaLayers.lifeFrames, layerFrames: ailment.areaLayers.layerFrames, checks: ailment.areaLayers.checks, addsPerUse: ailment.areaLayers.addsPerUse } };
+  }
   if (ailment.combat.stacking === "independent") {
     // Pooled successes above one per main use cannot raise the chance past 100%; the extra stacks are carried
     // in the average stack instead (the stack limit then applies to main-use stacks only).

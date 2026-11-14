@@ -183,6 +183,12 @@ export function collectEnemyAilments({ setups = [], activeNames = new Set(), mod
     // at the 10-stack cap like every Numbed source (src/combat-states.js; the 1-stack-per-second build-up is not counted: provisional).
     const trueBody = text.match(/^When the skill's Shadow Strike True Body hits an enemy, it inflicts \d+ stack of Numbed on enemies within [\d.]+ ?m of the enemy hit\. Interval: [\d.]+ ?s$/im);
     if (trueBody) add("Numbed", false, `${setup.name}: skill text`, `${setup.name}: its Shadow Strike True Body hits inflict Numbed (game affix 413525792)`);
+    // Ice Lances: Permafrost (Noble) (record 888393792: on the supported skill's hit, every 1.5 s, node 2320 casts stone 1551, a Lv. 20 Frost
+    // Terra; src/permafrost-terra.js): stone 1551 carries Frost Terra's own affix 14853477 (on its damage, node 347 Frostbite on the target), so its
+    // DoT keeps the dummy Frostbitten as the board Frost Terra's does. Not while Dance of the Deep stops a non-Main Terra's damage.
+    if (setup.enabled !== false && hits && (setup.supports || []).some((support) => support && support.enabled !== false && support.name === "Ice Lances: Permafrost (Noble)")
+      && !modifierTexts.some((line) => line.origin === "trait" && /^Non-Main Terra Skill cannot deal damage$/i.test(normalizePercentageText(String(line.text ?? "")).trim())))
+      add("Frostbite", false, `${setup.name}: Ice Lances: Permafrost (Noble)`, `${setup.name}'s hits trigger a Lv. 20 Frost Terra (stone 1551): "Inflicts Frostbite when this skill deals damage" (affix 14853477)`);
   }
   // Chaotic Ending's roll (legendary audit batch 8): "Critical Strikes are guaranteed to inflict Numbed": Numbed while the Main Skill
   // hits (it crits; provisional: the crit chance is not checked here).

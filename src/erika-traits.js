@@ -60,6 +60,8 @@ export const INCISIVE = Object.freeze({ additionalAttackDamagePercent: 20, atMet
 // Buff 82169 level 1 (Mortal Gambit, node 625 mode 1): affix 127628400 args [10, 2, 20, 5], p0 at any distance. Level 0 has p0 = 0.
 export const MORTAL_GAMBIT_ATTACK_PERCENT = 10;
 export const INCISIVE_CLOSE_CONDITION = "erikaIncisiveClose";
+// Best-case switch: your Lightning hits keep Feline Figure's opening Numbed up through the per-attacker store (felineFigureState storeKept).
+export const NUMBED_STORE_CONDITION = "erikaNumbedStore";
 const HORIZON_SECONDS = 120;
 const EPS = 1e-9;
 const round = (value) => Math.round(value * 10000) / 10000;
@@ -148,43 +150,68 @@ export function felineNumbedSchedule({ intervalSeconds, durationSeconds, perTrig
  * @param {object[]} p.modifierTexts the build's lines
  * @param {number} p.movementSpeedPercent the character's Movement Speed total (stat sheet)
  * @param {boolean} p.otherNumbed another source keeps the dummy Numbed (the enemy-ailment model; held at 10 stacks)
+ * @param {boolean} p.otherNumbedOwn that other Numbed is Erika's own (her other sources, or her Lightning hits refilling it through the
+ *   per-attacker store, client 0x141ef1180), so her Numbed Effect carriers reach it; defaults to otherNumbed
+ * @param {boolean} p.storeKeeps your hits deal Lightning Damage after conversion, so on a Numbed dummy they refill Numbed through the
+ *   per-attacker store (client 0x141ef1180; the planner keeps 10 stacks there, src/combat-states.js)
+ * @param {object} p.requestedConditions the best-case switches (NUMBED_STORE_CONDITION)
  * @param {number} p.mainUsesPerSecond the Main Skill's uses per second (other Numbed sources inflict 1 stack per use)
  * @param {number|null} p.critChancePercent the Main Skill's crit chance the hit pass measured (Charging Tail), null before
  * @returns {object|null} null unless Lightning Shadow is the selected loadout and its Feline Figure line is present
  */
-export function felineFigureState({ heroId = "", modifierTexts = [], movementSpeedPercent = 0, otherNumbed = false, mainUsesPerSecond = 0, critChancePercent = null } = {}) {
+export function felineFigureState({ heroId = "", modifierTexts = [], movementSpeedPercent = 0, otherNumbed = false, otherNumbedOwn = otherNumbed, storeKeeps = false, requestedConditions = {}, mainUsesPerSecond = 0, critChancePercent = null } = {}) {
   if (heroId !== LIGHTNING_SHADOW) return null;
   const lines = traitLinesOf(modifierTexts, heroId);
   const electrify = first(lines, LIGHTNING_PATTERNS.electrify);
   const trigger = first(lines, LIGHTNING_PATTERNS.trigger);
   if (!electrify && !trigger) return null;
   const P = LIGHTNING_PATTERNS;
-  const baseMax = electrify ? Number(electrify.match[4]) : 3;
+  // Feline Figure needs Electrify owned (264779's gates: GetBuffStack(82166) >= 1, buff 82164), and its Numbed is 520462624's own node 343
+  // (Feline Figure deals no damage): without either line it inflicts nothing.
+  const baseMax = electrify ? Number(electrify.match[4]) : 0;
   const maxElectrify = baseMax + sumOf(lines, P.maxElectrify);
   const perStack = first(lines, P.perStack);
-  const perTrigger = perStack ? Math.floor(maxElectrify / Number(perStack.match[1])) * Number(perStack.match[2]) : maxElectrify;
+  const perTrigger = perStack ? Math.floor(maxElectrify / Number(perStack.match[1])) * Number(perStack.match[2]) : 0;
   const electrifySeconds = electrify ? Number(electrify.match[5]) : 10;
   const charging = first(lines, P.chargingTrigger);
-  // Game affixes 264779 and 978270: once on the dummy, unless Charging Equation has another source's Numbed to fire on.
-  const retriggers = Boolean(charging && otherNumbed);
+  const active = Boolean(trigger) && perTrigger > 0;
+  // Feline Figure's opening cast Numbs the dummy (buff 170). While a target is Numbed, each attacker's Lightning hits fill that attacker's
+  // store and every whole 10% of the target's Max Life + Energy Shield in it adds a Numbed stack (client 0x141ef1180, field 2006882; manual
+  // rule 1002000720), so with Lightning hits of hers that store keeps the dummy Numbed after the opening's 2 s, as it keeps every other
+  // Numbed source at the planner's 10 stacks (src/combat-states.js). The dummy's Max Life is in no table: held as the best case (switch
+  // NUMBED_STORE_CONDITION; open question erika-feline-figure-store). Off: the opening's stacks, then none.
+  const storeKept = active && !otherNumbed && Boolean(storeKeeps) && requestedConditions?.[NUMBED_STORE_CONDITION] !== false;
+  // The dummy's Numbed held by more than Feline Figure's own casts, and whether that Numbed is Erika's (her applications raise the
+  // trigger events on her, 1000150 / 1000160: research/remaining-triggers-2026-11-04.md §1).
+  const held = otherNumbed || storeKept;
+  const heldOwn = storeKept || (otherNumbed && otherNumbedOwn);
+  // Game affixes 264779 and 978270: once on the dummy, unless Charging Equation has another Numbed of hers to fire on (trigger 1000160 on
+  // the applier, notMine [6100072]: the store's stacks come from her hits, not Feline Figure's, which deals no damage).
+  const retriggers = Boolean(charging && heldOwn);
   const intervalSeconds = retriggers ? Number(charging.match[1]) : Infinity;
   const doubled = Boolean(first(lines, P.doubled));
   const durationPercent = sumOf(lines, P.numbedDuration);
   const durationSeconds = NUMBED.durationSeconds * Math.max(0, 1 + durationPercent / 100) * (doubled ? 2 : 1);
-  const active = Boolean(trigger) && perTrigger > 0;
   const schedule = active ? felineNumbedSchedule({ intervalSeconds, durationSeconds, perTrigger }) : { points: [], average: 0, afterTrigger: 0 };
   const ffStacks = schedule.average;
-  const totalStacks = otherNumbed ? NUMBED.maxStacks : Math.min(NUMBED.maxStacks, ffStacks);
+  const totalStacks = held ? NUMBED.maxStacks : Math.min(NUMBED.maxStacks, ffStacks);
   const ffShare = totalStacks > 0 ? Math.min(1, ffStacks / totalStacks) : 0;
-  // Swift as Lightning: stacks inflicted per second (Feline Figure's retriggers, plus 1 per Main Skill use from another Numbed source).
-  const inflictedPerSecond = (active && retriggers ? perTrigger / intervalSeconds : 0) + (otherNumbed ? Math.max(0, Number(mainUsesPerSecond) || 0) : 0);
+  // Swift as Lightning (267709): its counter steps on trigger 1000160, which the buff-add routine raises on the applier once per layer added
+  // (SS14 client 0x141f71170, research/remaining-triggers-2026-11-04.md §1), so it counts Numbed stacks. Feline Figure's recasts add their
+  // layers; the dummy's other Numbed of hers is held at the planner's 10 stacks (each its own 2 s × (1 + Numbed Duration)), which needs at least
+  // that many ÷ the duration layers per second (each held stack was one layer added), so the count is at least that, else 1 per Main Skill use.
+  const otherSeconds = NUMBED.durationSeconds * Math.max(0, 1 + durationPercent / 100);
+  const otherHeld = heldOwn ? Math.max(0, NUMBED.maxStacks - (active && retriggers ? Math.min(NUMBED.maxStacks, ffStacks) : 0)) : 0;
+  const heldLayersPerSecond = otherSeconds > 0 ? otherHeld / otherSeconds : 0;
+  const countedPerSecond = heldOwn ? Math.max(0, Number(mainUsesPerSecond) || 0) : 0;
+  const inflictedPerSecond = (active && retriggers ? perTrigger / intervalSeconds : 0) + Math.max(countedPerSecond, heldLayersPerSecond);
   const swiftMatch = first(lines, P.swift);
   const swift = swiftMatch ? (() => {
     const [, per, speed, damage, area, max, seconds] = swiftMatch.match.map(Number);
     const stacks = Math.min(max, inflictedPerSecond * seconds / per);
     return { per, speedPercentPerStack: speed, damagePercentPerStack: damage, areaPercentPerStack: area, maxStacks: max, seconds, stacks: round(stacks), damagePercent: round(damage * stacks), speedPercent: round(speed * stacks), source: swiftMatch.line.source };
   })() : null;
-  const inflicted = otherNumbed || (active && retriggers);
+  const inflicted = heldOwn || (active && retriggers);
   // Movement Speed: the stat sheet's total plus the trait's conditional lines (held: Electrify at max, Numbed inflicted recently).
   const electrifySpeed = sumOf(lines, P.speedPerElectrify) * maxElectrify;
   const moonSpeed = inflicted ? sumOf(lines, P.moonSpeed) : 0;
@@ -193,23 +220,30 @@ export function felineFigureState({ heroId = "", modifierTexts = [], movementSpe
   const wildMatch = first(lines, P.wild);
   const wild = wildMatch ? { perPercent: Number(wildMatch.match[1]), capPercent: Number(wildMatch.match[2]), movementSpeedPercent: round(movementSpeed), value: round(Math.max(0, Math.min(Number(wildMatch.match[2]), Number(wildMatch.match[1]) * movementSpeed))), source: wildMatch.line.source } : null;
   const chargingMatch = first(lines, P.chargingEffect);
-  const stacksAtTrigger = otherNumbed ? NUMBED.maxStacks : schedule.afterTrigger;
+  // Charging Equation's l0 (659138752) is GetBuffStack(170) on the target when Feline Figure inflicts Numbed, kept until its next cast: the
+  // dummy's held stacks when it recasts, else its one opening cast's own stacks on the clean dummy (read after they land: provisional).
+  const stacksAtTrigger = held && retriggers ? NUMBED.maxStacks : schedule.afterTrigger;
   const chargingEffect = chargingMatch && active ? { perStackPercent: Number(chargingMatch.match[1]), maxStacks: Number(chargingMatch.match[2]), stacks: Math.min(Number(chargingMatch.match[2]), stacksAtTrigger), value: round(Number(chargingMatch.match[1]) * Math.min(Number(chargingMatch.match[2]), stacksAtTrigger)), source: chargingMatch.line.source } : null;
+  // Charging Tail (3160357 row 0): on a Feline Figure cast that crits, a 10 s carrier on Erika (node 306 mode 2) of +50% additional Numbed
+  // Effect on the Numbed tag alone (attr 34011 mod 4, tags [5100009]; node 622 then refreshes buff 170's effect), so it scales every Numbed
+  // Erika inflicts in the window, not only Feline Figure's: its share of the dummy's stacks is Erika's own share (1 when the other Numbed is
+  // hers). It is held only while Feline Figure keeps casting: one opening cast holds it for its first 10 s, none of a sustained fight.
+  const ownShare = heldOwn ? 1 : ffShare;
   const tailMatch = first(lines, P.tailEffect);
   const tail = tailMatch ? (() => {
     const window = Number(tailMatch.match[1] ?? tailMatch.match[2]), percent = Number(tailMatch.match[3]);
     const critCan = Boolean(first(lines, P.tailCrit));
     const c = critCan && critChancePercent != null ? Math.max(0, Math.min(100, critChancePercent)) / 100 : 0;
-    const triggersInWindow = active ? Math.max(1, Math.ceil(window / intervalSeconds - EPS)) : 0;
-    const share = active ? 1 - (1 - c) ** triggersInWindow : 0;
-    return { windowSeconds: window, percent, critCan, critChancePercent: critChancePercent == null ? null : round(c * 100), measured: critChancePercent != null, triggersInWindow, share: round(share), factor: round(1 + percent / 100 * share * ffShare), source: tailMatch.line.source };
+    const triggersInWindow = active && retriggers ? Math.max(1, Math.ceil(window / intervalSeconds - EPS)) : 0;
+    const share = triggersInWindow > 0 ? 1 - (1 - c) ** triggersInWindow : 0;
+    return { windowSeconds: window, percent, critCan, critChancePercent: critChancePercent == null ? null : round(c * 100), measured: critChancePercent != null, triggersInWindow, share: round(share), ownShare: round(ownShare), factor: round(1 + percent / 100 * share * ownShare), source: tailMatch.line.source };
   })() : null;
   const factors = [...additional.map((item) => 1 + item.value / 100), 1 + (wild?.value || 0) / 100, 1 + (chargingEffect?.value || 0) / 100, tail?.factor || 1];
   const additionalFactor = factors.reduce((product, value) => product * Math.max(0, value), 1);
   return {
     active, maxElectrify, baseMaxElectrify: baseMax, perTrigger, electrifySeconds, intervalSeconds, charging: Boolean(charging), retriggers, doubled, durationPercent, durationSeconds: round(durationSeconds),
-    stacks: round(ffStacks), totalStacks: round(totalStacks), otherNumbed: Boolean(otherNumbed), ffShare: round(ffShare), stacksAtTrigger, schedule,
-    inflictedPerSecond: round(inflictedPerSecond), swift, movementSpeed: { total: round(movementSpeed), sheet: Number(movementSpeedPercent) || 0, electrify: round(electrifySpeed), moon: moonSpeed, swift: swift?.speedPercent || 0 },
+    stacks: round(ffStacks), totalStacks: round(totalStacks), otherNumbed: Boolean(otherNumbed), storeKeeps: Boolean(storeKeeps), storeKept, held, heldOwn, ffShare: round(ffShare), stacksAtTrigger, schedule,
+    inflictedPerSecond: round(inflictedPerSecond), heldLayersPerSecond: round(heldLayersPerSecond), swift, movementSpeed: { total: round(movementSpeed), sheet: Number(movementSpeedPercent) || 0, electrify: round(electrifySpeed), moon: moonSpeed, swift: swift?.speedPercent || 0 },
     additional, wild, chargingEffect, tail, additionalFactor: round(additionalFactor)
   };
 }

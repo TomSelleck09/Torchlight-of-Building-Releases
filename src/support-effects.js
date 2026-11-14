@@ -24,6 +24,9 @@ import { BATCH6_SUPPORT_RULES, batch6Status, resolveBatch6Clause, BATCH6_DURATIO
 import { SUMMON_ACTIVATION_MEDIUM_REASON, summonMinionRows, summonSupportReading } from "./summon-support-minion.js";
 // Chunk 8 (2026-11-01): the clauses the census left unread, from their game records (src/support-chunk8.js).
 import { CHUNK8_SUPPORT_RULES, resolveChunk8Condition, chunk8OwnStatus } from "./support-chunk8.js";
+import { classifyMechanic, FAMILY_RULES } from "./mechanic-classifier.js";
+import { stoneTagChanges } from "./stone-tag-registry.js";
+import { BOSS_ENEMY_COUNT, recordCountsBossAsFive } from "./boss-enemy-count.js";
 import { atLeastShare, enemyBuffSet, ownCombatHeld, playerBuffSet } from "./unit-buff-set.js";
 // Your held buffs on your unit buff set (W9 step 2; the support state's `playerBuffs`), else the support state's flat fields (TLI_BUFF_SET=off).
 const heldOwn = (state) => ownCombatHeld(state);
@@ -326,9 +329,11 @@ const CENSUS_SUPPORT_RULES = [
   // The same two parts as separate clauses (a level row split on its sentence).
   { family: "spellBurst", pattern: /^The supported skill can activate Spell Burst$/i, build: () => ({ value: 0, kind: "canActivate", canActivate: true }) },
   { family: "spellBurst", pattern: new RegExp(`^${N}% additional Hit Damage for skills cast by Spell Burst when Spell Burst is activated by the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "hitAdditional", recipe: 550492864 }) },
-  // Groundshaker: Epicenter / Cripple (recipe 119083224: attr 5719 additional on {this skill, 6101354 the spreading fissure}): a penalty on
-  // the fissure's own hits (the Groundshaker profile's "fissure" component).
-  { family: "conditionalAdditional", pattern: new RegExp(`^${N}% additional damage while the fissure created by the supported skill spreads$`, "i"), build: (m) => ({ value: num(m[1]), component: "fissure", condition: "fissureSpreads", census: true, recipe: 119083224 }) },
+  // Groundshaker: Cripple (recipe 119083224: attr 5719 additional on {this skill, 6101354 the fissure tag}): on the hits that carry the
+  // fissure tag, the profile components' `fissureTag` share (src/attack-hit-profiles.js Groundshaker, from Split 177867's group tags): the
+  // spreading fissure, which deals the Fission's row 501 on the uses that consume a Demolisher Charge, and Frequent Quake's pulses; never
+  // the row-502 explosion (2026-11-14).
+  { family: "conditionalAdditional", pattern: new RegExp(`^${N}% additional damage while the fissure created by the supported skill spreads$`, "i"), build: (m) => ({ value: num(m[1]), condition: "fissureSpreads", census: true, recipe: 119083224 }) },
   // Fire Explosion (recipe 13523221: on the supported skill dealing damage (trigger 1000030, 1 s gate) a 4 s buff 11730 of +P1 Affliction Per
   // Second): held while the supported skill deals damage to the dummy (src/planner.js adds it to the build's Affliction per second).
   { family: "affliction", pattern: new RegExp(`^${N} Affliction Per Second if the supported skill has dealt damage recently$`, "i"), build: (m) => ({ value: num(m[1]), kind: "recentDamage", recipe: 13523221 }) },
@@ -626,15 +631,19 @@ export const SUPPORT_CLAUSE_RULES = [
   // Grudge (reference data; leveled Lv1 31 … Lv40 70): Paralysis on a Cursed target when the supported skill deals damage (manual rule
   // 1002020420: +15% damage taken, 4 s base duration, 1 stack). src/combat-states.js chanceParalysis reads it at the planner's hit rate.
   { family: "paralysis", pattern: new RegExp(`^When the supported skill deals damage to a Cursed target, there is a ${N}% chance to Paralyze it$`, "i"), build: (m) => ({ chancePercent: num(m[1]) }) },
-  // Groundshaker: Cripple (Noble) (2026-10-14): Paralysis on every hit of the spreading fissure, no Curse needed. The
-  // Groundshaker profile (src/attack-hit-profiles.js "fissure") lands the fissure on the dummy once per Demolisher Charge
-  // consumed, so the fissure's hit rate drives the uptime; a skill without a fissure component is Not on dummy.
+  // Groundshaker: Cripple (Noble) (2026-10-14): Paralysis on every hit of the spreading fissure, no Curse needed. Record 252388064 fires on
+  // a hit (1000033) that carries the fissure tag 6101354: the spreading fissure (Split 177867 reaction_enhance: the Fission's row 501 on a use
+  // that consumes a Demolisher Charge, hit rule bHitOnce, so once per charge on the dummy) and Frequent Quake's pulses, never the row-502
+  // explosion (2026-11-14). The rate is uses × the Demolisher share (src/planner.js fissureHitsPerSecond); Frequent Quake's pulses add
+  // events inside the same fissure, not read (no uptime change while a fissure lands every ≤ 4 s). A skill without a fissure is Not on dummy.
   { family: "paralysis", pattern: /^When the fissure created by the supported skill spreads, inflicts Paralysis on enemies on hit$/i, build: () => ({ chancePercent: 100, fissure: true }) },
   { family: "selfDebuff", pattern: new RegExp(`^When the supported skill deals damage, there is a ${N}% chance to inflict a debuff: ${N}% damage taken by the enemy from the supported skill for ${N} s$`, "i"), build: (m) => ({ chancePercent: num(m[1]), value: num(m[2]), durationSeconds: num(m[3]) }) },
   { family: "reaping", pattern: new RegExp(`^Reaps ${N} s of Damage Over Time when the supported skill hits\\. Only Reaps (\\w+) Damage dealt by the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "onHit", ailment: m[2].toLowerCase() }) },
   { family: "reaping", pattern: new RegExp(`^For every \\+1 Beam the supported skill has, ${N}% additional Reaping Recovery Speed for Reaping that is triggered when this skill reaches max channeled stacks$`, "i"), build: (m) => ({ value: num(m[1]), kind: "recoveryPerBeam" }) },
   { family: "beams", pattern: /^\+?(\d+) additional Beams for the supported Beam Skill$/i, build: (m) => ({ value: num(m[1]) }) },
-  { family: "tags", pattern: /^The supported skill gains the (\w+) Tag$/i, build: (m) => ({ tag: m[1], kind: "add" }) },
+  // A tag change (2026-11-13, review §4 B2): every wording of the stones ("gains / now has / has the A[, B, and C] tag(s)", optionally followed
+  // by a sentence of its own, `rest`); the tags themselves come from the game's stone filter (setup.supportAddedTags, src/planner.js).
+  { family: "tags", pattern: /^(?:The supported skill|This skill) (?:now has|has|gains) the ([A-Z][\w-]*(?: [A-Z][\w-]*)*(?:, (?:and )?[A-Z][\w-]*(?: [A-Z][\w-]*)*)*(?:,? and [A-Z][\w-]*(?: [A-Z][\w-]*)*)?) [Tt]ags?(?:\.\s*(.+?))?\.?$/i, build: (m) => { const tagList = m[1].split(/,\s*(?:and\s+)?|\s+and\s+/).map((tag) => tag.trim()).filter(Boolean); return { tag: tagList[0], tags: tagList, kind: "add", rest: m[2] || null }; } },
   { family: "tags", pattern: /^(?:Removes the (\w+) [Tt]ag(?: (?:from|of) the supported skill)?|The supported skill loses the (\w+) [Tt]ag)$/i, build: (m) => ({ tag: m[1] ?? m[2], kind: "remove" }) },
   // Typed damage taken the supported skill inflicts on the enemy (Wilting Beam: Dispirit, Flame Jet: Scorched Earth,
   // Burning Shot: Ignition): a build-wide enemy debuff while the skill deals damage (uptime 1: provisional).
@@ -789,6 +798,65 @@ function originEffectStatus(clause, ctx, s) {
   return s("In calc", `increased Origin effect of Origin of ${magus} (attr 3401 mod 3 on [this skill, Origin]), summed with the build's Origin effect lines (src/origin-of-spirit-magus.js summonOriginEffect)${clause.minTypes ? `; while at least ${clause.minTypes} Spirit Magus types are out (the town panel has none)` : ""}`, ["origin"]);
 }
 
+// A Magnificent / Noble clause no rule reads whose wording the census classifier calls neutral on one dummy (src/mechanic-classifier.js:
+// radius, size, direction, defence, on-kill, several targets, spread) reads No DPS effect / Not on dummy instead of Not modeled (2026-11-13,
+// review §4 B1). Kept out: the supports whose neutral-looking clause is a real damage gap (review §3: Groundshaker: Frequent Quake swaps the
+// Split for a lingering fissure, Ice Lances: Permafrost triggers a Frost Terra (read since 2026-11-14 by its own rules, src/support-chunk8.js);
+// Gale Slash: Dominance, kept here, is read by its own rule since 2026-11-14), and a typed
+// Penetration line (the classifier's "Penetrat" means a projectile passing through).
+const NEUTRAL_CLASSIFIER_EXCLUDED = new Set(["Groundshaker: Frequent Quake (Magnificent)", "Ice Lances: Permafrost (Noble)", "Gale Slash: Dominance (Magnificent)"]);
+const NEUTRAL_FAMILY_REASON = { onKill: "needs an enemy to be defeated; the dummy never dies", spread: "spreading reaches other enemies; the dummy is the only one", selfDefense: "a defence: the dummy never attacks", multiTarget: "reaches other enemies or targets; the dummy is the only one", noDamage: "movement, area, size, direction, Mana or a control effect: no effect on damage to one dummy" };
+function neutralSpecialClause(clause, supportName) {
+  if (!isSpecial(supportName) || NEUTRAL_CLASSIFIER_EXCLUDED.has(supportName)) return null;
+  const text = String(clause.text ?? "");
+  if (/\b(?:Fire|Cold|Lightning|Erosion|Elemental|Physical|Armor|Resistance) Penetration\b/i.test(text)) return null;
+  const { family, dummy } = classifyMechanic(text);
+  if (dummy === "dps" || !NEUTRAL_FAMILY_REASON[family]) return null;
+  // Conservative: neutral only when no damage-relevant family matches anywhere in the clause, and it names no hit, fissure or cast change
+  // (a radius line that also inflicts Numbed, a Chain Lightning that hits the farthest enemy, a skill that "can no longer be triggered"), and no
+  // return, Recall or "on the spot" (a returning or re-jumping projectile can hit the dummy again: not settled).
+  if (FAMILY_RULES.some((rule) => rule.dummy === "dps" && rule.re.test(text)) || /\bhit(?:s|ting)?\b|\bfissures?\b|\bChain Lightning\b|\bis now cast\b|\breturn|\bRecall|\bon the spot\b/i.test(text)) return null;
+  return { status: dummy === "no-dps" ? "No DPS effect" : "Not on dummy", reason: `${NEUTRAL_FAMILY_REASON[family] || "no effect on damage to one dummy"} (wording class "${family}", src/mechanic-classifier.js)` };
+}
+
+/** The game stone filter's tag changes on a setup: the planner's fields when it set them, else supportAddedTagNames / supportRemovedTagNames on
+ * the setup's own tags and enabled supports (a setup the planner did not build: the census, the picker). Null without a named setup. */
+function setupStoneTagChanges(setup) {
+  if (!setup?.name || !Array.isArray(setup.tags)) return null;
+  if (setup.supportAddedTags || setup.supportRemovedTags) return { added: setup.supportAddedTags || [], removed: setup.supportRemovedTags || [], tags: setup.tags };
+  const supports = (setup.supports || []).filter((support) => support && support.enabled !== false);
+  const skill = { name: setup.name, tags: setup.tags, role: setup.role };
+  let changes = null;
+  try { changes = stoneTagChanges(skill, supports); } catch { return null; }
+  if (!changes) return null;
+  const { added, removed } = changes;
+  return { added, removed, tags: [...setup.tags.filter((tag) => !removed.includes(tag)), ...added] };
+}
+
+// Neutral second sentences of a tag clause (review §4 B2): what they change has no reader that the tag does not already cover.
+const TAG_CLAUSE_NEUTRAL_REST = [
+  [/^Wind Blade Quantity is not affected by Projectile Quantity bonuses$/i, "Wind Blade Quantity: the blades are not a modeled hit count, so Projectile Quantity adds none either way"],
+  [/^Charges forward when casting this skill$/i, "the forward charge is movement"],
+  [/^This Damage Over Time can't be spread$/i, "spreading reaches other enemies"]
+];
+/** A tag clause's badge: In calc where the game's stone filter applies the tag change to this setup (setup.supportAddedTags / supportRemovedTags;
+ * src/support-compatibility.js skillTagsWithSupportChanges, read by the hit, DoT and ailment models since 2026-11-03). */
+function tagClauseStatus(clause, ctx, s) {
+  const names = clause.tags || [clause.tag];
+  const changes = ctx.setupTagChanges;
+  const restRule = clause.rest ? TAG_CLAUSE_NEUTRAL_REST.find(([pattern]) => pattern.test(clause.rest.trim())) : null;
+  if (clause.rest && !restRule) return s("Not modeled", `the tag change is read; no rule reads "${clause.rest}"`);
+  const restNote = restRule ? `; ${restRule[1]}` : "";
+  if (!changes) return ctx.engine ? s("In calc", `the skill's line scopes ${clause.kind === "add" ? "gain" : "lose"} the ${names.join(", ")} tag (the game's stone filter; src/support-compatibility.js skillTagsWithSupportChanges)${restNote}`, ["skill-hit", "skill-dot", "ailments"]) : s("Not modeled", "no damage engine for the supported skill");
+  const list = clause.kind === "add" ? changes.added : changes.removed;
+  const applied = names.filter((name) => list.includes(name));
+  const already = clause.kind === "add" ? names.filter((name) => !applied.includes(name) && changes.tags.includes(name)) : names.filter((name) => !applied.includes(name) && !changes.tags.includes(name));
+  const missing = names.filter((name) => !applied.includes(name) && !already.includes(name));
+  if (missing.length) return s("Not modeled", `the game's stone filter ${applied.length ? `${clause.kind === "add" ? "adds" : "removes"} ${applied.join(", ")}; it` : ""} ${clause.kind === "add" ? "adds" : "removes"} no ${missing.join(", ")} tag here, so the change is not applied`.replace(/\s+/g, " "));
+  if (!applied.length) return s("No DPS effect", `the skill ${clause.kind === "add" ? "already has" : "never had"} the ${names.join(", ")} tag${restNote}`);
+  return s("In calc", `the game's stone filter ${clause.kind === "add" ? "adds" : "removes"} the ${applied.join(", ")} tag ${clause.kind === "add" ? "to" : "from"} the skill: its hits, damage over time and ailments read it (setup.supportAddedTags; src/support-compatibility.js skillTagsWithSupportChanges)${restNote}`, ["skill-hit", "skill-dot", "ailments"]);
+}
+
 function clauseStatus(clause, support, ctx) {
   const engine = ctx.engine;
   const name = support.name;
@@ -853,7 +921,12 @@ function clauseStatus(clause, support, ctx) {
   if ((tags.has("Aura") || ctx.role === "aura") && auraModelReadsClause(name, clause.text)) return s("In calc", AURA_EFFECT_NAMED_SUPPORTS.has(name) ? `the Aura's Aura Effect at the support's level (src/aura-effects.js auraSupportEffects${name === "Precise: Stand as One" ? ": × min(5, Auras affecting you)" : ""})` : "the Aura's Aura Effect (src/aura-effects.js auraSupportEffects)", ["aura"]);
   // Periodic Burst on a Mobility Skill: src/periodic-burst.js reads it from the setup's clauses, whatever the damage engine
   // (badge fix 2026-10-27; the Mobility skill usually has no damage engine of its own).
-  if (clause.family === "periodicBuff") return periodicBuffStatus(tags, ctx, s);
+  // The stone filter's added tags count (a Mobility tag from Thunder Spike: Rumbling Thunder; src/periodic-burst.js reads setup.tags; 2026-11-13).
+  if (clause.family === "periodicBuff") return periodicBuffStatus(new Set([...tags, ...(ctx.setupTagChanges?.added || [])]), ctx, s);
+  // Youga's Selves of All Realms: its own duration and cooldown clauses (Extended Duration, Cooldown Reduction, an Activation Medium's
+  // additional Duration) are read by src/youga-ultimate-one.js (ownTimingLines: I Am the Measure of All Time and the skill's uptime), though the
+  // skill has no damage engine of its own (2026-11-13, review §4).
+  if (ctx.skillName === "Selves of All Realms" && (clause.family === "cooldown" || clause.family === "duration")) return s("Provisional", `read by Youga's Selves of All Realms model (src/youga-ultimate-one.js ownTimingLines): its ${clause.family === "cooldown" ? "Cooldown Recovery Speed (I Am the Measure of All Time reads it)" : "Duration (its uptime)"}`, ["youga"]);
   // Activation Medium event clauses (census items #8 / #12): event sources apply whatever the supported skill's engine.
   if (clause.amEvent) return amEventStatus(clause, ctx);
   // Census batch 5 (B3): hit-count and cadence changes on the supported skill's hit profile (src/support-hit-count-batch5.js).
@@ -1179,8 +1252,8 @@ function clauseStatus(clause, support, ctx) {
     case "paralysis":
       if (clause.fissure) {
         if (engine !== "skill-hit") return s("Not modeled", "read for skill hits only (the fissure's hit rate drives the uptime)");
-        return (ctx.profile?.components || []).some((component) => component.key === "fissure")
-          ? s("Provisional", "Paralysis (+15% damage taken, 4 s, 1 stack; manual rule 1002020420) on each fissure hit: the skill model lands the fissure on the dummy once per Demolisher Charge consumed (src/attack-hit-profiles.js, provisional), so the uptime follows that rate (src/combat-states.js)", ["combat-states"])
+        return (ctx.profile?.components || []).some((component) => component.fissureTag)
+          ? s("Provisional", "Paralysis (+15% damage taken, 4 s, 1 stack; manual rule 1002020420) on each hit carrying the fissure tag 6101354 (record 252388064): the spreading fissure hits the dummy once per Demolisher Charge consumed (Split 177867, hit rule bHitOnce), so the uptime follows that rate (src/combat-states.js)", ["combat-states"])
           : s("Not on dummy", "the skill model has no fissure that hits the dummy; a spreading fissure needs other enemies");
       }
       // Grudge's row (record 369609664) opens on trigger 1000030: the skill's hits and its damage over time (one event per server tick while it
@@ -1201,7 +1274,7 @@ function clauseStatus(clause, support, ctx) {
       if (beam) return s("Provisional", "every Beam hits the dummy, beam ticks and explosions, after the first keeping 30% (the skill's 70% Shotgun falloff is the share lost; client repeat multiplier, user decision 2026-11-05)", ["scorching-beam"]);
       return s("No DPS effect", "extra Beams do not hit one dummy more than once (they count for Rapid Completion)");
     case "tags":
-      return engine === "skill-hit" ? s("In calc", `the skill's line scopes ${clause.kind === "add" ? "gain" : "lose"} the ${clause.tag} tag`, ["skill-hit"]) : s("Not modeled", "tag changes are read for skill hits only");
+      return tagClauseStatus(clause, ctx, s);
     case "maxAfflictionDot":
       return engine === "skill-dot" ? s("In calc", "additional damage over time while the dummy is at Max Affliction (rating 100): the steady state, and the recount from the moment the simulated rating reaches 100 (src/skill-dot-model.js)", ["skill-dot"]) : s("Not modeled", "read for skill DoTs only");
     case "terraCharge":
@@ -1228,6 +1301,8 @@ function clauseStatus(clause, support, ctx) {
     default:
       break;
   }
+  const neutral = neutralSpecialClause(clause, name);
+  if (neutral) return s(neutral.status, neutral.reason);
   return s("Not modeled", "no rule reads this clause");
 }
 
@@ -1390,8 +1465,10 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     case "aggressionPerEnemy": {
       if (!(heldOwn(state) ? heldOwn(state).hasAttackAggression || heldOwn(state).hasSpellAggression : state.hasAggression)) return off("no Attack or Spell Aggression source (src/combat-states.js)");
       if (!explicitRadiusHolds(clause.meters, state.nearTarget)) return off(`the dummy is outside ${clause.meters} m`);
-      const applied = Math.min(clause.cap, clause.value);
-      return on(`Aggression held; 1 enemy (the training dummy) within ${clause.meters} m: ${clause.value}% × 1 (up to +${clause.cap}%)`, { appliedValue: r(applied) });
+      // Record 370519520's node 700 carries calcCountByRarity: the Boss dummy counts as 5 enemies (src/boss-enemy-count.js; G1c 2026-11-13).
+      const enemies = recordCountsBossAsFive(clause.recipe) ? BOSS_ENEMY_COUNT : 1;
+      const applied = Math.min(clause.cap, clause.value * enemies);
+      return on(`Aggression held; ${enemies === 1 ? "1 enemy (the training dummy)" : `the Boss dummy counts as ${enemies} enemies (record ${clause.recipe}: calcCountByRarity, the game's Enemy Count rule)`} within ${clause.meters} m: ${clause.value}% × ${enemies} (up to +${clause.cap}%)`, { appliedValue: r(applied) });
     }
     case "perBlurRating": {
       const rating = ownBlurRating(state);
@@ -1452,10 +1529,11 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       if (!types.includes("Fire")) return off("the supported skill deals no Fire Damage");
       const effect = siblingMatch(siblings, new RegExp(`^${N}% additional Ablaze Effect for each enemy within ${N} m Ignited by the supported skill, up to ${N}%$`, "i"));
       const perEnemy = effect ? num(effect[1]) : 0, meters = effect ? num(effect[2]) : 10, cap = effect ? num(effect[3]) : 0;
-      const enemies = explicitRadiusHolds(meters, state.nearTarget) ? 1 : 0;
+      // Record 357258688's node 700 carries calcCountByRarity: the Ignited Boss dummy counts as 5 enemies (src/boss-enemy-count.js; G1f 2026-11-13).
+      const enemies = explicitRadiusHolds(meters, state.nearTarget) ? (recordCountsBossAsFive(357258688) ? BOSS_ENEMY_COUNT : 1) : 0;
       const boost = Math.min(cap, perEnemy * enemies);
       const value = r(clause.value * (1 + boost / 100));
-      return on(`the dummy is Ignited (the supported skill deals Fire hits; provisional attribution): Ablaze +${clause.value}% Fire Damage taken from the supported skill (patch notes; provisional) × (1 + ${r(boost)}% Ablaze Effect for ${enemies} Ignited enemy within ${meters} m) = +${value}%`, { appliedValue: 0, typedParts: [{ typed: "Fire", value }], provisional: true });
+      return on(`the dummy is Ignited (the supported skill deals Fire hits; provisional attribution): Ablaze +${clause.value}% Fire Damage taken from the supported skill (patch notes; provisional) × (1 + ${r(boost)}% Ablaze Effect for ${enemies === BOSS_ENEMY_COUNT ? `the Ignited Boss dummy, counted as ${enemies} enemies (record 357258688: calcCountByRarity),` : `${enemies} Ignited enemy`} within ${meters} m) = +${value}%`, { appliedValue: 0, typedParts: [{ typed: "Fire", value }], provisional: true });
     }
     // ---- Skill-mechanics census batch 2 (B1, 2026-10-27) ----
     // Rumbling Thunder: one Shadow Strike True Body hit per use; the debuff holds min(1, uses/s × seconds) of the time.
@@ -1475,8 +1553,13 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       const rating = dummyFrostbiteRating(state);
       return rating >= 100 ? on(`the dummy is Frozen (Frostbite Rating ${r(rating)} ≥ 100, user-confirmed 2026-10-18): +${clause.value} Critical Strike Rating (game affix ${clause.recipe})`, { appliedValue: clause.value }) : off(`the dummy is not Frozen (Frostbite Rating ${r(rating)} < 100)`);
     }
-    case "terraCentre":
-      return on(`one enemy, the training dummy, inside the Nether Terra's central area (best case; game affix ${clause.recipe}${clause.cap ? `; up to +${clause.cap}%` : ""}; provisional)`, { appliedValue: Math.min(clause.cap ?? Infinity, clause.value), provisional: true });
+    case "terraCentre": {
+      // Devour's per-enemy line (record 10990381: node 700 with calcCountByRarity) counts the Boss dummy as 5 enemies (src/boss-enemy-count.js;
+      // G1d 2026-11-13); Extermination's debuff (2809405) has no count.
+      const enemies = clause.cap != null && recordCountsBossAsFive(clause.recipe) ? BOSS_ENEMY_COUNT : 1;
+      const who = enemies === 1 ? "one enemy, the training dummy," : `the Boss dummy, counted as ${enemies} enemies (calcCountByRarity, the game's Enemy Count rule),`;
+      return on(`${who} inside the Nether Terra's central area (best case; game affix ${clause.recipe}${clause.cap ? `; ${clause.value}% × ${enemies}, up to +${clause.cap}%` : ""}; provisional)`, { appliedValue: Math.min(clause.cap ?? Infinity, clause.value * enemies), provisional: true });
+    }
     case "nearOwnProjectile":
       if (!hits) return off("the supported skill deals no hits");
       return explicitRadiusHolds(clause.meters, state.nearTarget) ? on(`the projectile flies to the dummy and the character stands within ${clause.meters} m of it (Distance group: Nearby, best case)`, { appliedValue: clause.value }) : off(`the character stands ${DISTANT_STANDING_METERS} m away (Distance group), outside ${clause.meters} m of the projectile`);
@@ -1506,8 +1589,10 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       if (full.engine !== "skill-hit") return off("Attack Speed of the supported skill: read on skill hits only");
       if (!(enemyBuffSet(state)?.holds("Trauma") ?? (state.enemyAilments || []).includes("Trauma"))) return off("the dummy is not Traumatized (enemy-ailment model)");
       if (!explicitRadiusHolds(clause.meters, state.nearTarget)) return off(`the dummy is outside ${clause.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
-      const applied = Math.min(clause.cap, clause.value);
-      return on(`1 Traumatized enemy (the training dummy) within ${clause.meters} m: +${clause.value}% × 1 (up to +${clause.cap}%; game recipe ${clause.recipe})`, { appliedValue: r(applied) });
+      // Record 164098032's node 700 carries calcCountByRarity: the Boss dummy counts as 5 Traumatized enemies (src/boss-enemy-count.js; G1e 2026-11-13).
+      const enemies = recordCountsBossAsFive(clause.recipe) ? BOSS_ENEMY_COUNT : 1;
+      const applied = Math.min(clause.cap, clause.value * enemies);
+      return on(`${enemies === 1 ? "1 Traumatized enemy (the training dummy)" : `the Traumatized Boss dummy, counted as ${enemies} enemies (calcCountByRarity, the game's Enemy Count rule),`} within ${clause.meters} m: +${clause.value}% × ${enemies} (up to +${clause.cap}%; game recipe ${clause.recipe})`, { appliedValue: r(applied) });
     }
     case "galeSeconds": {
       if (!full.channeled && !full.tags.has("Channeled")) return off("the supported skill is not channeled, so it has no Gale");
@@ -1529,8 +1614,8 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       return stacks > 0 ? on(`${r(focus.pointsPerSecond)} Focus Pts/s (${full.skillName} profile) × ${clause.seconds} s ÷ ${clause.every} = ${r(stacks)} stacks held (each ${clause.seconds} s; up to ${clause.cap}; game recipe ${clause.recipe}; provisional)`, { appliedValue: r(clause.value * stacks), provisional: true }) : off("the skill gains no Focus Pts");
     }
     case "fissureSpreads": {
-      if (!(full.profile?.components || []).some((component) => component.key === "fissure")) return off("the supported skill creates no modeled fissure");
-      return on(`on the spreading fissure's own hits (the "fissure" hit group; game recipe ${clause.recipe}: tag 6101354): ${clause.value >= 0 ? "+" : ""}${clause.value}% additional`, { appliedValue: 0, componentParts: [{ component: "fissure", value: clause.value }] });
+      if (!(full.profile?.components || []).some((component) => component.fissureTag)) return off("the supported skill creates no modeled fissure");
+      return on(`${clause.value >= 0 ? "+" : ""}${clause.value}% additional on the hits that carry the fissure tag 6101354 (game recipe ${clause.recipe}): the Fission on the uses that consume a Demolisher Charge, which the spreading fissure deals (Split 177867 reaction_enhance), and Frequent Quake's pulses; not the Fissure Secondary Damage explosion (row 502), whose group carries no fissure tag`, { appliedValue: 0, fissureTagParts: [{ value: clause.value }] });
     }
     // Minion supports: the planner's state (Command, the dummy's Frostbite Rating, the player's hits) or the Minion model's own (Growth,
     // the Empower Skill buff, Self-Destruct Protocol: src/minion-damage-model.js minionCensusLine).
@@ -1699,7 +1784,9 @@ export function resolveSupportEffects(setup, ctx = {}) {
     windRhythmTerraDot: ctx.windRhythmTerraDot ?? Boolean(engine === "skill-dot" && profile?.recast && (setup?.supports || []).some((support) => support.enabled !== false && support.name === "Activation Medium: Wind Rhythm")),
     // Any other non-channeled skill DoT with an Activation Medium (src/trigger-interval.js activationMediumDotTrigger; 2026-10-13).
     triggeredDot: ctx.triggeredDot ?? Boolean(engine === "skill-dot" && !profile?.channeled && (setup?.supports || []).some((support) => support.enabled !== false && /^Activation Medium: /.test(support.name || ""))),
-    conditions: ctx.conditions || null
+    conditions: ctx.conditions || null,
+    // The stone filter's tag changes of this setup: the planner's (setup.supportAddedTags / supportRemovedTags), else from the stone filter.
+    setupTagChanges: ctx.setupTagChanges ?? setupStoneTagChanges(setup)
   };
   const effects = {
     setupKey: setup?.setupKey || setup?.instanceId || setup?.name || null, skillName: setup?.name || null, engine,
@@ -1776,6 +1863,9 @@ export function resolveSupportEffects(setup, ctx = {}) {
         clause.appliedValue = round(clause.value * (clause.stacks ?? 0));
       }
       Object.assign(clause, clauseStatus(clause, support, full));
+      // A Magnificent / Noble star line worth +0% (1★; specialSupportStarBonus 0 / 4 / 8 / 14 / 20) moves nothing, so it must not lift the
+      // support's header to In calc (2026-11-13, review §4 B5).
+      if (clause.origin === "star" && /^\+?0(?:\.0+)?% additional damage\b/i.test(String(clause.text)) && (clause.status === "In calc" || clause.status === "Provisional")) Object.assign(clause, { status: "No DPS effect", reason: `${clause.stars ?? 1}★: the star bonus is +0% at this star count (+20% at 5★)`, consumers: [] });
       // Crowd control the clause's stone affix holds on the dummy (wiring audit W6a item 1, 2026-11-03; src/combat-states.js holdRows,
       // passed back through supportConditions): In calc where a crowd control reader counts it (or its Paralysis adds damage taken),
       // No DPS effect where nothing reads it, Inactive where its event never fires.
@@ -1807,8 +1897,11 @@ export function resolveSupportEffects(setup, ctx = {}) {
           effects.conditionalAdditional.push({ ...entry, value: clause.value, condition: clause.condition, active: clause.active, appliedValue: clause.appliedValue, conditionText: clause.conditionText, triggeredOnly: Boolean(clause.triggeredOnly), ...(clause.hitOnly ? { hitOnly: true, skillScope: clause.skillScope } : {}), ...(clause.typedParts ? { typedParts: clause.typedParts } : {}) });
           // Census item #2 typed bodies (Electric Overload, Elemental Conversion, Blazing Scorch): typed additional lines on the hits.
           if (clause.active && ["In calc", "Provisional"].includes(clause.status)) for (const part of clause.typedParts || []) if (part.value) effects.additional.push({ ...entry, text: `${part.value >= 0 ? "+" : ""}${part.value}% additional ${part.typed} Damage (${clause.text} — ${clause.conditionText})`, value: part.value, typed: part.typed, scope: scopeFor(part.typed) });
-          // Condition-unread batch 3: a line scoped to one hit group (Groundshaker's fissure), read by src/skill-hit-model.js per component.
+          // Condition-unread batch 3: a line scoped to one hit group, read by src/skill-hit-model.js per component.
           if (clause.active && ["In calc", "Provisional"].includes(clause.status)) for (const part of clause.componentParts || []) if (part.value) (effects.componentAdditional[part.component] ??= []).push({ source: clause.source, text: `${clause.text} — ${clause.conditionText}`, value: part.value });
+          // A line on the hits that carry Groundshaker's fissure tag 6101354 (Cripple): src/skill-hit-model.js applies it to each component at
+          // its `fissureTag` share (2026-11-14).
+          if (clause.active && ["In calc", "Provisional"].includes(clause.status)) for (const part of clause.fissureTagParts || []) if (part.value) (effects.fissureTagAdditional ??= []).push({ source: clause.source, text: `${clause.text} — ${clause.conditionText}`, value: part.value });
           break;
         // Condition-unread batch 3: a conditional Attack Speed of the supported skill (Restless).
         case "censusSpeed": if (clause.active && clause.appliedValue && ["In calc", "Provisional"].includes(clause.status)) effects.speed.push({ ...entry, text: `${clause.text} — ${clause.conditionText}`, value: clause.appliedValue, additional: true, kind: "attack" }); break;

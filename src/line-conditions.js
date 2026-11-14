@@ -1,4 +1,5 @@
 import { dummyTarget, dummyTargetWord, explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS } from "./dummy-target.js";
+import { BOSS_ENEMY_COUNT, bossCountedRecordFor } from "./boss-enemy-count.js";
 import { ailmentStateNames } from "./enemy-ailments.js";
 import { BY_YOU, auraTagCount, empowerTagCount, enemyBuffSet, playerBuffSet, ownCombatHeld } from "./unit-buff-set.js";
 import { CONSUMED_COMBO_POINTS, COMBO_POINTS_PER_STARTER } from "./combo-points.js";
@@ -498,8 +499,9 @@ const LINE_RULES = [
   // for every P1 Intelligence. Up to +P3%"): the same per-stat reading with its cap (the T1 text prints no "+").
   [new RegExp(`^\\+?${N}% (.+?) for every (\\d+) (${STAT_WORDS})\\. Up to \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[1])}% ${m[2]}`, key: "perStat", params: { per: num(m[1]), every: num(m[3]), stat: m[4].toLowerCase(), template: m[2], cap: num(m[5]) } })],
   // Affliction Effect revived memory family (reference data Memory Revival; game affix 1393437): "For every enemy within 20 m nearby, +X%
-  // Affliction Effect, up to +Y%". The training dummy is the one enemy, within 10 m (src/dummy-target.js).
-  [new RegExp(`^For every enemy within (\\d+(?:\\.\\d+)?) ?m nearby, \\+?${N}% (.+?), up to \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[2])}% ${m[3]}`, key: "enemiesWithin", params: { meters: num(m[1]), per: num(m[2]), cap: num(m[4]) } })],
+  // Affliction Effect, up to +Y%". The training dummy is the one enemy, within 10 m (src/dummy-target.js); its node 700 carries
+  // calcCountByRarity, so the Boss dummy counts as 5 enemies (src/boss-enemy-count.js; 2026-11-13).
+  [new RegExp(`^For every enemy within (\\d+(?:\\.\\d+)?) ?m nearby, \\+?${N}% (.+?), up to \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[2])}% ${m[3]}`, key: "enemiesWithin", params: { meters: num(m[1]), per: num(m[2]), cap: num(m[4]), bossRecord: bossCountedRecordFor(m[0]) } })],
   // Main Attack Skill revived memory family (reference data Memory Revival; game affix 6038069, trigger 1000069 on Main Skill Attack casts, not
   // Sentry or Channeled): the Attack Speed stacks per Main Attack Skill cast "recently" (4 s, game hyperlink 103) and, at max
   // stacks, a guaranteed Double Damage cast every N casts (src/double-damage.js). Revived affix census 2026-10-21, provisional.
@@ -598,8 +600,9 @@ const LINE_RULES = [
   // 494247264): the Aura board or the Active board holds a Focus skill.
   [new RegExp(`^When Focus Skills are equipped in the (Passive|Active) Skill Slot: ([+-]?\\d+(?:\\.\\d+)?)% additional Focus Skill Damage, \\+?${N}% Focus Buff Effect$`), (m) => ({ bodies: [`${num(m[2]) >= 0 ? "+" : ""}${num(m[2])}% additional Focus Skill Damage`, `+${num(m[3])}% Focus Buff Effect`], key: "focusSkillInSlot", params: { slot: m[1].toLowerCase() } })],
   // "… when there are at least 5 enemies within 10 m" (Precise: Domain Expansion; game recipe 263618880: gate 4, at least P2 − 1 other
-  // entities within P1 m): the training dummy is one enemy.
-  [new RegExp(`^(.+?) when there are at least (\\d+) enemies within (\\d+(?:\\.\\d+)?) ?m$`), (m) => ({ body: m[1], key: "nearbyEnemiesAtLeast", params: { count: Number(m[2]), meters: num(m[3]) } })],
+  // entities within P1 m): its gate carries calcCountByRarity, so the Boss dummy counts as 5 enemies (src/boss-enemy-count.js;
+  // 2026-11-13); a record without the flag counts it as one enemy.
+  [new RegExp(`^(.+?) when there are at least (\\d+) enemies within (\\d+(?:\\.\\d+)?) ?m$`), (m) => ({ body: m[1], key: "nearbyEnemiesAtLeast", params: { count: Number(m[2]), meters: num(m[3]), bossRecord: bossCountedRecordFor(m[0]) } })],
   // Missing Life (Hysteria: game affix 49439984 [1, 0.7] "per 11 → 57191"; Divine Spirit: 9813309 [3, 2.3] "per 11 → 57191"):
   // the Life-lost state the "for every 1% of Life lost" lines read (missing unsealed Life; 0 on the dummy unless the Life group
   // assumes Low Life). Linear, as the other per-N lines. "when outside the Divine Realm"
@@ -942,11 +945,14 @@ function resolveKey(condition, state) {
       return off(`${lifeText} < ${params.percent}% and no Energy Shield`, { provisional: true });
     }
     // "For every enemy within N m nearby" (revived Affliction Effect family): the training dummy is the one enemy, within 10 m of
-    // the player (src/dummy-target.js), so 1 × the per-enemy value, at most the cap.
+    // the player (src/dummy-target.js), at most the cap. A record with calcCountByRarity on its node 700 (game affix 1393437) counts
+    // the Boss dummy as 5 enemies (the Enemy Count rule, src/boss-enemy-count.js; 2026-11-13), else 1.
     case "enemiesWithin": {
       const holds = explicitRadiusHolds(params.meters, state.nearTarget);
-      const count = holds ? Math.min(1, params.cap / Math.max(1e-9, params.per)) : 0;
-      return count > 0 ? on(`1 enemy (the training dummy) within ${params.meters} m (${state.nearTarget === false ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away` : "the player stands within 10 m"}): ×1 (up to +${params.cap}%)`, { factor: count }) : off(`the dummy is outside ${params.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
+      const enemies = params.bossRecord ? BOSS_ENEMY_COUNT : 1;
+      const count = holds ? Math.min(enemies, params.cap / Math.max(1e-9, params.per)) : 0;
+      const who = params.bossRecord ? `the Boss dummy counts as ${BOSS_ENEMY_COUNT} enemies (record ${params.bossRecord}: calcCountByRarity, the game's Enemy Count rule)` : "1 enemy (the training dummy)";
+      return count > 0 ? on(`${who} within ${params.meters} m (${state.nearTarget === false ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away` : "the player stands within 10 m"}): ×${round(count)} (up to +${params.cap}%)`, { factor: count }) : off(`the dummy is outside ${params.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
     }
     // Main Attack Skill revived family (game affix 6038069, chunk 2 2026-11-01: each cast adds to local l0 and takes it back 4 s later, on
     // trigger 1000069 with Attack + Main Skill, not Channeled or Sentry): stacks = Main Skill casts in the last 4 s, at most the cap; the
@@ -1420,7 +1426,9 @@ function resolveKey(condition, state) {
       return held.length ? on(`${round(typeCount)} Elemental Ailment type${typeCount === 1 ? "" : "s"} on the dummy (${held.join(", ")}; game keyword 101)`, { factor: typeCount }) : off("no Elemental Ailment on the dummy");
     }
     case "nearbyEnemiesAtLeast": {
-      if (params.count > 1) return off(`needs ${params.count} enemies Nearby: the training dummy is one enemy`, { notOnDummy: true });
+      // A flagged record (calcCountByRarity on its count gate) counts the Boss dummy as 5 enemies; the player stands within 10 m.
+      if (params.count > 1 && params.bossRecord && BOSS_ENEMY_COUNT >= params.count && explicitRadiusHolds(params.meters ?? KEYWORD_RADII_METERS.nearby, state.nearTarget)) return on(`the Boss dummy counts as ${BOSS_ENEMY_COUNT} enemies (record ${params.bossRecord}: calcCountByRarity, the game's Enemy Count rule) ≥ ${params.count}, within ${params.meters} m`);
+      if (params.count > 1) return off(`needs ${params.count} enemies Nearby: ${params.bossRecord ? `the Boss dummy counts as ${BOSS_ENEMY_COUNT} (record ${params.bossRecord})` : "the training dummy is one enemy"}`, { notOnDummy: true });
       return state.nearTarget !== false ? on(`the dummy is Nearby (within ${KEYWORD_RADII_METERS.nearby} m; distance group: close, best case)`) : off(`${DISTANT_STANDING_METERS} m from the dummy (distance group: Distant): no enemy Nearby`);
     }
     case "auraCountAtLeast": { const auraCount = ownAuraCount(state); return (auraCount || 0) >= params.count ? on(`${auraCount} active Aura type${auraCount === 1 ? "" : "s"} ≥ ${params.count} (own Auras only${condition.wording && /your Minions/i.test(condition.wording) ? "; your Minions stand inside them: best case" : ""}: provisional)`, { provisional: true }) : off(`${auraCount || 0} active Aura types < ${params.count}`); }

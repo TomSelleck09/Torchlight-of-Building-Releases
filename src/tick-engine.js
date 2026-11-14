@@ -460,7 +460,7 @@ function createWorld(spec, frames, trace) {
     paths, bySource, labels, stats, firstDamageFrame: null, trace: trace ? [] : null,
     pathCache: new Map(), snapIndexes: new Map(),
     speeds: new Map(Object.entries(spec.speeds || {}).map(([key, speed]) => [key, { ...speed, key: `speed:${key}`, parts: speed.parts ?? [{ base: 1, increasedPercent: speed.increasedPercent ?? 0, additionalFactor: speed.additionalFactor ?? 1 }] }])),
-    delayed: new Map(), dots: new Map(),
+    delayed: new Map(), dots: new Map(), areas: new Map(),
     ailmentSpecs: new Map((spec.ailments || []).map((item) => [item.key, item])),
     ailmentRuns: new Map((spec.ailments || []).map((item) => [item.key, newAilmentRun(item)])),
     ailmentTicks: new Map((spec.ailments || []).map((item) => [item.key, { activeTicks: 0, baseTicks: 0 }])),
@@ -631,7 +631,9 @@ function addStacks(world, spec, effect, chance, origin) {
   let record = world.dots.get(spec.key);
   if (!record) { record = { stacks: [], head: 0, weight: 0, base: 0, firstSettleFrame: world.frame + 1, by: origin }; world.dots.set(spec.key, record); }
   const weight = chance * (effect.stacks ?? 1), value = effect.value ?? spec.value;
-  record.stacks.push({ expiryFrame: buffExpiryFrame(world.frame, spec.seconds), value, weight, snap: snapshotAt(world, spec.path) });
+  // A stack first settles on the next tick, wherever in the tick it landed (one added before this tick's DoT pass, by a cast in the Skill stage or
+  // an area's check, waits too), so a D s layer settles D × 30 ticks.
+  record.stacks.push({ expiryFrame: buffExpiryFrame(world.frame, spec.seconds), value, weight, snap: snapshotAt(world, spec.path), settleFrom: world.frame + 1 });
   record.weight += weight;
   record.base += weight * value;
   for (let over = record.weight - spec.limit; over > 1e-12 && record.head < record.stacks.length;) {
@@ -781,11 +783,18 @@ function expiringLayers(world, spec, dot) {
   return { lostBase: (1 - share) * base, lostHeld: (1 - share) * held, until: at, share };
 }
 
+// The stacks of a record that landed on this tick before its DoT pass: they settle from the next tick (the tail of the list, in landing order).
+function freshStacks(world, record) {
+  let base = 0, weight = 0, at = record.stacks.length;
+  while (at > record.head && record.stacks[at - 1].settleFrom > world.frame) { at -= 1; base += record.stacks[at].weight * record.stacks[at].value; weight += record.stacks[at].weight; }
+  return { base, weight, from: at };
+}
+
 // The chance an independent-stack record (Wilt) holds at least one stack on this tick: each expected stack weight is an independent chance, capped
 // at 1 (the trigger bus's DoT event, W10 step 2a).
-function stackPresence(record) {
+function stackPresence(record, until = record.stacks.length) {
   let none = 1;
-  for (let at = record.head; at < record.stacks.length && none > 0; at += 1) none *= 1 - Math.min(1, record.stacks[at].weight);
+  for (let at = record.head; at < until && none > 0; at += 1) none *= 1 - Math.min(1, record.stacks[at].weight);
   return 1 - none;
 }
 
@@ -808,7 +817,7 @@ function snapshotDotAmount(world, path, dot, fresh, expiring = null) {
   // The group of this tick holds the moved successes (settling now) and the fresh runs (settling from the next tick): only the fresh base waits.
   // An expiring layer keeps its share of this tick (expiringLayers).
   if (dot.chain) { dot.groups.forEach((group, index) => { total += (group.base * group.scale - (fresh && group.frame === world.frame ? dot.freshBase : 0)) * (expiring && index < expiring.groups ? expiring.share : 1) * valueOf(group.snap ?? null); }); }
-  else if (dot.stacks) { const shared = dot.snap !== undefined; for (let at = dot.head; at < dot.stacks.length; at += 1) { const stack = dot.stacks[at]; total += stack.weight * stack.value * (expiring && at < expiring.until ? expiring.share : 1) * valueOf(shared ? dot.snap : stack.snap ?? null); } }
+  else if (dot.stacks) { const shared = dot.snap !== undefined, until = freshStacks(world, dot).from; for (let at = dot.head; at < until; at += 1) { const stack = dot.stacks[at]; total += stack.weight * stack.value * (expiring && at < expiring.until ? expiring.share : 1) * valueOf(shared ? dot.snap : stack.snap ?? null); } }
   else total = dotBase(dot) * valueOf(dot.snap ?? null);
   return total * FRAME_SECONDS;
 }
@@ -1089,6 +1098,14 @@ function fireEffects(world, effects = [], origin) {
         for (const holder of [...world.actions, ...world.triggers]) if (holder.cooldown && holder.cooldown.startFrame !== null && (holder.spec.actor ?? "player") === "player") holder.cooldown.creditSeconds += effect.seconds;
         note(world, "cooldownReduced", { seconds: effect.seconds, by: origin });
         break;
+      case "area": {
+        // A Terra's buff area (src/area-dot-layers.js, S1): it replaces the previous area of its key (one at a time), which stops checking; the
+        // layers it added stay and tick to their own ends. The new area's creation check adds its layer now; later checks run in the Buff stage.
+        world.areas.set(effect.area, { effect, origin, startFrame: world.frame, lastAddFrame: world.frame, checks: new Set(effect.checks) });
+        fireEffects(world, effect.effects, origin);
+        note(world, "area", { area: effect.area, by: origin });
+        break;
+      }
       case "delay": {
         // One-frame minimum on waits (§3.2): a delayed event lands on a later tick, in the Timer stage.
         const due = world.frame + Math.max(1, framesAtOrAfter(effect.seconds));
@@ -1242,7 +1259,8 @@ const STAGES = {
       // the attacker's multipliers for every held stack.
       if (dot.stacks && dot.head < dot.stacks.length && world.frame >= dot.stacks[dot.head].expiryFrame && world.frame < dot.stacks[dot.stacks.length - 1].expiryFrame) dot.snap = snapshotAt(world, spec.path);
       const expiring = expiringLayers(world, world.ailmentSpecs.get(key), dot);
-      const base = dotBase(dot) - (fresh ? dot.freshBase : 0) - (expiring?.lostBase ?? 0), heldNow = (dot.chain ? dot.held - (fresh ? dot.freshHeld : 0) : dot.stacks ? dot.weight : 1) - (expiring?.lostHeld ?? 0);
+      const freshLayers = dot.stacks ? freshStacks(world, dot) : null;
+      const base = dotBase(dot) - (fresh ? dot.freshBase : 0) - (freshLayers?.base ?? 0) - (expiring?.lostBase ?? 0), heldNow = (dot.chain ? dot.held - (fresh ? dot.freshHeld : 0) : dot.stacks ? dot.weight - freshLayers.weight : 1) - (expiring?.lostHeld ?? 0);
       if (spec.path && base > 0) {
         const path = world.paths.get(spec.path);
         // tick-ailment-snapshot (chunk 0 finding, live since chunk 15 session 3): the attacker's time-varying multipliers are fixed at each
@@ -1252,7 +1270,7 @@ const STAGES = {
         const record = { source: seriesKey(path), amount, dot: key, by: dot.by };
         // The trigger bus (W10 step 2a): the record is a 1000030 event in the share of the tick it is on the dummy (a chain's or a held store's
         // held mass, an expiring last layer included since it settles part of this tick; P(any stack) for independent stacks; a plain DoT 1).
-        if (world.bus) record.presence = dot.chain ? Math.min(1, Math.max(0, dot.held - (fresh ? dot.freshHeld : 0))) : dot.stacks ? stackPresence(dot) : 1;
+        if (world.bus) record.presence = dot.chain ? Math.min(1, Math.max(0, dot.held - (fresh ? dot.freshHeld : 0))) : dot.stacks ? stackPresence(dot, freshLayers.from) : 1;
         // With a trace each settlement keeps what it read, so a DoT series can be taken apart (src/tick-parity.js dotBudget).
         if (world.trace) { record.base = base; record.held = heldNow; record.amounts = (path.modifiers || []).map((modifier) => modifierAmount(world, modifier)); }
         world.dotRecords.push(record);
@@ -1266,6 +1284,14 @@ const STAGES = {
     }
     // A chain kept beside a held store (Scorch's share of the run) runs out on its own timers.
     for (const [key, run] of world.ailmentRuns) if (run.store && run.chain?.groups.length) expireChain(world, key, run.chain, run, false);
+    // Buff areas (S1): after this tick's settlement and expiries, an area on a check frame whose own layer has ended adds another, while it lives.
+    for (const [key, area] of world.areas) {
+      const offset = world.frame - area.startFrame;
+      if (offset >= area.effect.lifeFrames) { world.areas.delete(key); continue; }
+      if (offset <= 0 || !area.checks.has(offset) || world.frame < area.lastAddFrame + area.effect.layerFrames) continue;
+      area.lastAddFrame = world.frame;
+      fireEffects(world, area.effect.readd, area.origin);
+    }
   },
   // 7. Attack: hit records, read after this tick's expiries.
   attack(world) {
@@ -1405,7 +1431,8 @@ export const firstHitTimeline = (run) => ({ ...run, firstDamageSeconds: Number.i
  * { kind: "dot", dot, seconds } | { kind: "collect", collector, value } | { kind: "delay", seconds, effects } |
  * { kind: "chance", key, probability, gate: { fixedSeconds }, requiresAny: [buff], effects } | { kind: "reduceCooldowns", seconds } |
  * { kind: "use", event, units } (a skill use for the trigger bus, W10 step 3b) | { kind: "consume", buff, stacks } | { kind: "ailment", ailment, key, chance, notActiveChance, attempts, stream, stacks, value, reapUses: [reap key] } |
- * { kind: "reapUse", reap }.
+ * { kind: "reapUse", reap } | { kind: "area", area, checks: [frame offsets], lifeFrames, layerFrames, effects, readd } (a buff area replacing the previous
+ *   one of its key: `effects` at its creation, `readd` at each later check once its last layer has ended; src/area-dot-layers.js).
  * Modifiers (on a path or a speed): { buff | collector | count: [{ buff } | { held: true } | { level: world => share }] (with linear, capCount: a
  *   per-type sum) | affliction: true | maxAffliction: { ratioAtNone, ratioAtFull } | ailmentShare: { ailment, fractions } | amount: world => percent,
  *   requires: [buff], layer, percent, perStack, capPercent, perPoint, types, parts }.

@@ -636,10 +636,19 @@ export function b6LineStatus(heroId, text, state) {
       }
       case "modularization": return neutral("each Module is summoned once and stays: a shorter Modularization cooldown changes no dummy figure");
       case "partyHeader": {
-        const any = modeled ? nourished.some((minion) => minion.heroTraits?.party || minion.heroTraits?.partyFire || minion.heroTraits?.partyRock) : nourished.length > 0;
-        return any ? inCalc("the per-Magus Nourishment effects below") : inactive(nourished.length ? "no modeled Spirit Magus has a damage effect here (Frost: Minion Frostbite is not modeled)" : noMagus);
+        const frostOn = Boolean(state.minionFrostbite?.applied && party("frost-magus")?.frostbite?.perStack > 0);
+        const any = modeled ? nourished.some((minion) => minion.heroTraits?.party || minion.heroTraits?.partyFire || minion.heroTraits?.partyRock) || frostOn : nourished.length > 0;
+        return any ? inCalc("the per-Magus Nourishment effects below") : inactive(nourished.length ? "no modeled Spirit Magus has a damage effect here (Frost: the Frost Magus's Frostbite does not reach the dummy)" : noMagus);
       }
-      case "partyFrost": return party("frost-magus") ? { status: "Not modeled", reason: "Frostbite inflicted by Minions is not modeled (the Frost Magus's Max Frostbite Rating); the Life and Energy Shield restore has no DPS effect" } : inactive("no Nourished Frost Magus");
+      case "partyFrost": {
+        // G5 (2026-11-14; src/minion-frostbite.js): 1953125's Frost row writes the Magus's own field 2007015 (+5 × its Nourishment stacks), the
+        // rating its Permafrost Cast / Ice Earthshaker Frostbite (affix 4826069) sets on the dummy.
+        const m = party("frost-magus"), fb = m?.frostbite, dummy = state.minionFrostbite;
+        if (!m) return inactive("no Nourished Frost Magus");
+        if (!fb || !(fb.inflictionsPerSecond > 0)) return inactive(`the Frost Magus inflicts no Frostbite: ${fb?.reason || "Permafrost Cast and Ice Earthshaker never land"}; the Life and Energy Shield restore has no DPS effect`);
+        if (!dummy?.applied) return inactive(`the Frost Magus's Frostbite does not reach the dummy: ${dummy?.reason || "settled on the second pass"}; the Life and Energy Shield restore has no DPS effect`);
+        return inCalc(`+${fb.perStack} Max Frostbite Rating per Nourishment stack on the Frost Magus (game row 1953125 on field 2007015; ${fb.averageStacks} stacks held at its Frostbite hits on average): the Frostbite its Permafrost Cast / Ice Earthshaker inflict (affix 4826069) holds Frostbite Rating ${dummy.rating} on the dummy ${round(dummy.uptime * 100)}% of the time (${fb.ratingRule}), +${dummy.takenPercent}% Cold Damage taken on average, its Freeze and its crowd control type (src/minion-frostbite.js; the stacks at the hit after the use's loss roll and the Magus's own Frostbite Effect, 0, are inferred; provisional); the Life and Energy Shield restore has no DPS effect`);
+      }
       case "partyThunder": { const m = party("thunder-magus"); return m?.heroTraits?.party?.numbedStacks > 0 ? inCalc(`${m.heroTraits.party.numbedStacks} Numbed stacks held on the dummy (its Nourished hits, ${m.heroTraits.party.nourishedHitsPerSecond}/s, one per 0.2 s, 2 s each): +5% Lightning Damage taken each on its own Lightning hits, and +2% additional Lightning Damage per Nourishment stack (provisional)`) : inactive("no Nourished Thunder Magus"); }
       case "partyFire": { const m = party("fire-magus"); return m?.heroTraits?.partyFire ? inCalc("per Nourishment stack held: +9% additional Critical Strike Damage and -20% Critical Strike Rating on each Fire Magus use (the expected value over the stacks; provisional)") : inactive("no Nourished Fire Magus"); }
       case "partyRock": { const m = party("rock-magus"); return m?.heroTraits?.partyRock ? inCalc(`+${round(g.party.rock.perStack)} Physical Damage per Nourishment stack (${g.party.rock.armorPercent}% of ${round(g.party.rock.armor)} Armor, up to ${g.party.rock.capTotal} in total: game row 1953125) added to the Rock Magus's hits; the damage transfer has no DPS effect (provisional)`) : m ? inactive("no Armor") : inactive("no Nourished Rock Magus"); }

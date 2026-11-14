@@ -2,7 +2,7 @@ import { normalizePercentageText } from "./percentage-text.js"; import { stripGr
 import { matchTalentTextClause } from "./talent-text-effects.js";
 import { activeKismetEffects, parseKismetEffect } from "./kismet-effects.js";
 import { auraBaseEffects, auraOwnStackEffect, auraSupportEffects, auraSupportSealedManaCompensation } from "./aura-effects.js";
-import { auraScalingSs13, auraStatUsesEffectScale } from "./data/skills/aura-scaling-ss13.js";
+import { AURA_COMBAT_ONLY_STATS, auraScalingSs13, auraStatUsesEffectScale } from "./data/skills/aura-scaling-ss13.js";
 import { additionalIgniteMultiplier, supportEffect } from "./support-model.js";
 import { supportDataMode, supportGameLine } from "./game-skill-data.js";
 import { destinyNodeDamageLines, nativePactspiritNodeEffect, orderedPactspiritNodes, pactspiritEffectsAtLevel, pactspiritLevel } from "./pactspirit-levels.js";
@@ -308,6 +308,8 @@ export function calculateAuraLedger(setups, options) {
     // An item-granted Aura (src/planner.js, Lone Walker's Boots) seals no Mana or Life (user-confirmed 2026-10-13).
     const reservation = setup.granted ? { ...ownReservation, granted: true, uncappedReservedPercent: 0, reservedPercent: 0 } : ownReservation;
     const baseEffects = auraBaseEffects(setup);
+    // The town panel has no target: an enemy-count gated stat (Precise: Domain Expansion's "at least 5 enemies" affixes) is combat only.
+    if (options.context === "town") for (const stat of AURA_COMBAT_ONLY_STATS) delete baseEffects[stat];
     // Flame Focus's Ignite chance is its Focus buff's (config_char_buff 10450 / 10451, read in src/focus-buffs.js since W6c 2026-11-03):
     // a Focus buff, scaled by Focus Buff Effect, not an Aura value scaled by Aura Effect (the hand-kept 10 / 15 here are gone).
     // "<Aura> gains an additional effect: <modifiers>" (Pantheon's Elegy; src/aura-gained-effects.js): part of the Aura's buff,

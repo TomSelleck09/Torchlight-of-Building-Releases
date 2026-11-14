@@ -206,6 +206,8 @@ function contributionReason(entries, limit = 3) {
 
 function humanizeEffectKey(key) {
   const percent = /Percent$/.test(key);
+  // An enemy-count gated Aura stat (Precise: Domain Expansion's "at least 5 enemies"; the Boss dummy counts as 5).
+  if (/CrowdPercent$/.test(key)) return { percent, label: `${humanizeEffectKey(key.replace(/CrowdPercent$/, "Percent")).label} (at least 5 enemies: the Boss dummy counts as 5)` };
   const words = key.replace(/Percent$/, "").replace(/([a-z])([A-Z])/g, "$1 $2").split(" ");
   const label = words.map((word, index) => index === 0 && /^(additional|increased)$/i.test(word) ? word.toLowerCase() : word[0].toUpperCase() + word.slice(1)).join(" ");
   return { percent, label };

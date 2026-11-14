@@ -11,6 +11,7 @@ import { ITEM_GRANTED_SKILLS_SS14 } from "./data/skills/item-granted-skills-ss14
 const skillGameTagsSs13 = { ...Object.fromEntries(minionSkillOwnersSs13.filter((owner) => owner.catalogEntry).map((owner) => [owner.owner, { stoneId: owner.stoneId, tags: owner.gameTagIds }])), ...linkedStoneTagsSs13,
   ...Object.fromEntries(Object.values(ITEM_GRANTED_SKILLS_SS14).map((skill) => [skill.name, { stoneId: skill.stone, tags: skill.gameTagIds }])) };
 import { inferDamageProfile } from "./skill-damage-profiles.js";
+import { registerStoneTagChanges } from "./stone-tag-registry.js";
 
 // Eligibility is the game's own tag filter: each support stone's include / exclude tag groups in config_skill_stone, read
 // against the skill's own stone tags (src/data/skills/support-eligibility-ss13.generated.js, built by
@@ -265,3 +266,6 @@ export function supportRuleText(support) {
   const description = (support?.effects || []).join(" ");
   return [description.match(/^Supports?\s+[^.]+\./i)?.[0], ...[...description.matchAll(/Cannot support [^.]+\./gi)].map((match) => match[0])].filter(Boolean).join(" ");
 }
+
+// The stone filter's tag changes for src/support-effects.js (its tag clause badges; src/stone-tag-registry.js).
+registerStoneTagChanges((skill, supports) => ({ added: supportAddedTagNames(skill, supports), removed: supportRemovedTagNames(skill, supports) }));

@@ -159,7 +159,14 @@ const DEFINITIONS = [
   { name: "Groundshaker", delivery: "attack-melee", demolisher: DEMOLISHER,
     weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to swords, axes, hammers, cudgels, tin staffs, and unarmed") },
     components: [
-      { key: "fission", label: "Fission", groupId: 501, perUse: 1, ...text("one Fission area hit per use (game description: a circular area of radius 230 in front)") },
+      // `fissureTag`: the share of the component's hits that carry the fissure tag 6101354 (zhenhandadi_dilie), which Cripple's records
+      // 119083224 / 252388064 read. SS14 Split 177867 (Wrathful Vault's 189074 alike): the fire event's "<if> skill energy rank compare"
+      // group branches to reaction_enhance with a Demolisher Charge, else reaction_normal. reaction_normal's group tags are the skill's 8
+      // (Hit, Attack, Melee, Area, Demolisher, Active, Physical, Strength), damage index 0 (row 501); reaction_enhance's group adds 6101354
+      // and is the spreading fissure (shape-over-time component 445915, a spread time read from energy_rate, hit rule bHitOnce), damage
+      // index 0 (row 501) too; its event group fires reaction_delay_attack, the row-502 explosion (damage index 1), whose group carries the
+      // 8 tags only. So the Fission carries the tag on the uses that consume a charge, the explosion never (2026-11-14).
+      { key: "fission", label: "Fission", groupId: 501, perUse: 1, fissureTag: "demolisher", ...text("one Fission area hit per use (game description: a circular area of radius 230 in front)") },
       { key: "fissure", label: "Fissure Secondary Damage", groupId: 502, perUse: 1, demolisher: { gated: true }, ...provisional("the Fissure (game description: \"Steep Strike area damage\") is read as the Demolisher Charge consumption effect — its spread follows Demolisher Charge Restoration Speed — so it lands once per use that consumes a charge (one charge every 3 s at best)") }
     ],
     notes: ["Groundshaker: the +10% additional Skill Area on consuming Demolisher Charge has no DPS effect on one dummy."] },

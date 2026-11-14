@@ -17,6 +17,7 @@ import { minionBatch6Early, minionBatch6Plan, applyBatch6SkillMechanics, dedupeB
 import { moduleMinionEntries } from "./module-protocols.js";
 // Supports on a summon read on its Minion skills (2026-10-28; provisional, open question summon-support-minion-tags).
 import { summonSupportReading } from "./summon-support-minion.js";
+import { minionFrostbiteHold, minionFrostbiteRating, minionSkillFrostbiteChance, summonFrostbiteShare, MINION_FROSTBITE } from "./minion-frostbite.js";
 const TROOP_FAMILY = new Set(TROOP_FAMILIES);
 
 
@@ -435,8 +436,10 @@ function combineBuffs(active, skillType, skill = null) {
  * @param {object|null} p.heroTraits Moto / Iris trait inputs for this Minion (hero trait audit B6; src/moto-iris-traits.js, built
  *   by src/planner.js minionHeroTraits): { readTexts, layers (static Minion layers: Overload, Nourishing Spring Rain's Growth,
  *   Unstoppable Wave …), overloadCycle, extraCount, nourish (Growing Breeze extras), troopNourish, vigilant, selfDestruct, magiCount }.
+ * @param {{ ownerField: number }|null} p.frostbite the summoner's Frostbite Rating field (10 + its Max Frostbite Rating lines), which the
+ *   Frost Magus's summon shares (src/minion-frostbite.js); default 10. Read only by a Minion whose skills inflict Frostbite.
  */
-export function calculateMinion({ profile, level = 20, modifierTexts = [], traitLines = [], target = {}, timelineSeconds = 60, setups = [], windows = [5, 20], extraTaken = [], traitSkill = "cooldown", extraCritOnly = [], handledTexts = null, extraLines = [], bond = null, summonCastSpeed = null, heroTraits = null, prebuilt = true, troopMaxMinions = true, moduleMaxMinions = true, targetLife = true, batch6 = null, extraMinions = null } = {}) {
+export function calculateMinion({ profile, level = 20, modifierTexts = [], traitLines = [], target = {}, timelineSeconds = 60, setups = [], windows = [5, 20], extraTaken = [], traitSkill = "cooldown", extraCritOnly = [], handledTexts = null, extraLines = [], bond = null, summonCastSpeed = null, heroTraits = null, prebuilt = true, troopMaxMinions = true, moduleMaxMinions = true, targetLife = true, batch6 = null, extraMinions = null, frostbite = null } = {}) {
   const resolved = typeof profile === "string" ? MINION_PROFILES[profile] : profile;
   if (!resolved) return null;
   const capped = Math.max(1, Math.min(MINION_BASE_DAMAGE_FROZEN_LEVEL, Math.floor(level || 20)));
@@ -1064,13 +1067,24 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
       nourishDist = next;
     }
     const effectPercent = nourishEffectAt(ultimateCast);
-    return { factor: 1 + effectPercent / 100 * stacks, stacks, dist, effectPercent };
+    // `after`: the stacks once this use's loss roll is done (the Frost Magus's Frostbite Rating reads the stacks at its hit, src/minion-frostbite.js).
+    return { factor: 1 + effectPercent / 100 * stacks, stacks, dist, effectPercent, after: nourishDist.slice() };
   };
   // Nature's Party (revived, B6): Nourishment's per-Magus base effects per stack (Fire: crit, Rock: added Physical from Armor;
   // Thunder: Numbed and its Lightning bonus, Erosion: Deterioration, both settled after the cycle).
   const party = isSpiritMagus && nourish ? heroTraits?.party || null : null;
   const partyFire = party?.fire && resolved.key === "fire-magus" ? party.fire : null;
   const partyRock = party?.rock && resolved.key === "rock-magus" && party.rock.perStack > 0 ? party.rock : null;
+  // Frostbite this Minion inflicts on the dummy (G5, 2026-11-14; src/minion-frostbite.js, provisional): its skills with a Frostbite chance on
+  // their Cold hits (game affix 4826069: Permafrost Cast, Ice Earthshaker), each landing an infliction at its cast's share (the Enhanced-skill
+  // chance) for each Magus out, its rating the Magus's field 2007015: your Frostbite Rating through the summon's 11905909, + Nature's Party's
+  // 5 per Nourishment stack held at the hit (1953125, the stacks after the use's loss roll). The dummy-state reading is the planner's.
+  const frostbiteChances = new Map(skills.filter((item) => !item.buffOnly && item.percent > 0 && (item.type === "Cold" || (item.baseType === "Cold" && (item.conversion?.percent ?? 100) < 100))).map((item) => [item.name, minionSkillFrostbiteChance(item.name)]).filter(([, chance]) => chance > 0));
+  const frostbiteShare = frostbiteChances.size ? summonFrostbiteShare(resolved.summon) : null;
+  const frostbitePerStack = frostbiteChances.size && party?.frost && resolved.key === "frost-magus" ? Number(party.frost.maxFrostbitePerStack) || 0 : 0;
+  const frostbiteOwnerField = Number(frostbite?.ownerField ?? MINION_FROSTBITE.baseRating);
+  const frostbiteInflictions = [];
+  const frostbiteRatings = (dist) => dist ? dist.map((p, n) => [minionFrostbiteRating({ ownerField: frostbiteOwnerField, share: frostbiteShare, extra: frostbitePerStack * n }), p]).filter(([, p]) => p > 0) : [[minionFrostbiteRating({ ownerField: frostbiteOwnerField, share: frostbiteShare }), 1]];
   const nourishedDamage = (skill, combined, extraAdditionalPercent, nourishment) => {
     let total = 0;
     nourishment.dist.forEach((p, n) => {
@@ -1130,6 +1144,10 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     const buffed = Boolean(combined && (combined.additionalFactor !== 1 || combined.critRating || combined.critRatingPercent || combined.critDamagePercent)) || extraAdditionalPercent > 0;
     const partyPerHit = Boolean((partyFire || partyRock) && nourishment.dist);
     events.push({ time: landAt, skill: skill.name, type: skill.type, damage: (partyPerHit ? nourishedDamage(skill, combined, extraAdditionalPercent, nourishment) * hitsHere * count * weight : perHitHere(combined, extraAdditionalPercent) * hitsHere * count * weight * nourishment.factor) * bondDamageRatio(skill, landAt) * bloom * ramp, weight, buffed, buff: buffed ? combined?.labels.join(" + ") || "next-use bonus" : null, ...nourishTag, ...useTag });
+    if (frostbiteChances.has(skill.name)) {
+      const stacks = nourishment.after ?? nourishment.dist ?? (nourishDist ? nourishDist.slice() : null);
+      frostbiteInflictions.push({ time: landAt, probability: 1 - (1 - Math.min(1, weight) * frostbiteChances.get(skill.name) / 100) ** Math.max(1, count), ratings: frostbiteRatings(stacks), stacks: stacks ? stacks.reduce((total, p, n) => total + p * n, 0) : 0 });
+    }
   };
   // Census batch 6 (src/minion-sentry-batch6.js): Frost Release's stacks multiply on a recast while next-use bonuses remain ("Stacks up to 5
   // time(s)", "Multiple stacks of the skill effect multiply."); at Stage 4 every 5 other casts trigger it; Frequent Quake's triggered
@@ -1275,6 +1293,20 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
   }
   const windowAverage = (seconds) => events.filter((event) => event.time < seconds).reduce((total, event) => total + event.damage, 0) / seconds;
   const steadyFrom = 20, steadyTo = horizon;
+  // The dummy's Frostbite from this Minion's landings (src/minion-frostbite.js): held share, rating and Cold Damage taken over the cycle.
+  let frostbiteSummary = null;
+  if (frostbiteChances.size) {
+    const hold = minionFrostbiteHold(sdPlan?.chosen ? [] : frostbiteInflictions, { durationSeconds: MINION_FROSTBITE.durationSeconds, steadyFrom, steadyTo });
+    const steadyLandings = frostbiteInflictions.filter((item) => item.time >= steadyFrom && item.time < steadyTo);
+    const weightSum = steadyLandings.reduce((total, item) => total + item.probability, 0);
+    const averageStacks = weightSum > 0 ? round(steadyLandings.reduce((total, item) => total + item.probability * item.stacks, 0) / weightSum) : 0;
+    const skillNames = [...frostbiteChances.keys()];
+    frostbiteSummary = {
+      skills: skillNames, chancePercent: Math.max(...frostbiteChances.values()), ownerField: round(frostbiteOwnerField), share: frostbiteShare, perStack: frostbitePerStack, averageStacks, ...hold,
+      ratingRule: `${frostbiteShare ? `your Frostbite Rating ${round(frostbiteOwnerField)} (10 + your Max Frostbite Rating lines) shared by ${resolved.summon} (game affix 11905909)` : `${MINION_FROSTBITE.baseRating} (field 2007015)`}${frostbitePerStack ? ` + ${frostbitePerStack} per Nourishment stack held at the hit (Nature's Party, game row 1953125; ${averageStacks} on average)` : ""}, max ${MINION_FROSTBITE.ratingCap}`,
+      reason: hold.inflictionsPerSecond > 0 ? null : `${skillNames.join(" and ")} never land${enhanced && skillNames.includes(enhanced.name) && enhancedShare === 0 ? ` (${enhanced.name} is the Enhanced Skill, at a ${round(magus?.enhancedChancePercent ?? 0)}% Enhanced-skill chance)` : ""}`
+    };
+  }
   const steadyDps = events.filter((event) => event.time >= steadyFrom && event.time < steadyTo).reduce((total, event) => total + event.damage, 0) / (steadyTo - steadyFrom);
   const perSkill = skills.map((item) => {
     const own = events.filter((event) => event.skill === item.name && event.time >= steadyFrom && event.time < steadyTo);
@@ -1359,6 +1391,8 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     combat: { dps: steadyDps, perMinionDps: steadyDps / Math.max(1, count), fiveSecondAverageDps: windowAverage(windows[0] ?? 5), twentySecondAverageDps: windowAverage(windows[1] ?? 20) },
     town: { dps: 0, note: "the character panel reads 0 for summon skills (user, 2026-10-11)" },
     notes, warnings, assumptions, modeled: steadyDps > 0,
+    // The Frostbite this Minion's hits inflict (src/minion-frostbite.js; only a Minion whose skills inflict it carries the key).
+    ...(frostbiteSummary ? { frostbite: frostbiteSummary } : {}),
     // Census batch 6 (src/minion-sentry-batch6.js): the support clauses and own-text mechanics applied to this Minion.
     batch6: batch6Plan.applied.length || batch6Skills.notes.length || quakeCasts || batch6Early.savage || batch6Plan.frostRelease?.triggerEvery ? { applied: batch6Plan.applied, notes: [...batch6Plan.notes, ...batch6Skills.notes], quakeCasts, savageGrowth: batch6Early.savage, frostReleaseTrigger: batch6Plan.frostRelease?.triggerEvery || null, troop: batch6Plan.troop } : null,
     // Hero trait audit B6 (src/moto-iris-traits.js): what the Moto / Iris inputs did on this Minion (the module badges read it).

@@ -216,7 +216,8 @@ function compileAilment(planner, ailment, type, timedLayers, inputs, targetBless
   const blessings = targetBlessings.filter((item) => item.hitPlaced || (item.gains?.reap && inputs.reaping?.length)).map((item) => ({ ...item, percent: targetBlessingPercent(planner, ailment.key, item) }));
   // `relink`: a linked skill DoT is added again by its link the frame after a removal (src/tick-engine.js; Approaching Nightfall).
   const shared = { key: ailment.key, seconds: ailment.duration, path: ailment.silent ? null : ailment.key, ...(ailment.relink ? { relink: true } : {}) };
-  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus) };
+  // A Terra's area layers (src/area-dot-layers.js, S1): each layer carries one layer's value; the area effect (dotEffect) places them on its checks.
+  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.areaLayers ? ailment.areaLayers.layerValue : ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus) };
   const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings, bus);
   const weights = heldStrength === "refresh" ? null : heldWeights(planner, ailment, streams);
   if (weights) {
@@ -346,7 +347,11 @@ export function compileAilmentProgram(planner, readings = {}, timerFields = {}, 
     const item = compiled.get(dot.key);
     if (!item) return null;
     placed.add(dot.key);
-    return { kind: "ailment", ailment: dot.key, key: `${dot.key}:use`, chance: 1, ...(reapsOnDot.has(dot.key) ? { reapUses: reapsOnDot.get(dot.key) } : {}) };
+    const apply = { kind: "ailment", ailment: dot.key, key: `${dot.key}:use`, chance: 1, ...(reapsOnDot.has(dot.key) ? { reapUses: reapsOnDot.get(dot.key) } : {}) };
+    // A Terra's buff area (S1): the cast replaces the area, which adds a layer at its creation check and again at each check after its layer ends.
+    const layers = item.ailment.areaLayers;
+    if (!layers) return apply;
+    return { kind: "area", area: dot.key, checks: layers.checks, lifeFrames: layers.lifeFrames, layerFrames: layers.layerFrames, effects: [apply], readd: [{ kind: "ailment", ailment: dot.key, key: `${dot.key}:area`, chance: 1 }] };
   };
 
   /** Each stream's effect on its skill's hits. Only what lands on the loop is kept: the rest stays averaged. */

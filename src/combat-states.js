@@ -423,6 +423,9 @@ export const MAX_FROSTBITE_PER_TYPE = PATTERNS.maxFrostbitePerType;
 export const damageTypeGroups = (types) => { const set = new Set(types || []); return ["Physical", "Fire", "Cold", "Lightning", "Erosion"].filter((type) => set.has(type)).length; };
 const perTypeFrostbiteRating = (modifierTexts, typeGroups) => typeGroups > 0 ? sum(modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text)).trim().match(MAX_FROSTBITE_PER_TYPE); return match && line.origin !== "derived" && !line.lineEffect ? num(match[1]) * (line.multiplier ?? 1) * typeGroups : 0; })) : 0;
 const uncappedFrostbiteRating = (modifierTexts, typeGroups = 0) => BUFF_VALUES.frostbiteBaseRating + perTypeFrostbiteRating(modifierTexts, typeGroups) + sum(modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text)).trim().match(PATTERNS.maxFrostbite); return match && !/Minion/i.test(line.text) ? num(match[1]) * (line.multiplier ?? 1) : 0; }));
+/** Your Frostbite Rating field 2007015 (10 + the Max Frostbite Rating lines, before the cap): what Summon Frost Magus's affix 11905909 shares with
+ * its Magus (node 126 at fromMod 1, src/minion-frostbite.js). */
+export const ownerFrostbiteField = (modifierTexts = [], { typeGroups = 0 } = {}) => uncappedFrostbiteRating(modifierTexts, typeGroups);
 /** The Frostbite Rating cap: 120, or the highest "Frostbite Rating can exceed its upper limit, up to N" (Deepfreeze; B3). */
 export function frostbiteRatingCap(modifierTexts = []) {
   return Math.max(BUFF_VALUES.frostbiteMaxRating, ...modifierTexts.map((line) => { const match = normalizePercentageText(String(line.text)).trim().match(PATTERNS.frostbiteCapRaise); return match ? num(match[1]) : 0; }));
@@ -1013,13 +1016,18 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.lightningInfiltrationCrit)) { const active = Boolean(state.canCrit) && dealt.has("Lightning"); if (active) debuffs.infiltration.add("Lightning"); entry(line, active, active ? "the build crits with Lightning Damage: Lightning Infiltration held (uptime 1, provisional)" : "no crit with Lightning Damage", { provisional: true }); }
   const frostbitten = onDummy("Frostbite");
   const frostbiteTypeGroups = damageTypeGroups(state.dealtDamageTypes || state.dealtTypes);
-  debuffs.frostbiteRating = frostbitten ? inflictedFrostbiteRating(modifierTexts, { typeGroups: frostbiteTypeGroups }) : 0;
+  // A Frostbite only your Minions keep (G5, 2026-11-14; src/minion-frostbite.js, put on the dummy by the planner's second pass): the dummy's
+  // rating is the Minion's own (the Frost Magus's field 2007015: your Frostbite Rating through Summon Frost Magus's 11905909, + Nature's
+  // Party's 5 per Nourishment stack), held at its share; its Cold Damage taken and schedules come with it.
+  const minionFrostbite = frostbitten && state.minionFrostbite?.applied && (buffs ? buffs.heldOnlyBy("Frostbite", "minion") : Object.prototype.hasOwnProperty.call(state.enemyAilmentUptime || {}, "Frostbite")) ? state.minionFrostbite : null;
+  debuffs.frostbiteRating = minionFrostbite ? minionFrostbite.rating : frostbitten ? inflictedFrostbiteRating(modifierTexts, { typeGroups: frostbiteTypeGroups }) : 0;
   // Frostbite only from Discord of the Second Will: buff 112 on its turn in the rotation, so Cold Damage taken and the crowd control
   // count take that uptime (chunk 2, 2026-11-01). Readers of the Frostbitten state itself keep it held.
   const discordFrostbiteLine = frostbitten ? find(PATTERNS.discordCrowdControl).find((line) => (state.enemyAilmentSources || {}).Frostbite === line.source) ?? null : null;
   for (const line of find(MAX_FROSTBITE_PER_TYPE)) { const value = num(line.clean.match(MAX_FROSTBITE_PER_TYPE)[1]) * (line.multiplier ?? 1); const active = frostbitten && frostbiteTypeGroups > 0; entry(line, active, !frostbitten ? "the build inflicts no Frostbite" : `${frostbiteTypeGroups} damage type group${frostbiteTypeGroups === 1 ? "" : "s"} dealt (Physical / Elemental / Erosion): +${round(value * frostbiteTypeGroups)} Max Frostbite Rating → Frostbite Rating ${debuffs.frostbiteRating} (max 120; provisional)`, { provisional: true }); }
-  // user-confirmed 2026-10-18: Frozen at 100 or higher (reference data says "more than 100").
-  debuffs.frozen = frostbitten && debuffs.frostbiteRating >= BUFF_VALUES.frostbiteFreezeAt;
+  // user-confirmed 2026-10-18: Frozen at 100 or higher (reference data says "more than 100"). A Minion's Frostbite: Frozen while its held rating is
+  // 100 or more (its share, src/minion-frostbite.js), held like a Minion-inflicted ailment where a reader takes no share.
+  debuffs.frozen = minionFrostbite ? minionFrostbite.frozenShare > 0 : frostbitten && debuffs.frostbiteRating >= BUFF_VALUES.frostbiteFreezeAt;
   // W8 step 3 (Group B): a Freeze this pass reaches with the per-type Max Frostbite Rating lines (Prophet's Dirge: the enemy-ailment
   // model's Freeze check counts no damage type group) is on the dummy for every Frozen reader, as the deemed Freeze below is (before, only
   // the crowd control counters saw it).
@@ -1455,15 +1463,27 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Read by Homing Frost Bolt's Alternate Spacetime effect (src/youga-ultimate-one.js).
   debuffs.frostbiteEffectPercent = frostbiteEffect;
   debuffs.frostbiteEffectFactor = frostbiteEffectAdditional;
-  for (const line of find(PATTERNS.frostbiteEffectAdditional)) entry(line, frostbitten, frostbitten ? "multiplies Frostbite's Cold Damage taken: rating × (1 + Frostbite Effect) × (1 + this) (provisional)" : "the build inflicts no Frostbite", { provisional: true });
+  // The Frostbite Effect of a Minion's Frostbite is its own (buff 112's GetEffectScale, its caster's): your lines do not scale it (inferred).
+  const minionEffectReason = minionFrostbite ? `the dummy's Frostbite is the ${minionFrostbite.minion}'s: its Cold Damage taken scales with the caster's own Frostbite Effect (buff 112, GetEffectScale), not yours (inferred; open question minion-frostbite)` : null;
+  for (const line of find(PATTERNS.frostbiteEffectAdditional)) entry(line, frostbitten && !minionFrostbite, minionEffectReason ?? (frostbitten ? "multiplies Frostbite's Cold Damage taken: rating × (1 + Frostbite Effect) × (1 + this) (provisional)" : "the build inflicts no Frostbite"), { provisional: true });
+  // The Minions' Frostbite (G5, src/minion-frostbite.js): +rating % additional Cold Damage taken while it is held, its average in the sustained
+  // figure and its level over time in the windows and the recount (the dummy starts clean; from the Minion's first landing).
+  if (minionFrostbite) {
+    const taken = minionFrostbite.takenPercent;
+    const source = `${minionFrostbite.minion}'s Frostbite (keyword 735: +1% additional Cold Damage taken per Frostbite Rating)`;
+    derive(`+${taken}% additional Cold Damage taken`, source, minionFrostbite.reason, true);
+    timedEffects.push({ id: "minionFrostbite", label: `Frostbite inflicted by the ${minionFrostbite.minion}`, source, text: `+${taken}% additional Cold Damage taken`, target: "enemy", toggle: false, provisional: true, enabled: true, active: true,
+      reason: minionFrostbite.reason, summary: `Frostbite Rating ${minionFrostbite.rating} held ${round(minionFrostbite.uptime * 100)}% of the time: +${taken}% Cold Damage taken on average`,
+      parts: [{ type: "Cold", reach: "all", percent: 1, schedule: minionFrostbite.schedules.taken }], bodies: [`+${taken}% additional Cold Damage taken`] });
+  }
   // Cold Damage taken = rating × (1 + Frostbite Effect) % (user-confirmed 2026-10-13; the creator's calc v0.3 multiplies the two instead).
-  if (frostbitten) {
+  if (frostbitten && !minionFrostbite) {
     const frostbiteUptime = discordFrostbiteLine ? sustainedLevel(discordSchedule(discordInterval(discordFrostbiteLine), 1)) : 1;
     const taken = round(debuffs.frostbiteRating * BUFF_VALUES.frostbiteTakenPerRating * (1 + frostbiteEffect / 100) * frostbiteEffectAdditional * frostbiteUptime);
     derive(`+${taken}% additional Cold Damage taken`, "Frostbite (keyword 735: +1% additional Cold Damage taken per Frostbite Rating)", `Frostbite Rating ${debuffs.frostbiteRating} on the dummy${frostbiteEffect ? `, +${frostbiteEffect}% Frostbite Effect applied to it (user-confirmed 2026-10-13)` : ""}${frostbiteUptime < 1 ? `, at ${round(frostbiteUptime * 100)}% uptime (Discord of the Second Will's turn)` : ""}`, frostbiteEffect > 0 || frostbiteUptime < 1);
   }
-  for (const line of find(PATTERNS.maxFrostbite)) entry(line, frostbitten, frostbitten ? `Frostbite Rating ${debuffs.frostbiteRating} (10 base + Max Frostbite Rating, max 120; provisional reading of the inflicted amount)` : "the build inflicts no Frostbite", { provisional: true });
-  for (const line of find(PATTERNS.frostbiteEffect)) entry(line, frostbitten, frostbitten ? "scales Frostbite's Cold Damage taken: rating × (1 + Frostbite Effect) (user-confirmed 2026-10-13)" : "the build inflicts no Frostbite");
+  for (const line of find(PATTERNS.maxFrostbite)) entry(line, frostbitten, minionFrostbite ? `your Max Frostbite Rating reaches the ${minionFrostbite.minion}'s Frostbite (Summon Frost Magus, game affix 11905909: +1 per +1): Frostbite Rating ${debuffs.frostbiteRating} held on the dummy (${minionFrostbite.ratingRule}; provisional)` : frostbitten ? `Frostbite Rating ${debuffs.frostbiteRating} (10 base + Max Frostbite Rating, max 120; provisional reading of the inflicted amount)` : "the build inflicts no Frostbite", { provisional: true });
+  for (const line of find(PATTERNS.frostbiteEffect)) entry(line, frostbitten && !minionFrostbite, minionEffectReason ?? (frostbitten ? "scales Frostbite's Cold Damage taken: rating × (1 + Frostbite Effect) (user-confirmed 2026-10-13)" : "the build inflicts no Frostbite"));
   // Condensed Frost (Gemma – Glacial Night; chunk 1, 2026-10-31; buff 81233 on every enemy, affix 3166437 [7/20, -10, 28, 120], tag 5008005):
   // +0.35% additional Cold Damage taken per point of the Frostbite Rating over 120, the points capped at 28 ÷ 0.35 = 80, × (1 + Condensed
   // Frost Effect). The rating is the same GetFightResource(4) Frostbite's own line reads, so a deemed rating counts. Its -10% additional
@@ -1646,8 +1666,12 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Blinding; user-accepted 2026-10-13 that Frostbite and Freeze count). "For every type of crowd control effect the enemy has,
   // you and your Minions deal +X% additional damage to them" (game affix 75106: one multiplier, X × the count at hit time):
   // the count follows each type's clock (Witch Antelope's turns), so it is a timed sum. Knockback is instantaneous: not counted.
-  if (frostbitten) holdCc("Frostbite", discordFrostbiteLine ? discordSchedule(discordInterval(discordFrostbiteLine), 1) : { kind: "full" }, { foreign: Boolean(ownAilmentList) && !ownAilmentList.includes("Frostbite"), by: foreignAilmentBy("Frostbite") });
-  if (debuffs.frozen) holdCc("Freeze", { kind: "full" }, { foreign: Boolean(ownAilmentList) && !ownAilmentList.includes("Frostbite"), by: foreignAilmentBy("Frostbite") });
+  // A Minion's Frostbite (src/minion-frostbite.js) counts at its held share, Freeze at its rating-100 share, both your Minions'.
+  if (minionFrostbite) { holdCc("Frostbite", minionFrostbite.schedules.held, { foreign: true, by: "minion" }); if (debuffs.frozen) holdCc("Freeze", minionFrostbite.schedules.frozen, { foreign: true, by: "minion" }); }
+  else {
+    if (frostbitten) holdCc("Frostbite", discordFrostbiteLine ? discordSchedule(discordInterval(discordFrostbiteLine), 1) : { kind: "full" }, { foreign: Boolean(ownAilmentList) && !ownAilmentList.includes("Frostbite"), by: foreignAilmentBy("Frostbite") });
+    if (debuffs.frozen) holdCc("Freeze", { kind: "full" }, { foreign: Boolean(ownAilmentList) && !ownAilmentList.includes("Frostbite"), by: foreignAilmentBy("Frostbite") });
+  }
   if (paralysisHeld) holdCc("Paralysis", { kind: "full" });
   if (find(PATTERNS.holyMaiden).length && state.anyHit) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, { kind: "full" });
   if (yourDamage) for (const line of find(PATTERNS.discordCrowdControl)) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, discordSchedule(discordInterval(line), DISCORD_CROWD_CONTROL.indexOf(type)));
@@ -2081,16 +2105,19 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Numbing hit inflicts 1 stack; provisional: the "+N additional stacks" and the per-damage thresholds are not counted).
   const numbedPerStackRaw = numbedBase * (1 + numbedEffect / 100) * numbedAdditional, numbedPerStack = round(numbedPerStackRaw);
   if (otherNumbed && Number(state.mainUsesPerSecond) > 0) timedEffects.push({ id: "numbed", label: "Numbed", source: "Numbed (keyword 762)", target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: "Lightning", reach: "all", percent: numbedPerStack, schedule: { kind: "ramp", maxStacks: debuffs.numbedStacks, intervalSeconds: revivedNumbed ? 1 / (revivedNumbed.perTrigger * revivedNumbed.triggersPerSecond) : 1 / Number(state.mainUsesPerSecond), startStacks: 1 } }] });
+  // Feline Figure's opening kept by your Lightning hits' store (src/erika-traits.js storeKept): its stacks at t = 0, then the windows' one
+  // stack per Main Skill use, as for another source, up to the 10 held.
+  else if (felineFigure?.storeKept && Number(state.mainUsesPerSecond) > 0) timedEffects.push({ id: "numbed", label: "Numbed (Feline Figure, kept by your Lightning hits)", source: "Lightning Shadow: Feline Figure", target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: "Lightning", reach: "all", percent: numbedPerStack, schedule: { kind: "ramp", maxStacks: debuffs.numbedStacks, intervalSeconds: 1 / Number(state.mainUsesPerSecond), startStacks: Math.min(debuffs.numbedStacks, felineFigure.perTrigger), opening: { stacks: Math.min(debuffs.numbedStacks, felineFigure.perTrigger), seconds: felineFigure.durationSeconds } } }] });
   // Feline Figure alone: its own stack schedule from t = 0 (Electrify owned when engaging; the dummy starts clean).
   else if (felineFigure?.schedule?.points?.length) timedEffects.push({ id: "numbed", label: "Numbed (Feline Figure)", source: "Lightning Shadow: Feline Figure", target: "enemy", toggle: false, enabled: true, active: true, parts: [{ type: "Lightning", reach: "all", percent: numbedPerStack, schedule: { kind: "steps", points: felineFigure.schedule.points, sustained: debuffs.numbedStacks } }] });
   // Feline Figure's Numbed is the Numbed buff (game affix 520462624 row 2: node 343 adds buff 170, Electrify stacks − 1 layers; W8 step 3
   // Group B), so with no other Numbed source the dummy holds the Numbed state and its groups (4000121, 4000570, 4000580) while the stacks
   // last: every Numbed, Elemental Ailment and Ailment reader sees it (W4 item 9). Before, only its Lightning Damage taken was read.
   if (felineFigure && Number(felineFigure.totalStacks) > 0 && !otherNumbed) {
-    if (state.enemyBuffs instanceof UnitBuffSet && !state.enemyBuffs.list.some(felineNumbedHold)) state.enemyBuffs.add({ name: "Numbed", source: FELINE_NUMBED_SOURCE, reason: `${felineFigure.totalStacks} Numbed stack(s) from Electrify (game affix 520462624: buff 170)`, inflictedBy: "you", stage: "combat" });
+    if (state.enemyBuffs instanceof UnitBuffSet && !state.enemyBuffs.list.some(felineNumbedHold)) state.enemyBuffs.add({ name: "Numbed", source: FELINE_NUMBED_SOURCE, reason: felineFigure.storeKept ? `Feline Figure's opening Numbed (game affix 520462624: buff 170), kept at ${felineFigure.totalStacks} stacks by your Lightning hits through the per-attacker store (client 0x141ef1180; best case, provisional)` : `${felineFigure.totalStacks} Numbed stack(s) from Electrify (game affix 520462624: buff 170)`, inflictedBy: "you", stage: "combat" });
     if (Array.isArray(state.enemyAilments) && !state.enemyAilments.includes("Numbed")) { state.enemyAilments.push("Numbed"); state.felineNumbedOnly = true; }
   }
-  if (numbed && debuffs.numbedStacks > 0) derive(`+${round(numbedPerStackRaw * debuffs.numbedStacks)}% additional Lightning Damage taken`, `Numbed (keyword 762: +${numbedBase}% additional Lightning Damage taken per stack${numbedChanged ? ", changed base effect" : ""}, max 10${numbedAdditional !== 1 ? `; ×${numbedAdditional} additional Numbed Effect` : ""})`, otherNumbed ? `${debuffs.numbedStacks} Numbed stacks on the dummy (best case, as the support resolver reads it: provisional)` : `${debuffs.numbedStacks} average Numbed stacks from Feline Figure (Q-H10: provisional)`, true);
+  if (numbed && debuffs.numbedStacks > 0) derive(`+${round(numbedPerStackRaw * debuffs.numbedStacks)}% additional Lightning Damage taken`, `Numbed (keyword 762: +${numbedBase}% additional Lightning Damage taken per stack${numbedChanged ? ", changed base effect" : ""}, max 10${numbedAdditional !== 1 ? `; ×${numbedAdditional} additional Numbed Effect` : ""})`, otherNumbed ? `${debuffs.numbedStacks} Numbed stacks on the dummy (best case, as the support resolver reads it: provisional)` : felineFigure?.storeKept ? `${debuffs.numbedStacks} Numbed stacks: Feline Figure's opening Numbed, kept by your Lightning hits through the per-attacker store (client 0x141ef1180; best case, as for every Numbed source: provisional)` : `${debuffs.numbedStacks} average Numbed stacks from Feline Figure (Q-H10: provisional)`, true);
   for (const line of find(PATTERNS.numbedEffect)) entry(line, numbed, numbed ? "scales Numbed's Lightning Damage taken" : "the build inflicts no Numbed");
   // The revived Numbed family's source line (src/enemy-ailments.js): In calc when it is what keeps the dummy Numbed; with another
   // source already holding the 10-stack cap it adds nothing (provisional best-case stack count, as for every Numbed source).

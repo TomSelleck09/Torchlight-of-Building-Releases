@@ -80,6 +80,8 @@ export function scorchingBeamHitModifiers({ modifierTexts = null, beamActive = t
     add(entry.name + " aura: Fire Damage", "additional", entry.effectiveEffects?.additionalFireDamagePercent, FIRE);
     if (main?.tags?.includes("Spell")) add(entry.name + " aura: Spell Damage", "additional", entry.effectiveEffects?.additionalSpellDamagePercent);
     if (main?.tags?.includes("Area")) add(entry.name + " aura: Area Damage", "additional", entry.effectiveEffects?.additionalAreaDamagePercent);
+    // Precise: Domain Expansion's "at least 5 enemies within 10 m" write (record 263618880; the Boss dummy counts as 5): its own factor.
+    if (main?.tags?.includes("Area")) add(entry.name + " aura: Area Damage (at least 5 enemies)", "additional", entry.effectiveEffects?.additionalAreaDamageCrowdPercent);
   }
   add("Pacts: Damage", "increased", spirits.damagePercent);
   add("Pacts: Spell Damage", "increased", spirits.spellDamagePercent);

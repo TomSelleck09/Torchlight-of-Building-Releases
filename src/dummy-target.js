@@ -6,6 +6,11 @@
 //   (no ailments, Affliction, curses or resistance reduction yet).
 export const dummyTarget = Object.freeze({ boss: true, elite: true, withinMeters: 10 });
 
+// The game's Enemy Count rule: "each Boss counts as 5 monsters" (the Enemy Count hyperlink text). A record whose node 700 (count of enemies)
+// or count gate carries `calcCountByRarity` counts the Boss dummy as 5 enemies (Spectral Slash: Legion, record 506057920, applied
+// 2026-11-08; the other readers 2026-11-13: src/boss-enemy-count.js). Per-enemy records without the flag (14773965, 137974192) keep 1.
+export const BOSS_ENEMY_COUNT = 5;
+
 // Distance keywords (sourced: reference data keyword tooltips "Nearby" = "Within 6m", "Proximity" = "Within 4m", "Distant" = "6m
 // away"; game keywords 102 / 160 / 150 carry the radius as {%s:1}; research/residual-batch-2026-10-12.md §4.1). Before
 // 2026-10-12 the planner read Nearby and Proximity as the 10 m stand-in of the dummy profile (open question Q-G9).

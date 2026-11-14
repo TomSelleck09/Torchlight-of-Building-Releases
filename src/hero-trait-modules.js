@@ -5,7 +5,7 @@ import { ADVANCED_ELEMENTAL_IMPACT_PERCENT, coldPulseState, cooldownSpeedFactor,
 import { curseEffects } from "./curse-model.js";
 import { ILLUSION_RECENT_SECONDS, TURBULENCE_BASE_SECONDS, endlessManaDamage, illusionRate, makeItQuickDamage, meAndMyselfFrequency, refreshedStacks, stacksHeld, twistedSpacetime } from "./youga-spacetime.js";
 import { selenaCompleteSkillLoadoutSs13 } from "./data/skills/selena-complete-skill-loadout-ss13.js";
-import { LIGHTNING_PATTERNS, VENDETTA_PATTERNS, INCISIVE, INCISIVE_CLOSE_CONDITION, MORTAL_GAMBIT_ATTACK_PERCENT, cleanErika } from "./erika-traits.js";
+import { LIGHTNING_PATTERNS, VENDETTA_PATTERNS, INCISIVE, INCISIVE_CLOSE_CONDITION, NUMBED_STORE_CONDITION, MORTAL_GAMBIT_ATTACK_PERCENT, cleanErika } from "./erika-traits.js";
 import { ORDER_CALLING, CHARGE_CALLING, GROWING_BREEZE, VIGILANT_BREEZE, b6ClauseKey, b6LineStatus, b6RevivedLine, b6Switches } from "./moto-iris-traits.js";
 import { WISDOM, INCARNATION, BLASPHEMER, THEA_HEROES, theaClauseKey, theaLineRead, theaRevivedLine, theaSwitches, settleTheaCrowdControl } from "./thea-traits.js";
 import { SAGE, sageClauseKey, sageLineRead, sageRevivedLine } from "./sage-traits.js";
@@ -422,14 +422,15 @@ export function resolveSpacetimeState(traitLines = [], state = {}) {
 // `state.felineFigure` (felineFigureState) and `state.erikaVendetta` (vendettaStingState) come from src/planner.js; the engines
 // apply them (src/combat-states.js Numbed, src/vendetta-model.js triggers); these entries carry the badges and the derived lines.
 const pct = (value) => Math.round(value * 10000) / 100;
-function erikaLightningEntry(line, module, state, { entry, derive, neutral }) {
+function erikaLightningEntry(line, module, state, { entry, derive, neutral, timedEffects = [] }) {
   const P = LIGHTNING_PATTERNS, text = cleanErika(line.clean);
   const ff = state.felineFigure || null;
   if (!ff) { entry(line, module, false, "Lightning Shadow's Feline Figure line is not in the build"); return; }
   const active = ff.active;
   const numbedOn = active || ff.otherNumbed;
-  const cadence = active ? (ff.retriggers ? `Feline Figure fires every ${ff.intervalSeconds} s on the dummy (Charging Equation: on another source's Numbed, 1 s per enemy; game affix 978270)` : `Feline Figure fires once on the dummy, at the start of the fight (its mark never expires, inferred${ff.charging ? "; Charging Equation retriggers it only on another source's Numbed, and the build has none" : ""}; game affix 264779, provisional)`) : "Feline Figure does not fire";
-  const stacksText = `${ff.perTrigger} Numbed stack(s) per trigger, each ${ff.durationSeconds} s: ${ff.stacks} average Feline Figure stacks${ff.otherNumbed ? " (another Numbed source holds the dummy at 10)" : ""}`;
+  const kept = ff.storeKept ? "; your Lightning hits keep that Numbed up through the per-attacker store, so the dummy holds 10 stacks (client 0x141ef1180; best-case switch \"Numbed kept by your Lightning hits\", provisional)" : "";
+  const cadence = active ? (ff.retriggers ? `Feline Figure fires every ${ff.intervalSeconds} s on the dummy (Charging Equation: on another Numbed of yours, 1 s per enemy; game affix 978270)${ff.storeKept ? `; its opening Numbed is kept by your Lightning hits through the per-attacker store (client 0x141ef1180; best case, provisional)` : ""}` : `Feline Figure fires once on the dummy, at the start of the fight (its mark never expires, inferred${ff.charging ? "; Charging Equation retriggers it only on another Numbed of yours, and the build has none" : ""}; game affix 264779, provisional)${kept}`) : "Feline Figure does not fire";
+  const stacksText = `${ff.perTrigger} Numbed stack(s) per trigger, each ${ff.durationSeconds} s: ${ff.stacks} average Feline Figure stacks${ff.otherNumbed ? " (another Numbed source holds the dummy at 10)" : ff.storeKept ? " (your Lightning hits keep the dummy at 10 through the store)" : ""}`;
   const speedFeeds = Boolean(ff.wild);
   // Numbed only raises Lightning Damage taken: with no Lightning damage dealt, the Numbed clauses change no dummy figure.
   const lightning = !state.dealtDamageTypes || state.dealtDamageTypes.has("Lightning");
@@ -437,15 +438,31 @@ function erikaLightningEntry(line, module, state, { entry, derive, neutral }) {
   // Another Numbed source already holds the dummy at 10 stacks: Feline Figure's stack count changes the figure only through
   // Swift as Lightning's rate or Charging Tail's share (Charging Equation's per-stack bonus reads the 10 held).
   const countClause = [P.electrify, P.trigger, P.perStack, P.maxElectrify, P.doubled, P.chargingTrigger].some((pattern) => pattern.test(text));
-  if (countClause && active && ff.otherNumbed && !ff.swift && !(ff.tail?.share > 0)) { neutral("No DPS effect", `another Numbed source already holds the dummy at ${ff.totalStacks} stacks (the cap), so Feline Figure's own stacks (${ff.stacks} on average) add none, and nothing in this build reads its trigger rate`); return; }
+  // Kept by your Lightning hits' store: the opening still starts it (Electrify, the trigger, its Numbed); its count and duration do not
+  // (the store holds 10 whatever they are; with Swift as Lightning the count sets its windows' first stacks, so the skip below spares it).
+  const opening = [P.electrify, P.trigger, P.perStack].some((pattern) => pattern.test(text));
+  // Charging Equation's own recast decides which stack count its per-stack Numbed Effect reads (the held 10, or the opening's).
+  const recastRead = P.chargingTrigger.test(text) && Boolean(ff.chargingEffect);
+  if (countClause && active && !recastRead && (ff.otherNumbed || (ff.storeKept && !opening)) && !ff.swift && !(ff.tail?.share > 0)) { neutral("No DPS effect", `${ff.storeKept ? "your Lightning hits keep the dummy" : "another Numbed source already holds the dummy"} at ${ff.totalStacks} stacks (the cap), so Feline Figure's own stacks (${ff.stacks} on average) add none, and nothing in this build reads its trigger rate`); return; }
   let match;
   if (P.electrify.test(text)) entry(line, module, active, active ? `Electrify held at its max, ${ff.maxElectrify} stacks (movement is constant, user rule; Skill Effect Duration does not lengthen the window: provisional): ${stacksText}` : "no Feline Figure trigger line");
   else if (P.reset.test(text)) neutral("No DPS effect", "resetting Electrify with the Trait Skill: the planner holds Electrify at max, and a reset does not clear Feline Figure's mark on the dummy");
-  else if (P.trigger.test(text)) entry(line, module, active, `${cadence}; Feline Figure deals no damage of its own`);
+  else if (P.trigger.test(text)) {
+    entry(line, module, active, `${cadence}; Feline Figure deals no damage of its own`);
+    // The best-case switch, listed when it decides the dummy's Numbed: Feline Figure is the only Numbed source and your hits deal Lightning.
+    if (active && !ff.otherNumbed && ff.storeKeeps) {
+      const on = Boolean(ff.storeKept);
+      timedEffects.push({ id: NUMBED_STORE_CONDITION, label: "Numbed kept by your Lightning hits (Feline Figure)", source: line.source, target: "enemy", toggle: true, provisional: true, enabled: on, active: on,
+        summary: "Feline Figure's opening Numbed is kept up by your Lightning hits: on a Numbed enemy they fill your store and add a stack per 10% of its Max Life + Energy Shield (client 0x141ef1180), so the dummy holds 10 stacks, as for every Numbed source",
+        reason: on ? "best-case assumption (the dummy's Max Life is in no table)" : `off: Feline Figure's opening ${ff.perTrigger} stack(s) for ${ff.durationSeconds} s, then no Numbed`, parts: [] });
+    }
+  }
   else if (P.perStack.test(text)) entry(line, module, active, active ? `${stacksText}; +5% Lightning Damage taken per stack (src/combat-states.js)` : "Feline Figure does not fire");
   else if (P.additional.test(text)) entry(line, module, numbedOn, numbedOn ? `multiplies Numbed's Lightning Damage taken (×${ff.additionalFactor} from every additional Numbed Effect line together)` : "the dummy is not Numbed");
   else if ((match = text.match(P.moonSpeed))) {
-    if (!numbedOn) entry(line, module, false, "no Numbed inflicted");
+    // Game affix 712332544: a 4 s buff on each Numbed you inflict (trigger 1000150), so it counts only while you keep inflicting it in a
+    // sustained fight (felineFigureState movementSpeed.moon); Feline Figure's one opening cast holds it for 4 s at the start only.
+    if (!numbedOn || !(ff.movementSpeed?.moon > 0)) entry(line, module, false, !numbedOn ? "no Numbed inflicted" : "no Numbed inflicted in a sustained fight: Feline Figure fires once on the dummy, and nothing else of yours inflicts Numbed (game affix 712332544: 4 s after each infliction)");
     else if (speedFeeds) entry(line, module, true, `Numbed is inflicted all the time: +${match[1]}% Movement Speed, read by Wild Lightning (Movement Speed ${ff.movementSpeed.total}%)`);
     else neutral("No DPS effect", "Movement Speed only: no Movement Speed reader of damage in this build (Wild Lightning not picked)");
   } else if (P.maxElectrify.test(text)) entry(line, module, active, active ? `Electrify ${ff.baseMaxElectrify} → ${ff.maxElectrify} stacks: ${stacksText}` : "Feline Figure does not fire");
@@ -461,16 +478,25 @@ function erikaLightningEntry(line, module, state, { entry, derive, neutral }) {
     const swift = ff.swift;
     if (!swift) { entry(line, module, false, "Swift as Lightning is not in this build's lines"); return; }
     const body = `+${swift.damagePercent}% additional damage`;
-    entry(line, module, swift.stacks > 0, swift.stacks > 0 ? `${ff.inflictedPerSecond} Numbed stacks inflicted per second × ${swift.seconds} s ÷ ${swift.per} = ${swift.stacks} of ${swift.maxStacks} stacks: ${body} (and +${swift.speedPercent}% Movement Speed; Feline Figure Area: no DPS effect; provisional)` : "no Numbed inflicted in a sustained fight: Feline Figure fires once, and no other source inflicts it", swift.stacks > 0 ? [body] : []);
-    if (swift.stacks > 0) derive(body, line.source, `Swift as Lightning: ${swift.stacks} stacks`);
-  } else if (P.chargingTrigger.test(text)) entry(line, module, active, active ? `${cadence}: ${stacksText}` : "Feline Figure does not fire");
+    const held = ff.heldLayersPerSecond > 0 ? ` (each stack counts, trigger 1000160 per layer added; the dummy's ${ff.totalStacks} held stacks of yours need at least ${ff.heldLayersPerSecond} new ones a second)` : "";
+    entry(line, module, swift.stacks > 0, swift.stacks > 0 ? `${ff.inflictedPerSecond} Numbed stacks inflicted per second${held} × ${swift.seconds} s ÷ ${swift.per} = ${swift.stacks} of ${swift.maxStacks} stacks: ${body} (and +${swift.speedPercent}% Movement Speed; Feline Figure Area: no DPS effect; provisional)` : "no Numbed inflicted in a sustained fight: Feline Figure fires once, and no other source of yours inflicts it", swift.stacks > 0 ? [body] : []);
+    if (swift.stacks > 0) {
+      derive(body, line.source, `Swift as Lightning: ${swift.stacks} stacks`);
+      // Its counter steps only on Numbed she inflicts on the dummy, so in the windows it builds from 0 at engagement, like an own buff gained
+      // only from the dummy (user decisions 2026-11-02 and 2026-11-04 on Blessings, Blur and Profane, by analogy): Feline Figure's opening
+      // layers at t = 0, then one stack per `per` layers at the sustained rate, up to the sustained count (its 10 s counter has not run out).
+      const opening = active ? Math.min(swift.stacks, ff.perTrigger / swift.per) : 0;
+      if (ff.inflictedPerSecond > 0) timedEffects.push({ id: "erikaSwiftAsLightning", label: "Swift as Lightning (from 0 at engagement)", source: line.source, target: "self", toggle: false, enabled: true, active: true, summary: `${swift.stacks} stacks of +${swift.damagePercentPerStack}% additional damage, built from the Numbed you inflict on the clean dummy`,
+        parts: [{ type: null, reach: "all", percent: swift.damagePercentPerStack, schedule: { kind: "ramp", maxStacks: swift.stacks, intervalSeconds: swift.per / ff.inflictedPerSecond, startStacks: opening } }] });
+    }
+  } else if (P.chargingTrigger.test(text)) entry(line, module, active, active ? `${cadence}: ${stacksText}${ff.chargingEffect && ff.retriggers ? `; each recast reads the dummy's ${ff.chargingEffect.stacks} stacks for its per-stack Numbed Effect` : ""}` : "Feline Figure does not fire");
   else if (P.chargingEffect.test(text)) {
     const charging = ff.chargingEffect;
     entry(line, module, Boolean(charging), charging ? `${charging.stacks} Numbed stacks on the dummy when Feline Figure inflicts (steady state) × ${charging.perStackPercent}% = +${charging.value}% additional Numbed Effect (refreshed every trigger; provisional)` : active ? "Charging Equation is not in this build's lines" : "Feline Figure does not fire");
   } else if (P.tailCrit.test(text) || P.tailEffect.test(text)) {
     const tail = ff.tail;
     const on = Boolean(tail && active && tail.share > 0 && (!tail.measured || tail.factor > 1));
-    entry(line, module, on, !active ? "Feline Figure does not fire" : !tail ? "Charging Tail's Numbed line is not in the build" : !tail.measured ? "Feline Figure's crit chance is read from the Main Skill's once the hit pass measures it" : tail.share > 0 && tail.factor <= 1 ? "Feline Figure holds no Numbed on the sustained dummy (it fires once), so the +50% has nothing to act on" : tail.share > 0 ? `Feline Figure's own crit chance decides it (game affix 3160357); the planner has none for it, so the Main Skill's ${tail.critChancePercent}% stands in (provisional): ${tail.triggersInWindow} trigger(s) in ${tail.windowSeconds} s, so ${pct(tail.share)}% of its Numbed is +${tail.percent}% additional effect (×${tail.factor} on the dummy's Numbed)` : "the Main Skill has no crit chance");
+    entry(line, module, on, !active ? "Feline Figure does not fire" : !tail ? "Charging Tail's Numbed line is not in the build" : !(tail.triggersInWindow > 0) ? `Feline Figure fires once on the dummy (it recasts only through Charging Equation on another Numbed source of yours), so the ${tail.windowSeconds} s carrier holds at the start of the fight only, not in a sustained one` : !tail.measured ? "Feline Figure's crit chance is read from the Main Skill's once the hit pass measures it" : tail.share > 0 && tail.factor <= 1 ? "none of the dummy's Numbed is yours, so the +50% has nothing to act on" : tail.share > 0 ? `Feline Figure's own crit chance decides it (game affix 3160357); the planner has none for it, so the Main Skill's ${tail.critChancePercent}% stands in (provisional): ${tail.triggersInWindow} trigger(s) in ${tail.windowSeconds} s, so ${pct(tail.share)}% of the time a ${tail.windowSeconds} s carrier on you gives every Numbed you inflict +${tail.percent}% additional effect (its write is on the Numbed tag alone, so your other sources' stacks take it too; ${pct(tail.ownShare ?? 1)}% of the dummy's stacks are yours): ×${tail.factor} on the dummy's Numbed` : "the Main Skill has no crit chance");
   } else entry(line, { ...module, status: "Not modeled" }, false, "this Lightning Shadow clause is not read");
 }
 
@@ -1018,7 +1044,7 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
       else unmodeled("this Stalker clause is not read");
       continue;
     }
-    if (module.key === "lightningShadow") { erikaLightningEntry(line, module, state, { entry, derive, neutral: (status, why) => entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active: false, conditionText: `${module.label}: ${why}`, status, provisional: true, bodies: [], condition: "heroModule", group: null, module: module.key }) }); continue; }
+    if (module.key === "lightningShadow") { erikaLightningEntry(line, module, state, { entry, derive, timedEffects, neutral: (status, why) => entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active: false, conditionText: `${module.label}: ${why}`, status, provisional: true, bodies: [], condition: "heroModule", group: null, module: module.key }) }); continue; }
     if (module.key === "vendettaSting") { erikaVendettaEntry(line, module, state, { entry, derive, timedEffects, entries, neutral: (status, why) => entries.push({ source: line.source, origin: line.origin || "trait", text: line.clean, active: false, conditionText: `${module.label}: ${why}`, status, provisional: true, bodies: [], condition: "heroModule", group: null, module: module.key }) }); continue; }
     // Activation Medium: Terra (src/selena-dance.js resolveActivationMediumTerra; the planner applies it).
     if (module.key === "activationMediumTerra") {

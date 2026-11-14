@@ -66,6 +66,17 @@ export const CHUNK8_SUPPORT_RULES = [
   // Shackles of Malice: Defile (chunk 9; recipe 218176832: on this skill's hit, buff 11180 for 4 s on the target; its affix 523789152 writes attr 3410 additional
   // on the Curse tag 5100301, the curse's effect on that target): src/build-mechanics.js joins it to the Curse Effect of every curse on the dummy.
   own("curseEffectOnHit", new RegExp(`^When the supported skill hits a target, ${N}% additional Curse Effect for the target for ${N} ?s$`, "i"), (m) => ({ value: num(m[1]), seconds: num(m[2]), recipe: 218176832 })),
+  // Frost Spike: Offshoot (recipe 14543653: on using the skill, a P2 s buff of field 2007015 Max Frostbite Rating): read by name in chunk8BuildLines
+  // (a "+20 Max Frostbite Rating" line held while the skill is used); this rule only gives the clause its badge (2026-11-13, review §4 B4).
+  own("chunk8OffshootFrostbite", new RegExp(`^${N} Max Frostbite Rating for ${N} ?s after using the supported skill$`, "i"), (m) => ({ value: num(m[1]), seconds: num(m[2]), recipe: 14543653 })),
+  // Chain Lightning: Lucky (Noble) "The supported skill deals Lucky Damage": read by name in src/skill-hit-model.js (ownLuckyRolls, the luck
+  // count of the skill's own hit rolls); this rule only gives the clause its badge (2026-11-13, review §4 B4).
+  own("chunk8OwnLucky", /^The supported skill deals Lucky Damage$/i, () => ({ recipe: null })),
+  // Ice Lances: Permafrost (Noble) (record 888393792 [1.5, 20]: on the supported skill's hit, gate 206, node 2320 casts stone 1551, a Lv. 20 Frost
+  // Terra; Split 619202's 10 s area is the "+66% additional Duration", its radius no effect on one dummy): src/permafrost-terra.js, a skill DoT
+  // src/planner.js adds with the hits (2026-11-14, review §3 G3). These rules give the two clauses their badge.
+  own("chunk8PermafrostTerra", new RegExp(`^Every ${N}\\s*s, the next supported skill triggers a Lv\\. (\\d+) Frost Terra on hit$`, "i"), (m) => ({ value: num(m[2]), seconds: num(m[1]), recipe: 888393792 })),
+  own("chunk8PermafrostTerra", new RegExp(`^${N}% base radius for the Terra triggered by this effect and ${N}% additional Duration$`, "i"), (m) => ({ value: num(m[2]), radius: num(m[1]), area: true, recipe: 888393792 })),
   // Hyper Metabolism (recipe 160618912, Charging Progress per second) and Medicinal Buildup (558427712, a share of the skill's Charging Progress back on each cast): src/elixir-model.js.
   own("elixirCharging", new RegExp(`^The supported skill gains ${N} Charging Progress every second\\.?$`, "i"), (m) => ({ value: num(m[1]), kind: "perSecond", recipe: 160618912 })),
   own("elixirCharging", new RegExp(`^When casting the supported skill, gains ${N}% of the skill's Charging Progress$`, "i"), (m) => ({ value: num(m[1]), kind: "refund", recipe: 558427712 })),
@@ -89,6 +100,10 @@ export const CHUNK8_SUPPORT_RULES = [
   own("chunk8Recovery", /^Gains a buff when the supported skill is at max channeled stacks: Demolisher Charge is instantly restored the next (\d+) times the skill consumes it$/i, (m) => ({ value: num(m[1]), kind: "instant", recipe: 404583872 })),
   // Gale Slash: Brutality (recipe 321298880: on casting Combo Starter 1, 6000413, node 627 +P1 Combo Points, Cooldown P2).
   rule("combo", new RegExp(`^Gains (\\d+) Combo Point\\(s\\) after casting the Combo Starter 1 of the supported skill\\. Cooldown: ${N}\\s*s$`, "i"), (m) => ({ value: num(m[1]), cooldown: num(m[2]), kind: "starterPoints", comboReason: "extra Combo Points per cycle at min(1, cycle ÷ cooldown), read with the cycle's consumed points (src/skill-hit-model.js)", comboProvisional: true, recipe: 321298880 })),
+  // Gale Slash: Dominance (recipe 955168320: trigger 1000033 on a hit with the crit 5001010, Hit 5000003, Combo Starter 6000411 and this-skill
+  // 5000002 tags; gated by label 3100533 on filter 121, which the row then sets, so once per skill instance, i.e. per Starter cast; node 627
+  // fight resource 22 (Combo Points) +p0 on the holder). Each Starter cast adds p0 × P(that cast crits) to the points the next Finisher consumes.
+  rule("combo", /^Gains (\d+) Combo Point\(s\) on Critical Strikes from the Combo Starter of the supported skill\. Each skill cast can only trigger this effect once\.?$/i, (m) => ({ value: num(m[1]), kind: "starterCritPoints", comboReason: "each Combo Starter cast that crits (its crit determinations: one per hit group with the crit cache on) adds the points to what the next Combo Finisher consumes, an expected value feeding its Amplification and per-point lines (game recipe 955168320: once per cast by label 3100533; src/skill-hit-model.js; provisional: the cast's crit share and the gain landing before the Finisher is created are inferred)", comboProvisional: true, recipe: 955168320 })),
   // Focused Slash: Tranquility (recipe 303262432) and Focused Shot: Long Shot (recipe 380382720): attr 7000, Fervor's effect on the supported skill: the skill's own Fervor line.
   rule("chunk8Fervor", new RegExp(`^While standing still, Fervor's bonus to the supported skill additionally ${N}% every ${N}\\s*s, up to (\\d+) time\\(s\\)\\. When moving, loses this bonus$`, "i"), (m) => ({ value: num(m[1]), cap: num(m[3]), condition: "fervorStill", recipe: 303262432 })),
   rule("chunk8Fervor", new RegExp(`^When there are no enemies nearby\\s*,\\s*Fervor\\s*'s effect on the supported skill additionally ${N}%\\s*\\(does not apply to the basic effects of Fervor\\)$`, "i"), (m) => ({ value: num(m[1]), condition: "fervorRange", recipe: 380382720 })),
@@ -270,6 +285,19 @@ export function chunk8OwnStatus(clause, ctx) {
       return engine === "skill-hit" && ctx.combo ? s("Provisional", "extra hits on each Combo Finisher: whole steps of the increased Attack Speed (src/skill-hit-model.js)", ["skill-hit"]) : s("Inactive", "the supported skill has no modeled Combo cycle");
     case "elixirCharging":
       return s("In calc", clause.kind === "perSecond" ? "Charging Progress per second for this Elixir: it recharges on the dummy (src/elixir-model.js)" : "Charging Progress back on each cast: a charge costs less (src/elixir-model.js)", ["elixir"]);
+    case "chunk8OffshootFrostbite":
+      return s("Provisional", "held while the supported skill is used: a \"+" + clause.value + " Max Frostbite Rating\" line joins the build's Frostbite (src/support-chunk8.js chunk8BuildLines; open question on the chunk 8 readings)", ["frostbite"]);
+    case "chunk8OwnLucky":
+      return engine === "skill-hit" ? s("In calc", "the supported skill's own hit rolls are Lucky (src/skill-hit-model.js ownLuckyRolls, the luck count of its rolls)", ["skill-hit"]) : s("Inactive", "read on the supported skill's own hit rolls; it has no modeled hit");
+    case "chunk8PermafrostTerra": {
+      // The planner's state (supportConditions.permafrostTerra): a board Frost Terra holds the same DoT buff, Dance of the Deep stops a non-Main Terra.
+      if (engine !== "skill-hit") return s("Inactive", "the triggered Frost Terra needs a modeled hit of the supported skill to trigger on");
+      const blocked = ctx.conditions?.permafrostTerra?.blocked;
+      if (blocked) return s(blocked.status, blocked.reason);
+      return clause.area
+        ? s("Provisional", `the triggered Frost Terra's area lasts 10 s × (1 + Skill Effect Duration) (Split 619202: the board Frost Terra's 6 s × 1.66, the +${clause.value}% additional Duration) and holds its 2 s DoT status while the dummy stands in it (inferred, as Thornfield's area); the +${clause.radius}% radius has no effect on one dummy (src/permafrost-terra.js; open question permafrost-frost-terra)`, ["skill-dot"])
+        : s("Provisional", `a Lv. ${clause.value} Frost Terra (stone 1551) on the dummy, triggered by the supported skill's hit every ${clause.seconds} s at most (record 888393792, gate 206; the next hit after it): its own skill DoT, Reapable, at its level with the build's lines and no support of the supported skill; +40% per Terra Charge consumed; it keeps the dummy Frostbitten (src/permafrost-terra.js; open question permafrost-frost-terra)`, ["skill-dot"]);
+    }
     case "curseEffectOnHit":
       return ctx.conditions && !ctx.conditions.anyCurse ? s("Inactive", "no curse on the dummy to raise") : s("Provisional", "one additional term on the Curse Effect of every curse on the dummy, held while the skill hits (src/build-mechanics.js; §6 test 111)", ["curses"]);
     case "chunk8Penetration":

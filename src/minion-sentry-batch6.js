@@ -15,6 +15,7 @@
 // follow the Minion model's rules (src/minion-damage-model.js: deterministic cycle, every Minion of a summon acting alike, the dummy a
 // Boss within 10 m that never attacks) and are provisional: open questions minion-batch6-* / sentry-batch6-* in src/open-questions.js.
 import { enemyBuffSet } from "./unit-buff-set.js";
+import { BOSS_ENEMY_COUNT, recordCountsBossAsFive } from "./boss-enemy-count.js";
 import { skillBuffValue, supportStone, gameLevelValue } from "./game-skill-data.js";
 
 const N = "([+-]?\\d+(?:\\.\\d+)?)";
@@ -245,7 +246,7 @@ const SENTRY_READINGS = {
   detonationPerMultistrike: "+X% per 1% of the Sentry's Multistrike chance (its own +100%) on the Explosion hits, up to the cap",
   unbroken: "no 1 s Multistrike lock and no Explosion: the blade and its Multistrike repeat every attack interval",
   multistrikeIncrementPerSentry: "the Multistrike damage increment × (1 + X% × Sentries deployed)",
-  numbedCastFrequency: "+X% additional Cast Frequency while the dummy is Numbed (one enemy)"
+  numbedCastFrequency: "+X% additional Cast Frequency × 5 while the dummy is Numbed (the Boss dummy counts as 5 enemies: record 455061504, calcCountByRarity), up to the stack cap"
 };
 
 /** Mind Control: Enthrall's links to the build's Minions (src/support-effects.js resolveSupportEffects; planner condition minionsOwned). */
@@ -885,7 +886,10 @@ export function applyBatch6SentryEdits(profile, effects, { modifierTexts = [], e
   }
   if (name === "Thunder Core" && ailments.has("Numbed")) {
     for (const clause of kind("numbedCastFrequency")) {
-      next.sentry = { ...(next.sentry || {}), castFrequency: [...(next.sentry?.castFrequency || []), { text: `${clean(clause.text)} (1 Numbed enemy: the dummy; game recipe ${clause.recipe})`, value: clause.value, additional: true }] };
+      // Record 455061504's node 700 carries calcCountByRarity: the Numbed Boss dummy counts as 5 enemies, up to the clause's stack cap
+      // (src/boss-enemy-count.js; G1g 2026-11-13).
+      const enemies = Math.min(Number(clause.cap) || 1, recordCountsBossAsFive(clause.recipe) ? BOSS_ENEMY_COUNT : 1);
+      next.sentry = { ...(next.sentry || {}), castFrequency: [...(next.sentry?.castFrequency || []), { text: `${clean(clause.text)} (the Numbed Boss dummy counts as ${enemies} enemies: game recipe ${clause.recipe}, calcCountByRarity)`, value: clause.value * enemies, additional: true }] };
     }
   }
   if (name === "Scorching Pulse" && boardSkillNames?.has?.("Flame Core")) {

@@ -637,6 +637,9 @@ export function frailLayer(ctx) {
 
 export function frostbiteLayer(ctx) {
   if (!ctx.isLive("frostbite")) return;
+  // A Frostbite only your Minions keep (src/minion-frostbite.js) is no event of your hits: its level over time is the combat pass's timed part
+  // (id "minionFrostbite"), and the lines that read it keep the planner's share.
+  if (enemyBuffSet(ctx.planner.lineEffects?.state)?.heldOnlyBy("Frostbite", "minion", { stage: "model" })) return;
   let any = false;
   // First Flake of Strange Snow on the trigger bus (W10 step 2a): the Frostbite line's Cold Damage taken is linear in the rating, so it reads the
   // deemed rating on this tick ÷ the planner's (exactly 1 while the deemed bonus is the planner's), while Frostbite is held.
@@ -673,7 +676,10 @@ export function numbedLayer(ctx) {
   }
   if (!any) return;
   if (busShare > 0) { ctx.reported("numbed").events = "held by the trigger bus from your Minions' Lightning landings (2 s each), its stacks the planner's × the loop's share over the planner's"; return; }
-  ctx.collectors.push({ key: "numbed", windowSeconds: AILMENT_SECONDS.Numbed });
+  // Feline Figure's opening Numbed, kept by your Lightning hits' store (src/erika-traits.js storeKept): its stacks land at t = 0 (each on its own
+  // 2 s; Electroplated Motif's 4 s is read as 2 s here), then your hits add theirs.
+  const opening = part?.schedule?.opening;
+  ctx.collectors.push({ key: "numbed", windowSeconds: AILMENT_SECONDS.Numbed, ...(opening?.stacks > 0 ? { seed: [{ frame: 0, value: opening.stacks }] } : {}) });
   addAilmentEvent(ctx, "Numbed", { kind: "collect", collector: "numbed" }, "Lightning");
   ctx.reported("numbed").events = `one stack per Numbing hit, each on its own ${AILMENT_SECONDS.Numbed} s (keyword 762), up to ${stacks}; the per-damage threshold is not counted (open question tick-numbed-stacks)`;
 }

@@ -248,14 +248,16 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     additionalAilmentDamagePercent: "Ailment Damage",
     additionalFireDamagePercent: "Fire Damage",
     additionalDamageOverTimePercent: "Damage Over Time",
-    additionalAreaAilmentDamagePercent: "Area Ailment Damage"
+    additionalAreaAilmentDamagePercent: "Area Ailment Damage",
+    // Precise: Domain Expansion's "at least 5 enemies within 10 m" write (record 687124224; the Boss dummy counts as 5): its own factor (G1b).
+    additionalAreaAilmentDamageCrowdPercent: "Area Ailment Damage (at least 5 enemies)"
   };
   // "+X% additional Ailment Damage dealt by Area Skills" (Domain Expansion, affix 183965584: attr 3604 {Area})
   // needs the Area tag on the skill that inflicts the ailment (user decision 2026-10-11). Ignite, and the
   // Trauma / Wilt layers that inherit this ledger (src/ailment-shared.js), are inflicted by `main` (Scorching
   // Beam: the planner applies every ailment at its use rate). Without the tag the line is listed in
   // `inactiveSources` with the reason; skill DoTs are not ailments and never read ailment lines.
-  const igniteAuraSkillTags = { additionalAreaAilmentDamagePercent: "Area" };
+  const igniteAuraSkillTags = { additionalAreaAilmentDamagePercent: "Area", additionalAreaAilmentDamageCrowdPercent: "Area" };
   for (const [name, auraEntry] of auraEntries) {
     if (!activeNames.has(name)) continue;
     for (const [stat, label] of Object.entries(igniteAuraStats)) {

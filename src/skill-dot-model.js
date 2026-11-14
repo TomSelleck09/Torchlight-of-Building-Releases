@@ -8,6 +8,7 @@ import { normalizePercentageText } from "./percentage-text.js";
 import { AFFLICTION_DAMAGE_PER_POINT } from "./game-attribute-defaults.js";
 import { damageTypeRestriction, restrictionLine } from "./damage-type-restriction.js";
 import { luckyRollFraction, luckyRollsFor, randomRollNote } from "./lucky-damage.js";
+import { meanAreaLayers } from "./area-dot-layers.js";
 
 // Damage over time dealt by a skill itself (profile kind "dot", engine "skill-dot"): Wilting Beam.
 //
@@ -221,8 +222,13 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
   // the DoT up for area + status seconds (8 T Thornfield audit G6, 2026-11-13; the area re-applying its status while the dummy stands in it is
   // read from the buffArea component: inferred). One area at a time (Max Terra quantity 1): a recast replaces it.
   const areaSeconds = profile.dot.areaSeconds > 0 ? profile.dot.areaSeconds * Math.max(0, 1 + (Number(skillEffectDurationPercent) || 0) / 100) : 0;
-  const heldSeconds = profile.dot.durationSeconds + areaSeconds;
-  const tickingShare = Math.min(1, heldSeconds * castsPerSecond);
+  // The area's layers (profile.dot.areaLayers; 8 T Thornfield audit S1, applied 2026-11-13 on the user's decision; src/area-dot-layers.js): the
+  // area adds one 2 s layer of the DoT buff to the dummy at its checks, re-added only after it ends; a recast deletes the area but not its last
+  // layer, which ticks to its own end beside the new area's, and the buff has no cap, so the layers add. This replaces G6's held uptime: the
+  // DoT is one layer's value × the long-run layers held (meanLayers), and it ticks on `coverage` of the frames. Open question thornfield-area-layers.
+  const areaLayers = areaSeconds > 0 && profile.dot.areaLayers ? meanAreaLayers({ ...profile.dot.areaLayers, layerSeconds: profile.dot.durationSeconds, areaSeconds }, castsPerSecond) : null;
+  const heldSeconds = areaLayers ? profile.dot.durationSeconds : profile.dot.durationSeconds + areaSeconds;
+  const tickingShare = areaLayers ? areaLayers.coverage : Math.min(1, heldSeconds * castsPerSecond);
   const supports = supportLayers(setup, damageType, profile, { triggered, damageEventsPerSecond: dotTicksPerSecond * tickingShare });
   const ledger = shared?.ledger || {};
   // A recipe-placed entry already passed the recipe's scope (the DoT's damage types, DoT / skill tags; never ailment-only tags).
@@ -310,13 +316,17 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
   // Uptime: a status applied less often than it lasts (a cooldown-bound area; a skill-hit Terra's 2 s DoT once per 6 s
   // Terra) is active duration × applications/s of the time; a channeled beam refreshing every use, or a DoT Terra recast
   // whenever a Terra Charge is available (at least every 2 s), keeps it at 1.
-  const uptime = Math.min(1, durationSeconds * castsPerSecond);
+  const uptime = areaLayers ? areaLayers.coverage : Math.min(1, durationSeconds * castsPerSecond);
+  // The value held over one layer's: the layers held (an area's overlapping layers), else the uptime.
+  const held = areaLayers ? areaLayers.meanLayers : uptime;
   // firstApplicationSeconds (src/planner.js dotFirstApplication; user decision 2026-10-22): a triggered recast ready at engagement
   // applies at that time and then at its rate; null keeps the first application one interval in.
-  const window = (seconds) => windowAverageStrongest({ ...roll, seconds, applicationsPerSecond: castsPerSecond, firstApplicationSeconds }) * combatFactor * uptime * windowResistance(seconds);
+  const window = (seconds) => windowAverageStrongest({ ...roll, seconds, applicationsPerSecond: castsPerSecond, firstApplicationSeconds }) * combatFactor * held * windowResistance(seconds);
   const key = `skill:${setup?.setupKey || setup?.instanceId || profile.name}`;
   return {
     key, name: profile.name, damageType, skillDot: true, setupKey: setup?.setupKey, profile, typeRestriction, randomRoll,
+    // The area's layer schedule (S1): the recount carries the layers per recast, the tick engine their frames (src/dummy-recount-inputs.js, src/tick-ailments.js).
+    ...(areaLayers ? { areaLayers: { meanLayers: areaLayers.meanLayers, coverage: areaLayers.coverage, addsPerUse: areaLayers.addsPerUse, gapFrames: areaLayers.gapFrames, layerSeconds: profile.dot.durationSeconds, areaSeconds, checkIntervalSeconds: areaLayers.schedule.checkIntervalSeconds, step: areaLayers.schedule.step, checks: areaLayers.schedule.checks, lifeFrames: areaLayers.schedule.lifeFrames, layerFrames: areaLayers.schedule.layerFrames, buff: profile.dot.areaLayers.buff ?? null, source: profile.dot.areaLayers.source ?? null } } : {}),
     level, base, chancePercent: 100, rawChancePercent: 100, durationSeconds, stackLimit: 1, applicationsPerSecond: castsPerSecond, firstApplicationSeconds: Number.isFinite(firstApplicationSeconds) && firstApplicationSeconds >= 0 ? firstApplicationSeconds : null,
     town: { perBaseFactor: townFactor, minimumDps: base.min * townFactor, maximumDps: base.max * townFactor },
     fullAfflictionScale: combatRating > 0 ? afflictionFactor(100) / afflictionFactor(combatRating) : 1,
@@ -326,7 +336,7 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
     afflictionPerPoint: (afflictionFactor(100) - 1) / 100,
     afflictionPerSecond: supports.afflictionPerSecond.reduce((sum, line) => sum + line.value, 0),
     builtInReaping: profile.builtInReaping ? { ...profile.builtInReaping } : null,
-    combat: { factor: combatFactor, steadyDps: steadyStrongest * combatFactor * uptime, uptime, steadyStrongestBase: steadyStrongest, stacking: "strongest", steadyActiveStacks: castsPerSecond > 0 ? 1 : 0, averageApplication: perSecond, successesPerSecond: castsPerSecond, fiveSecondAverageDps: window(5), twentySecondAverageDps: window(20), critOnlyFactor: 1, recentCritStacks: [] },
+    combat: { factor: combatFactor, steadyDps: steadyStrongest * combatFactor * held, uptime, steadyStrongestBase: steadyStrongest, stacking: "strongest", steadyActiveStacks: areaLayers ? areaLayers.meanLayers : castsPerSecond > 0 ? 1 : 0, averageApplication: perSecond, successesPerSecond: castsPerSecond, fiveSecondAverageDps: window(5), twentySecondAverageDps: window(20), critOnlyFactor: 1, recentCritStacks: [] },
     steps: {
       increasedFactor: 1 + increasedPercent / 100,
       additionalFactor: product(combatAdditional.map((line) => line.value)),
@@ -342,7 +352,7 @@ export function calculateSkillDot({ setup, profile, modifierTexts: allModifierTe
     ledger: { base: [{ source: `${profile.name} Lv.${level}`, text: `${perSecond} ${damageType} damage per second (${profile.sources?.gameData || "Reference data"}${level > 20 ? "; base frozen past Lv.20" : ""})`, value: perSecond, min: perSecond, max: perSecond, category: `Base ${profile.name} damage` }], increased, additional: townAdditional, combatAdditional: [...sharedCombat, ...maxAfflictionLines], taken, affliction: [...supports.additionalAffliction, ...supports.afflictionPerSecond.map((line) => ({ ...line, category: "Affliction per second" }))] },
     sources: {
       typed: { base: [{ source: `${profile.name} Lv.${level}`, text: `${perSecond} ${damageType} damage per second`, min: perSecond, max: perSecond }], chance: [], duration: [], increased: [...typed.increased, ...spell.increased, ...supports.increased], additional: [...typed.additional, ...spell.additional, ...supports.additional, ...levelLine], taken: typed.taken, critOnlyAdditional: [], perRecentCritAdditional: [], perCritDamageAdditional: [], stackLimit: [], reapingDuration: [] },
-      chance: [{ source: profile.name, text: "Applied by every use of the skill", value: 100 }], duration: [{ source: profile.name, text: areaSeconds > 0 ? `Lasts ${profile.dot.durationSeconds} s, applied while the dummy stands in the skill's ${round(areaSeconds)} s area (${profile.dot.areaSeconds} s × Skill Effect Duration; ${profile.dot.areaSource || "its Split"}): held ${round(heldSeconds)} s per cast` : `Lasts ${durationSeconds} s, refreshed by each use`, value: 0 }],
+      chance: [{ source: profile.name, text: "Applied by every use of the skill", value: 100 }], duration: [{ source: profile.name, text: areaLayers ? `Each layer lasts ${profile.dot.durationSeconds} s; the skill's ${round(areaSeconds)} s area (${profile.dot.areaSeconds} s × Skill Effect Duration; ${profile.dot.areaSource || "its Split"}) adds a layer to the dummy at its checks (every ${profile.dot.areaLayers.checkIntervalSeconds} s), again once its layer has ended; a recast replaces the area and its last layer ticks on beside the new one's (no cap): ${round(areaLayers.addsPerUse)} layers per recast, ${round(areaLayers.meanLayers)} held on average (one every ${round(areaLayers.gapFrames)} frames; provisional, thornfield-area-layers)` : areaSeconds > 0 ? `Lasts ${profile.dot.durationSeconds} s, applied while the dummy stands in the skill's ${round(areaSeconds)} s area (${profile.dot.areaSeconds} s × Skill Effect Duration; ${profile.dot.areaSource || "its Split"}): held ${round(heldSeconds)} s per cast` : `Lasts ${durationSeconds} s, refreshed by each use`, value: 0 }],
       increasedPercent, townAdditional: townAdditional.map((line) => line.value), combatAdditional: combatAdditional.map((line) => line.value), perCritDamageTown: [], perCritDamageCombat: []
     },
     notes: randomRoll ? [...supports.notes, randomRoll.text] : supports.notes,

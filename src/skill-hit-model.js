@@ -1518,7 +1518,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // "Gains N Combo Point(s) on Critical Strike from Combo Finishers" (census item #9; game recipe 313241984): the share of Finisher
   // casts that crit (one check per cast: 1 − (1 − c)^hits) carries N points into the next Finisher (expected value; provisional). The
   // crit chance here is the skill's chance read the way the crit block below reads it (supports' and tagged rating on the attack crit).
-  const comboCritChance = comboExtras?.pointsOnCrit > 0 ? (() => {
+  const starterCritPointLines = profile.cycle ? (supports.effects.combo || []).filter((line) => line.kind === "starterCritPoints" && ["In calc", "Provisional"].includes(line.status)) : [];
+  const comboCritChance = comboExtras?.pointsOnCrit > 0 || starterCritPointLines.length ? (() => {
     if (crit.guaranteedCrit) return 1 - (crit.cannotCritShare || 0);
     const base = attackProfile ? (crit.attackCrit || weapon?.crit || null) : null;
     const tagged = base ? crit.taggedCrit || { ratingPercent: 0, ratingFlat: 0 } : null;
@@ -1543,9 +1544,23 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // Gale Slash: Brutality (chunk 8; recipe 321298880): points on Starter 1 behind a cooldown, min(1, cycle ÷ cooldown) of the cycles, up to the Max Combo Points.
   const cycleSeconds = usesPerSecond > 0 ? 1 / usesPerSecond : 0;
   // The cap holds on each cycle that gains them, so a mean over the cycles reads the capped gain.
-  const consumedBeforeCrit = comboSupportLines("starterPoints").reduce((points, line) => points + Math.min(1, cycleSeconds / Math.max(1e-9, line.cooldown)) * Math.max(0, Math.min(MAX_COMBO_POINTS_DEFAULT, baseConsumedPoints + line.value) - baseConsumedPoints), baseConsumedPoints);
+  const consumedAfterStarterPoints = comboSupportLines("starterPoints").reduce((points, line) => points + Math.min(1, cycleSeconds / Math.max(1e-9, line.cooldown)) * Math.max(0, Math.min(MAX_COMBO_POINTS_DEFAULT, baseConsumedPoints + line.value) - baseConsumedPoints), baseConsumedPoints);
+  // Gale Slash: Dominance (src/support-chunk8.js; game recipe 955168320): each Combo Starter cast that crits gains N points once (label 3100533
+  // on the cast's instance), before the next Finisher's instance is created, so the first Finisher of the sequence consumes them: per Starter
+  // step N × P(the cast crits), P = 1 − (1 − c)^checks, checks = 1 per hit group with the crit cache on (src/crit-cache.js), else its hits.
+  const starterCritGain = starterCritPointLines.reduce((total, line) => total + (Number(line.value) || 0), 0);
+  const starterCritCasts = starterCritGain > 0 && comboCritChance > 0 && profile.cycle?.steps?.length ? profile.cycle.steps.filter(isStarterStep).map((step) => {
+    const parts = base.components.filter((component) => !component.addedOnly && !component.splitPart && step.keys.includes(String(component.componentKey ?? component.key ?? "").split(/[+>:]/)[0]));
+    const hits = parts.reduce((total, component) => total + (typeof component.hitsPerUse === "number" ? component.hitsPerUse : typeof component.perUse === "number" ? component.perUse : 1), 0);
+    const groups = new Set(parts.map((component) => component.strikeKey ?? component.componentKey ?? component.key)).size;
+    const checks = critCacheFor(profile.name).cached ? Math.min(hits, groups) : hits;
+    return { keys: step.keys, checks, chance: checks > 0 ? 1 - Math.pow(1 - Math.min(1, comboCritChance), checks) : 0 };
+  }) : [];
+  const starterCritPoints = starterCritCasts.reduce((total, cast) => total + starterCritGain * cast.chance, 0);
+  const consumedBeforeCrit = starterCritPoints > 0 ? Math.min(MAX_COMBO_POINTS_DEFAULT, consumedAfterStarterPoints + starterCritPoints) : consumedAfterStarterPoints;
   const consumedPoints = comboExtras?.pointsOnCrit > 0 ? expectedConsumedWithCritPoints(consumedBeforeCrit, comboExtras.pointsOnCrit, finisherCritCastChance, MAX_COMBO_POINTS_DEFAULT) : consumedBeforeCrit;
-  if (comboPoints && consumedPoints !== baseConsumedPoints) Object.assign(comboPoints, { changed: true, consumed: consumedPoints, ...(comboExtras?.pointsOnCrit > 0 ? { critPoints: { value: comboExtras.pointsOnCrit, castChance: finisherCritCastChance, sources: comboExtras.pointOnFinisherCrit } } : {}) });
+  if (comboPoints && consumedPoints !== baseConsumedPoints) Object.assign(comboPoints, { changed: true, consumed: consumedPoints, ...(comboExtras?.pointsOnCrit > 0 ? { critPoints: { value: comboExtras.pointsOnCrit, castChance: finisherCritCastChance, sources: comboExtras.pointOnFinisherCrit } } : {}), ...(starterCritPoints > 0 ? { starterCritPoints: { value: starterCritGain, expected: starterCritPoints, casts: starterCritCasts, sources: starterCritPointLines.map((line) => line.source) } } : {}) });
+  if (starterCritPoints > 0) notes.push(`${profile.name}: "${starterCritPointLines[0].text}" (${starterCritPointLines.map((line) => line.source).join(", ")}; game recipe 955168320, once per cast): ${starterCritCasts.map((cast) => `${cast.keys.join("+")} crits on ${round(cast.chance * 100)}% of casts (${round(cast.checks)} determination(s))`).join(", ")}, so the Finisher consumes ${round(starterCritPoints)} more Combo Point(s) on average: ${round(consumedPoints)} in all (provisional).`);
   // Each Finisher of the sequence consumes what is held when it is created (src/combo-points.js finisherConsumedPoints; SS14 client
   // 0x141defa80): the first `consumedPoints`, each later one only the crit points gained since the previous Finisher's consume.
   // `finisherCharges` lists them (expected) when the sequence holds more than one Finisher; `finisherInstances` gives each its own Finisher
@@ -1593,6 +1608,11 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const spellBurstConsume = spellBurstStacks >= 1 && Number.isFinite(spellBurstCharge.seconds) && spellBurstCharge.seconds > 0 && !spellBurst ? supports.effects.spellBurst.filter((line) => line.kind === "consume" && line.status !== "Inactive" && line.value) : [];
   // The profile component a typed part comes from (its census batch 5 fields: quantityBonus, extraClones, allLastWave).
   const profileComponentOf = (component) => profile.components.find((item) => item.key === String(component.componentKey ?? "").split(/[+>:]/)[0]) || {};
+  // The lines on the hits that carry Groundshaker's fissure tag 6101354 (supports.effects.fissureTagAdditional: Cripple, record 119083224)
+  // for a profile component's `fissureTag` (2026-11-14, src/attack-hit-profiles.js Groundshaker): 1, every hit of the component carries it
+  // (Frequent Quake's pulses); "demolisher", only the hits of the uses that consume a Demolisher Charge (the Fission, which the spreading
+  // fissure deals on those uses: Split 177867). The row-502 explosion carries none.
+  const fissureTagged = (tag) => (tag && demolisherShare > 0 ? (supports.effects.fissureTagAdditional || []).filter((line) => line.value) : []);
   // `charge` (Combo Finisher charges, finisherInstances): which Finisher of the sequence this component is, the points it consumes and its
   // weight (a later Finisher's crit / no-crit outcome of the previous one).
   const buildComponent = (component, charge = null) => {
@@ -1629,10 +1649,13 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     if (converge) extraVolley.total = 1 + extraVolley.factor * (extraVolley.reached - 1) * (1 + converge.bonus);
     const perUse = extraVolley ? { hits: rawPerUse.hits * extraVolley.total, shotgun: extraVolley, detail: `${rawPerUse.detail} × ${shotgunVolleyText(extraVolley)} (1 + ${extraProjectiles} projectiles from supports ${volleyRule ? `by the skill's own rule: ${volleyRule.note}` : "in a fan; provisional"})` } : projectileBoost ? { ...rawPerUse, detail: `${rawPerUse.detail} (+${extraProjectiles} projectiles from supports; provisional)` } : rawPerUse;
     if (component.basis === "provisional") provisionalComponents.push(component);
+    const fissureTag = profileComponentOf(component).fissureTag;
     // Hero effects scoped to one hit group (Youga's Alternate Spacetime: Blazing Meteor's Ash, Serpent Beam's Finisher; src/youga-ultimate-one.js).
     const heroComponentLines = [...(heroEffects?.componentAdditional?.[String(component.componentKey ?? component.key).split(/[+>:]/)[0]] || []),
-      // Support lines scoped to one hit group (Groundshaker: Epicenter / Cripple's fissure penalty; condition-unread batch 3).
-      ...(supports.effects.componentAdditional?.[String(component.componentKey ?? component.key).split(/[+>:]/)[0]] || [])].filter((line) => line.value);
+      // Support lines scoped to one hit group (condition-unread batch 3).
+      ...(supports.effects.componentAdditional?.[String(component.componentKey ?? component.key).split(/[+>:]/)[0]] || []),
+      // Lines on the hits that carry the fissure tag on every hit (fissureTag 1); a "demolisher" share joins the Demolisher-consumed lines below.
+      ...(fissureTag === 1 ? fissureTagged(fissureTag).map((line) => ({ ...line, text: `${line.text} (every hit carries the fissure tag 6101354)` })) : [])].filter((line) => line.value);
     const extraAdditional = [...(component.extraAdditional || []), ...(component.steep?.role === "steep" ? steepDamageLines : component.steep?.role === "sweep" ? sweepDamageLines : []), ...(String(component.componentKey ?? component.key).split(/[+>:]/)[0] === "finisher" ? [...finisherDamageLines, ...(charge ? finisherPointLinesAt(pointsHere) : finisherPointLines)] : []), ...heroComponentLines];
     // Barrage waves (barrageWaveState): the expected extra wave on the "waves" component, and the per-wave damage average.
     const waveCount = barrage?.active && String(component.componentKey).split(/[+>:]/)[0] === "waves" ? (typeof spec === "number" ? spec : spec?.countAtStacks ? spec.countAtStacks(channelState?.fullStacks ?? 5) : null) : null;
@@ -1643,7 +1666,13 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       extraAdditional.push({ source: barrage.perWave.map((line) => line.source).join(" + "), text: `+${round(barrage.perWavePercent)}% damage increase per wave: wave k deals ×(1 + k × ${round(barrage.perWavePercent)}%) over ${round(waveCount + barrage.extraWaves)} waves = ×${round(factor)} average (game field 2501029; per-wave formula provisional)`, value: (factor - 1) * 100 });
     }
     // "+X% additional skill damage when Demolisher Charge is consumed" (DEMOLISHER_CONSUMED_LINE).
-    if (demolisherConsumed.length && demolisherShare > 0) {
+    // With fissure-tag lines on the charge-consuming share (fissureTag "demolisher": the Fission, dealt by the spreading fissure on those
+    // uses), both act on the same uses: one expected factor 1 + share × (Π(1 + X) − 1) over the uses, not one linear term per line.
+    const chargeFissure = fissureTag === "demolisher" && !component.demolisher?.gated ? fissureTagged(fissureTag) : [];
+    if (chargeFissure.length) {
+      const lines = [...demolisherConsumed, ...chargeFissure], product = lines.reduce((factor, line) => factor * (1 + line.value / 100), 1);
+      extraAdditional.push({ source: lines.map((line) => line.source).join(" + "), text: `${lines.map((line) => line.text).join("; ")}: ×${round(product)} together on a use that consumes a Demolisher Charge (its Fission is the spreading fissure, tag 6101354: Split 177867), ×1 on the rest, × ${round(demolisherShare)} share of uses that consume a charge`, value: (product - 1) * demolisherShare * 100 });
+    } else if (demolisherConsumed.length && demolisherShare > 0) {
       const share = component.demolisher?.gated ? 1 : demolisherShare;
       for (const line of demolisherConsumed) extraAdditional.push({ source: line.source, text: `${line.text} × ${round(share)} ${component.demolisher?.gated ? "(this part lands only on uses that consume a charge)" : "share of uses that consume a charge"} (game affix 175116; provisional)`, value: line.value * share });
     }
@@ -1966,6 +1995,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const effects = entry.effectiveEffects || {};
     if (effects.additionalSpellDamagePercent && spellScaleStage) auraLines.push({ source: `Aura: ${entry.name} / Spell Damage`, text: `+${round(effects.additionalSpellDamagePercent)}% additional Spell Damage`, value: effects.additionalSpellDamagePercent, category: "Additional damage", origin: "derived" });
     if (effects.additionalAreaDamagePercent && skillTags.has("Area")) auraLines.push({ source: `Aura: ${entry.name} / Area Damage`, text: `+${round(effects.additionalAreaDamagePercent)}% additional Area Damage`, value: effects.additionalAreaDamagePercent, category: "Additional damage", origin: "derived" });
+    // Precise: Domain Expansion's "at least 5 enemies within 10 m" write (record 263618880; the Boss dummy counts as 5): its own factor (G1b).
+    if (effects.additionalAreaDamageCrowdPercent && skillTags.has("Area")) auraLines.push({ source: `Aura: ${entry.name} / Area Damage (at least 5 enemies)`, text: `+${round(effects.additionalAreaDamageCrowdPercent)}% additional Area Damage`, value: effects.additionalAreaDamageCrowdPercent, category: "Additional damage", origin: "derived" });
     // Skill-tag and typed aura stats (gear-pact batch G4): Cruelty "+X% additional Attack Damage" (Attack skills), Fearless
     // "+X% additional Melee Skill Damage" (Melee skills), Charged Flames / Frigid Domain / Electric Conversion "+X% additional
     // Fire / Cold / Lightning Damage" (components of that type). Physical / Erosion arrive as derived modifier texts when
@@ -2451,7 +2482,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     // A Combo skill's own Mark (ownMark): on the ailments this skill inflicts, +X% damage taken × the Mark's time on the dummy
     // (src/ailment-applications.js reads `ownAilmentScale`; the Mark is a target-side term, read here as a factor on its applications).
     ...(ownMark ? { ownMark, ownAilmentScale: [{ source: `${ownMark.name} (config_char_buff ${ownMark.buff})`, text: `${ownMark.name}: +${ownMark.percent}% additional damage taken from this skill (its DoT records keep the skill's id), on the dummy ${round(ownMark.timeShare * 100)}% of the time (from Combo Starter 1's hit to the cycle's end; provisional, open question spectral-slash-mark)`, factor: 1 + ownMark.percent / 100 * ownMark.timeShare }] } : {}),
-    barrage: barrage?.active ? barrage : null, comboPoints: comboPoints ? { perStarter: comboPoints.perStarter, consumed: comboPoints.consumed, sources: comboPoints.sources, critPoints: comboPoints.critPoints || null, ...(comboPoints.perFinisher ? { perFinisher: [...comboPoints.perFinisher] } : {}) } : null,
+    barrage: barrage?.active ? barrage : null, comboPoints: comboPoints ? { perStarter: comboPoints.perStarter, consumed: comboPoints.consumed, sources: comboPoints.sources, critPoints: comboPoints.critPoints || null, ...(comboPoints.starterCritPoints ? { starterCritPoints: comboPoints.starterCritPoints } : {}), ...(comboPoints.perFinisher ? { perFinisher: [...comboPoints.perFinisher] } : {}) } : null,
     // Combo cycle extras (census item #9): the lines read and the Finisher hits' share of the skill's hits (Shockwave Warcry's
     // "Ailment Damage for Combo Finishers", src/ailment-applications.js).
     combo: profile.cycle ? (() => {

@@ -132,7 +132,7 @@ function dotProfile(name, { groupId, durationSeconds, delivery, channeled = fals
   return Object.freeze({
     name, kind: "dot", engine: group ? "skill-dot" : null, damageType, spell: tags.includes("Spell"), tags,
     delivery, castIntervalSeconds, channeled, beam: tags.includes("Beam"), maxChanneledStacks: channeled ? skillTimingSs13[name]?.channel?.maxStacks ?? 5 : null,
-    dot: { durationSeconds, perSecondAtLevel, stacking: "strongest", referenceLevel: 20, referencePerSecond: perSecondAtLevel(20), ...(area ? { areaSeconds: area.seconds, areaSource: area.source } : {}) },
+    dot: { durationSeconds, perSecondAtLevel, stacking: "strongest", referenceLevel: 20, referencePerSecond: perSecondAtLevel(20), ...(area ? { areaSeconds: area.seconds, areaSource: area.source, ...(area.layers ? { areaLayers: area.layers } : {}) } : {}) },
     refreshPerSecond, recast: delivery === "spell-terra" ? terraRecast(name) : null, extraAdditional, perAdditionalMaxStackAdditionalPercent,
     builtInReaping: null, canInflictHitAilments: false, randomRoll: randomRoll ? Object.freeze({ ...randomRoll }) : null, ...(linked ? { linked: true } : {}), ...(maxLifeAdditional ? { maxLifeAdditional: Object.freeze({ ...maxLifeAdditional }) } : {}),
     notes, unmodeled, reason: group ? null : `no game DoT row linked for ${name}`,
@@ -164,8 +164,13 @@ const SKILL_DOT_PROFILES = Object.freeze(Object.fromEntries([
   dotProfile("Thornfield", { groupId: 1201, durationSeconds: 2, delivery: "spell-terra", extraAdditional: [{ ...TERRA_CHARGE_DOT, source: "Thornfield: Terra Charge" }],
     maxLifeAdditional: { record: 683267456, perMaxLife: 100, percent: 1.25, capPercent: 100 },
     // The area (Split 411245, component buffArea "jisiArea": time 6 × attr 3402 with tag 5100310, bufftime 2, one at a time by field 2403100): the
-    // 2 s status holds while the dummy stands in it (G6, 2026-11-13; src/skill-dot-model.js heldSeconds).
-    area: { seconds: 6, source: "Split 411245 buffArea" },
+    // 2 s status holds while the dummy stands in it (G6, 2026-11-13). S1 (applied 2026-11-13, user decision; src/area-dot-layers.js): the area checks
+    // every 0.1 s (a float), adds one "persistent" 2 s layer of buff 11760 per target (limit 1, no refresh, re-added once it ends), and the buff
+    // has no cap (subtype 3, cap −1, stack mode 1), so a recast's new area adds its layer while the deleted area's last one ticks on. Gated to this
+    // profile: Frost Terra (290371, buff 10200), Nether Grasp's Terra (606837, buff 11780) and Flame Jet's area (869450, buff 10210) carry the same
+    // flags and no cap but stack mode 2, and the Frost Terra Lv16 run (25 recasts in 20 s, tests/frost-terra-dummy-reference.test.js) reads one
+    // layer's damage, not the 2.5 this reading would give there; open question thornfield-area-layers.
+    area: { seconds: 6, source: "Split 411245 buffArea", layers: { checkIntervalSeconds: 0.1, buff: 11760, source: "Split 411245 buffArea (checkInterval 0.1 s, persistent, limit 1); buff 11760 subtype 3, cap −1" } },
     notes: ["Thornfield: per the reference data, the Terra lasts 6 s (one at a time); 486 Persistent Physical Damage every second for 2 s. Best case: recast whenever a Terra Charge is available (as Frost Terra; not checked in game for Thornfield); the 6 s area (Split 411245, × Skill Effect Duration) keeps giving the dummy inside it the 2 s status, so one cast holds the DoT for the area's life and its 2 s after (game Split; the re-application inside the area inferred from its buffArea component). \"1.25% additional damage for this skill for every 100 Max Life, up to +100%\" is read from game record 683267456 (stone 2870: node 119 on Max Life, linear, capped; one additional factor on the skill's damage, so its DoT and the Reaps that settle it); the self True Damage has no DPS effect of its own."] }),
   // Black Hole (Empower): a 4 s area ticking every 0.5 s (game description; DoT row 561), one per 10 s cooldown (game Split 430451).
   dotProfile("Black Hole", { groupId: 561, durationSeconds: 4, delivery: "spell-area", refreshPerSecond: 1 / 10,

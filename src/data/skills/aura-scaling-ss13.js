@@ -1,6 +1,7 @@
 import { auraLevelRecordsSs13 } from "./aura-level-records-ss13.generated.js";
 import { SKILL_BUFFS } from "../game/skill-game-values.generated.js";
 import { buffDataMode } from "../../game-skill-data.js";
+import { BOSS_ENEMY_COUNT, recordCountsBossAsFive } from "../../boss-enemy-count.js";
 
 // Buff affix IDs from the installed SS13 tables. A line index refers to the
 // skill's first displayed effect, after its introductory "Activates" line.
@@ -39,10 +40,18 @@ export const AURA_AFFIX_STATS = {
   101010078: { stat: "additionalAttackDamagePercent", line: 1, digits: 1 },
   871242: { stat: "additionalAreaDamagePercent", line: 1, digits: 1 },
   183965584: { stat: "additionalAreaAilmentDamagePercent", line: 2, digits: 1 },
+  // Precise: Domain Expansion's two gated affixes (records 263618880 / 687124224: gate 4 "at least P2 enemies within P1 m" with
+  // calcCountByRarity, value P3 × GetEffectScale): the Boss dummy counts as 5 enemies (src/boss-enemy-count.js), so they hold in combat;
+  // each is its own additional write. The town panel has no target (combatOnly). Parameters [radius, enemies, value] (2026-11-13, G1b).
+  263618880: { stat: "additionalAreaDamageCrowdPercent", line: -1, digits: 1, param: 2, enemiesParam: 1, combatOnly: true },
+  687124224: { stat: "additionalAreaAilmentDamageCrowdPercent", line: -1, digits: 1, param: 2, enemiesParam: 1, combatOnly: true },
   363414400: { stat: "additionalAilmentDamagePercent", line: 1, digits: 1 },
   101080017: { stat: "ailmentChancePercent", line: 2, digits: 1 },
   101010359: { stat: "ailmentDurationPercent", line: 3, digits: 1 }
 };
+
+/** Aura stats with a combat-only gate (an enemy count): left out of the town context (src/engine.js). */
+export const AURA_COMBAT_ONLY_STATS = new Set(Object.values(AURA_AFFIX_STATS).filter((item) => item.combatOnly).map((item) => item.stat));
 
 export const auraScalingSs13 = auraLevelRecordsSs13;
 
@@ -64,7 +73,13 @@ export function auraRecord(name) {
 }
 
 function affixValueAtLevel(affix, level) {
-  if (affix.fixedParameters) return Number(affix.fixedParameters[0]);
+  if (affix.fixedParameters) {
+    const metadata = AURA_AFFIX_STATS[affix.affixId];
+    // An enemy-count gate ("at least P2 enemies"): the Boss dummy counts as BOSS_ENEMY_COUNT enemies when the record carries
+    // calcCountByRarity, else 1; a gate that does not hold gives no value.
+    if (metadata?.enemiesParam != null && (recordCountsBossAsFive(affix.affixId) ? BOSS_ENEMY_COUNT : 1) < Number(affix.fixedParameters[metadata.enemiesParam])) return null;
+    return Number(affix.fixedParameters[metadata?.param ?? 0]);
+  }
   const anchors = Object.entries(affix.levelMap || {}).map(([at, value]) => [Number(at), Number(value)]).sort((a, b) => a[0] - b[0]);
   if (!anchors.length || !Number.isFinite(level)) return null;
   const selected = Math.max(1, level);
