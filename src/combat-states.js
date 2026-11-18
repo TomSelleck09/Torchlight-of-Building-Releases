@@ -18,6 +18,12 @@ import { ELIXIR_PROGRESS_LINE, ELIXIR_EFFECT_LINE, ELIXIR_ADDITIONAL_EFFECT_LINE
 
 // Your Blessings from your unit buff set (W9 step 2: the early Blessing pass, src/planner.js), else the state's fields (TLI_BUFF_SET=off).
 const ownBlessingStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingStacks() : state.blessingStacks; };
+// The share of the time Blur is held on you (W9 step 2's Blur entry; Stab In The Back's held share), 0 without Blur.
+const ownBlurShare = (state) => {
+  const own = playerBuffSet(state);
+  if (own?.staged("blur")) { const entry = own.entryOf("Blur", { stage: "blur" }); return entry && entry.share > 0 ? entry.share * (entry.heldShare ?? 1) : 0; }
+  return state.blurHeld ? (state.blurHeld.heldShare ?? 1) : 0;
+};
 const ownBlessingMaxStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingMaxStacks() : state.blessingMaxStacks; };
 
 // Buffs, enemy debuffs and the damage side of non-damaging ailments (research/talent-batch-2026-10-12.md §10 chunk 3).
@@ -86,7 +92,10 @@ const CROWD_CONTROL_READER = /type of crowd control effect the enemy has|for eac
 export const CROWD_CONTROL_COUNTER_TEXT = new RegExp(`${CROWD_CONTROL_READER.source}|for each Crowd Control Effect the target has|affected by [0-9]+ or more crowd control effects`, "i");
 // Readers of the Blinded state (target state 4000140: "+X% additional damage to Blinded enemies" 101010148, Spirit Magi 171666624,
 // Lucky Critical Strike against Blinded enemies) and of the Paralyzed state (Judgment 191779): a held Blind / Paralysis feeds them.
-const BLINDED_READER = /\bBlinded enem/i, PARALYZED_READER = /\bParalyzed enem/i;
+// A defence line about a Blinded enemy ("+25% Critical Strike Damage Mitigation against Blinded enemies" beside the Warlock node's Blind chance,
+// its belt blend and slate copies; "-12% additional damage dealt by Blinded enemies") acts on an enemy that attacks, which the dummy never does:
+// not a reader (badge movement probe 2026-11-15: the Blind chance beside it read In calc and moved nothing).
+const BLINDED_READER = /^(?!.*(?:Mitigation against|damage dealt by) Blinded enem).*\bBlinded enem/i, PARALYZED_READER = /\bParalyzed enem/i;
 // Crowd control held from the game recipes (src/crowd-control-recipes.js; wiring audit gap 1, 2026-11-03): the planner measures the
 // event rates (your hits, triggered uses, Minion hits, skill casts: src/planner.js hit-rate pass) when such a line has a reader, or
 // holds Paralysis (its own damage taken).
@@ -361,6 +370,15 @@ const PATTERNS = {
   flashFlood: /^(?:Halves Spell Burst Upper Limit|\+\d+(?:\.\d+)?% additional Attack and Cast Speed for every Spell Burst triggered recently, up to \d+%)$/i,
   // Negative values too (2026-10-17: the follower's Icy Blade "-5% Frostbite Effect … for each Sweep Slash").
   frostbiteEffect: /^([+-]\d+(?:\.\d+)?)% Frostbite Effect$/i,
+  // "+X% Crowd Control Effect(s)" (game affixes 14388 / 3015637: attr 3401 mod 3 on tag 5100101, the crowd control buffs' Effect, on the holder;
+  // Dual Kismet: Bounded Holy Maiden's -60%, config_modifier 100350819). Buff 230 (Paralysis) and 112 (Frostbite) carry tag 5100101 and
+  // scale their damage taken by GetEffectScale (the caster's attr 3401 queried with the buff's tags, increased pool): so it sums with the
+  // inflicted Paralysis Effect and the Frostbite Effect (2026-11-15). Weaken / Slow are dummy-side (no DPS); Taunt / Blind / Freeze have no
+  // scaled value.
+  crowdControlEffect: /^([+-]\d+(?:\.\d+)?)% Crowd Control Effects?$/i,
+  // Daze (Warlock core; game affix 3155589): the same 3401 write (and +X% additional Ailment Damage, read by src/blur-effects.js) behind gate
+  // node 10 on the Blur state 4000060, so it holds while Blur is held (its held share under Stab In The Back).
+  crowdControlEffectBlur: /^([+-]\d+(?:\.\d+)?)% Crowd Control Effects? and \+\d+(?:\.\d+)?% additional Ailment Damage while Blur is active$/i,
   // Gemma (hero trait audit B3, 2026-10-19). Deepfreeze: "Frostbite Rating can exceed its upper limit, up to N" (game affix
   // 12710333 [200, 5]: buff 81232) raises the 120 cap to N. First Flake of Strange Snow (revived, Frostbitten Heart only):
   // "-50% additional Frostbite Effect" multiplies the effect, and "Each type of Crowd Control Effect, Ailment, and Curse
@@ -535,6 +553,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const centralizeDamageTakenPercent = round(-centralizePerPoint / 2 * (heldFervorRating - centralizeConsumed));
   const centralizePenalty = 0;
   const fervorRating = round(heldFervorRating - centralizeConsumed);
+  // The Fervor readers linear in the Rating (census C1, 2026-11-15): the loop builds a non-fixed Rating from 0 on your hits (src/trigger-bus.js
+  // section 12, buff 390's resource affix 411268) and reads each of these at the Rating held on the tick; the steady path keeps the held Rating.
+  const fervorReaders = [];
   const centralizeHitText = fixedFervor.length ? `hit (Centralize; condition "Centralize: not hit" off): the fixed ${heldFervorRating} Fervor Rating refuses the halving (game code 0x14207caf0: no change while a fixed value is held), nothing consumed, ${fervorRating} left for every Fervor reader`
     : `hit (Centralize; condition "Centralize: not hit" off): half of the ${heldFervorRating} Fervor Rating consumed (${centralizeConsumed}), ${fervorRating} left for every Fervor reader (provisional)`;
   const fervorText = (fixedFervor.length
@@ -550,7 +571,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const value = round(num(match[1]) * (line.multiplier ?? 1) * (fervorRating / every));
     const body = `+${value}% ${match[2] || ""}${match[3]}`;
     entry(line, hasFervor && value !== 0, hasFervor ? `${fervorRating} Fervor Rating ÷ ${every}` : "no Fervor source", { bodies: [body] });
-    if (hasFervor && value) derive(body, line.source, `${fervorRating} Fervor Rating`, true);
+    if (hasFervor && value) { derive(body, line.source, `${fervorRating} Fervor Rating`, true); fervorReaders.push({ kind: "damage", source: line.source, text: body, value }); }
   }
   // Hair-trigger: game record 281, node 624 lowerValue = GetFightResource(1, 0) ÷ P1 × P2: the held Fervor Rating ÷ 7 × 2% with no
   // GetFloorInt (chunk 4, 2026-11-01), as one additional term on triggered skills only (an Activation Medium trigger, a gear / pact "Trigger" skill, a Wind Rhythm Terra recast). The
@@ -576,6 +597,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   if (hasFervor) {
     const rating = round(fervorRating * BUFF_VALUES.fervorPerPoint * (1 + fervorEffect / 100));
     derive(`+${rating}% Critical Strike Rating`, "Fervor (keyword 740: +2% Critical Strike Rating per point, max 100)", `${fervorText}; ${fervorEffect ? `+${fervorEffect}% Fervor effect` : "no Fervor effect"}`, true);
+    if (rating) fervorReaders.push({ kind: "critRating", source: "Fervor (keyword 740: +2% Critical Strike Rating per point, max 100)", text: `+${rating}% Critical Strike Rating`, value: rating });
   }
   // Ghost Slaughter: "Fervor gains an additional base effect: +1% additional Attack and Ailment Damage for every 1 Fervor
   // Rating": +Rating × 1% additional Attack Damage and additional Ailment Damage. Provisional: a Fervor base effect, so Fervor
@@ -589,7 +611,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const reading = `${fervorRating} Fervor Rating${every !== 1 ? ` ÷ ${every}` : ""} × ${num(match[1])}%${fervorEffect ? ` × (1 + ${fervorEffect}% Fervor effect)` : ""}; a Fervor base effect, so Fervor effect scales it, like the Critical Strike Rating base effect (provisional)`;
     entry(line, hasFervor && value !== 0, hasFervor ? reading : "no Fervor source", { provisional: true, bodies });
     if (hasFervor && value) {
-      for (const body of bodies) derive(body, line.source, reading, true);
+      for (const body of bodies) { derive(body, line.source, reading, true); fervorReaders.push({ kind: "damage", source: line.source, text: body, value }); }
       fervorAttackAilment.push({ source: line.source, value, rating: fervorRating, fervorEffectPercent: fervorEffect, text: `${line.source}: ${bodies.join(" and ")} (${reading})` });
     }
   }
@@ -605,7 +627,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, hasFervor, hasFervor ? `+${value}% Skill Area (${fervorRating} Fervor Rating ÷ ${match ? num(match[2]) : "?"}${fervorEffect ? ` × (1 + ${fervorEffect}% Fervor effect)` : ""})${state.skillAreaReaders ? ": read by the hit's Skill Area support" : ": no Skill Area reader on the build"}` : "no Fervor source", { status: hasFervor && state.skillAreaReaders ? "In calc" : "No DPS effect", provisional: Boolean(state.skillAreaReaders) });
   }
   // The drain sets the held current-Life level the "per 1% Life lost" readers take (src/planner.js lifeLostState; record 824274, 2026-11-05).
-  for (const line of find(PATTERNS.fervorLifeDrain)) entry(line, hasFervor, state.lifeLostDrain ? `${state.lifeLostDrain.text}${state.lifeLostReaders ? "; read by the build's Life-lost lines" : "; no Life-lost reader on the build"}` : "Life and Energy Shield drain", { status: hasFervor && state.lifeLostDrain && state.lifeLostReaders ? "In calc" : "No DPS effect", provisional: Boolean(state.lifeLostDrain && state.lifeLostReaders) });
+  // A seal that leaves at most 1 Life unsealed fixes every Life state and Life lost reading (src/line-coverage.js lifePinnedBySeal): the drain moves none.
+  const lifePinned = Boolean(state.lifeBalance?.settled) && Number(state.lifeBalance.maxLife) * Number(state.lifeBalance.unsealedPercent) / 100 <= 1;
+  for (const line of find(PATTERNS.fervorLifeDrain)) entry(line, hasFervor, state.lifeLostDrain ? `${state.lifeLostDrain.text}${lifePinned ? "; the seal leaves at most 1 Life, so no Life reading changes" : state.lifeLostReaders ? "; read by the build's Life-lost lines" : "; no Life-lost reader on the build"}` : "Life and Energy Shield drain", { status: hasFervor && state.lifeLostDrain && state.lifeLostReaders && !lifePinned ? "In calc" : "No DPS effect", provisional: Boolean(state.lifeLostDrain && state.lifeLostReaders) });
   // User-confirmed 2026-10-14: Fervor from a static source ("Have Fervor", the necklace) is not lost at Low Life, though sealed
   // Life keeps the build at Low Life; only Fervor gained in combat would be.
   for (const line of find(PATTERNS.losesFervorLowLife)) entry(line, false, fervorSources.length || fixedFervor.length ? "Fervor here is static (\"Have Fervor\" or a fixed Rating), so Low Life does not remove it (user-confirmed 2026-10-14)" : "no Fervor source", { status: "No DPS effect" });
@@ -613,8 +637,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.critDamagePerFervor)) {
     const value = round(num(line.clean.match(PATTERNS.critDamagePerFervor)[1]) * (line.multiplier ?? 1) * fervorRating);
     entry(line, hasFervor, hasFervor ? `${fervorRating} Fervor Rating (provisional)` : "no Fervor source", { provisional: true, bodies: [`+${value}% Critical Strike Damage`] });
-    if (hasFervor && value) derive(`+${value}% Critical Strike Damage`, line.source, `${fervorRating} Fervor Rating`, true);
+    if (hasFervor && value) { derive(`+${value}% Critical Strike Damage`, line.source, `${fervorRating} Fervor Rating`, true); fervorReaders.push({ kind: "critDamage", source: line.source, text: `+${value}% Critical Strike Damage`, value }); }
   }
+  // Built from 0 on the loop only for a Rating gained in combat: a fixed Rating locks the resource (game code 0x14207caf0), and the Centralize
+  // hit reading (switch off) halves a Rating the loop does not run.
+  const fervorLive = hasFervor && !fixedFervor.length && !centralizeHitApplies && fervorRating > 0 && fervorReaders.length ? { rating: fervorRating, max: BUFF_VALUES.fervorMax, readers: fervorReaders } : null;
   for (const line of find(PATTERNS.fervorRatingOnHit)) entry(line, hasFervor, hasFervor ? (fixedFervor.length ? `Fervor Rating is fixed at ${heldFervorRating}` : "Fervor Rating is already held at its max (100)") : "no Fervor source", { status: "No DPS effect" });
   // Centralize part 1 (the user has not answered whether it can raise a fixed Rating): the current reading is kept.
   const fixedFervorSource = (() => { const fixedLine = find(PATTERNS.fervorFixed).find((line) => num(line.clean.match(PATTERNS.fervorFixed)[1]) === heldFervorRating); if (!fixedLine) return ""; const prefix = fixedLine.clean.match(/^\[([^\]]+)\]/); const core = String(fixedLine.source || "").match(/core: ([^(]+?)(?: \(|$)/i); return (prefix?.[1] || core?.[1] || fixedLine.source || "").trim(); })();
@@ -645,8 +672,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // 86855680) holds with the Feline Stimulant stacks at their cap (own buff, best case; resolved with the timed effects below).
   // "when triggering a Main Skill" is trigger 1000060 with the Main Skill tag (game record 715628480; the 1000074 / 1000060 pairs settle
   // 1000060 as a triggered use): the Main Skill's triggered uses from the hit pass (wiring audit W2 gap 5, 2026-11-03: a manual Main Skill
-  // alone no longer holds it); before the pass, any Main Skill use.
-  const mainTriggered = Number.isFinite(state.mainTriggeredUsesPerSecond) ? state.mainTriggeredUsesPerSecond > 0 : Number(state.mainUsesPerSecond) > 0;
+  // alone no longer holds it); before the pass, a Main Skill in use that something in the build can trigger (src/planner.js
+  // mainTriggerPossible; before 2026-11-15 any Main Skill use, so a never-triggered Main Skill measured its rates with Attack Aggression).
+  const mainTriggered = Number.isFinite(state.mainTriggeredUsesPerSecond) ? state.mainTriggeredUsesPerSecond > 0 : Number(state.mainUsesPerSecond) > 0 && state.mainTriggerPossible !== false;
   const felineOn = find(PATTERNS.felineGain).length > 0 && conditionOn("felineStimulant") && mainTriggered;
   // "Gains Attack / Spell Aggression when Minions land a (Spell) Critical Strike": the Minion holds it, not you. Raw affixes 77639088 and 817133056: row 1 hands
   // row 2 to the Minions ([3]), and row 2's buff filter is [1], that row's own holder; a line that reaches you says so (Command's 9338664 writes on [4]). The
@@ -1086,6 +1114,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const value = round(((1 + 14 / 100) ** stacks - 1) * 100);
     entry(line, stacks > 0, stacks > 0 ? `Frostbite inflicted on every hit: a Cage stack every ${interval} s, each lasting 5 s: ${stacks} stacks held (max 4), +14% additional Cold Damage each (multiplies; own buff pre-built, provisional)` : "the build inflicts no Frostbite", { provisional: true, bodies: stacks ? [`+${value}% additional Cold Damage`] : [] });
     if (stacks > 0) derive(`+${value}% additional Cold Damage`, line.source, `${stacks} Cage stacks`, true);
+    // Census C4 (user decision 2026-11-15: a stack gained only from the dummy starts at 0): record 178747 gains Cage on 1000150 (inflicting an
+    // ailment) with Frostbite (buff 112) and its gate 206, so in the 5 s / 20 s windows and the 60 s recount the stacks come one per interval from
+    // the first hit of yours (the first Frostbite; inferred), each its own factor (multiplies): one part per stack, on from its gain.
+    if (stacks > 0) {
+      const first = Number.isFinite(state.ccEventRates?.firstHitSeconds) ? state.ccEventRates.firstHitSeconds : 0;
+      timedEffects.push({ id: `cage:${line.source}`, label: "Cage stacks (from the first Frostbite)", source: line.source, text: line.clean, target: "self", toggle: false, provisional: true, enabled: true, active: true,
+        parts: Array.from({ length: stacks }, (_, index) => ({ type: "Cold", reach: "all", percent: 14, schedule: { kind: "steps", points: [[first + index * interval, 1]], sustained: 1 } })) });
+    }
   }
   for (const line of find(PATTERNS.throneAtMaxChannel)) {
     const cap = num(line.clean.match(PATTERNS.throneAtMaxChannel)[2]);
@@ -1231,7 +1267,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, count > 0, `${count} Infiltration type${count === 1 ? "" : "s"} on the dummy`, { bodies: [`+${value}% additional Elemental Damage`] });
     if (value > 0) derive(`+${value}% additional Elemental Damage`, line.source, `${count} Infiltration types`, true);
   }
-  const paralysisEffect = sum(find(PATTERNS.paralysisEffect).filter((line) => { const hand = line.clean.match(PATTERNS.paralysisEffect)[2]; return !hand || (hand === "Two" ? state.twoHanded : !state.twoHanded); }).map((line) => num(line.clean.match(PATTERNS.paralysisEffect)[1]) * (line.multiplier ?? 1)));
+  // Crowd Control Effect (PATTERNS.crowdControlEffect) joins both Effects; the scale (1 + Effect) is floored at 0.
+  const crowdControlEffect = sum(values(PATTERNS.crowdControlEffect)) + ownBlurShare(state) * sum(values(PATTERNS.crowdControlEffectBlur));
+  const paralysisEffect = Math.max(-100, crowdControlEffect + sum(find(PATTERNS.paralysisEffect).filter((line) => { const hand = line.clean.match(PATTERNS.paralysisEffect)[2]; return !hand || (hand === "Two" ? state.twoHanded : !state.twoHanded); }).map((line) => num(line.clean.match(PATTERNS.paralysisEffect)[1]) * (line.multiplier ?? 1))));
   for (const line of find(PATTERNS.paralysisAttacks)) { const active = Boolean(state.attackHits); if (active) debuffs.paralysis = 1; entry(line, active, active ? "Attacks hit the dummy: Paralysis held (duration not sourced; uptime 1, provisional)" : "no modeled Attack hit", { provisional: true }); }
   // A record on trigger 1000030 (882870: "… on hit" in its text, "dealing damage" 5001160 on the row) also fires on your DoT's damage (wiring
   // audit W2 gap 4, 2026-11-03); one on 1000033 needs your hits.
@@ -1457,7 +1495,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Frostbite here, the character's: every skill and item line of the character pools into one rating and one effect (a unit's
   // Frostbite, not a per-skill one), and Minions' Frostbite lines are not read (the maxFrostbite reader skips them). With a
   // single unit nothing is overwritten, so the rule changes no figure.
-  const frostbiteEffect = sum(values(PATTERNS.frostbiteEffect));
+  const frostbiteEffect = Math.max(-100, sum(values(PATTERNS.frostbiteEffect)) + crowdControlEffect);
   // "+X% additional Frostbite Effect" (First Flake of Strange Snow's −50%; B3): its own multiplier on (1 + Frostbite Effect).
   const frostbiteEffectAdditional = values(PATTERNS.frostbiteEffectAdditional).reduce((product, value) => product * Math.max(0, 1 + value / 100), 1);
   // Read by Homing Frost Bolt's Alternate Spacetime effect (src/youga-ultimate-one.js).
@@ -1480,10 +1518,17 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   if (frostbitten && !minionFrostbite) {
     const frostbiteUptime = discordFrostbiteLine ? sustainedLevel(discordSchedule(discordInterval(discordFrostbiteLine), 1)) : 1;
     const taken = round(debuffs.frostbiteRating * BUFF_VALUES.frostbiteTakenPerRating * (1 + frostbiteEffect / 100) * frostbiteEffectAdditional * frostbiteUptime);
-    derive(`+${taken}% additional Cold Damage taken`, "Frostbite (keyword 735: +1% additional Cold Damage taken per Frostbite Rating)", `Frostbite Rating ${debuffs.frostbiteRating} on the dummy${frostbiteEffect ? `, +${frostbiteEffect}% Frostbite Effect applied to it (user-confirmed 2026-10-13)` : ""}${frostbiteUptime < 1 ? `, at ${round(frostbiteUptime * 100)}% uptime (Discord of the Second Will's turn)` : ""}`, frostbiteEffect > 0 || frostbiteUptime < 1);
+    derive(`+${taken}% additional Cold Damage taken`, "Frostbite (keyword 735: +1% additional Cold Damage taken per Frostbite Rating)", `Frostbite Rating ${debuffs.frostbiteRating} on the dummy${frostbiteEffect ? `, ${crowdControlEffect && frostbiteEffect < 0 ? "" : "+"}${crowdControlEffect ? round(frostbiteEffect) : frostbiteEffect}% Frostbite Effect applied to it (user-confirmed 2026-10-13${crowdControlEffect ? `; ${crowdControlEffect > 0 ? "+" : ""}${round(crowdControlEffect)}% of it Crowd Control Effect` : ""})` : ""}${frostbiteUptime < 1 ? `, at ${round(frostbiteUptime * 100)}% uptime (Discord of the Second Will's turn)` : ""}`, frostbiteEffect > 0 || frostbiteUptime < 1);
   }
   for (const line of find(PATTERNS.maxFrostbite)) entry(line, frostbitten, minionFrostbite ? `your Max Frostbite Rating reaches the ${minionFrostbite.minion}'s Frostbite (Summon Frost Magus, game affix 11905909: +1 per +1): Frostbite Rating ${debuffs.frostbiteRating} held on the dummy (${minionFrostbite.ratingRule}; provisional)` : frostbitten ? `Frostbite Rating ${debuffs.frostbiteRating} (10 base + Max Frostbite Rating, max 120; provisional reading of the inflicted amount)` : "the build inflicts no Frostbite", { provisional: true });
   for (const line of find(PATTERNS.frostbiteEffect)) entry(line, frostbitten && !minionFrostbite, minionEffectReason ?? (frostbitten ? "scales Frostbite's Cold Damage taken: rating × (1 + Frostbite Effect) (user-confirmed 2026-10-13)" : "the build inflicts no Frostbite"));
+  // Crowd Control Effect: In calc where it scales a held Paralysis or Frostbite of yours (src/line-coverage.js reads this entry), else No DPS
+  // effect (Weaken / Slow only change the enemy; Taunt / Blind / Freeze carry no scaled value; the follower's and a Minion's crowd control
+  // take their caster's own Effect).
+  {
+    const scales = [ownParalysis && "your Paralysis's damage taken (buff 230, tag 5100101)", frostbitten && !minionFrostbite && "your Frostbite's Cold Damage taken (buff 112, tag 5100101)"].filter(Boolean);
+    for (const line of find(PATTERNS.crowdControlEffect)) entry(line, scales.length > 0, scales.length ? `scales ${scales.join(" and ")}: GetEffectScale sums it with the inflicted Paralysis / Frostbite Effect (game affix 14388, attr 3401 on tag 5100101)` : "no Paralysis or Frostbite of yours on the dummy: the other crowd control types carry no scaled damage value", { status: scales.length ? "In calc" : "No DPS effect" });
+  }
   // Condensed Frost (Gemma – Glacial Night; chunk 1, 2026-10-31; buff 81233 on every enemy, affix 3166437 [7/20, -10, 28, 120], tag 5008005):
   // +0.35% additional Cold Damage taken per point of the Frostbite Rating over 120, the points capped at 28 ÷ 0.35 = 80, × (1 + Condensed
   // Frost Effect). The rating is the same GetFightResource(4) Frostbite's own line reads, so a deemed rating counts. Its -10% additional
@@ -1977,7 +2022,10 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const allowed = conditionOn("felineStimulant"), active = felineOn;
     const reason = !allowed ? offReason("felineStimulant") : !active ? (Number(state.mainUsesPerSecond) > 0 ? "the Main Skill is never triggered (trigger 1000060: a triggered use, not one you cast yourself)" : "no Main Skill in use") : `best case: ${maxStacks} Feline Stimulant stacks held (own buff${prebuilt ? ", pre-built" : "; held from t = 0, its build-up is not modeled"}): +${buff}% additional Attack Damage (5% per stack, multiplies)${having ? `, +${having}% additional Attack Damage while having it` : ""}${find(PATTERNS.felineAggression).length ? ", Attack Aggression at max stacks" : ""} (provisional: the duration is not in the saved data)`;
     const derivedLines = [[`+${buff}% additional Attack Damage`, `${maxStacks} Feline Stimulant stacks`], ...(having ? [[`+${having}% additional Attack Damage`, "having Feline Stimulant"]] : [])];
-    addTimed({ id: "felineStimulant", label: "Feline Stimulant (Kitty Express)", target: "self", enabled: allowed, active, reason, summary: `${maxStacks} Feline Stimulant stacks held`, parts: [], bodies: derivedLines.map(([text]) => text), derived: derivedLines },
+    // Everything it gives is Attack Damage and Attack Aggression (Attack Damage and Attack Speed): a build with no Attack hit takes none of it
+    // (badge movement probe 2026-11-15: In calc on the Youga Homing Frost Bolt probe, a Spell build, moving nothing).
+    const noAttack = active && !state.attackHits;
+    addTimed({ id: "felineStimulant", label: "Feline Stimulant (Kitty Express)", target: "self", enabled: allowed, active, reason: noAttack ? `${reason}; the build has no Attack hit, the only thing Feline Stimulant and Attack Aggression reach` : reason, ...(noAttack ? { status: "No DPS effect" } : {}), summary: `${maxStacks} Feline Stimulant stacks held`, parts: [], bodies: derivedLines.map(([text]) => text), derived: derivedLines },
       line, [...find(PATTERNS.felineMax), ...find(PATTERNS.felineDamage), ...find(PATTERNS.felineAggression)]);
   }
 
@@ -2137,7 +2185,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (chance > 0) derive(`+${penetration}% Elemental Resistance Penetration`, line.source, `Reactive Rainbow's Elemental Resistance Reversal (${round(chance)}% chance)`, true);
   }
   for (const line of find(PATTERNS.numbedBase)) entry(line, numbed && ownNumbed, numbed && ownNumbed ? "replaces Numbed's +5% per stack, max 10 stacks (user-confirmed 2026-10-12)" : numbed ? "the Numbed on the dummy is the follower's or your Minions': the changed base effect comes with your own Numbed infliction (game record 289590144, trigger 1000150; inferred)" : "the build inflicts no Numbed");
-  for (const line of [...find(PATTERNS.numbedExtra), ...find(PATTERNS.numbedThreshold)]) entry(line, false, otherNumbed ? "Numbed is already at its 10-stack cap in the best-case reading (provisional)" : "the build inflicts no Numbed", { status: otherNumbed ? "No DPS effect" : "Inactive", provisional: true });
+  // "Inflicts N additional stack(s) of Numbed" (record 173497728): the sustained figure holds Numbed at its 10-stack cap, but on the loop (the
+  // 5 s / 20 s windows and the 60 s recount, src/tick-layers.js numbedLayer) each Numbing hit of yours adds 1 + N stacks from the clean dummy
+  // (15 T Chain Lightning audit G4, 2026-11-18), so it reads In calc where you inflict Numbed.
+  for (const line of find(PATTERNS.numbedExtra)) entry(line, false, ownNumbed ? "the sustained figure holds Numbed at its 10-stack cap; on the loop (5 s / 20 s windows, 60 s recount) each Numbing hit of yours inflicts 1 + N stacks (game record 173497728) from the clean dummy (provisional)" : otherNumbed ? "Numbed is already at its 10-stack cap in the best-case reading, and the Numbed on the dummy is not yours (provisional)" : "the build inflicts no Numbed", { status: ownNumbed ? "In calc" : otherNumbed ? "No DPS effect" : "Inactive", provisional: true });
+  for (const line of find(PATTERNS.numbedThreshold)) entry(line, false, otherNumbed ? "Numbed is already at its 10-stack cap in the best-case reading (provisional)" : "the build inflicts no Numbed", { status: otherNumbed ? "No DPS effect" : "Inactive", provisional: true });
 
   // ---- Lucky ----
   // Census #11 (2026-10-27): Everburn Thunderfire (Ignited dummy), Hanging Bird (held Deflection), Megagon Dice (random windows) and
@@ -2290,7 +2342,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // The Infiltrations' inflicters, settled from the pass's entries (a follower affix's is the follower's).
   const ownInfiltration = new Set(ownInfiltrationTypes(entries));
   for (const hold of passSet.list) if (/ Infiltration$/.test(hold.name)) hold.inflictedBy = ownInfiltration.has(hold.label) ? "you" : "follower";
-  return withDummyHolds({ supportCrowdControl: supportCrowdControlStatus, crowdControl: [...ccSchedules.keys()], ownCrowdControl: [...ccSchedules.keys()].filter((type) => ownCcTypes.has(type)), crowdControlShares: Object.fromEntries([...ccSchedules].map(([type, schedule]) => [type, round(Math.min(1, sustainedLevel(schedule)))])), crowdControlReaders, ailmentReaders, centralize, regain, warcry: stormCommand, elixir: elixirs, numbedRevived: revivedNumbed, entries,derived, buffs: { fervorRating, fervorEffectPercent: fervorEffect, fervorAttackAilment, fervorSkillArea, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, attackAggressionEffectPercent: hasAttackAggression ? aggressionEffect("attack") : 0, spellAggressionEffectPercent: hasSpellAggression ? aggressionEffect("spell") + perCastEffect : 0, hasHasten, hasProfane, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration], ownInfiltration: ownInfiltrationTypes(entries) }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis, deemedRerun }, passSet.list, Object.fromEntries(ccForeignBy), { crowdControl: Object.fromEntries([...ccSchedules.keys()].map((type) => [type, { schedule: ccSchedules.get(type), scripted: ccScripted.get(type) ?? null, recipe: ccRecipeHolds.get(type) || [] }])), counters: busCounters, intimidated: busIntimidated, paralysis: busParalysis,
+  return withDummyHolds({ supportCrowdControl: supportCrowdControlStatus, crowdControl: [...ccSchedules.keys()], ownCrowdControl: [...ccSchedules.keys()].filter((type) => ownCcTypes.has(type)), crowdControlShares: Object.fromEntries([...ccSchedules].map(([type, schedule]) => [type, round(Math.min(1, sustainedLevel(schedule)))])), crowdControlReaders, ailmentReaders, centralize, regain, warcry: stormCommand, elixir: elixirs, numbedRevived: revivedNumbed, entries,derived, buffs: { fervorRating, fervorLive, fervorEffectPercent: fervorEffect, fervorAttackAilment, fervorSkillArea, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, attackAggressionEffectPercent: hasAttackAggression ? aggressionEffect("attack") : 0, spellAggressionEffectPercent: hasSpellAggression ? aggressionEffect("spell") + perCastEffect : 0, hasHasten, hasProfane, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration], ownInfiltration: ownInfiltrationTypes(entries) }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis, deemedRerun }, passSet.list, Object.fromEntries(ccForeignBy), { crowdControl: Object.fromEntries([...ccSchedules.keys()].map((type) => [type, { schedule: ccSchedules.get(type), scripted: ccScripted.get(type) ?? null, recipe: ccRecipeHolds.get(type) || [] }])), counters: busCounters, intimidated: busIntimidated, paralysis: busParalysis,
     // First Flake of Strange Snow's deemed rating (W10 step 2): the types it counted, its per-type value and cap, and the rating it gave.
     deemedFrostbite: deemedFrostbite ? { ...deemedFrostbite, types: [...deemedFrostbite.types], rating: debuffs.frostbiteRating } : null });
 }

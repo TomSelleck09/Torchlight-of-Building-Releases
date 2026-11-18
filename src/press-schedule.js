@@ -27,6 +27,8 @@ import { buffTiming } from "./empower-buffs.js";
 import { skillTimingSs13 } from "./data/skills/skill-timing-ss13.generated.js";
 import { setupBoardTab } from "./magus-active-slot.js";
 import { BASE_BLESSING_SECONDS } from "./blessing-layers.js";
+import { classifyHitLine } from "./skill-hit-lines.js";
+import { skillTagsWithSupportChanges } from "./support-compatibility.js";
 
 export const PRESS_SWITCH = "castOtherSkills";
 export const PRESS_SWITCH_LABEL = "Cast other active skills on the dummy";
@@ -42,13 +44,29 @@ const round = (value) => Math.round(value * 10000) / 10000;
 const enabledSupports = (setup) => (setup?.supports || []).filter((support) => support.enabled !== false);
 const hasTag = (setup, tag) => (setup?.tags || []).includes(tag);
 
+// Activation Mediums that act on your own uses of the supported skill and trigger nothing: Lock On ("Locks On enemies within N m when you use the
+// supported skill") and Resonance Activation ("Activates Resonance when you use the supported skill"). src/activation-medium-events.js counts the
+// player's uses of these skills as the Lock On / Resonance events, so they are still pressed (badge movement probe 2026-11-15: Bull's Rage with
+// Activation Medium: Lock On was read as triggered and freed its press time).
+const USE_SOURCE_MEDIUMS = new Set(["Activation Medium: Lock On", "Activation Medium: Resonance Activation"]);
+
 // The support or source that triggers the setup, or null.
 function triggerOf(setup, hit, tangleKeys) {
-  const support = enabledSupports(setup).find((item) => /^Activation Medium:/.test(item.name) || item.name === "Preparation" || item.name === "Clockwork Core");
+  const support = enabledSupports(setup).find((item) => (/^Activation Medium:/.test(item.name) && !USE_SOURCE_MEDIUMS.has(item.name)) || item.name === "Preparation" || item.name === "Clockwork Core");
   if (support) return support.name;
   if (hit?.rate?.trigger) return hit.rate.trigger.source || "its trigger";
   if (tangleKeys.has(setup.setupKey)) return "a Tangle";
   return null;
+}
+
+// The press kind a triggered setup would have without its trigger (the support switched off, or no Tangle on it), or null when another trigger
+// still holds it.
+function untriggeredKind(inputs, setup, trigger) {
+  const plain = { ...setup, supports: (setup.supports || []).map((support) => (support.name === trigger ? { ...support, enabled: false } : support)) };
+  const tangleKeys = new Set([...(inputs.tangleKeys || [])].filter((key) => !(trigger === "a Tangle" || /Tangle/.test(trigger)) || key !== setup.setupKey));
+  const skillHits = (inputs.skillHits || []).map((hit) => (hit?.setupKey === setup.setupKey && hit.rate?.trigger ? { ...hit, rate: { ...hit.rate, trigger: null } } : hit));
+  const kind = collectPressInputs({ ...inputs, setups: [plain], skillHits, tangleKeys }).skills.find((item) => item.key === setup.setupKey)?.kind;
+  return kind && kind !== "triggered" ? kind : null;
 }
 
 /** The support or Tangle that triggers a setup, read before its hit model runs (no hit-model trigger), or null. */
@@ -118,7 +136,8 @@ function headerUseTime(name, castSpeedFactor) {
  * @returns {{ skills: object[] }} each { key, name, kind: "pressed" | "triggered" | "held" | "split" | "notNeeded", intervalSeconds,
  *   pressSeconds, reason, demolisher }
  */
-export function collectPressInputs({ setups = [], activeNames = new Set(), mainKey = null, skillHits = [], empowerEntries = [], aim = null, elixirSetups = [], periodicBurst = [], mobilityNeeds = [], pureHeart = null, mobilityItemTriggers = [], tangleKeys = new Set(), ownTimeKeys = new Set(), skillDots = [], inactiveReasons = new Map(), idleBuff = () => null, modifierTexts = [], castSpeedFactor = 1 } = {}) {
+export function collectPressInputs(inputs = {}) {
+  const { setups = [], activeNames = new Set(), mainKey = null, skillHits = [], empowerEntries = [], aim = null, elixirSetups = [], periodicBurst = [], mobilityNeeds = [], pureHeart = null, mobilityItemTriggers = [], tangleKeys = new Set(), ownTimeKeys = new Set(), skillDots = [], inactiveReasons = new Map(), idleBuff = () => null, modifierTexts = [], castSpeedFactor = 1 } = inputs;
   const skills = [];
   for (const setup of setups) {
     if (!setup || setup.enabled === false || !activeNames.has(setup.name) || setup.setupKey === mainKey || setup.role === "support" || setupBoardTab(setup) !== "skills") continue;
@@ -144,7 +163,13 @@ export function collectPressInputs({ setups = [], activeNames = new Set(), mainK
     // the net gain over plain attacking) is left to that model.
     if (ownTimeKeys.has(key)) { other("held", "its own model already counts the Main Skill time its casts take"); continue; }
     const trigger = triggerOf(setup, hit, tangleKeys);
-    if (trigger) { other("triggered", `triggered by ${trigger}: takes none of your time`); continue; }
+    if (trigger) {
+      // Whether the setup would be pressed without the support or Tangle that triggers it (read by the support's badge, src/skill-coverage.js
+      // pressFreedBy: a trigger that frees a press's time moves the figure; one on a setup the rotation would not press frees nothing).
+      const untriggered = trigger === "a Tangle" || enabledSupports(setup).some((support) => support.name === trigger) ? untriggeredKind(inputs, setup, trigger) : null;
+      skills.push({ key, name, kind: "triggered", reason: `triggered by ${trigger}: takes none of your time`, ...(untriggered ? { untriggeredKind: untriggered } : {}) });
+      continue;
+    }
     // A skill that cannot act on the dummy (its damage source inactive: a non-Main Terra under Dance of the Deep, …) is not pressed.
     if (inactiveReasons.has(key) && !hit) { other("notNeeded", `inactive (${inactiveReasons.get(key)})`); continue; }
     const hitCooldown = Number(hit?.rate?.effectiveCooldownSeconds) || 0;
@@ -225,11 +250,24 @@ export function collectPressInputs({ setups = [], activeNames = new Set(), mainK
  * The windows the build's Mobility lines need: an active "after using Mobility Skills" line its N s ("recently" 4 s; kind "line"); a held
  * Blessing gained when using Mobility Skills the gap that keeps it at its max, duration × stacks per gain ÷ max stacks (kind "blessing"; each
  * gain a layer on its own timer, user decision 2026-11-04; "X% chance" counts X ÷ 100 stacks; before 2026-11-08 the gain line's own "N s",
- * else 4 s).
+ * else 4 s). A line that feeds nothing is no need (badge movement probe 2026-11-15: Deceiver's Might's "+1 to Max Agility Blessing Stacks if you
+ * have used a Mobility Skill in the last 8s" with no Agility held, and Dual Kismet: Sky Piercer's Attack Horizontal Projectile Damage with no such
+ * skill, had Shadow Dash pressed every 8 s / 5 s for nothing): a "+N to Max <Blessing> Blessing Stacks" body needs that Blessing held, a
+ * skill-tag-scoped damage body (src/skill-hit-lines.js classifyHitLine) an active setup with every tag. `setups` / `activeNames` omitted: the
+ * tag check is skipped (as before).
  */
-export function mobilityNeeds(lines = [], blessings = []) {
+export function mobilityNeeds(lines = [], blessings = [], { setups = null, activeNames = null } = {}) {
   const window = (text) => { const match = String(text || "").match(/(\d+(?:\.\d+)?)\s*s\b/); return match ? Number(match[1]) : RECENTLY_SECONDS; };
-  const needs = lines.filter((line) => line.condition === "mobility" && line.active !== false).map((line) => ({ kind: "line", source: line.source, seconds: window(line.text), label: `"${line.text}" (${line.source}): ${window(line.text)} s` }));
+  const bodyFeeds = (body) => {
+    const text = String(body?.derivedText || body?.body || "").trim();
+    const blessing = text.match(/^\+[\d.]+ to Max (Focus|Agility|Tenacity) Blessing Stacks$/i);
+    if (blessing) return blessings.some((entry) => entry.name.toLowerCase() === blessing[1].toLowerCase() && entry.stacks > 0);
+    const tags = setups ? [...(classifyHitLine(text)?.scope?.skillTags || [])] : null;
+    if (tags?.length) return setups.some((setup) => setup && setup.enabled !== false && (!activeNames || activeNames.has(setup.name)) && tags.every((tag) => skillTagsWithSupportChanges(setup.tags || [], setup).has(tag)));
+    return true;
+  };
+  const feeds = (line) => !(line.bodies || []).length || line.bodies.some(bodyFeeds);
+  const needs = lines.filter((line) => line.condition === "mobility" && line.active !== false && feeds(line)).map((line) => ({ kind: "line", source: line.source, seconds: window(line.text), label: `"${line.text}" (${line.source}): ${window(line.text)} s` }));
   for (const blessing of blessings) {
     if (!(blessing.stacks > 0)) continue;
     const durationSeconds = Number(blessing.layers?.durationSeconds) > 0 ? Number(blessing.layers.durationSeconds) : BASE_BLESSING_SECONDS;

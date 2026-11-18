@@ -389,6 +389,9 @@ const staticBuffHolder = (modifierTexts, buff) => modifierTexts.some((line) => l
 const TOWN_HELD_CONDITIONS = {
   buffActive: (entry, modifierTexts) => Boolean(entry.params?.buff) && staticBuffHolder(modifierTexts, entry.params.buff),
   standingStill: () => true,
+  // A per-stat line ("+1% Movement Speed for every 20 Dexterity, up to +300%", Ralph's Journey, record 101140049) reads the stat-sheet
+  // attribute, met in town too: the 15 T Chain Lightning town panel's Movement Speed Bonus 268 holds its +140.43% (2026-11-18, G2).
+  perStat: () => true,
   dualWielding: () => true,
   shield: () => true
 };

@@ -117,8 +117,16 @@ function focusBuffSyntheticLines({ buffs, effectPercent }) {
   return { lines, notes, ignite };
 }
 
-export function collectBuildMechanics({ main, setups = [], activeNames = new Set(), modifierTexts = [], specialSupportConfigs = {}, castsPerSecond = 0, curseLimitMaximum = 1, skillCurses = [], heroMemories = { lines: [] }, targetLife = true, auraAilmentChance = null, minionsDealDamage = false, twoHandedWeapon = false, grantedSupportLevelBonus = () => 0, minionAilmentTypes = [], eventSources = null, tenacityGain = null, dealtTypesBySetup = null } = {}) {
+export function collectBuildMechanics({ main, setups = [], activeNames = new Set(), modifierTexts = [], specialSupportConfigs = {}, castsPerSecond = 0, curseLimitMaximum = 1, skillCurses = [], heroMemories = { lines: [] }, targetLife = true, auraAilmentChance = null, minionsDealDamage = false, twoHandedWeapon = false, grantedSupportLevelBonus = () => 0, triggeredSkillLevel = null, minionAilmentTypes = [], eventSources = null, tenacityGain = null, dealtTypesBySetup = null } = {}) {
   const recognized = new Map();
+  // A curse an item or a talent casts (node 2320 at the level parameter: "Triggers Lv. N X Curse …", Fiery Oath, Dual Kismet: Spindle, the Minion
+  // and Nearby Sentries triggers) takes the build's skill level lines from its printed level (user decision 2026-11-16; src/planner.js
+  // itemSkillLevel, src/item-triggered-skills.js): `triggeredSkillLevel(name, level, line)`. TOWER Sequence and hero trait lines keep the
+  // printed level there. "Nearby enemies within N m are cursed by Lv. N X" (node 301: the curse buff at that level, no skill cast) keeps it.
+  const castCurse = (name, level, line, text, extra = {}) => {
+    const levels = triggeredSkillLevel?.(name, level, line) || { baseLevel: level, addedLevels: 0, effectiveLevel: level };
+    return { name, level: levels.effectiveLevel, ...(levels.addedLevels ? { baseLevel: levels.baseLevel, addedLevels: levels.addedLevels } : {}), source: line.source, text, origin: line.origin, slot: line.slot, cast: true, ...(levels.fixedLevel ? { fixedLevel: true } : {}), ...extra };
+  };
   const mark = (line, note) => recognized.set(normalizePercentageText(line.text), note);
   // A gear-triggered curse's own event (wiring audit W2 gap 3, 2026-11-03): its record's trigger rows (src/trigger-rows.js) against
   // the build's sources `eventSources` ({ hit: your hits, dot: your DoT, minion: your Minions' damage }; null: not known, held as before).
@@ -415,7 +423,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     if (match) {
       const missing = curseEventMissing(line, text);
       if (missing) { mark(line, `Inactive: ${missing}`); continue; }
-      gearCurses.push({ name: match[2] || match[4], level: Number(match[1] || match[3]), source: line.source, text, origin: line.origin, slot: line.slot });
+      gearCurses.push(match[2] ? castCurse(match[2], Number(match[1]), line, text) : { name: match[4], level: Number(match[3]), source: line.source, text, origin: line.origin, slot: line.slot });
       continue;
     }
     // Pantheon's Elegy: Onslaughter's Dirge (legendary audit batch 1, 2026-10-22): "Enemies within 15m are cursed by Lv. 25 Timid Curse
@@ -431,7 +439,8 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     match = text.match(/^Enemies within \d+ ?m Nearby Sentries receive Lv\. (\d+) ([\w']+(?: [\w']+)*?)(?: Curse)?$/i);
     if (match) {
       if (!setups.some((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.tags || []).includes("Sentry"))) { mark(line, "Inactive: no active Sentry Skill"); continue; }
-      gearCurses.push({ name: match[2], level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot });
+      // Records 870296384 / 71535384: node 2320 casts the curse at the record's level (20 / 40) on the holder, every 5 s.
+      gearCurses.push(castCurse(match[2], Number(match[1]), line, text));
       continue;
     }
     // Curses Minions trigger ("Triggers Lv. 20 Timid Curse when Minions deal damage to enemies. Cooldown: 0.2 s", "Triggers Lv. 10
@@ -440,7 +449,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     match = text.match(/^Triggers? Lv\. (\d+) ((?:[\w']+(?: [\w']+)*? Curse)(?: and [\w']+(?: [\w']+)*? Curse)*) when (?:Minions deal|a Minion deals) damage(?: to enemies)?(?:\. Cooldown: [\d.]+ ?s)?$/i);
     if (match) {
       if (!minionsDealDamage) { mark(line, "Inactive: no modeled Minion deals damage"); continue; }
-      for (const name of match[2].split(/ and /).map((part) => part.replace(/ Curse$/i, "").trim())) gearCurses.push({ name, level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot, minionTrigger: true });
+      for (const name of match[2].split(/ and /).map((part) => part.replace(/ Curse$/i, "").trim())) gearCurses.push(castCurse(name, Number(match[1]), line, text, { minionTrigger: true }));
       continue;
     }
     // Dual Kismet: Spindle (pact scripted-effects batch 2026-10-13): "Triggers Lv. 25 Corruption upon inflicting damage. Cooldown:
@@ -450,7 +459,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     if (match && (curseTakenEffect(match[2]) || NO_DUMMY_EFFECT_CURSES[match[2]] || ["Scorch", "Entangled Pain"].includes(match[2]))) {
       const missing = curseEventMissing(line, text);
       if (missing) { mark(line, `Inactive: ${missing}`); continue; }
-      gearCurses.push({ name: match[2], level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot });
+      gearCurses.push(castCurse(match[2], Number(match[1]), line, text));
       continue;
     }
     // Fiery Oath (chunk 12; game record 117923520: trigger 1000110 "on gaining buff stacks" with tag 5100208 Tenacity Blessing, gate 206
@@ -463,7 +472,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
     match = text.match(/^Gaining Tenacity Blessing triggers Lv\. (\d+) Scorch ?\. Interval: [\d.]+ ?s$/i);
     if (match) {
       const gains = tenacityGain ? tenacityGain.gains : modifierTexts.some((other) => other !== line && /\bgains? .*Tenacity Blessing|Tenacity Blessing when/i.test(String(other.text)));
-      if (gains) gearCurses.push({ name: "Scorch", level: Number(match[1]), source: line.source, text, origin: line.origin, slot: line.slot, tenacityGain: true });
+      if (gains) gearCurses.push(castCurse("Scorch", Number(match[1]), line, text, { tenacityGain: true }));
       else mark(line, `Inactive: the build gains no Tenacity Blessing stacks in the fight (game trigger 1000110 on gaining Tenacity Blessing${tenacityGain?.reason ? `; ${tenacityGain.reason}` : ""})`);
       continue;
     }

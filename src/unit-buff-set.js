@@ -533,19 +533,53 @@ export function putEmpowerBuffs(set, { skills = [], entries = [] } = {}) {
   return set.markStaged("empower");
 }
 
+/** The Defensive Skills' own buffs (src/defensive-buffs.js entries), stage "defensive": each at its buff's steady uptime (`share`), with
+ * its config_char_buff record id so the attribute pool writes it at that share (src/unit-buff-writes.js). Aegis of Fire's block is the
+ * "block" stage's (Effective HP and the block readers' best case), so its entry carries no record id here (no second block write). */
+export function putDefensiveBuffs(set, entries = []) {
+  if (!(set instanceof UnitBuffSet)) return set;
+  set.removeWhere((entry) => entry.stage === "defensive");
+  for (const item of entries || []) {
+    const share = clamp01(Number(item.uptime));
+    const record = ownBuffRecordOf(item.name);
+    set.add({ name: item.name, stage: "defensive", kind: "defensive", share, uptime: share, ...(item.name !== "Aegis of Fire" && item.buff != null ? { buff: item.buff } : {}), ...(record ? { tags: record.tags } : {}), source: `${item.name} (Defensive Skill: ${item.cadence || "held"})` });
+  }
+  return set.markStaged("defensive");
+}
+
 /**
  * The Empower buffs the game's counters count: GetBuffCfgIdCountByTag([5100311]) (Empowered Insight 972411968; with 5100304 Multi-
- * Coupling Equation 53529464): the distinct held buffs whose config_char_buff record carries the Empower tag 5100311 (an Empower Skill
- * on the board, read as held under the pre-built best case; Aim 10320 while it is up all the time), not every board skill tagged Empower
- * (W9 step 4). A board Empower Skill with no record keeps the board reading (counted). `defensive`: also 5100304 (Defensive buffs). Null
+ * Coupling Equation 53529464): the distinct buffs held all the time whose config_char_buff record carries the Empower tag 5100311 (a
+ * board Empower Skill whose buff never lapses or has no buff model; Aim 10320 while it is up all the time), not every board skill tagged
+ * Empower (W9 step 4). The part-time ones are in empowerTagShares (census C5). A board Empower Skill with no record keeps the board reading (counted). `defensive`: also 5100304 (Defensive buffs). Null
  * when the set has no Empower stage yet.
  */
 export function empowerTagCount(holder, { defensive = false } = {}) {
+  const shares = empowerTagShares(holder, { defensive });
+  return shares ? [...shares.values()].filter((share) => share >= 1 - 1e-9).length : null;
+}
+
+/**
+ * Each counted Empower buff (and with `defensive` the Defensive ones) and its share of the time held (census C5, user decision
+ * 2026-11-15 "model any skills that have a build up time or don't have permanent uptime"): the record's GetBuffCfgIdCountByTag reads
+ * the buffs held at the moment, so a board Empower Skill counts at its own buff's steady uptime (src/empower-buffs.js entries, the
+ * `uptime` putEmpowerBuffs stores; one with no buff model keeps the board reading, held) and Aim at its uptime. A Map name → share in
+ * [0, 1], or null when the set has no Empower stage yet. The buffs' timers are read as independent (their cooldowns are not
+ * phase-locked in the model; inferred).
+ */
+export function empowerTagShares(holder, { defensive = false } = {}) {
   const own = playerBuffSet(holder);
   if (!own?.staged("empower")) return null;
   const tagged = (name) => { const record = ownBuffRecordOf(name); return !record || record.tags.includes(OWN_STATUS_TAGS.empower) || (defensive && record.tags.includes(OWN_STATUS_TAGS.defensive)); };
-  const held = own.entries(null, {}).filter((entry) => entry.kind === "empower" && (entry.stage === "empower" || (Number(entry.share) || 0) >= 1 - 1e-9) && tagged(entry.name));
-  return new Set(held.map((entry) => entry.name)).size;
+  const shares = new Map();
+  for (const entry of own.entries(null, {})) {
+    // A Defensive Skill's own buff (stage "defensive", src/defensive-buffs.js) at its uptime, with `defensive` (2026-11-15).
+    if (defensive && entry.kind === "defensive" && tagged(entry.name)) { shares.set(entry.name, Math.max(shares.get(entry.name) ?? 0, clamp01(entry.share))); continue; }
+    if (entry.kind !== "empower" || !tagged(entry.name)) continue;
+    const share = entry.stage === "empower" ? (entry.uptime == null || !Number.isFinite(Number(entry.uptime)) ? 1 : clamp01(entry.uptime)) : clamp01(entry.share);
+    shares.set(entry.name, Math.max(shares.get(entry.name) ?? 0, share));
+  }
+  return shares;
 }
 
 /** The Elixir buffs (src/elixir-model.js setups: their active share and Elixir Skill Effect), stage "elixir". */

@@ -27,3 +27,27 @@ export function fateSlotBonuses(selectedSpirits = [], fateUnlocks = {}) {
     return total;
   }, { micro: 0, medium: 0 });
 }
+
+// The Undetermined Fate item's own icon (game item icon UI_S9Pet_UndeterminedFate_128, exported read-only from the paks with
+// the bundled Ue4Export: Art/UI/Textures/Common/Icon/Item/128, 256 px, converted to webp).
+export const UNDETERMINED_FATE_ICON = "./src/assets/tli/catalog/UI_S9Pet_UndeterminedFate_128.webp";
+
+// The icon a pact tree node shows: an equipped Kismet's, the Undetermined Fate's on a Destiny ("Undetermined Fate Slots") node
+// with one installed, else the node's own graphic.
+export function pactNodeIcon(node, { kismet = null, fateUnlockId = null } = {}) {
+  if (kismet?.icon) return kismet.icon;
+  if (node?.ring === "destiny" && fateSlotChoice(fateUnlockId)) return UNDETERMINED_FATE_ICON;
+  return node?.icon || "";
+}
+
+// The rarity class that colours a pact tree node's ring (src/styles.css .pact-border-*): what sits in the node. A Legendary, Epic or
+// Rare Kismet (inner / mid nodes and the extra Fate slots), an installed Undetermined Fate on the Destiny node, the spirit's main
+// (outer) node, else normal. Epic is the Destiny item's quality 3 (config_item_base field 0; 2026-11-18).
+export function pactNodeBorderClass(node, { kismet = null, fateInstalled = false } = {}) {
+  if (kismet?.rarity === "Legendary") return "pact-border-legendary-kismet";
+  if (kismet?.rarity === "Epic") return "pact-border-epic-kismet";
+  if (kismet?.rarity === "Rare") return "pact-border-rare-kismet";
+  if (node?.ring === "destiny" && fateInstalled) return "pact-border-fate";
+  if (node?.ring === "outer") return "pact-border-main";
+  return "pact-border-normal";
+}

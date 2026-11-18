@@ -112,11 +112,15 @@ export function buildAttributePool({ modifierTexts = [], playerBuffs = null, sta
         const heldBy = line.origin === "trait" ? "the hero trait module" : droppable ? null : "the line's current reader (no derived line, not the hit model's converter)";
         const to = encodedKey(effect.attr), from = encodedKey(effect.from);
         const toMod = MOD_NUMBER[effect.bucket] ?? null, fromMod = MOD_NUMBER[effect.fromBucket] ?? 5;
+        // Added flat damage (toMod 2, "Adds X - Y Fire Damage per N Strength", record 101140002): the read is an added-damage entry of
+        // the target's type with its range, as a line's added write (src/attribute-pool-hit.js), so the hit model places it on its type.
+        const flatSpan = toMod === 2 && effect.concept === "damage" && typeof effect.type === "string" && effect.type.length > 0;
+        const addedType = flatSpan ? effect.type[0].toUpperCase() + effect.type.slice(1) : null;
         const record = pool.addConversion({
           unit: effect.kind === "share" ? "minion" : "player", sourceUnit: "player", to, toMod, toTags: effect.toTagIds ?? null, from, fromMod,
-          fromValue: effect.per ?? 1, toLower: effect.value * scale, max: Number.isFinite(effect.max) ? effect.max * scale : null,
+          fromValue: effect.per ?? 1, toLower: effect.value * scale, toUpper: flatSpan && Number.isFinite(effect.upper) ? effect.upper * scale : null, max: Number.isFinite(effect.max) ? effect.max * scale : null,
           source, heldBy: droppable && line.origin !== "trait" ? null : heldBy, droppable, lineKey,
-          entry: { source: line.source, text: `${line.text} (node 114, read at this hit: ${effect.fromConcept ?? from} ${effect.fromBucket ?? ""} ÷ ${effect.per ?? 1} × ${effect.value * scale}; game affix ${resolved.chosen.id ?? "?"})`, origin: line.origin ?? null, category: toMod === 4 ? "Additional damage" : "Increased damage", conversion: true }
+          entry: { source: line.source, text: `${line.text} (node 114, read at this hit: ${effect.fromConcept ?? from} ${effect.fromBucket ?? ""} ÷ ${effect.per ?? 1} × ${flatSpan && Number.isFinite(effect.upper) ? `${effect.value * scale} - ${effect.upper * scale}` : effect.value * scale}; game affix ${resolved.chosen.id ?? "?"})`, origin: line.origin ?? null, category: flatSpan ? `Added ${addedType} damage` : toMod === 4 ? "Additional damage" : "Increased damage", conversion: true, ...(flatSpan ? { type: addedType } : {}) }
         });
         if (!record.heldBy) convertedLines.set(lineKey, record);
       }

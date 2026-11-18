@@ -22,8 +22,10 @@ import { terraChargesAtInterval, terraChargesConsumed } from "./selena-dance.js"
 // - Rate: the gate reopens 1.5 s after a trigger and the next landing use of the supported skill triggers, so a trigger every
 //   ceil(1.5 s × uses/s) ÷ uses/s at the hit pass's steady use rate (node 206 is a fixed gate: no Cooldown Recovery Speed). First trigger at
 //   the supported skill's first use: the gate's 1.5 s ran out before the fight (inferred; the flag pair is not settled by the data).
-// - Level 20, fixed: the closest precedent is an item's "Triggers Lv. N …" skill, which stays at the item's level (CLAUDE.md, 2026-10-27);
-//   node 2320 names the level and no level line of the build is read (inferred).
+// - Level: node 2320 casts stone 1551 at p1 = 20, the same cast an item's "Triggers Lv. N …" line makes, so it follows that rule: Lv. 20 + the
+//   build's skill level lines for stone 1551's tags (All Skills, Active, Spell / Cold / Terra …), user decision 2026-11-16 (src/item-triggered-
+//   skills.js triggeredSkillLevel; was Lv. 20 fixed, the 2026-10-27 item precedent). Whether the client adds the caster's level attributes to a
+//   node-2320 cast is not traced (inferred).
 // - Its own skill, not the supported one: no support socketed on the supported skill reaches it (an item-triggered skill's precedent); the
 //   build's lines reach it by stone 1551's tags (Spell, Cold, Terra, Damage Over Time; never the Frost Terra family tag, which no line uses).
 // - Terra Charge: the triggered stone holds its own charges (Max Terra Charge 1, 1 per 0.5 s) and a trigger consumes what it holds:
@@ -70,7 +72,7 @@ export function permafrostTerraState({ setups = [], activeNames = new Set(), blo
  * The trigger cadence on one supported skill's modeled hit: the gate reopens 1.5 s after a trigger, the next use's hit triggers.
  * @param {object|null} hit the supported skill's modeled hit (src/skill-hit-model.js)
  */
-export function permafrostTrigger(hit) {
+export function permafrostTrigger(hit, levelLabel = `Lv. ${PERMAFROST_TERRA_LEVEL}`) {
   const uses = Number(hit?.rate?.usesPerSecond) || 0;
   if (!(uses > 0)) return null;
   const period = 1 / uses;
@@ -79,14 +81,18 @@ export function permafrostTrigger(hit) {
   const firstApplicationSeconds = Number.isFinite(hit?.rate?.firstUseSeconds) && hit.rate.firstUseSeconds >= 0 ? hit.rate.firstUseSeconds : period;
   return {
     castsPerSecond: 1 / intervalSeconds, intervalSeconds, usesPerTrigger, firstApplicationSeconds,
-    text: `${PERMAFROST_TERRA_NAME}: Lv. ${PERMAFROST_TERRA_LEVEL} Frost Terra (stone ${PERMAFROST_TERRA_STONE}) triggered on ${hit?.name || "the supported skill"}'s hit every ${round(intervalSeconds)} s: gate ${PERMAFROST_GATE_SECONDS} s (record ${PERMAFROST_RECORD}, node 206: no Cooldown Recovery Speed), the next of its ${round(uses)} uses/s after it (${usesPerTrigger} use${usesPerTrigger === 1 ? "" : "s"} per trigger); first at its first use, ${round(firstApplicationSeconds)} s (provisional)`
+    text: `${PERMAFROST_TERRA_NAME}: ${levelLabel} Frost Terra (stone ${PERMAFROST_TERRA_STONE}) triggered on ${hit?.name || "the supported skill"}'s hit every ${round(intervalSeconds)} s: gate ${PERMAFROST_GATE_SECONDS} s (record ${PERMAFROST_RECORD}, node 206: no Cooldown Recovery Speed), the next of its ${round(uses)} uses/s after it (${usesPerTrigger} use${usesPerTrigger === 1 ? "" : "s"} per trigger); first at its first use, ${round(firstApplicationSeconds)} s (provisional)`
   };
 }
 
-/** The synthetic setup of the triggered Terra: its own skill at the record's level, no supports. */
-export function permafrostTerraSetup(carrier, baseProfile) {
+/**
+ * The synthetic setup of the triggered Terra: its own skill at the record's level (+ the build's skill level lines when `levels` is given:
+ * { baseLevel, addedLevels, effectiveLevel, levelBonusSources }, src/planner.js itemSkillLevel), no supports.
+ */
+export function permafrostTerraSetup(carrier, baseProfile, levels = null) {
   return {
     name: "Frost Terra", role: "support-trigger", tags: [...(baseProfile?.tags || [])], baseLevel: PERMAFROST_TERRA_LEVEL, addedLevels: 0, effectiveLevel: PERMAFROST_TERRA_LEVEL,
+    ...(levels ? { baseLevel: levels.baseLevel, addedLevels: levels.addedLevels, effectiveLevel: levels.effectiveLevel, levelBonusSources: levels.levelBonusSources || [] } : {}),
     supports: [], setupKey: permafrostTerraSetupKey(carrier.setupKey), instanceId: permafrostTerraSetupKey(carrier.setupKey), enabled: true,
     triggeredBy: { support: PERMAFROST_SUPPORT, setupKey: carrier.setupKey, name: carrier.name }
   };
@@ -99,7 +105,7 @@ export function permafrostTerraProfile(baseProfile, trigger, carrier, terraCharg
     ...(terraChargeLine ? { terraCharge: terraChargeLine } : {}),
     dot: { ...baseProfile.dot, areaSeconds: PERMAFROST_TERRA_AREA_SECONDS, areaSource: `Split ${PERMAFROST_TERRA_SPLIT} buffArea (stone ${PERMAFROST_TERRA_STONE}: the board Frost Terra's 6 s × 1.66)` },
     triggeredBy: { support: PERMAFROST_SUPPORT, setupKey: carrier.setupKey, name: carrier.name },
-    notes: [`${PERMAFROST_TERRA_NAME}: ${PERMAFROST_SUPPORT} on ${carrier.name} casts stone ${PERMAFROST_TERRA_STONE} (Split ${PERMAFROST_TERRA_SPLIT}: Frost Terra's DoT row 271, 2 s status, a ${PERMAFROST_TERRA_AREA_SECONDS} s area × Skill Effect Duration) at Lv. ${PERMAFROST_TERRA_LEVEL} on the dummy; its own skill (no support of ${carrier.name} reaches it), Terra Charge +${PERMAFROST_TERRA_CHARGE_PERCENT}% per charge consumed (stone ${PERMAFROST_TERRA_STONE}'s value); the area holds the status while the dummy stands in it (provisional, open question permafrost-frost-terra).`],
+    notes: [`${PERMAFROST_TERRA_NAME}: ${PERMAFROST_SUPPORT} on ${carrier.name} casts stone ${PERMAFROST_TERRA_STONE} (Split ${PERMAFROST_TERRA_SPLIT}: Frost Terra's DoT row 271, 2 s status, a ${PERMAFROST_TERRA_AREA_SECONDS} s area × Skill Effect Duration) at Lv. ${PERMAFROST_TERRA_LEVEL} + the build's skill level lines (user decision 2026-11-16) on the dummy; its own skill (no support of ${carrier.name} reaches it), Terra Charge +${PERMAFROST_TERRA_CHARGE_PERCENT}% per charge consumed (stone ${PERMAFROST_TERRA_STONE}'s value); the area holds the status while the dummy stands in it (provisional, open question permafrost-frost-terra).`],
     sources: { ...(baseProfile.sources || {}), gameData: `config_skill_damage group 271 (Lv. ${PERMAFROST_TERRA_LEVEL}, DoT row); stone ${PERMAFROST_TERRA_STONE}, record ${PERMAFROST_RECORD}`, timing: `SkillEditor Split ${PERMAFROST_TERRA_SPLIT}` }
   });
 }

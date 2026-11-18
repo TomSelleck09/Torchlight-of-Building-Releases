@@ -25,7 +25,10 @@ export function skillDisplaySs13(entry, level) {
     isAura ? ["Mana Reservation", `${entry.sealedManaPercent ?? 50}%`] : [stats["cast speed"] ? "Cast Speed" : "Attack Speed", stats["cast speed"] || stats["attack speed"]],
     ["Effectiveness of Added Damage", hasLevelProgression && levelEntry.addedDamage || stats["effectiveness of added damage"]],
   ].filter(([, value]) => value);
-  const baseEffects = description ? [description, ...(entry?.effects || []).slice(1)] : entry?.effects || [];
+  // The level description can already hold a later catalog effect line (Bull's Rage's "This skill costs Life instead of Mana"):
+  // drop a later effect only when it is exactly equal to a line already shown.
+  const descriptionLines = new Set(String(description || "").split("\n").map((line) => line.trim()));
+  const baseEffects = description ? [description, ...(entry?.effects || []).slice(1).filter((effect) => !descriptionLines.has(String(effect).trim()))] : entry?.effects || [];
   const auraScaling = isAura ? scaledAuraEffects(entry.name, selectedLevel, baseEffects) : null;
   return {
     facts,

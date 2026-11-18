@@ -17,7 +17,9 @@ const cellNumbers = (raw) => String(raw ?? "").split(",").map((part) => {
 });
 function columnValues(name, heading, level) {
   const column = (supportProgressionSs13[name]?.columns || []).find((item) => item.heading !== "Descript" && heading.test(item.heading));
-  const values = column ? cellNumbers(column.values?.[String(level)]) : [];
+  // The reference data table stops at Lv40; past it the text fallback holds the Lv40 cell, and game mode reads the stone at the real level
+  // (gameLevelValue holds the curve's last point; uncapped support levels since 2026-10-27, as src/support-effects.js).
+  const values = column ? cellNumbers(column.values?.[String(Math.min(40, level))]) : [];
   if (!values.length || !values.every(Number.isFinite)) throw new Error(`${name}: no progression value at Lv.${level}`);
   // Game mode: the stone affix behind the column's heading (the Lv.1 line), at the level; the column's numberIndexes pick its numbers.
   if (supportDataMode() === "game") {
@@ -39,7 +41,7 @@ const baseLineNumber = (name, pattern) => {
 };
 
 export function supportEffect(name, level) {
-  if (!Number.isInteger(level) || level < 1 || level > 40) throw new RangeError("Support level must be 1–40");
+  if (!Number.isInteger(level) || level < 1) throw new RangeError("Support level must be a whole number of at least 1");
   if (name === "Additional Ignite") {
     // "For each stack of Ignite an enemy has, the supported skill deals X% additional Ignite Damage to the enemy, up to Y%".
     const [perStack, cap] = columnValues(name, /^For each stack of Ignite an enemy has/i, level).values;

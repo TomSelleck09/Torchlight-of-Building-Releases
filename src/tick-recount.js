@@ -15,6 +15,7 @@ import { blessingSeconds } from "./tick-layers.js";
 import { compileTriggerBus } from "./trigger-bus.js";
 import { runTickEngine } from "./tick-engine.js";
 import { calculateDummyRecount, summarizeRecount, windowTotals } from "./dummy-recount.js";
+import { engineBuffUptime } from "./skill-uptime.js";
 
 /**
  * The one internal seam: the engine drives the windows and the recount of every build (on since chunk 15 session 2, 2026-11-01; the moved
@@ -26,7 +27,7 @@ export const TICK_ENGINE_DRIVES = true;
 /** The planner's own continuous recount from the same inputs (the pre-engine timeline, the end check's base), never shown in the UI. */
 export const steadyRecount = (planner, { seconds = TICK_RECOUNT_SECONDS } = {}) => calculateDummyRecount(planner.dummyRecount.inputs, { seconds });
 /**
- * The trigger bus for a planner result (W10, src/trigger-bus.js): null on the layers (TLI_TRIGGER_BUS unset or "layers", the default), else the
+ * The trigger bus for a planner result (W10, src/trigger-bus.js): null on the layers with nothing to own (TLI_TRIGGER_BUS "layers"; the default is "bus" since 2026-11-15), else the
  * compiled listeners, with the Blessing durations the layers use (src/tick-layers.js blessingSeconds). `mode` overrides the flag (a test).
  */
 export const tickTriggerBus = (planner, { mode = undefined } = {}) => compileTriggerBus(planner, { mode, blessingSeconds: (name) => blessingSeconds(planner, name) });
@@ -115,5 +116,8 @@ export function driveWithTickEngine(planner, { seconds = TICK_RECOUNT_SECONDS, f
   // The planner's own steady-path windows, kept for the tests that pin a model unit of that path (a timed layer's exact factor, the cold-start
   // ramp, a Reap's share per DoT); no figure or view reads them.
   const steadyWindows = { damagePaths: planner.damagePaths ? { fiveSeconds: planner.damagePaths.fiveSeconds, twentySeconds: planner.damagePaths.twentySeconds } : null, recountFiveSeconds: planner.recountFiveSeconds ?? null, recountOpening: planner.recountOpening ?? null, igniteIllOmen: planner.igniteIllOmen ?? null, dummyRecount: { fiveSeconds: recount.fiveSeconds, twentySeconds: recount.twentySeconds, recount20: recount.recount20 } };
-  return { ...planner, dummyRecount, damagePaths, recountFiveSeconds, recountOpening, igniteIllOmen, steadyWindows };
+  // Each buff the loop ran over the 5 s / 20 s windows and the 60 s timeline, for the skill tooltips (display only, src/skill-uptime.js; 2026-11-15).
+  let buffUptime = {};
+  try { buffUptime = engineBuffUptime(planner, run); } catch { buffUptime = {}; }
+  return { ...planner, dummyRecount, damagePaths, recountFiveSeconds, recountOpening, igniteIllOmen, steadyWindows, buffUptime };
 }

@@ -33,6 +33,10 @@ import { warcryShares } from "./storm-command.js";
 const N = "([+-]?\\d+(?:\\.\\d+)?)";
 const round = (value) => Math.round(value * 10000) / 10000;
 const clean = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim();
+// "Lv.20 +9" for an item-triggered skill that takes the build's skill level lines (user decision 2026-11-16; src/item-triggered-skills.js
+// triggeredLevelLabel), else "Lv.N".
+const levelText = (level, levels) => Number(levels?.addedLevels) ? `Lv.${levels.baseLevel} ${levels.addedLevels > 0 ? "+" : ""}${levels.addedLevels}` : `Lv.${level}`;
+const levelFields = (levels) => Number(levels?.addedLevels) ? { baseLevel: levels.baseLevel, addedLevels: levels.addedLevels } : {};
 const PLAIN_COOLDOWN = new RegExp(`^${N}% (additional )?Cooldown Recovery Speed$`, "i");
 
 /** A buff value from the game's config_char_buff record of `skill` (SKILL_BUFFS) at `level`: affix `id`, argument `index`. */
@@ -229,9 +233,10 @@ const HELD_SECONDS = 3600;
 
 /**
  * One Empower buff entry: the timing, the lines at full strength and their averages, the derived lines and timed parts.
- * @param {object} p { name, level, setup, clauses, effect ({ factor, sources }), empowerScaled, modifierTexts, ctx, item, multistrikeEventsPerSecond, setupKey }
+ * @param {object} p { name, level, levels (an item-triggered skill's { baseLevel, addedLevels }: the label "Lv.20 +9"), setup, clauses, effect ({ factor, sources }),
+ *   empowerScaled, modifierTexts, ctx, item, multistrikeEventsPerSecond, setupKey }
  */
-export function empowerBuffEntry({ name, level, clauses = [], effect = { factor: 1, sources: [] }, empowerScaled = true, modifierTexts = [], ctx = {}, item = null, multistrikeEventsPerSecond = null, setupKey = null }) {
+export function empowerBuffEntry({ name, level, levels = null, clauses = [], effect = { factor: 1, sources: [] }, empowerScaled = true, modifierTexts = [], ctx = {}, item = null, multistrikeEventsPerSecond = null, setupKey = null }) {
   const definition = EMPOWER_BUFF_SPECS[name];
   if (!definition) return null;
   const read = definition.effects(level, ctx) || {};
@@ -264,9 +269,9 @@ export function empowerBuffEntry({ name, level, clauses = [], effect = { factor:
   const status = read.inactive ? "Inactive" : !modeled.length ? (unmodeled.length ? "Not modeled" : "Inactive") : unmodeled.length ? "Partly modeled" : "In calc";
   const factorText = empowerScaled ? ` × Empower Effect ${round(effect.factor)}${read.extraEffect ? ` × ${round(extraFactor)} (${read.extraEffect.text})` : ""}` : "";
   const lineText = lines.map((line) => line.kind === "lucky" ? (line.active ? "Lucky Damage (persistent: uptime 1)" : `Lucky Damage only while persistent (uptime ${uptime} < 1): not applied`) : `${line.fullText} for ${line.scope} → ${line.text} on average`).join("; ");
-  const text = read.inactive ? `${name}${item ? ` (${item.source})` : ""} Lv.${level}: inactive (${read.inactive}).`
-    : `${name}${item ? ` (${item.source})` : ""} Lv.${level} Euphoria${factorText}: ${lineText || "nothing modeled"}${timing ? `; lasts ${read.held ? "while Mana lasts" : `${timing.durationSeconds} s`}${timing.refreshPerSecond ? ` (6 s, refreshed by ${round(timing.refreshPerSecond)} Elite-hit refreshes/s)` : ""} (${definition.durationSource}); ${timing.cadence}; uptime min(1, ${timing.durationSeconds} ÷ ${timing.periodSeconds}) = ${uptime}; first use at ${timing.firstUseSeconds} s in the 5 s / 20 s windows` : ""}${(read.notes || []).length ? `; ${read.notes.join("; ")}` : ""}${unmodeled.length ? `; not modeled: ${unmodeled.join("; ")}` : ""} (provisional).`;
-  return { setupKey, skill: name, kind: "euphoria", projectileFixed: Boolean(read.projectileFixed) && uptime >= 1 - 1e-9, item: item ? { source: item.source, chancePercent: item.chancePercent ?? null, cooldownSeconds: item.cooldownSeconds ?? item.intervalSeconds ?? null, text: item.text } : null, level, base: lines[0]?.value ?? 0, factor: round(factor), value: lines[0]?.average ?? 0, full: lines[0]?.full ?? 0, uptime, active, status, reason: text, empowerScaled, sources: effect.sources || [], euphoria: timing ? { ...timing, level, base: lines[0]?.value ?? 0, value: lines[0]?.full ?? 0, average: lines[0]?.average ?? 0 } : null, lines, derived, timed, unmodeled, marks: Boolean(definition.marks) && active, text };
+  const text = read.inactive ? `${name}${item ? ` (${item.source})` : ""} ${levelText(level, levels)}: inactive (${read.inactive}).`
+    : `${name}${item ? ` (${item.source})` : ""} ${levelText(level, levels)} Euphoria${factorText}: ${lineText || "nothing modeled"}${timing ? `; lasts ${read.held ? "while Mana lasts" : `${timing.durationSeconds} s`}${timing.refreshPerSecond ? ` (6 s, refreshed by ${round(timing.refreshPerSecond)} Elite-hit refreshes/s)` : ""} (${definition.durationSource}); ${timing.cadence}; uptime min(1, ${timing.durationSeconds} ÷ ${timing.periodSeconds}) = ${uptime}; first use at ${timing.firstUseSeconds} s in the 5 s / 20 s windows` : ""}${(read.notes || []).length ? `; ${read.notes.join("; ")}` : ""}${unmodeled.length ? `; not modeled: ${unmodeled.join("; ")}` : ""} (provisional).`;
+  return { setupKey, skill: name, kind: "euphoria", ...levelFields(levels), projectileFixed: Boolean(read.projectileFixed) && uptime >= 1 - 1e-9, item: item ? { source: item.source, chancePercent: item.chancePercent ?? null, cooldownSeconds: item.cooldownSeconds ?? item.intervalSeconds ?? null, text: item.text } : null, level, base: lines[0]?.value ?? 0, factor: round(factor), value: lines[0]?.average ?? 0, full: lines[0]?.full ?? 0, uptime, active, status, reason: text, empowerScaled, sources: effect.sources || [], euphoria: timing ? { ...timing, level, base: lines[0]?.value ?? 0, value: lines[0]?.full ?? 0, average: lines[0]?.average ?? 0 } : null, lines, derived, timed, unmodeled, marks: Boolean(definition.marks) && active, text };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -353,9 +358,10 @@ export function warcryEnemiesAffected(modifierTexts = [], warcriesHeld = 1) {
 
 /**
  * One Warcry buff entry.
- * @param {object} p { name, level, setupKey, clauses (the setup's support clauses), modifierTexts, effect (warcryEffectFactor), item ({ intervalSeconds, source }), warcriesHeld }
+ * @param {object} p { name, level, levels (an item-triggered skill's { baseLevel, addedLevels }), setupKey, clauses (the setup's support clauses), modifierTexts, effect
+ *   (warcryEffectFactor), item ({ intervalSeconds, source }), warcriesHeld }
  */
-export function warcryBuffEntry({ name, level, setupKey = null, clauses = [], modifierTexts = [], effect = { factor: 1, sources: [] }, item = null, warcriesHeld = 1 }) {
+export function warcryBuffEntry({ name, level, levels = null, setupKey = null, clauses = [], modifierTexts = [], effect = { factor: 1, sources: [] }, item = null, warcriesHeld = 1 }) {
   const definition = WARCRY_BUFF_SPECS[name];
   if (!definition) return null;
   const enemies = warcryEnemiesAffected(modifierTexts, warcriesHeld);
@@ -369,8 +375,8 @@ export function warcryBuffEntry({ name, level, setupKey = null, clauses = [], mo
   const derived = lines.filter((line) => line.average !== 0).map((line) => ({ text: line.text, source: sourceOf(line), origin: "buff", multiplier: 1, warcryBuff: name, kind: line.minion ? "minion" : "damage", derivedFrom: sourceOf(line), lineEffect: { conditional: true, key: "empowerBuff", conditionText: `${name} up ${timing.uptime} of the time (time-averaged; provisional)`, provisional: true } }));
   const timed = lines.filter((line) => !line.minion && line.full !== 0).map((line) => ({ percent: line.full, reach: line.reach, sourcePrefix: `${name}: Warcry buff`, schedule: { kind: "periodic", durationSeconds: timing.durationSeconds, periodSeconds: timing.periodSeconds, startSeconds: timing.firstUseSeconds } }));
   const cooldownText = item ? timing.cadence : `cast whenever its ${timing.cooldownSeconds} s cooldown is ready (${share?.cooldownSourced ? "game skill data" : "no game cooldown record: read as 8 s"}; best case, switch "Warcries cast on cooldown")`;
-  const text = `${name}${item ? ` (${item.source})` : ""} Lv.${level}: ${lines.map((line) => `${line.fullText} for ${line.scope}`).join("; ")} (per enemy affected: ${enemies} on the dummy) × Warcry Effect ${round(effect.factor)}; lasts ${timing.durationSeconds} s (skill text); ${cooldownText}; uptime ${timing.uptime} → ${lines.map((line) => line.text).join("; ")} on average; first cast at ${timing.firstUseSeconds} s in the 5 s / 20 s windows${unmodeled.length ? `; not modeled: ${unmodeled.join("; ")}` : ""} (provisional).`;
-  return { setupKey, skill: name, kind: "warcry", item: item ? { source: item.source, intervalSeconds: item.intervalSeconds, text: item.text } : null, level, base: lines[0]?.value ?? 0, factor: round(effect.factor), value: lines[0]?.average ?? 0, full: lines[0]?.full ?? 0, uptime: timing.uptime, active: lines.length > 0 && timing.uptime > 0, status: unmodeled.length ? "Partly modeled" : "In calc", empowerScaled: false, sources: effect.sources, euphoria: timing, lines, derived, timed, unmodeled, text };
+  const text = `${name}${item ? ` (${item.source})` : ""} ${levelText(level, levels)}: ${lines.map((line) => `${line.fullText} for ${line.scope}`).join("; ")} (per enemy affected: ${enemies} on the dummy) × Warcry Effect ${round(effect.factor)}; lasts ${timing.durationSeconds} s (skill text); ${cooldownText}; uptime ${timing.uptime} → ${lines.map((line) => line.text).join("; ")} on average; first cast at ${timing.firstUseSeconds} s in the 5 s / 20 s windows${unmodeled.length ? `; not modeled: ${unmodeled.join("; ")}` : ""} (provisional).`;
+  return { setupKey, skill: name, kind: "warcry", ...levelFields(levels), item: item ? { source: item.source, intervalSeconds: item.intervalSeconds, text: item.text } : null, level, base: lines[0]?.value ?? 0, factor: round(effect.factor), value: lines[0]?.average ?? 0, full: lines[0]?.full ?? 0, uptime: timing.uptime, active: lines.length > 0 && timing.uptime > 0, status: unmodeled.length ? "Partly modeled" : "In calc", empowerScaled: false, sources: effect.sources, euphoria: timing, lines, derived, timed, unmodeled, text };
 }
 
 /**

@@ -234,7 +234,7 @@ export class AttributePool {
           const value = this.conversionValue(record, query, guard);
           if (value === null) { result.guarded.push(record); continue; }
           if (value === 0) continue;
-          const write = { conversion: record, unit, attr: record.to, mod: record.toMod, value: record.toMod === 2 ? value.min : value, upper: record.toMod === 2 ? value.max : null, source: record.source ?? null, entry: record.entry ? { ...record.entry, value: record.toMod === 2 ? value.min : value } : null, seq: record.seq };
+          const write = { conversion: record, unit, attr: record.to, mod: record.toMod, value: record.toMod === 2 ? value.min : value, upper: record.toMod === 2 ? value.max : null, source: record.source ?? null, entry: record.entry ? { ...record.entry, value: record.toMod === 2 ? value.min : value, ...(record.toMod === 2 ? { min: value.min, max: value.max } : {}) } : null, seq: record.seq };
           result.conversions.push(write);
           writes.push(write);
           addToSummary(result, write);

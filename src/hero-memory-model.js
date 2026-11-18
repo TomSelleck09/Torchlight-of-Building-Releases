@@ -106,9 +106,23 @@ export function heroMemoryLineCoverage(model, memoryId, text, equipped = true) {
 // read In calc before 2026-10-12).
 const MEMORY_DAMAGE_STATS = new Set(["damagePercent", "damageOverTimePercent", "elementalDamagePercent", "intelligence", "castSpeedPercent", "spellCriticalStrikeRating", "spellCriticalStrikeRatingPercent", "criticalStrikeDamagePercent", "afflictionEffectPercent", "reapingDurationPercent", "reapingRecoverySpeedPercent", "firedamage", "spelldamage", "spellcriticalstrikedamage", "fireskillcriticalstrikedamage", "strength", "dexterity"]);
 
+// Approaching Nightfall's badge from its two clauses (src/approaching-nightfall.js nightfallLineStatus): the settlement decides (Provisional where it
+// runs), the Ailment Duration joins its reason; In calc on the duration alone when the settlement is Inactive.
+function nightfallCoverage(lines, planner) {
+  const parts = lines.map((line) => nightfallLineStatus(line, planner)).filter(Boolean);
+  const settle = parts.find((part, index) => /^Additionally settles/i.test(lines[index])) ?? parts[parts.length - 1], duration = parts.find((part) => part !== settle);
+  const durationNote = duration ? `-50% additional Ailment Duration: ${duration.status}${duration.reason ? ` (${duration.reason})` : ""}` : "";
+  if (settle?.status === "Provisional") return { status: "Provisional", reason: [settle.reason, durationNote].filter(Boolean).join(" ") };
+  if (duration?.status === "In calc") return { status: "In calc", reason: `The settlement on Reaping is Inactive: ${settle?.reason || "no Reap"}.` };
+  return { status: "Inactive", reason: [settle?.reason, duration?.reason].filter(Boolean).join("; ") };
+}
+
 function baseHeroMemoryLineCoverage(model, memoryId, text, equipped = true) {
   if (!equipped) return "Not equipped";
-  const clauses = String(text).split(/\s*·\s*|\n/).filter(Boolean);
+  // Approaching Nightfall's one data sentence holds its two record rows; the intake splits it the same way (revivedFamilyText above), and the
+  // memory line takes the affix's own rule (badge movement probe 2026-11-15: the joined sentence read Not modeled / Partly modeled and moved).
+  const clauses = nightfallIntakeText(String(text)).split(/\s*·\s*|\n/).filter(Boolean);
+  if (clauses.length > 1 && clauses.some((clause) => /^Additionally settles [\d.]+% of the remaining total Damage Over Time when Reaping/i.test(clause.trim())) && coverageContext()?.activation) return nightfallCoverage(clauses.map((clause) => clause.trim()), coverageContext()).status;
   const statuses = clauses.map((clause) => {
     const line = model.lines.find(line => line.memoryId === memoryId && line.text.trim() === clause.trim());
     if (!line) {
@@ -141,14 +155,7 @@ function commonRevivedAffixCoverage(planner, memory) {
   const lines = revivedFamilyText(memory, hero).split("\n").map((line) => line.trim()).filter(Boolean);
   if (!lines.length) return null;
   // Approaching Nightfall (src/approaching-nightfall.js): the settlement decides the badge (Provisional where it runs), the duration joins its reason.
-  if (name === "Approaching Nightfall") {
-    const parts = lines.map((line) => nightfallLineStatus(line, planner)).filter(Boolean);
-    const settle = parts.find((part, index) => /^Additionally settles/i.test(lines[index])) ?? parts[parts.length - 1], duration = parts.find((part) => part !== settle);
-    const durationNote = duration ? `-50% additional Ailment Duration: ${duration.status}${duration.reason ? ` (${duration.reason})` : ""}` : "";
-    if (settle?.status === "Provisional") return { status: "Provisional", reason: [settle.reason, durationNote].filter(Boolean).join(" ") };
-    if (duration?.status === "In calc") return { status: "In calc", reason: `The settlement on Reaping is Inactive: ${settle?.reason || "no Reap"}.` };
-    return { status: "Inactive", reason: [settle?.reason, duration?.reason].filter(Boolean).join("; ") };
-  }
+  if (name === "Approaching Nightfall") return nightfallCoverage(lines, planner);
   const model = planner?.heroMemories || { lines: [], intakeOnly: [] };
   return { status: combineStatuses(lines.map((line) => heroMemoryLineCoverage(model, memory.id, line, true))), reason: "" };
 }

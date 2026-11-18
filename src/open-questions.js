@@ -171,14 +171,25 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "empower-count-held",
-    title: "Empower Skills counted as held",
-    question: "\"While affected by at least N Empower Skill(s)\" and Multi-Coupling Equation count the held buffs tagged Empower (5100311). Does a board Empower Skill whose buff lapses between casts count all the time?",
+    title: "Empower buffs counted at their uptime",
+    question: "\"While affected by at least N Empower Skill(s)\" and Multi-Coupling Equation count the held buffs tagged Empower (5100311). Are the Empower buffs' timers independent, so the count follows each buff's own uptime?",
     evidence: "game data (partial)",
-    current: "W9 step 4 (src/unit-buff-set.js empowerTagCount): the records count GetBuffCfgIdCountByTag([5100311]) at the moment (972411968, 53529464). Read: a board Empower Skill counts (own buffs pre-built, best case), Aim only when up all the time, a board skill whose record lacks the tag never.",
-    alternatives: [{ reading: "Only while each buff is up", effect: "the gate holds the share of time all N buffs overlap (lower with lapsing Empowers)" }],
+    current: "Census C5 (user decision 2026-11-15; src/unit-buff-set.js empowerTagShares): the records count GetBuffCfgIdCountByTag([5100311]) at the moment (972411968, 53529464), so each Empower buff counts at its own steady uptime (src/empower-buffs.js; one with no buff model held), Aim at its uptime, a board skill whose record lacks the tag never. The timers are read as independent (inferred): Empowered Insight holds the share of time at least N are up; Multi-Coupling the expected stacks, its always-held whole stacks as the attribute line and the rest averaged by the Spell Burst model.",
+    alternatives: [{ reading: "Held while on the board (before 2026-11-15)", effect: "10 T claim ×1.136, 30 T claim ×1.041 on the sustained figure" }, { reading: "Cooldowns phase-locked (cast together)", effect: "the overlap is the shorter uptime, not the product (Empowered Insight higher)" }],
     test: "Empowered Insight (at least 2) with two Empower Skills, one on a long cooldown: compare the supported skill's damage while that buff is up and after it lapses.",
     source: "config_affix_effect 972411968, 53529464; config_char_buff tags 5100311 / 5100304",
     appliesWhen: (ctx) => ctx.hasText(/affected by at least [\d.]+ Empower Skill|Empower or Defensive Skill\(s\) affecting you/i)
+  },
+  {
+    id: "defensive-buff-uptime",
+    title: "Defensive Skill buffs at their uptime",
+    question: "A Defensive Skill's buff lasts its Split's duration (Delayed Pain, Defensive Buffer, Brisk Wind, Forced Start 5 s; Stoneskin, Obscure, Prayer, Reform 6 s) and is recast on its trigger or cooldown (6 s). Is its share of the time held min(1, duration ÷ max(trigger interval, effective cooldown)), and do Frost Shield's and Aegis of Fire's Splits (struct 678530, 5 s) add the buff the same way?",
+    evidence: "game data (partial)",
+    current: "src/defensive-buffs.js (user rule 2026-11-15): duration from the Split's add-buff struct (428666; 678530 read as an add-buff on Frost Shield and Aegis of Fire, inferred) × the duration lines (general Skill Effect Duration: the records carry tag 5100310), cooldown from the Split header ÷ Cooldown Recovery Speed, interval from its Activation Medium (Preparation, Boss / Elite, Energy Shield whenever ready at Max Energy Shield 0, Multistrike, event mediums) or the press rotation (on its cooldown): Delayed Pain pressed on its 6 s cooldown is up 5 ÷ 6. Multi-Coupling Equation counts it at that share, the buffs' timers independent (inferred); the attribute pool writes its record at the share. A trigger with no rate (player state, movement) keeps it held.",
+    alternatives: [{ reading: "Held while on the board (before 2026-11-15)", effect: "no fixture figure differs; Multi-Coupling with a pressed Delayed Pain counts 1 for 0.833" }],
+    test: "Cast Delayed Pain on cooldown and watch its buff icon: it should lapse for about 1 s of every 6 s.",
+    source: "SkillEditor Splits 429792, 771257, 874092, 260350, 367580, 586324, 639252, 811743, 451765, 507248 (add-buff durations, header cooldowns); config_char_buff tags 5100304 / 5100310",
+    appliesWhen: (ctx) => (ctx.planner?.defensiveBuffs || []).some((item) => !item.held)
   },
   {
     id: "buff-second-affix-list",
@@ -949,14 +960,14 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "tower-granted-support-level",
-    title: "TOWER Sequence supports: fixed at the printed level?",
-    question: "Item-granted supports now take the build's support levels (user decision 2026-10-27). Does that also hold for a TOWER Sequence's \"Main Skill is supported by Lv. N <Support>\" (Lv. 25 Cataclysm, Lv. 20 Shortened Duration, …), which the user confirmed on 2026-10-11 as fixed at Lv. 25?",
+    title: "TOWER Sequence supports and triggered skills: fixed at the printed level?",
+    question: "Item-granted supports take the build's support levels (user decision 2026-10-27) and skills an item triggers take the build's skill levels (user decision 2026-11-16). Does that also hold for a TOWER Sequence's \"Main Skill is supported by Lv. N <Support>\" (Lv. 25 Cataclysm, Lv. 20 Shortened Duration, …), which the user confirmed on 2026-10-11 as fixed at Lv. 25, and for its \"Triggers Lv. N …\" lines (Lv. 30 Black Hole when moving; Lv. 10 Entangled Pain and Timid Curses when a Minion deals damage)?",
     evidence: "provisional",
-    current: "User decision 2026-10-27 (for now): TOWER Sequence grants keep their printed level (src/gear-unique-modules.js isTowerSequenceLine → fixedLevel), as do item-granted special skills (Main Skill replacements, \"Triggers Lv. N …\" skills: the item's level) and hero-trait grants (Erika's Have Fun \"Lv. 10 Multistrike\"; taking the levels would make it Lv27 on the Erika fixture, sustained ×1.018); gear \"Main Skill is supported by Lv. N\" grants keep taking the support levels. Game data suggests the TOWER grants would scale like gear grants (research/granted-support-level-2026-10-27.md §7: the same affix 330179744 and node-244 parameters, no TOWER exemption), so this stays open until an in-game test.",
-    alternatives: [{ reading: "TOWER grants take the build's support levels too", effect: "higher support values on builds with a TOWER-granted support (Cataclysm's Affliction effect, Shortened Duration)" }],
-    test: "With a TOWER Sequence weapon granting a support and a \"+N Support Skill Level\" item, read the support's level / value in the skill panel.",
-    source: "CLAUDE.md (item-granted supports, 2026-10-27; tower Cataclysm 2026-10-11); research/youga-additional-breakdown-2026-10-27.md D3; research/granted-support-level-2026-10-27.md §7",
-    appliesWhen: (ctx) => ctx.texts.some((entry) => /supported by (?:a )?Lv./i.test(entry.text) && isTowerSequenceLine(entry.text))
+    current: "User decision 2026-10-27 (for now): TOWER Sequence grants keep their printed level (src/gear-unique-modules.js isTowerSequenceLine → fixedLevel), and so do the skills a TOWER Sequence line triggers (src/item-triggered-skills.js isFixedLevelTriggerLine) and hero-trait grants (Erika's Have Fun \"Lv. 10 Multistrike\"; taking the levels would make it Lv27 on the Erika fixture, sustained ×1.018). Every other grant takes the build's levels: gear \"Main Skill is supported by Lv. N\" supports (2026-10-27), Main Skill replacements (2026-10-28) and the skills other items trigger (2026-11-16: Illusory Chimera's Lv. 20 Aim reads Lv. 29 on the 30 T build, as its town panel's Buff factor fits). Game data suggests the TOWER grants would scale like gear grants (research/granted-support-level-2026-10-27.md §7: the same affix 330179744 and node-244 parameters, no TOWER exemption), so this stays open until an in-game test.",
+    alternatives: [{ reading: "TOWER grants take the build's support and skill levels too", effect: "higher support values on builds with a TOWER-granted support (Cataclysm's Affliction effect, Shortened Duration), higher values for a TOWER-triggered Black Hole or curse" }],
+    test: "With a TOWER Sequence weapon granting a support and a \"+N Support Skill Level\" item, read the support's level / value in the skill panel; with a TOWER-triggered skill and a \"+N Spell Skill Level\" item, read that skill's value.",
+    source: "CLAUDE.md (item-granted supports, 2026-10-27; tower Cataclysm 2026-10-11; item-triggered skill levels, 2026-11-16); research/youga-additional-breakdown-2026-10-27.md D3; research/granted-support-level-2026-10-27.md §7; research/town-panel-unplaced-factors-2026-11-15.md",
+    appliesWhen: (ctx) => ctx.texts.some((entry) => /supported by (?:a )?Lv\.|^Triggers? (?:a )?Lv\./i.test(entry.text) && isTowerSequenceLine(entry.text))
   },
   {
     id: "cataclysm-hit-ailment-uptime",
@@ -1253,17 +1264,19 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "follower-crit-chance",
-    title: "The follower's crit chance: does its Critical Strike Rating 500 give 5% on a skill that does not always crit?",
-    question: "The Rampaging Rat letter's special effect '+12% additional damage taken by enemies for 1s when a Projectile Skill lands a Critical Strike' fires on the follower's own Projectile crits only (user-confirmed in game 2026-11-11). How often does the follower crit with a Projectile skill that does not always crit (Origin Ice Shot without Critical Strike Rating Increase)?",
+    title: "The follower's crit chance: 5% per cast on a skill that does not always crit?",
+    question: "Follower effects that fire 'when this skill lands a Critical Strike' (High Voltage's Lightning Infiltration, Bursting Pierce's −30% Armor) and the Rampaging Rat letter's '+12% additional damage taken by enemies for 1s when a Projectile Skill lands a Critical Strike' (the follower's own Projectile crits only, user-confirmed in game 2026-11-11) need the follower's crit chance on a skill that does not always crit (Lightning Beam, Origin Ice Shot without Critical Strike Rating Increase). Is it 5%, checked once per cast?",
     evidence: "game data (partial)",
-    current: "Game records (2026-11-11): modifier 600000009 holds affixes 878078592 (+2 Projectile Quantity, field 2006108), 382580 (+100% Projectile Speed, attr 6005) and 9561181, all on the follower (target 1, the holder; the ULT records reach you only through target 38). 9561181: trigger 1000030 on the holder's damage with the Critical Strike and Projectile tags (both required), one 1 s instance (node 306 mode 2, count 1) of attr 57201 mod 4, +12% additional damage taken with no tag, on the enemy of that damage event (filter 101): every hit and DoT the dummy takes gets it while it holds. User-confirmed in game 2026-11-11: only the follower's own Projectile crits trigger it, never yours. Provisional: 100% on a skill that always crits, else 5% from the follower's Critical Strike Rating 500 (config_mercenary_attr attr 4802 on all 48 letter rows; ÷ 100 as the Minion model reads the Minions' 500; no line of its skills raises it), one crit check per cast; uptime min(1, 1 s × casts/s) for a certain crit, 1 − (1 − p)^(casts/s × 1 s) for a chance. Origin Ice Shot at 0.73 casts/s holds it 3.7% of the time (+0.44%).",
+    current: "Game records (research/follower-crit-chance-2026-11-18.md): config_mercenary_attr writes Critical Strike Rating (attr 4802 mod 1) = 500 on all 48 table rows (32 named, 16 test; proven). Rating ÷ 10,000 = 5%: the panel formulas 21200 and 150067 divide attr 4802 by 10000 and the combat roll (0x141fc07a0) compares a random value with the attacker's own attr 4802 (the roll's scale inferred from the panel). No line of the follower's skills raises it; nothing on the fixtures writes crit to the follower. Provisional, read once per cast (the crit cache: Lightning Beam's Split 572773 does not switch it off): uptime 1 − (1 − 5%)^(casts/s × duration), a timed 'chance' part from the skill's first cast; 100% on a skill that always crits (its text or Critical Strike Rating Increase, label 3001120). High Voltage: affix 1033360273, buff 3461 for 10 s, +13% additional Lightning Damage taken: on the 15 T Chain Lightning build (Lightning Beam 0.4348 casts/s) 19.99% uptime, sustained ×1.0260. Bursting Pierce: −30% Armor for 4 s at the same rate. Rampaging Rat (affix 9561181: only the follower's own Projectile crits trigger it, user-confirmed in game 2026-11-11): Origin Ice Shot at 0.73 casts/s holds it 3.7% of the time (+0.44%). Not settled: whether the follower's cache key is set (the gate needs entity type 18 / 50 and class 1|2, not traced: else one roll per beam hit); whether 'allies' crit grants (filter 20, provisional) or Ally Auras reach the follower (not read); the follower's Critical Strike Damage (its rows write attr 4803 = 15, of unknown meaning; default 150).",
     alternatives: [
-      { reading: "The follower never crits off a skill that always crits (the reading before 2026-11-11)", effect: "Inactive without Forking Thunder or a Critical Strike Rating Increase affix: ×0.996 on the shared Rehan Frost Spike build of 2026-11-11" },
-      { reading: "The rating is read another way (for example ÷ 10, 50%)", effect: "Origin Ice Shot holds it far more often: up to +12% on everything the dummy takes" }
+      { reading: "One crit roll per hit, not per cast (the follower's cache key unset): Lightning Beam's 3 beams roll 1 − 0.95³ = 14.26% per cast", effect: "High Voltage 48.78% uptime: ×1.0634 sustained on the 15 T Chain Lightning build (×1.0260 now)" },
+      { reading: "The follower never crits off a skill that always crits (the reading before 2026-11-11 / 2026-11-18)", effect: "High Voltage and Bursting Pierce Inactive on Lightning Beam: ×0.9747 on the 15 T Chain Lightning build; Rampaging Rat ×0.996 on the shared Rehan Frost Spike build of 2026-11-11" },
+      { reading: "Ally crit grants or Ally Auras raise the follower's rating", effect: "a higher uptime; none on the fixtures" },
+      { reading: "The rating is read another way (for example ÷ 1000, 50%)", effect: "the crit effects hold far more often: up to ×1.13 on the 15 T build" }
     ],
-    test: "With the Rampaging Rat follower casting Origin Ice Shot (no Critical Strike Rating Increase affix) next to a non-Projectile skill of yours, watch your hit numbers on the dummy for a minute: the +12% should show on about 4% of them (5% crit chance, one check per Ice Shot cast, 1 s each).",
-    source: `${FOLLOWER_LETTER_NOTES}; game affixes 9561181, 878078592, 382580, 5500555, 966087936; config_mercenary_attr; src/follower-model.js followerRampagingRat, FOLLOWER_CRIT_RATING`,
-    appliesWhen: (ctx) => ctx.planner.follower?.selection?.follower?.id === "rampaging-rat"
+    test: "With only Tartarus: Lightning Beam + High Voltage on the follower and a Lightning hit of yours, a 1-minute run: the +13% should show on about 20% of your hits (one check per cast) or about 49% (one per beam hit). Rampaging Rat with Origin Ice Shot next to a non-Projectile skill of yours: the +12% on about 4% of your hits.",
+    source: `${FOLLOWER_LETTER_NOTES}; research/follower-crit-chance-2026-11-18.md; game affixes 9561181, 1033360273, 101010553, 878078592, 382580, 5500555, 966087936; buff 3461; config_mercenary_attr; Split 572773; src/follower-model.js FOLLOWER_CRIT_RATING, followerCritUptime, followerAffixHighVoltage, followerRampagingRat, armourShredReading`,
+    appliesWhen: (ctx) => ctx.planner.follower?.selection?.follower?.id === "rampaging-rat" || (ctx.planner.follower?.lines || []).some((line) => /when this skill lands a Critical Strike$/i.test(String(line.text || "")) && line.status === "In calc" && /crit chance/i.test(String(line.reason || "") + String(line.summary || "")))
   },
   {
     id: "follower-ice-shot-projectile-amplification",
@@ -1761,6 +1774,46 @@ export const OPEN_QUESTIONS = Object.freeze([
     // Shown where the two readings differ: a Blessing whose every gain is periodic and too slow to hold its max (Thea's cycle), or one the loop
     // holds below its max at some point after the opening (its peak or its average under the planner's stacks).
     appliesWhen: (ctx) => ctx.heroId.startsWith("thea-") || (ctx.planner.blessings?.entries || []).some((entry) => entry.stacks > 0 && entry.layers?.reading === "periodic" && entry.layers.mean < entry.layers.maxStacks)
+  },
+  {
+    id: "fervor-rating-build-up",
+    title: "Fervor Rating on the dummy: whose hits build it, and how fast",
+    question: "Buff 390 gains 1 Fervor Rating per hit of yours on a Boss. Do hits cast by a Spacetime Illusion count as yours for it, and does a Sentry (Ice Bond) build it with each of its hits as they land?",
+    evidence: "game data (partial)",
+    current: "Census C1 (user decision 2026-11-15: a stack gained only from the dummy starts at 0): buff 390's fight resource affix 411268 [1] gives node 627 +1 to resource 1 on 1000033 against a Rare (5002030) or Boss (5002000) target, bTriggerOnceWithSameSourceEntity false (proven: the recipe rows), so the 5 s / 20 s / 60 s loop builds a non-fixed Rating from 0, one point per landing hit of yours (src/trigger-bus.js section 12), and every reader linear in the Rating reads it on the tick (src/combat-states.js fervorLive: the per-Rating damage lines, Ghost Slaughter's base effect, the per-Rating crit damage, the +2% crit rating per point as a crit chance per state); the sustained figure keeps the held Rating. Inferred: a Spacetime Illusion's hits are its own unit's, so they build none (research/build-15t-illusion-g5-g6-2026-11-15.md §1); a Sentry use's hits land as one record on the loop (Ice Bond: 32 points per deploy, 8 in 60 s). Not on the loop: Vendetta's own crit (Attack Focus per 10 Rating) and Hair-trigger keep the held Rating.",
+    alternatives: [
+      { reading: "The Illusions' hits build the Rating too", effect: "15 T Illusion fixture 5 s ×0.70 → about ×0.96 (the Rating fills in about a second)" },
+      { reading: "Ice Bond builds it 4 points a second, hit by hit", effect: "15 T Illusion fixture 5 s / 20 s / 60 s ×0.703 / ×0.813 / ×0.937 → about ×0.62 / ×0.74 / ×0.91 (the census estimate)" }
+    ],
+    test: "Youga – Spacetime Illusion with a non-fixed Fervor source (Sacrificer's Necklace) on the training dummy: watch the Fervor Rating on the buff bar. Illusions' hits count: it reaches 100 within about a second; only Ice Bond: about 25 s.",
+    source: "research/buildup-uptime-census-2026-11-15.md §2.1; research/build-15t-illusion-g5-g6-2026-11-15.md §4; src/trigger-bus.js; src/tick-layers.js fervorReaders",
+    appliesWhen: (ctx) => Boolean(ctx.planner.lineEffects?.combat?.buffs?.fervorLive)
+  },
+  {
+    id: "cruelty-stack-timer",
+    title: "Precise: Cruelty's stacks: one timer or one per gain?",
+    question: "Each gain of Cruelty's buff (40% on hitting an Elite, 5 stacks, 4 s; Precise 8 s) adds stacks to buff 15184. Does a gain refresh the timer of every stack, or does each gain's 5 stacks run out on their own?",
+    evidence: "game data (partial)",
+    current: "Census (user decision 2026-11-15: a stack gained only from the dummy starts at 0): record 50355540 row 2 (1000033 on an Elite, bTriggerOnceWithSameSourceEntity true, node 188 40%, node 374 5 stacks of buff 15184 for 4 s / 8 s) is read on the loop through the chance accumulator, each gain adding 5 stacks up to 40 and refreshing their one timer (inferred: buff 15184's stack mode is not traced); row 3's 2.5% × GetBuffStack is one additional Aura Effect term on the Aura's scaled lines. The sustained figure keeps 40 (user-confirmed 2026-10-28). Every hitting fixture fills it within a few frames of hits, so the two readings differ only in the first second.",
+    alternatives: [
+      { reading: "Each gain's stacks keep their own timer", effect: "a build hitting less often than one landing per 0.4 s holds fewer than 40 stacks; no fixture moves noticeably" }
+    ],
+    test: "Precise: Cruelty on the training dummy with a slow single-hit skill (one hit every 2 s): the buff's stack count climbs by 5 per gain and never drops below the last count before 8 s pass (one timer), or drops in steps of 5 (own timers).",
+    source: "research/buildup-uptime-census-2026-11-15.md §4; src/aura-effects.js auraOwnStackEffect; src/trigger-bus.js section 13",
+    appliesWhen: (ctx) => (ctx.planner.aura?.entries || []).some((entry) => entry.ownStackEffect?.stacks > 0)
+  },
+  {
+    id: "bing-whimsy-opening",
+    title: "Mind Domain at engagement: when does the first Whimsy Explosion land?",
+    question: "Mind Domain's Whimsy stacks come from standing in a Whimsy Explosion's field (a stack every 0.5 s). The explosion needs 100 Whimsy Essence and your Spell Damage on an enemy. Is the Essence full when the fight starts, so the first Spell hit explodes at once?",
+    evidence: "game data (partial)",
+    current: "Census C3 (user decision 2026-11-15: a stack gained only from the dummy starts at 0): the windows and the 60 s recount hold no Whimsy until your first Spell hit + 0.5 s (the field's delay, Split 318305), then add a stack every 0.5 s (record 605182080, gate 206 0.5 s) up to the cap. Inferred: the Essence is pre-built at 100 (gained over time with no target), so the first explosion is at the first Spell hit; each stack after k × 0.5 s in the field.",
+    alternatives: [
+      { reading: "The Essence starts empty", effect: "the first explosion waits 100 ÷ the Essence per second (5 s at 20/s): the Bing 10 T and 30 T 5 s windows lower again (not measured)" }
+    ],
+    test: "Bing – Creative Genius with Mind Domain on the training dummy: watch the Whimsy Essence bar and the first explosion as you start casting.",
+    source: "research/buildup-uptime-census-2026-11-15.md §2.3; src/bing-traits.js",
+    appliesWhen: (ctx) => Boolean(ctx.planner.lineEffects?.state?.bing?.creative?.whimsy?.percent > 0)
   },
   {
     id: "thea-gods-boon-cycle",
@@ -2506,7 +2559,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Seething Silhouette: how often the Seething Spirit casts",
     question: "The Seething Spirit casts your Main Skill (game hyperlink 630024). How often does it cast while Berserk (Ritual of Offering: \"always exists and attacks automatically\"; Fury's Onslaught: for 2 s after each Main Skill use), and does each cast deal your full hit with your bonuses?",
     evidence: "provisional",
-    current: "Provisional, the rate only. The Spirit is NPC 10100 with ghost record 10100 (Melee and Attack, adds tag 6001190); its lines are written on you, so its hits read your lines (records 629, 187841424). With \"always exists\" the client's interval (field 2300102) is off, and its AI decides the casts; that behavior data is not extracted. Read: your own use rate for the Main Skill (Attack Speed included, × 0.7 with Fury's Onslaught's -30%), for the whole Berserk (Ritual) or while you use the Main Skill within every 2 s (Fury's Onslaught). Each cast is a full use with the Berserk-phase lines, Ritual's +X% additional Seething Spirit Damage and Fury's game-record offset (-43.82% at rank 5). Its hits count as applications of the skill's ailments (inferred). Disarmed (Ritual): your Attack Skills pause for the Berserk (Rage Infusion: its first 5 s).",
+    current: "Provisional, the rate only. The Spirit is NPC 10100 with ghost record 10100 (Melee and Attack, adds tag 6001190); its lines are written on you, so its hits read your lines (records 629, 187841424). With \"always exists\" the client's interval (field 2300102) is off, and its AI decides the casts; that behavior data is not extracted. Read: your own use rate for the Main Skill (Attack Speed included, × 0.7 with Fury's Onslaught's -30%), for the whole Berserk (Ritual) or while you use the Main Skill within every 2 s (Fury's Onslaught). Each cast is a full use with the Berserk-phase lines, Ritual's +X% additional Seething Spirit Damage and Fury's game-record offset (-43.82% at rank 5). Its hits count as applications of the skill's ailments (inferred). With a Combo Main Skill its casts run their own Combo cycle and never add to or spend your Combo Points (the client's 0x141defa80 reads the skill owner's points when a ghost casts another unit's skill object, but which object the Spirit casts was not traced; a user-pasted Google AI Mode answer, 2026-11-15, agrees with the separate cycle; not an in-game test). Disarmed (Ritual): your Attack Skills pause for the Berserk (Rage Infusion: its first 5 s).",
     alternatives: [
       { reading: "The Spirit has its own attack interval", effect: "a different Spirit cast rate" }
     ],
@@ -2947,12 +3000,12 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "gear-minion-curse-trigger",
     title: "Gear: \"Triggers Lv. N <Curse> when Minions deal damage\"",
-    question: "Is a curse a Minion triggers held on the dummy all the time while the Minion keeps hitting (cooldown 0.2 s), and is it exactly the printed level (no Curse or Skill Level lines raise it)?",
+    question: "Is a curse a Minion triggers held on the dummy all the time while the Minion keeps hitting (cooldown 0.2 s), and do the build's skill level lines raise it like any item-triggered skill?",
     evidence: "provisional",
-    current: "Provisional: held at uptime 1 at the printed level while a modeled Minion deals damage; it takes a curse slot after the skill curses like any gear-triggered curse (src/build-mechanics.js).",
+    current: "Provisional: held at uptime 1 while a modeled Minion deals damage; it takes a curse slot after the skill curses like any gear-triggered curse (src/build-mechanics.js). Its level is the printed level + the build's skill level lines (All Skills, Active, Spell / Curse …), the user decision of 2026-11-16 for item-triggered skills; the TOWER Sequence line (Lv. 10 Entangled Pain and Timid Curses) keeps its printed level (open question tower-granted-support-level).",
     alternatives: [
       { reading: "The curse lasts shorter than the gap between Minion hits", effect: "a lower uptime" },
-      { reading: "Curse level lines raise it", effect: "a stronger curse" }
+      { reading: "The curse stays at the printed level (a Minion's damage casts it, not you)", effect: "a weaker curse when the build has Spell / Curse / Active level lines" }
     ],
     test: "Summon a Minion with the affix equipped, watch the dummy's debuff bar for gaps and compare the curse's tooltip level with the printed one.",
     source: "research/gear-affixes-audit-2026-10-22.md §8",
@@ -3040,16 +3093,43 @@ export const OPEN_QUESTIONS = Object.freeze([
   },
   {
     id: "gear-spell-burst-on-use",
-    title: "\"+X% chance to immediately gain N stack(s) of Spell Burst Charge when using a skill\"",
-    question: "Does the charge gained add to the charge time as a plain rate?",
-    evidence: "provisional",
-    current: "Game record (chunk 11): 32278 fires on trigger 1000074, a player's use of any skill, so automatic casts do not roll it and every other manual skill does. Provisional: the charge rate is Max Spell Burst ÷ full charge time + Σ chance × N per manual use of the Spell Burst skill; other skills' uses are not counted yet.",
+    title: "\"+X% chance to immediately gain N stack(s) of Spell Burst Charge when using a skill\": which uses roll it",
+    question: "Does every use of yours roll it (each channel loop step of a channelled skill, a free step included; Spell Burst's automatic casts after your own cast; Multistrike repeats), while a triggered cast (Activation Medium: Burst Activation's, and its automatic casts) rolls nothing?",
+    evidence: "game code (not tested)",
+    current: "Record 32278: trigger 1000074, gate 188 (the chance), gate 206 (0.03 s, one success a frame), node 627 +N on resource 11 (the Spell Burst stacks). SS14 client: a press, each channel loop step (0x1423e5430, a step with no cost too: 0x141e03400 passes it at once), a Spell Burst automatic cast of your cast and a Multistrike repeat of your use raise 1000074; a triggered use raises 1000060 (0x142417e30), so Burst Activation's casts cannot refill their own Spell Burst. Provisional: the hit pass measures those uses (src/planner.js playerSkillUses) and a 30 Hz walk of the charge (src/spell-burst-refill.js: the regular charge, the refills, the check each frame, each activation emptying it) gives Burst Activation's activations and a Spell-Bursting skill's full charge time (15 T Chain Lightning audit G1, 2026-11-18; before, only the Spell-Bursting skill's own manual casts counted, as a plain rate).",
     alternatives: [
-      { reading: "Automatic Spell Burst casts also roll it", effect: "a faster recharge" }
+      { reading: "A channel's loop steps do not roll it (only presses)", effect: "the 15 T Chain Lightning build's Burst Activation back to its regular charge, 1.17 activations a second for 6.56 (×0.18 on Chain Lightning)" },
+      { reading: "Spell Burst's automatic casts do not roll it", effect: "a slightly slower refill for a Spell-Bursting skill you cast yourself" }
     ],
-    test: "Watch the Spell Burst bar on the dummy with and without the affix and time a full recharge.",
-    source: "research/gear-affixes-audit-2026-10-22.md §8; game affix 32278",
+    test: "Channel Path of Flames (or any skill with a free channel step) with Surging Inspiration and Chain Lightning on Activation Medium: Burst Activation; count Chain Lightning's casts over 10 s: about 66 activations × 3 casts by the walk, about 12 × 3 if the steps roll nothing.",
+    source: "research/build-15t-chain-lightning-audit-2026-11-18.md §G1; research/zero-cost-channel-step-2026-11-18.md; research/gear-affixes-audit-2026-10-22.md §8; game affix 32278",
     appliesWhen: (ctx) => ctx.hasText(/Spell Burst Charge when using a skill/i) && ctx.skillHits.some((hit) => hit.rate?.spellBurst)
+  },
+  {
+    id: "spell-burst-no-trigger-row",
+    title: "Activation Medium: Burst Activation: checked every frame?",
+    question: "Burst Activation's row has no trigger, only a gate (current Spell Burst = max). Is it checked every frame, so it casts the supported skill as soon as a refill fills Spell Burst, not only when the regular charge completes a stack?",
+    evidence: "game data (partial)",
+    current: "Record 987090624 row 1: no trigger node; its gate GetFightResource(11, 0) = GetFightResource(11, 1) and above 0, an enemy within 25 m; node 2320 casts the supported skill; row 2 refills resource 11 on that cast. Inferred: the row is evaluated every frame (the SS13 Affix system steps its node lists every frame, research/tick-engine-prototype-2026-10-31.md session 5; a one-off evaluation would cast at most once; the SS14 Affix update was not resolved, research/zero-cost-channel-step-2026-11-18.md §3). The walk (src/spell-burst-refill.js) also reads, inferred: the regular charge as progress towards a full charge, reset to 0 at each activation (C1, proven), on whole frames; in a frame the regular charge, then the refills, then the check (a Monte Carlo of the 15 T fixture's point read the check-first order the same within its noise); the 5 s / 20 s windows and the 60 s recount place the casts at the walk's mean interval (no runs of failed rolls).",
+    alternatives: [
+      { reading: "Checked only when a regular Spell Burst stack is gained", effect: "a refill waits for the next regular stack: Burst Activation near its regular 1.17 activations a second on the 15 T Chain Lightning build" }
+    ],
+    test: "Same as the refill check: with a free channel step rolling Surging Inspiration, count Burst Activation's casts over 10 s (about 66 activations if checked every frame).",
+    source: "research/build-15t-chain-lightning-audit-2026-11-18.md §G1 (link 1); research/zero-cost-channel-step-2026-11-18.md §3",
+    appliesWhen: (ctx) => ctx.skillHits.some((hit) => hit.rate?.spellBurst?.burstActivation && hit.rate.spellBurst.chargeSpeed?.refill)
+  },
+  {
+    id: "channel-loop-step-branch",
+    title: "Does a channelled skill's each step raise \"using a skill\" (1000074)?",
+    question: "A channel loop step raises 1000074 after its payment, a free step too. Does a channelled skill such as Path of Flames run that loop branch, so each of its steps (13.11 a second on the 15 T Chain Lightning build) rolls the \"when using a skill\" lines?",
+    evidence: "game code (not tested)",
+    current: "Proven (SS14 client, research/zero-cost-channel-step-2026-11-18.md): the loop step 0x1423e5430 raises 1000072 / 1000074 / 1000078 after paying, a step whose Mana and Life cost are both 0 passes the affordability check 0x141e03400 at once, and a step that raises nothing ends the loop. Inferred: which Split fields set the instance's loop flag (0x142406910 sets +0xfc when +0x163 is set and the timing object's +0x38 is positive); Path of Flames' Split 911777 carries a channel block (0.333 s, Max Channeled Stacks 5). The planner counts each channel step as a use of yours (its applications per second).",
+    alternatives: [
+      { reading: "The channel runs the other branch (no loop steps)", effect: "the steps raise nothing: the 15 T Chain Lightning build's Burst Activation at its regular 1.17 activations a second (×0.18 on Chain Lightning)" }
+    ],
+    test: "Channel Path of Flames alone with Surging Inspiration and watch the Spell Burst bar: it should fill about every second step (13 steps a second), not only every 0.85 s.",
+    source: "research/zero-cost-channel-step-2026-11-18.md §1, §4; research/build-15t-chain-lightning-audit-2026-11-18.md §G1 (link 2)",
+    appliesWhen: (ctx) => ctx.hasText(/Spell Burst Charge when using a skill/i) && (ctx.planner?.hitRateFacts?.playerUseStreams || []).some((stream) => (ctx.setups.find((setup) => setup.setupKey === stream.setupKey)?.tags || []).includes("Channeled"))
   },
   {
     id: "gear-demolisher-consumed",
@@ -3137,7 +3217,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Gear: \"Triggers Lv. 30 Aim while standing still. Interval: 1 s\"",
     question: "Is the item's Aim held to Aim's 10 s cooldown (6 s of every 10 s)?",
     evidence: "provisional",
-    current: "Game record: Aim's value comes from its buff's level map, 38.25% at Lv. 30 (src/aim-model.js). Provisional: with no Aim on the skill board, a Lv. N Aim at max(1 s, its cooldown) while standing still (the movement group compares it); with Aim on the board, no change.",
+    current: "Game record: Aim's value comes from its buff's level map, 38.25% at Lv. 30 (src/aim-model.js). Provisional: with no Aim on the skill board, a Lv. N Aim (+ the build's skill level lines, user decision 2026-11-16: Illusory Chimera's Lv. 20 Aim is Lv. 29 on the 30 T build) at max(1 s, its cooldown) while standing still (the movement group compares it); with Aim on the board, no change.",
     alternatives: [
       { reading: "The item's trigger ignores the cooldown", effect: "Aim held all the time while standing still" }
     ],
@@ -3150,7 +3230,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Gear: \"Triggers Lv. 30 Black Hole when moving. Interval: 1.5 s\"",
     question: "Is the item's Black Hole held to the skill's 10 s cooldown, and do its 100 Affliction on damage and its Euphoria (+3.5% additional Damage Over Time per 10 Affliction) apply?",
     evidence: "provisional",
-    current: "Provisional: with no Black Hole on the skill board, a Lv. 30 Black Hole DoT at max(1.5 s, its 10 s cooldown) while moving (the movement group compares it), the skill's own DoT model; its Affliction and Euphoria are not modeled (as for the skill on the board).",
+    current: "Provisional: with no Black Hole on the skill board, a Lv. 30 Black Hole DoT (a TOWER Sequence line: its printed level, open question tower-granted-support-level) at max(1.5 s, its 10 s cooldown) while moving (the movement group compares it), the skill's own DoT model; its Affliction and Euphoria are not modeled (as for the skill on the board).",
     alternatives: [
       { reading: "The item's trigger ignores the cooldown", effect: "a Black Hole every 1.5 s, overlapping" },
       { reading: "Its Euphoria applies to every DoT on the dummy", effect: "+35% additional DoT for 4 s of every 10 s" }
@@ -3164,7 +3244,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "Gear: \"Triggers Lv. 20 Scorch Curse upon dealing damage to enemies\"",
     question: "Is the item's Scorch held all the time on the dummy?",
     evidence: "provisional",
-    current: "Game records: buff 16080's 200000312 writes p0 × GetEffectScale at the level's value, so Curse Effect scales it (research/core-formulas-chunk0-2026-10-31.md §13.3). Provisional: with no Scorch skill on the bar, the dummy holds it all the time at +39% × (1 + Curse Effect) additional Fire Damage taken.",
+    current: "Game records: buff 16080's 200000312 writes p0 × GetEffectScale at the level's value, so Curse Effect scales it (research/core-formulas-chunk0-2026-10-31.md §13.3). Provisional: with no Scorch skill on the bar, the dummy holds it all the time at its level's value (+39% at Lv. 20) × (1 + Curse Effect) additional Fire Damage taken; its level is the printed one + the build's skill level lines (user decision 2026-11-16).",
     alternatives: [
       { reading: "It lapses between triggers", effect: "a lower share of the time at the bonus" }
     ],
@@ -4138,7 +4218,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "How many Numbed stacks does a weak Lightning source hold?",
     question: "On a Numbed enemy, stacks come from Lightning Damage dealt against the enemy's Max Life + Energy Shield. The follower's storm strikes are 50 flat Lightning. Does the dummy's Life let them add a stack?",
     evidence: "game code (not tested)",
-    current: "Client 0x141ef1180 (chunk 14, 2026-11-01; manual rule 1002000720): while the target is Numbed, each attacker's Lightning hits build a store; every whole (field 2006882, 10%) × (Max Life + Max Energy Shield) in it adds a stack, the rest carries. So the follower's storm holds the 1 stack its strike inflicts on a clean dummy, whenever no hit of yours deals Lightning after conversion: the planner sets that stack (src/combat-states.js), the engine reads it. With Lightning hits of yours the planner keeps 10 (their store fills fast). The dummy's Max Life is not in the tables: a threshold under 1 point would add the cap at once.",
+    current: "Client 0x141ef1180 (chunk 14, 2026-11-01; manual rule 1002000720): while the target is Numbed, each attacker's Lightning hits build a store; every whole (field 2006882, 10%) × (Max Life + Max Energy Shield) in it adds a stack, the rest carries. So the follower's storm holds the 1 stack its strike inflicts on a clean dummy, whenever no hit of yours deals Lightning after conversion: the planner sets that stack (src/combat-states.js), the engine reads it. With Lightning hits of yours the planner keeps 10 (their store fills fast). The dummy's Max Life is not in the tables: a threshold under 1 point would add the cap at once. On the loop (src/tick-layers.js numbedLayer) each Numbing hit of yours adds 1 + the \"Inflicts N additional stack(s) of Numbed\" lines' N (game record 173497728, node 343 on buff 170; since 2026-11-18, 15 T Chain Lightning audit G4), each on its own 2 s; the store's per-damage stacks are not counted there. Inferred: node 343 sits on the holder of the line, so the follower's (and your Minions') Numbed takes none of your extra stacks (1 per infliction on the loop).",
     alternatives: [
       { reading: "The dummy's Life is so small that the threshold is under 35 damage", effect: "Youga Forking Thunder ×1.43 on the average at 10 stacks" }
     ],
@@ -4790,7 +4870,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     source: "research/wiring-audit-triggers-2026-11-03.md gap 4; src/trigger-rows.js DOT_TICKS_PER_SECOND; src/crowd-control-recipes.js; src/blessing-model.js; src/combat-states.js",
     appliesWhen: (ctx) => !ctx.skillHits.length && ((ctx.planner.skillDots || []).some((dot) => dot?.modeled) || Object.values(ctx.ailments).some((ailment) => ailment?.modeled)) && ctx.hasText(/(?:when|upon) (?:you (?:or (?:your )?Minions )?)?(?:deal|dealing|inflicting) damage/i)
   },
-  // W10 step 1 (2026-11-04; src/trigger-bus.js): shown only when the trigger bus drives this build's windows (TLI_TRIGGER_BUS=bus, not the default)
+  // W10 step 1 (2026-11-04; src/trigger-bus.js): shown only when the trigger bus drives this build's windows (TLI_TRIGGER_BUS=bus, the default since 2026-11-15)
   // and a hit of yours raised an event a listener heard. Step 2b (2026-11-04): the SS14 client settled the count and the flag
   // (research/trigger-events-rea-2026-11-04.md §1, §2); what is left open is which hits the planner lands on the dummy.
   {
@@ -4807,7 +4887,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.bus?.events || 0) > 0 && (ctx.planner?.dummyRecount?.engine?.bus?.listeners || []).some((item) => (item.trigger ?? 1000033) !== 1000032 && item.events > (item.dotEvents || 0) + (item.reapEvents || 0))
   },
   // W10 steps 2a and 2b (2026-11-04; src/trigger-bus.js): shown only when the trigger bus drives trigger 1000030 or 1000032 on this build's windows
-  // and a DoT or a Reap of yours raised an event on the loop (TLI_TRIGGER_BUS=bus, not the default). The cadence is the client's
+  // and a DoT or a Reap of yours raised an event on the loop (TLI_TRIGGER_BUS=bus, the default since 2026-11-15). The cadence is the client's
   // (research/trigger-events-rea-2026-11-04.md §3); what each event carries is not traced.
   {
     id: "trigger-bus-dot-events",
@@ -4826,7 +4906,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => engineDrives(ctx) && ((ctx.planner?.dummyRecount?.engine?.bus?.dotEvents || 0) > 0 || (ctx.planner?.dummyRecount?.engine?.bus?.reapEvents?.you || 0) > 0)
   },
   // W10 step 3a (2026-11-04; src/trigger-bus.js): shown only when the trigger bus owns Blur on this build's windows (TLI_TRIGGER_BUS=bus, not the
-  // default). User decision 2026-11-04: a Blur gained from Reaps starts at 0 and builds from them; the rest is read here.
+  // default since 2026-11-15; on "layers" too, LAYER_READINGS reapBlur). User decision 2026-11-04: a Blur gained from Reaps starts at 0 and builds from them; the rest is read here.
   {
     id: "trigger-bus-blur-from-reaps",
     title: "Blur gained on the dummy (\"+50% chance to gain Blur when Reaping\"): how long does it last, and does a new gain refresh it?",
@@ -4861,7 +4941,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.bus?.reapStacks || []).length > 0
   },
   // W10 step 3b (2026-11-04; src/trigger-bus.js): shown only when the trigger bus raises your skill uses on this build's windows (TLI_TRIGGER_BUS=bus,
-  // not the default).
+  // the default since 2026-11-15).
   {
     id: "trigger-bus-use-events",
     title: "Skill-use events on the trigger bus: what is still read rather than traced?",
@@ -4878,7 +4958,7 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.bus?.useEvents?.uses || 0) > 0
   },
   // W10 step 3c (2026-11-04; src/trigger-bus.js): shown only when the trigger bus raises your Minions' hits or your Regains on this build's windows
-  // (TLI_TRIGGER_BUS=bus, not the default).
+  // (TLI_TRIGGER_BUS=bus, the default since 2026-11-15).
   {
     id: "trigger-bus-minion-regain-events",
     title: "Your Minions' hits and your Regains on the trigger bus: what is read rather than traced?",
@@ -5158,11 +5238,11 @@ export const OPEN_QUESTIONS = Object.freeze([
   {
     id: "permafrost-frost-terra",
     title: "Ice Lances: Permafrost: how strong is the Frost Terra it triggers?",
-    question: "Ice Lances: Permafrost triggers a Lv. 20 Frost Terra on hit every 1.5 s. Does that Terra stay at Lv. 20 whatever the build's skill level lines, does it consume a Terra Charge (+40% each), is its 1.5 s ready when the fight starts, and does its area keep the DoT on the dummy for its whole 10 s?",
+    question: "Ice Lances: Permafrost triggers a Lv. 20 Frost Terra on hit every 1.5 s. Does that Terra take the build's skill level lines (as an item's triggered skill does since 2026-11-16), does it consume a Terra Charge (+40% each), is its 1.5 s ready when the fight starts, and does its area keep the DoT on the dummy for its whole 10 s?",
     evidence: "game data (partial)",
-    current: "Applied 2026-11-14 (review research/support-revived-review-2026-11-13.md §3 G3; src/permafrost-terra.js). Proven from the records: the support's affix 888393792 [1.5, 20] fires on the supported skill's landing hit (trigger 1000033 on this skill), behind a 1.5 s node 206 gate with no Cooldown Recovery flag, and node 2320 casts stone 1551 at level 20 on the target. Stone 1551 is Frost Terra's stone 1610 without the Frost Terra family tag; its Terra Charge affix 974028 holds 40 (1610's holds 26), and it carries 1610's Frostbite affix 14853477. Its only Split 619202 deals Frost Terra's DoT row 271 through the same buff 10200, with a 10 s area (1610's Split: 6 s, so the \"+66% additional Duration\" is the Split's) × Skill Effect Duration. Inferred: the Terra is fixed at Lv. 20 (an item's \"Triggers Lv. N …\" skill's precedent: no level line, no support of Ice Lances), it consumes the charges it holds (1 at its default max, so +40%), the gate is ready at the fight's first hit (its 1.5 s ran out before), the area keeps the 2 s status on the dummy while it lasts (Thornfield's reading of the same area component), and with a Frost Terra on the board the two share buff 10200, one record, so the triggered one adds no DoT. A trigger every ceil(1.5 s × uses/s) ÷ uses/s at the supported skill's steady rate. No-gear Ice Lances Lv. 20 probe: one every 1.95 s, the Terra's DoT 521.75 (484 × 1.4 × 1.1 Frostbite × 0.7), and the dummy Frostbitten (Ice Lances ×1.1): sustained 957.4 → 1,622.2.",
+    current: "Applied 2026-11-14 (review research/support-revived-review-2026-11-13.md §3 G3; src/permafrost-terra.js). Proven from the records: the support's affix 888393792 [1.5, 20] fires on the supported skill's landing hit (trigger 1000033 on this skill), behind a 1.5 s node 206 gate with no Cooldown Recovery flag, and node 2320 casts stone 1551 at level 20 on the target. Stone 1551 is Frost Terra's stone 1610 without the Frost Terra family tag; its Terra Charge affix 974028 holds 40 (1610's holds 26), and it carries 1610's Frostbite affix 14853477. Its only Split 619202 deals Frost Terra's DoT row 271 through the same buff 10200, with a 10 s area (1610's Split: 6 s, so the \"+66% additional Duration\" is the Split's) × Skill Effect Duration. Inferred: the Terra is Lv. 20 + the build's skill level lines for its tags (the same node-2320 cast as an item's \"Triggers Lv. N …\" skill, which takes them by the user decision of 2026-11-16; no support of Ice Lances), it consumes the charges it holds (1 at its default max, so +40%), the gate is ready at the fight's first hit (its 1.5 s ran out before), the area keeps the 2 s status on the dummy while it lasts (Thornfield's reading of the same area component), and with a Frost Terra on the board the two share buff 10200, one record, so the triggered one adds no DoT. A trigger every ceil(1.5 s × uses/s) ÷ uses/s at the supported skill's steady rate. No-gear Ice Lances Lv. 20 probe: one every 1.95 s, the Terra's DoT 521.75 (484 × 1.4 × 1.1 Frostbite × 0.7), and the dummy Frostbitten (Ice Lances ×1.1): sustained 957.4 → 1,622.2.",
     alternatives: [
-      { reading: "The triggered Terra takes the build's skill level lines (as a Main Skill replacement does)", effect: "+10% additional damage per level from 21 to 30, +8% past 30, on its DoT; none on a build without level lines" },
+      { reading: "The triggered Terra stays at Lv. 20 whatever the build's skill level lines (the 2026-10-27 item precedent)", effect: "no +10% additional damage per level from 21 to 30 (+8% past 30) on its DoT; none on a build without level lines" },
       { reading: "A triggered cast consumes no Terra Charge", effect: "×0.714 on its DoT (×0.908 on the no-gear probe's sustained figure)" },
       { reading: "The gate starts in its cooldown: the first Terra 1.5 s into the fight", effect: "the first Terra at the next hit after 1.5 s: about ×0.70 on its 5 s window (×0.90 on the probe's 5 s figure); none on the sustained figure" },
       { reading: "The area applies its status once, on landing", effect: "none while the supported skill uses at least 0.5 times a second (a trigger every 2 s or faster keeps the 2 s status up); below that the DoT lapses between triggers" },

@@ -16,7 +16,7 @@ export function scorchingBeamCastRate({ blessings, ceaselessTide = false, main, 
   // Scorching Beam is a Channeled Skill, so channel-only speed applies to it.
   const channeledCounted = number(talent.channeledAttackAndCastSpeedPercent) + number(slate.channeledAttackAndCastSpeedPercent) !== 0;
   const recipe = speedAdjust && speedPathMode() === "recipe" ? speedAdjust(main, { channeledCounted }) : null;
-  const increasedPercent = number(recipe?.increased) + number(blessings?.castSpeedPercent) + number(aimCastSpeedPercent) + number(talent.attackAndCastSpeedPercent) + number(talent.castSpeedPercent) + number(talent.channeledAttackAndCastSpeedPercent)
+  let increasedPercent = number(recipe?.increased) + number(blessings?.castSpeedPercent) + number(aimCastSpeedPercent) + number(talent.attackAndCastSpeedPercent) + number(talent.castSpeedPercent) + number(talent.channeledAttackAndCastSpeedPercent)
     // Talent and slate lines share one parser (src/talent-text-effects.js); before talent batch T1 only captured
     // Selena nodes filled the talent keys, and slates had no channel-only key.
     + number(slate.attackAndCastSpeedPercent) + number(slate.castSpeedPercent) + number(slate.channeledAttackAndCastSpeedPercent)
@@ -24,13 +24,24 @@ export function scorchingBeamCastRate({ blessings, ceaselessTide = false, main, 
     + number(spirits.attackAndCastSpeedPercent) + number(spirits.castSpeedPercent)
     // Conditional and per-stat lines the shared resolver made active (src/line-effects.js, talent batch chunk 2).
     + number(lineSpeed?.increasedPercent);
-  const supportPercent = (main?.supports || []).filter((support) => support.enabled !== false && support.name === "Quick Decision")
-    .reduce((total, support) => total + (Number(support.effects?.join(" ").match(/([+-]\d+(?:\.\d+)?)\s*%\s+additional Attack and Cast Speed/i)?.[1]) || 0), 0);
+  // Support Cast Speed (2026-11-14, validation refresh item 1). Scorching Beam reads every enabled support's resolved speed clause
+  // (src/support-effects.js effects.speed, kind "cast" or "both"; Tangle Surge's recipe 101010457 "-10% additional Cast Speed", this skill):
+  // increased joins the pool, each additional write is its own factor (mod 4). Other setups keep Quick Decision only: the skill-hit model
+  // reads every other support's speed clause itself (src/skill-hit-model.js supportLayers skips only Quick Decision on spells).
+  const beamSpeed = main?.name === "Scorching Beam" && Array.isArray(main?.supportEffects?.speed)
+    ? main.supportEffects.speed.filter((line) => line.kind === "cast" || line.kind === "both") : null;
+  const supportAdditional = beamSpeed
+    ? beamSpeed.filter((line) => line.additional).map((line) => number(line.value))
+    : [(main?.supports || []).filter((support) => support.enabled !== false && support.name === "Quick Decision")
+      .reduce((total, support) => total + (Number(support.effects?.join(" ").match(/([+-]\d+(?:\.\d+)?)\s*%\s+additional Attack and Cast Speed/i)?.[1]) || 0), 0)];
+  const supportIncreased = beamSpeed ? beamSpeed.filter((line) => !line.additional).reduce((total, line) => total + number(line.value), 0) : 0;
+  const supportPercent = supportAdditional.reduce((total, value) => total + value, 0);
+  increasedPercent += supportIncreased;
   const additionalPercent = number(gear["castSpeedPercent:more"]) + supportPercent;
   const increasedFactor = Math.max(0, 1 + increasedPercent / 100);
   // Recipe: the support's and each line's additional Cast Speed multiply on their own; what the gear key holds beyond the lines stays one term.
   const gearRemainder = recipe ? number(gear["castSpeedPercent:more"]) - number(recipe.textAdditional) : 0;
-  const additionalTerms = recipe ? [supportPercent, ...recipe.additional.map((line) => number(line.value)), ...(Math.abs(gearRemainder) > 1e-9 ? [gearRemainder] : [])] : [additionalPercent];
+  const additionalTerms = recipe ? [...(supportAdditional.length ? supportAdditional : [0]), ...recipe.additional.map((line) => number(line.value)), ...(Math.abs(gearRemainder) > 1e-9 ? [gearRemainder] : [])] : [additionalPercent];
   const additionalFactor = additionalTerms.reduce((factor, value) => factor * Math.max(0, 1 + value / 100), 1) * (ceaselessTide ? 0.8 : 1)
     * (lineSpeed?.additionalPercents || []).reduce((factor, value) => factor * Math.max(0, 1 + number(value) / 100), 1);
   return {

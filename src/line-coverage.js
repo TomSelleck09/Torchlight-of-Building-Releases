@@ -37,7 +37,8 @@ import { SOLID_RIVER_DAMAGE_LINE, SOLID_RIVER_TRIGGER_LINE } from "./activation-
 import { TERRA_CHARGE_ON_USE } from "./selena-dance.js";
 import { ATTACK_AILMENT_CHANCE, CRIT_AILMENT_CHANCE } from "./ailment-applications.js";
 import { COMBO_POINTS_GAINED_LINE, COMBO_EXTRA_LINE } from "./combo-points.js";
-const CC_COMBAT_ENTRY_LINE = /^\+[\d.]+% Intimidating effect$/i;
+// "+X% Intimidating effect" and "+X% Crowd Control Effect(s)" (src/combat-states.js, 2026-11-15): the planner's combat entry decides.
+const CC_COMBAT_ENTRY_LINE = /^(?:\+[\d.]+% Intimidating effect|[+-][\d.]+% Crowd Control Effects?)$/i;
 const MINION_AILMENT_LINE = /^(?:Adds [\d.]+ ?[-–] ?[\d.]+ Base (?:Ailment|Ignite|Trauma|Wilt) Damage to Minions|\+[\d.]+% chance for Minions to inflict (?:Damaging Ailments|Ignite|Trauma|Wilt)|\+[\d.]+% (?:Ignite|Trauma|Wilt|Numbed) chance for Minions)$/i;
 import { markLineKind } from "./mark-effect.js";
 import { pureHeartLineStatus } from "./pure-heart.js";
@@ -53,6 +54,8 @@ import { TROOP_FAMILIES } from "./moto-iris-traits.js";
 import { MAGMASKULL_AFFLICTION_FIRE_LINE } from "./affliction-fire-hits.js";
 import { isFocusRateProfile } from "./focus-speed.js";
 import { nightfallLineStatus } from "./approaching-nightfall.js";
+import { mobilityPressInterval } from "./press-schedule.js";
+import { BASE_BLESSING_SECONDS } from "./blessing-layers.js";
 
 // Second opinion for tooltip coverage badges. The older per-panel checks know the
 // Ignite ledger; this one knows the generic ailment, Reaping, crit, support, curse,
@@ -63,7 +66,7 @@ import { nightfallLineStatus } from "./approaching-nightfall.js";
 let context = null;
 // A "+X% <Blessing> Blessing Duration" line: In calc when a held Blessing's timer can lapse in the windows (Focus, or Agility short of 100% uptime on the
 // engine's run; src/tick-layers.js blessingLayer), No DPS effect when it is held and its timer changes nothing (Tenacity has none), Inactive when none is held.
-function blessingDurationStatus(planner, names) {
+function blessingDurationStatus(planner, names, text = "") {
   const held = planner.blessings.entries.filter((entry) => entry.stacks > 0 && names.some((name) => name.toLowerCase() === entry.name.toLowerCase())).map((entry) => entry.name.toLowerCase());
   if (!held.length) return "Inactive";
   // Agility's duration counts when it runs out on the loop, or its gains never fill it (a longer duration would add stacks). A Blessing gained only
@@ -71,7 +74,45 @@ function blessingDurationStatus(planner, names) {
   // reports them.
   const engine = planner.dummyRecount?.engine, lapses = engine?.agilityBlessingLapses, agility = planner.blessings.entries.find((entry) => entry.name === "Agility");
   const agilityLapses = held.includes("agility") && (Number.isFinite(lapses) && !(engine?.agilityBlessingUptime >= 1) ? lapses > 0 || (engine.agilityBlessingPeak ?? 0) < (agility?.stacks ?? 0) : !(engine?.agilityBlessingUptime >= 1));
-  return held.includes("focus") || agilityLapses ? "In calc" : "No DPS effect";
+  return focusDurationRead(planner, held) || agilityLapses || pressWindowRead(planner, held, text) ? "In calc" : "No DPS effect";
+}
+// Focus's duration reaches a figure (2026-11-15, badge movement probe): the sustained figure through a periodic gain's mean below its max
+// (src/blessing-model.js layers), the windows through the engine's Blessing layer, live only when a line reads Focus on the loop (src/tick-layers.js
+// blessingLayer), while the loop's Focus runs out or never fills (the timeline's buff record). A Focus the loop renews (Reaps, hits, a timer) or no
+// loop line reads keeps the windows unchanged. Without an engine run the old reading (any held Focus) stands.
+function focusDurationRead(planner, held) {
+  if (!held.includes("focus")) return false;
+  const focus = planner.blessings.entries.find((entry) => entry.name === "Focus");
+  if (focus?.layers?.reading === "periodic" && Number(focus.layers.mean) < Number(focus.layers.maxStacks)) return true;
+  const engine = planner.dummyRecount?.engine, buff = planner.dummyRecount?.timeline?.buffs?.focus;
+  if (!engine) return true;
+  const live = (engine.liveLayers || []).some((layer) => layer.key === "blessings" && /\bFocus [1-9]/.test(String(layer.events || "")));
+  return live && Boolean(buff) && (buff.expiries > 0 || (buff.peakStacks ?? 0) < (focus?.stacks ?? 0));
+}
+// A Mobility skill pressed for its buffs keeps a Blessing gained on its use at max: the gap is duration × stacks per use ÷ max stacks
+// (src/press-schedule.js mobilityNeeds), so the duration sets the press cadence (Erika's Spiral Strike). The cadence takes whole presses
+// (mobilityPressInterval), so the line counts where taking its own share of the duration out changes the interval: +50% Agility Blessing
+// Duration does on Erika, +10% does not (3 presses per Periodic Burst period either way).
+function pressWindowRead(planner, held, text) {
+  const value = Number(String(text || "").match(/^\+([\d.]+)%/)?.[1]);
+  const entries = planner.blessings.entries.filter((entry) => held.includes(entry.name.toLowerCase()));
+  for (const skill of planner.hitRateFacts?.pressInputs?.skills || []) {
+    const windows = skill.windows || [];
+    const scaled = new Map();
+    for (const entry of entries) {
+      const sources = (entry.gainSources || []).filter((source) => /Mobility Skill/i.test(String(source.text || ""))).map((source) => source.source);
+      const duration = Number(entry.layers?.durationSeconds) > 0 ? Number(entry.layers.durationSeconds) : BASE_BLESSING_SECONDS;
+      for (const window of windows) if (window.kind === "blessing" && sources.includes(window.source)) scaled.set(window, Math.max(0, duration - BASE_BLESSING_SECONDS * value / 100) / duration);
+    }
+    if (!scaled.size) continue;
+    if (!(value > 0)) return true;
+    const free = mobilityPressInterval(windows, 0)?.intervalSeconds;
+    const cooldown = free != null && skill.intervalSeconds > free + 1e-9 ? skill.intervalSeconds : 0;
+    const now = mobilityPressInterval(windows, cooldown)?.intervalSeconds;
+    const without = mobilityPressInterval(windows.map((window) => scaled.has(window) ? { ...window, seconds: window.seconds * scaled.get(window) } : window), cooldown)?.intervalSeconds;
+    if (Math.abs((now ?? 0) - (without ?? 0)) > 1e-9) return true;
+  }
+  return false;
 }
 
 export function setCoverageContext(planner) { context = planner || null; }
@@ -255,6 +296,10 @@ export function engineLineStatus(text, planner = context) {
   // the current Life every consume and Life reader takes.
   const balanceInput = lifeBalanceLineStatus(text, planner);
   if (balanceInput) return balanceInput;
+  // An Affliction rate line ("+N Affliction inflicted per second", Magmaskull's "-6 Affliction Per Second for every +10% Affliction Effect") where
+  // the first infliction puts the dummy at 100 (Magmaskull's "Changes the initially inflicted Affliction to 100", src/initial-affliction.js) and
+  // nothing removes it: the rating is 100 from the first infliction on, whatever the rate (badge movement probe 2026-11-15).
+  if (/^[+-]?[\d.]+ Affliction (?:inflicted )?Per Second\b/i.test(normalizePercentageText(String(text || "")).trim()) && afflictionRatePinned(planner)) return "No DPS effect";
   const enabler = regainEnablerStatus(text, planner);
   if (enabler) return enabler;
   const regainAmount = regainAmountStatus(text, planner);
@@ -311,9 +356,21 @@ const LIFE_BALANCE_INPUTS = [
 ];
 /** A Life balance input line's status, or null when the build settles no balance or the text is not one. */
 export function lifeBalanceLineStatus(text, planner = context) {
-  if (!planner?.lineEffects?.state?.lifeBalance?.settled) return null;
+  const balance = planner?.lineEffects?.state?.lifeBalance;
+  if (!balance?.settled) return null;
   const clean = normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim().replace(/^\[[^\]]+\]\s*/, "");
-  return LIFE_BALANCE_INPUTS.some((pattern) => pattern.test(clean)) ? "In calc" : null;
+  if (!LIFE_BALANCE_INPUTS.some((pattern) => pattern.test(clean))) return null;
+  // A Regeneration Speed line scales the build's Life Regeneration: with none (Regeneration 0 Life/s) it changes nothing.
+  if (/^[+-][\d.]+% (?:additional )?Life Regeneration Speed$/i.test(clean) && !(Number(balance.regenerationPerSecond) > 0)) return "No DPS effect";
+  return lifePinnedBySeal(balance) ? "No DPS effect" : "In calc";
+}
+/**
+ * True when the seal leaves at most 1 Life unsealed (the client keeps 1 Life): every Life state and Life lost reading is then the seal's, so no
+ * Life balance input can move it (badge movement probe 2026-11-15: Erika's Tide of the Styx, Life Regeneration Speed and Ghost Slaughter's drain
+ * read In calc at 0.01% unsealed and moved nothing).
+ */
+export function lifePinnedBySeal(balance) {
+  return Boolean(balance?.settled) && Number(balance.maxLife) * Number(balance.unsealedPercent) / 100 <= 1;
 }
 
 /** A Regain enabler line's status (src/regain-model.js), or null when the text is not one. */
@@ -430,13 +487,26 @@ export const armorSourceLineStatus = (text, planner = context) => {
  * Speed (the Mobility attacks' 75% share, Wind Stalker's Interest and Cat Dive, Feline Figure), ±% Armor (the build's per-Armor and
  * Armor-threshold lines; "+X% additional Armor" was No DPS effect, plain Armor Counted in stats), and two-stat main-stat lines. Null: not one.
  */
+// A held conditional line whose bodies are all Movement Speed that a Movement Speed reader takes (heldStatLineStatus below; src/planner.js
+// conditionalMovementSpeed adds held conditional Movement Speed to the combat figure the readers after the line resolver take).
+function heldMovementSpeedRead(text, planner, lineEffect = lineEffectFor(planner, text)) {
+  return Boolean(lineEffect?.active) && lineEffect.status !== "Inactive" && Boolean(lineEffect.bodies?.length) && lineEffect.bodies.every((body) => /^[+-][\d.]+% Movement Speed$/i.test(normalizePercentageText(String(body.body || "")).trim()) && heldStatLineStatus(body.body, planner) === "In calc");
+}
 export function heldStatLineStatus(text, planner = context) {
   const clean = normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim();
+  // A Focus skill that gains Focus Pts per metre moved (Thunder Focus, Precise: Thunder Focus: `profile.focus.pointsPerMeter`) reads the player's
+  // movement speed, the increased sum and each additional factor (src/skill-hit-model.js movementFocusProfile, src/dummy-target.js
+  // playerMoveSpeed; badge movement probe 2026-11-15: Mountain Howling's "-20 % Movement Speed" and Furious Man's Body's "-20 % additional
+  // Movement Speed" moved Erika's Precise: Thunder Focus while they read Counted in stats).
+  const perMetre = () => (planner?.skillHits || []).some((hit) => hit.modeled && Number(hit.profile?.focus?.pointsPerMeter) > 0);
   if (/^(?:Feline Steps: )?[+-][\d.]+% Movement Speed(?: for Nearby allies and you)?$/i.test(clean)) {
     const state = planner?.lineEffects?.state;
-    const reads = (planner?.skillHits || []).some((hit) => hit.modeled && MOVEMENT_ATTACK_SPEED_SKILLS.has(hit.name)) || state?.windStalker?.interest || state?.windStalker?.catDive || state?.felineFigure?.active;
+    const reads = (planner?.skillHits || []).some((hit) => hit.modeled && MOVEMENT_ATTACK_SPEED_SKILLS.has(hit.name)) || state?.windStalker?.interest || state?.windStalker?.catDive || state?.felineFigure?.active || perMetre();
     return reads ? "In calc" : "Counted in stats";
   }
+  // "+X% additional Movement Speed" is its own factor on the player's movement speed only (src/character-stats.js; the stat sheet's increased
+  // row and the Mobility attacks' 75% share of increased Movement Speed leave it out).
+  if (/^[+-][\d.]+% additional Movement Speed$/i.test(clean) && perMetre()) return "In calc";
   if (/^[+-][\d.]+% (?:additional )?Armor(?: \(multiplies\))?$/i.test(clean) || ARMOR_SOURCE_LINE.test(clean)) return (planner?.lineEffects?.lines || []).some((line) => line.active && ["perArmor", "armorAtLeast"].includes(line.condition)) ? "In calc" : "Counted in stats";
   if (/^[+-][\d.]+ (?:Strength|Dexterity|Intelligence)(?:,? and |, )(?:Strength|Dexterity|Intelligence)/i.test(clean) && planner?.activation) return mainStatLineStatus(clean, planner) === "In calc" || (planner.lineEffects?.lines || []).some((line) => line.active && ["perAllStats", "highestStat", "lowestStat", "lowestAttributeTied"].includes(line.condition)) ? "In calc" : null;
   return null;
@@ -476,7 +546,9 @@ function takenBodyStatus(body, planner, engines = plannerEngines(planner)) {
   // gear-triggered Vulnerability moved the beam's added Physical while it read Inactive (badge movement probe 2026-11-01).
   const beamReads = /^(?:Spell|Fire)$/i.test(typed || "") ? engines.beam : (planner?.beamTypedTypes || []).includes(typed);
   // Modeled Minions take enemy damage-taken lines of their hits' types (src/minion-damage-model.js; tag scopes are not read).
-  const minionReads = !/^(?:Spell|Hit)$/i.test(typed || "") && (planner?.minions || []).some((minion) => minion.modeled && (!typed || (minion.skills || []).some((skill) => [skill.type, skill.baseType].includes(typed))));
+  // "Spell Damage taken" (Frail, Speed Phantom) reaches a Minion skill whose own tags hold Spell (src/minion-damage-model.js takenLines, G7
+  // 2026-11-12: the Spirit Magi's skills); badge movement probe 2026-11-15: a Frail source moved the Frost Magus while it read Inactive.
+  const minionReads = !/^Hit$/i.test(typed || "") && (planner?.minions || []).some((minion) => minion.modeled && (!typed || (minion.skills || []).some((skill) => /^Spell$/i.test(typed) ? (skill.tags || []).includes("Spell") : [skill.type, skill.baseType].includes(typed))));
   return hitReads || dotReads || beamReads || minionReads ? "In calc" : "Inactive";
 }
 
@@ -513,6 +585,10 @@ export function dazeStatus(planner = context) {
   return planner.blurEffects.damageSources.some((line) => line.source === "Daze · Blur active") && (!engines || engines.ignite || engines.otherAilment) ? "In calc" : "Inactive";
 }
 
+/** The dummy's Affliction is 100 from the first infliction on and nothing removes it (src/initial-affliction.js), so no rate line changes it. */
+export function afflictionRatePinned(planner = context) {
+  return planner?.initialAffliction?.status === "In calc" && Number(planner.initialAffliction.value) >= 100 && Number(planner.afflictionRating?.rating) >= 100 && !planner.afflictionRating.limitingRemover;
+}
 /** Status of a parsed key's route (src/talent-text-effects.js) in this build, or null when the engine layer decides. */
 export function routeStatus(route, key, planner = context) {
   if (route === "defense") return "Counted in stats";
@@ -529,7 +605,7 @@ export function routeStatus(route, key, planner = context) {
     // while the talent badge read Inactive).
     case "ignite": if (key === "fireDamageOverTimePercent" && engines.dotTypes.has("Fire")) return "In calc"; return on(key === "baseIgniteDamage" ? engines.igniteChance : /^igniteChance/.test(key) ? engines.baseIgnite && engines.igniteAppliers : engines.ignite);
     case "ailment": return on(engines.ignite || engines.otherAilment);
-    case "affliction": return on(engines.anyDot && (key === "afflictionPerSecond" || engines.affliction));
+    case "affliction": return /^afflictionPerSecond/.test(key) && afflictionRatePinned(planner) ? "No DPS effect" : on(engines.anyDot && (key === "afflictionPerSecond" || engines.affliction));
     case "reaping": return on(engines.anyDot && engines.reaping);
     case "castSpeed": return on(engines.castRate, "Counted in stats");
     case "attackAndCastSpeed": return on(engines.castRate || engines.attackRate, "Counted in stats");
@@ -614,6 +690,11 @@ function copyRuleStatus(text, planner) {
 
 function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (!text) return null;
+  // Increased Skill Area where a support reads the hit's Skill Area (src/support-conditional-batch4.js skillAreaState: the stat sheet and the
+  // combat-only writes, Baptism: Impassive among them; Berserking Blade: Rampage's node-114 rows, skillAreaToSteep; a threshold,
+  // skillAreaAtLeast): In calc where such a clause is active, else the No DPS effect rule below (2026-11-18: Mercury Purged's Impassive moved
+  // the 5 T build ×1.090 while it read No DPS effect).
+  if (/^\+[\d.]+% Skill Area$/i.test(normalizePercentageText(String(text)).trim()) && skillAreaClauseRead(planner)) return "In calc";
   // Crowd control held from the game recipes (src/crowd-control-recipes.js, wiring audit gap 1, 2026-11-03): the planner's combat entry
   // decides (In calc where its Paralysis adds damage taken or a reader counts its types, No DPS effect where nothing reads them).
   {
@@ -770,6 +851,7 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   }
   // Residual (C) wordings that cannot change dummy damage (src/line-families.js RESIDUAL_C_RULES).
   const residual = residualNonDamageStatus(text);
+  if (residual && heldMovementSpeedRead(text, planner)) return "In calc";
   if (residual) return residual.status;
   // "Precise: X gains an additional base effect: …" acts only while the Precise: X aura is active (residual batch P10: it read
   // In calc without Fearless, judged by its stripped body). No reader adds the effect to the aura yet: Not modeled when active.
@@ -826,9 +908,10 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (aimTiming && /Duration/i.test(aimTiming[2]) && planner?.lineEffects?.state?.windStalker?.stalker?.durationSeconds > 0) return "In calc";
   // The badge probe of chunk 2 (2026-11-01) found both moving under Counted in stats: Moto's and Iris's trait skill clocks read them
   // (src/moto-iris-traits.js facts), and Skill Effect Duration lengthens Empower and Warcry buffs up part-time (src/empower-buffs.js) and a Terra.
+  // A Terra skill, not another skill's Terra part ("Flame Jet: Flame Terra" keeps its own hit count: badge movement probe 2026-11-15).
   const traitClocks = planner?.lineEffects?.state?.motoIris;
   if (aimTiming && (traitClocks?.overload || (traitClocks?.hasMagus && traitClocks?.traitPressed))) return "In calc";
-  if (aimTiming && /Duration/i.test(aimTiming[2]) && ((planner?.empowerEffects?.entries || []).some((entry) => entry.active && entry.uptime < 1) || [...(planner?.skillHits || []), ...(planner?.skillDots || [])].some((item) => / Terra$/.test(String(item.name || ""))))) return "In calc";
+  if (aimTiming && /Duration/i.test(aimTiming[2]) && ((planner?.empowerEffects?.entries || []).some((entry) => entry.active && entry.uptime < 1) || [...(planner?.skillHits || []), ...(planner?.skillDots || [])].some((item) => / Terra$/.test(String(item.name || "")) && !/: /.test(String(item.name || ""))))) return "In calc";
   // "+X% Aiming Skill Duration" (src/aim-model.js; Aim read as the Aiming Skill, provisional): In calc while Aim is active.
   // An item-triggered Aim (Illusory Chimera's "Triggers Lv. 20 Aim …") counts too (planner.aim.active; badge movement probe 2026-10-27).
   if (/^[+-][\d.]+% Aiming Skill Duration\.?$/i.test(text) && planner?.activation) return planner.activation.activeNames?.has("Aim") || planner.aim?.active ? "In calc" : "Inactive";
@@ -924,7 +1007,11 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     // its Max Terra Charge Stacks per cast (src/selena-dance.js resolveTerraCharges). In calc where a modeled Terra hit or DoT carries a
     // Terra Charge bonus, Inactive without one.
     if (/^(?:\+\d+ Max Terra Charge Stacks?|Max Terra Charge Stacks? \+\d+)$/i.test(text)) {
-      const terra = (planner.skillHits || []).some((hit) => hit.modeled && hit.profile?.terraCharge) || (planner.skillDots || []).some((dot) => dot.profile?.terraCharge || dot.terraCharge);
+      // A Terra DoT carries its per-charge line in its ledger (src/planner.js terraChargeLine on the recast Terra: Thornfield, Frost Terra
+      // under Activation Medium: Terra); Frost Terra: Winter's Bite drops that line (2026-11-18: Silencing Severance's +1 read Inactive while
+      // it moved the 8 T Thornfield build ×1.49).
+      const terraDot = (dot) => dot.modeled !== false && (dot.ledger?.additional || []).some((line) => /Terra Charge/.test(String(line.source || "")));
+      const terra = (planner.skillHits || []).some((hit) => hit.modeled && hit.profile?.terraCharge) || (planner.skillDots || []).some((dot) => dot.profile?.terraCharge || dot.terraCharge || terraDot(dot));
       return terra ? "In calc" : "Inactive";
     }
     if (/^\+\d+ (?:to )?Parabolic Projectile Splits? quantity$/i.test(text)) {
@@ -1046,7 +1133,11 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   // full-charge Main Skill trigger (493789504): In calc where a modeled hit Spell Bursts (the trigger: where it is on), else Inactive.
   if (SOLID_RIVER_DAMAGE_LINE.test(text) && planner?.activation) return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst?.bonusLines?.some((line) => SOLID_RIVER_DAMAGE_LINE.test(String(line.text).split(":")[0]))) ? "In calc" : "Inactive";
   if (SOLID_RIVER_TRIGGER_LINE.test(text) && planner?.activation) return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst?.chargeTrigger) ? "In calc" : "Inactive";
-  if (/^\+\d+ Max Spell Burst$|^[+-]?[\d.]+% additional Hit Damage for skills cast by Spell Burst$|^[+-]?[\d.]+\s?% (?:additional )?Spell Burst Charge Speed$|^[\d.]+% chance to immediately gain \d+ stack\(s\) of Spell Burst Charge\. Interval: [\d.]+ ?s$/i.test(text) && planner?.activation || SPELL_BURST_USE_GAIN.test(text) && planner?.activation) {
+  // "+X% chance to immediately gain N stack(s) of Spell Burst Charge when using a skill" (record 32278; src/spell-burst-refill.js, 15 T Chain
+  // Lightning audit G1, 2026-11-18): In calc where a modeled hit's Spell Burst is refilled by it (Burst Activation's activations, a Spell-Bursting
+  // skill's full charge), else Inactive (no Spell-Bursting hit, or no use of yours raises 1000074 to roll it).
+  if (SPELL_BURST_USE_GAIN.test(text) && planner?.activation) return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst?.chargeSpeed?.refill) ? "In calc" : "Inactive";
+  if (/^\+\d+ Max Spell Burst$|^[+-]?[\d.]+% additional Hit Damage for skills cast by Spell Burst$|^[+-]?[\d.]+\s?% (?:additional )?Spell Burst Charge Speed$|^[\d.]+% chance to immediately gain \d+ stack\(s\) of Spell Burst Charge\. Interval: [\d.]+ ?s$/i.test(text) && planner?.activation) {
     return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst) ? "In calc" : "Inactive";
   }
   // Erika "E1 Model" talents (2026-10-14). Additional Min / Max Damage (Impermanence; src/skill-hit-model.js): In calc where a
@@ -1098,7 +1189,8 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     const minions = (planner.minions || []).filter((minion) => minion.modeled);
     const listed = (keys) => minions.some((minion) => keys.some((key) => (minion.lines?.[key] || []).some((line) => cleanText(line.text) === cleanText(text))));
     if (listed(["increased", "additional", "speed", "multistrikeChance", "multistrikeIncrement", "multistrikeIncrementAdditional"])) return "In calc";
-    if (minions.length && listed(["inactive"])) return "Inactive";
+    // A "for you and your Minions" line also reaches you: the player side decides when no Minion takes it (Deepfreeze, 2026-11-14).
+    if (minions.length && listed(["inactive"]) && !/ for you and your Minions\b/i.test(text)) return "Inactive";
   }
   // Minion added flat damage, penetration, crit and Double Damage lines (gear affix audit 2026-10-22: "Adds X - Y Fire Damage to
   // Minions" read Not modeled while it moved the Huge Ember): In calc where a modeled Minion skill in the cycle takes the line
@@ -1165,8 +1257,12 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   if (planner?.activation && COMMAND_SPEED.test(normalizePercentageText(String(text)))) return (planner.minions || []).some((minion) => minion.modeled && (minion.lines?.speed || []).some((line) => String(line.text).startsWith(normalizePercentageText(String(text))))) ? "In calc" : "Inactive";
   // "+X% Spirit Magus Ultimate Damage and Ailment Damage dealt by Ultimate": In calc where the Ultimate is in a Magus's cycle.
   if (planner?.activation && /^\+?[\d.]+ ?% (?:additional )?Spirit Magus Ultimate Damage and Ailment Damage dealt by Ultimate ?\.?$/i.test(String(text).trim())) return (planner.minions || []).some((minion) => minion.modeled && (minion.skills || []).some((skill) => (skill.isUltimate || skill.role === "ultimate") && skill.inCycle)) ? "In calc" : "Inactive";
-  // A map cap: no damage by itself (each Magus skill summons 1); Iris's Max Summonable reads it (src/moto-iris-traits.js).
-  if (planner?.activation && /^\+\d+ to Max Spirit Magi In Map$/i.test(text)) return (planner.modifierTexts || []).some((line) => /^Max Summonable Spirit Magi of Spirit Magus Skills \+\d+$/i.test(String(line.text))) ? "In calc" : "No DPS effect";
+  // A map cap: no damage by itself (each Magus skill summons 1). It makes room for a Magus that a Max Summonable source fields beyond one per
+  // Magus skill: Socialite's "+N Max Summonable Spirit Magi" or a summon support's "+N to Max Summonable Minions for the supported skill"
+  // (Elemental Duo, record 200000390; src/planner.js magusExtras). In calc where a modeled Magus is out more than once, the condition the hero
+  // modules read (src/moto-iris-traits.js mapCap); before 2026-11-18 only the Socialite line counted, so the 10 T Iris build's Happiest
+  // Reunion line read No DPS effect while it fielded Elemental Duo's second Erosion Magus (leave-one-out ×0.487).
+  if (planner?.activation && /^\+\d+ to Max Spirit Magi In Map$/i.test(text)) return (planner.minions || []).some((minion) => minion.modeled && minion.magus && (minion.count || 1) > 1) ? "In calc" : "No DPS effect";
   // Added flat damage with no player hit on the build (a Minion-only build).
   if (planner?.activation && /^Adds [\d.]+ - [\d.]+ \w+ Damage to Attacks and Spells$/i.test(String(text).trim()) && !(planner.skillHits || []).some((hit) => hit.modeled) && !planner.directHit?.toTarget) return "Inactive";
   // Overly Modified (src/sentry-cores.js; read per skill on its own hits and DoT, and on the ailments each skill inflicts, which
@@ -1272,6 +1368,10 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     // (An active line with such a body, "+20% Movement Speed when Focus Blessing reaches max stacks" on Grace Boots, read Not
     // modeled for want of a reader before 2026-10-18: it is a stat line either way.)
     // (Since batch 1, 2026-10-27, the resolver itself reads such a held line No DPS effect; the stat-line rule below still applies.)
+    // A held Movement Speed body reaches the readers a plain Movement Speed line does (heldStatLineStatus; src/planner.js conditionalMovementSpeed
+    // adds held conditional Movement Speed to the combat figure): badge movement probe 2026-11-15, Enamor's "When a Mobility Skill is equipped in the
+    // second slot, +25% Movement Speed" moved Erika's Spiral Strike while it read No DPS effect.
+    if (heldMovementSpeedRead(text, planner, lineEffect)) return "In calc";
     if (["Inactive", "Not modeled", "No DPS effect"].includes(lineEffect.status) && !lineEffect.enemyDebuff && lineEffect.bodies?.length && lineEffect.bodies.every((body) => isNonDamageBody(body.body))) return lineEffect.status !== "Inactive" && lineEffect.active && lineEffect.bodies.every((body) => isCharacterStatLine(body.body)) ? "Counted in stats" : "No DPS effect";
     // A Minion body in a build without a modeled Minion (P9: "+2% Minion Fire Penetration against Ignited enemies").
     // The Minion copies of player lines (core audit B7: Focused Strike, Dirty Tricks, Reflection; bodies "… for Minions") read like the
@@ -1297,6 +1397,9 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     if (!derived.length) return lineEffect.status;
     const engines = plannerEngines(planner);
     const statuses = derived.map((body) => {
+      // A derived Spell body that Rosa – Unsullied Blade copies to Attack (src/spell-to-attack.js copies the resolved conditional bodies too;
+      // 2026-11-18: the 15 T Rosa build's "+2% additional Spell Damage for every 91 Max Mana owned" read Inactive while its copy moved Frost Spike).
+      if (spellToAttackCopy(body, planner)) return "In calc";
       // Enemy damage-taken bodies (combat states: Frostbite, Numbed, Infiltrations, Frail, Paralysis): the hit engine reads
       // them (by type / skill tag), and the ailment engines read typed ones.
       if (/Damage taken$|^[+-]?[\d.]+% damage taken$/i.test(body) && engines) return takenBodyStatus(body, planner, engines);
@@ -1313,6 +1416,11 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
       const flatCrit = body.match(/^\+[\d.]+ (?:(Attack and Spell|Spell|Attack) )?Critical Strike Rating$/i);
       // An unused crit stat reads "Counted in stats", like the speed bodies above.
       if (flatCrit && engines) return (/^Spell$/i.test(flatCrit[1] || "") ? engines.spellHit : /^Attack$/i.test(flatCrit[1] || "") ? engines.attackRate : engines.anyHit) ? "In calc" : "Counted in stats";
+      // An added-damage body that names no skill type: a per-stat line's ("Adds 1 - 6 Lightning Damage for every 10 Dexterity", record 161015664;
+      // "Adds X - Y Fire Damage per N Strength", 101140002: node 114 into added damage with no skill tag), which every hit reads (the traced pool,
+      // the weapon model's untagged lines, the beam's "any" writes). Judged as the "to Attacks and Spells" wording; the bare body has no reader
+      // of its own, so it read Inactive while the hits took it (2026-11-18, 15 T Chain Lightning).
+      if (/^Adds [\d.]+ ?[-–] ?[\d.]+ (?:Physical|Fire|Cold|Lightning|Erosion) Damage$/i.test(body)) return clauseStatus(`${body} to Attacks and Spells`, planner);
       return clauseStatus(body, planner);
     });
     if (statuses.includes("In calc")) return lineEffect.status;
@@ -1594,12 +1702,12 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   // Blessing duration: since chunk 15 the windows run a held Focus or Agility Blessing's real timer (src/tick-layers.js blessingLayer, blessingSeconds), so the
   // duration reaches them. An Agility Blessing its crits keep at 100% uptime never lapses, and Tenacity has no timer: No DPS effect while held. Inactive when nothing holds it.
   const blessingDuration = text.match(/^\+[\d.]+% (Tenacity|Focus|Agility) Blessing Duration$/i);
-  if (blessingDuration && planner?.blessings?.entries) return blessingDurationStatus(planner, [blessingDuration[1]]);
+  if (blessingDuration && planner?.blessings?.entries) return blessingDurationStatus(planner, [blessingDuration[1]], text);
   // "+X% Numbed Duration": Numbed is held at its 10-stack cap on the dummy (best case, src/line-conditions.js), so a longer
   // duration changes nothing; Inactive without Numbed. The revived Numbed family alone holds stacks by duration (src/combat-states.js).
   if (/^\+[\d.]+% Numbed Duration$/i.test(text) && planner?.lineEffects?.state) return planner.lineEffects.combat?.numbedRevived?.stacks < 10 ? "In calc" : (planner.lineEffects.state.enemyAilments || []).includes("Numbed") ? "No DPS effect" : "Inactive";
   // The generic wording reaches every Blessing's duration, so it follows the best of the three.
-  if (/^\+[\d.]+% Blessing Duration$/i.test(text) && planner?.blessings?.entries) return blessingDurationStatus(planner, ["Focus", "Agility", "Tenacity"]);
+  if (/^\+[\d.]+% Blessing Duration$/i.test(text) && planner?.blessings?.entries) return blessingDurationStatus(planner, ["Focus", "Agility", "Tenacity"], text);
   // Ailment chance → ailment damage (Warlock [5,4]; src/ailment-model.js, src/theoretical-sources.js).
   if (CHANCE_TO_DAMAGE.test(text) && planner) {
     const engines = plannerEngines(planner);
@@ -1611,7 +1719,9 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   // Main-Hand Weapon speed / crit / added damage (src/weapon-damage-model.js reads them onto the main-hand weapon): In calc
   // where a modeled attack uses a held main-hand weapon (gear-pact batch chunk 1; they read Not modeled while applied).
   // (Legendary audit batch 1: a weapon value fixed by another item, "Weapon Attack Speed is fixed at 1.35", reads the same way.)
-  if (weaponLine && ["critMainHand", "mainHandSpeed", "addedMainHand", "weaponCritFixed", "weaponSpeedFixed"].includes(weaponLine.kind) && planner?.activation) {
+  // "+X% additional damage for Main-Hand Weapons" (record 103210002: node 321 on the main-hand item) too: badge movement probe 2026-11-15, a
+  // Severed Wrist pistol moved Erika's main-hand attacks while it read Inactive (the contribution match missed its weapon-model entry).
+  if (weaponLine && ["critMainHand", "mainHandSpeed", "addedMainHand", "weaponCritFixed", "weaponSpeedFixed", "mainHandDamage"].includes(weaponLine.kind) && planner?.activation) {
     const attack = weaponHitModeled(planner);
     return attack && planner.weaponAttack?.mainHand?.weapon ? "In calc" : "Inactive";
   }
@@ -1752,7 +1862,10 @@ export function skillLevelLineStatus(text, planner = context) {
     // Tangle, tags Support / Spell, and read Inactive before 2026-10-27; badge movement probe); a granted support keeps its level.
     const supportTags = (support) => [...(support.tags || []), ...(refdataSupportCatalogSs13.find((entry) => entry.name === support.name)?.tags || []), "Support"];
     const supportTakes = (setup) => (setup.supports || []).some((support) => support.enabled !== false && !support.granted && skillLevelLineApplies(text, { ...support, role: "support", tags: supportTags(support) }));
-    return users.some((setup) => (!pinned(setup) && skillLevelLineApplies(text, setup)) || supportTakes(setup)) ? "In calc" : "Inactive";
+    // Skills an item (or a support) triggers take the level lines too (user decision 2026-11-16; planner.itemTriggeredSkills: the ones read
+    // at their level, TOWER Sequence and hero trait grants fixed).
+    const triggered = (planner.itemTriggeredSkills || []).filter((entry) => !entry.fixedLevel).map((entry) => ({ name: entry.name, role: "item-trigger", tags: entry.tags || [] }));
+    return users.some((setup) => (!pinned(setup) && skillLevelLineApplies(text, setup)) || supportTakes(setup)) || triggered.some((skill) => skillLevelLineApplies(text, skill)) ? "In calc" : "Inactive";
   }
   return null;
 }
@@ -1765,6 +1878,11 @@ const settled = ["In calc", "Not equipped", "Not allocated", "Not selected", "No
 // Focus; legendary audit 2026-10-22).
 function weaponHitModeled(planner) {
   return (planner?.skillHits || []).some((hit) => hit.modeled && (hit.rate?.speedType === "attack-speed" || hit.profile?.weaponScaling));
+}
+
+// An active support clause that reads the hit's Skill Area (src/support-conditional-batch4.js) on an enabled setup.
+function skillAreaClauseRead(planner) {
+  return (planner?.activation?.setups || []).some((setup) => setup.enabled !== false && (setup.supportEffects?.clauses || []).some((clause) => clause.batch4 && clause.active && ["skillAreaToSteep", "skillAreaAtLeast"].includes(clause.condition)));
 }
 
 const squashedLine = (value) => normalizePercentageText(String(value ?? "")).replace(/\s+/g, " ").trim().toLowerCase();

@@ -524,6 +524,16 @@ export function triggerBusLayer(ctx) {
     for (const line of lines) target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", steadyAmount: line.value, amount: (world) => line.value * ((1 + holder.perStackPercent / 100) ** world.bus.useStacks(holder.key) - 1) / atCap });
     if (lines.length) read.add(`Willpower on ${target.hit.name}`);
   }
+  // The Fervor Rating (section 12, census C1): built from 0 on your hits; each reader linear in the Rating at the Rating held on this tick.
+  if (bus.fervor) fervorReaders(ctx, bus.fervor, read);
+  // An Aura's own stacks (section 13: Precise: Cruelty): the Aura's lines its Aura Effect scales, at (1 + 2.5% × the stacks held) over the
+  // planner's held factor (40 stacks: ×2). Its buff on your Minions keeps the planner's held value (their paths are not read here).
+  for (const spec of bus.auraStacks || []) for (const target of ctx.targets) {
+    const lines = target.claim("triggerBus", (line) => line.layer !== "taken" && String(line.source).startsWith(`Aura: ${spec.aura} /`) && spec.scaled.some((value) => Math.abs(value - line.value) < 1e-6));
+    const factor = (world) => (1 + spec.perStackPercent * Math.min(spec.maxStacks, world.buffs.get(spec.buffKey)?.stacks || 0) / 100) / spec.heldFactor;
+    for (const line of lines) { withExtras(target, line); target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", steadyAmount: line.value, amount: (world) => line.value * factor(world) }); }
+    if (lines.length) read.add(`${spec.aura}'s stacks on ${target.hit.name}`);
+  }
   // The "used recently" windows (section 8) on every hit: each derived damage line at the share of the tick its window is held.
   for (const recent of bus.recentWindows || []) for (const target of ctx.targets) {
     const lines = target.claim("triggerBus", (line) => line.source === recent.source && line.layer !== "taken" && recent.bodies.includes(line.text));
@@ -558,6 +568,73 @@ export function triggerBusLayer(ctx) {
   // Step 3c: your Minions' hits and your Regains.
   const minionRegainText = `${bus.ids.has(1000047) ? "; your Minions' hits raise 1000047 (and their own 1000033 / 1000030 on them)" : ""}${bus.regainPools?.length ? `; your Regains (${bus.regainPools.map((pool) => `${pool.key === "life" ? "Life" : "Energy Shield"} every ${pool.intervalSeconds} s`).join(", ")}) on your hits` : ""}${bus.owned.eventBlessings?.length ? `; ${bus.owned.eventBlessings.join(", ")} Blessing renewed by Regains or your Minions' damage` : ""}${bus.owned.regainWindows?.length ? `; "Regained in the last N s" lines (${bus.owned.regainWindows.length}) from 0 on the Regains` : ""}`;
   report.events = `trigger ${[...bus.ids].join(", ")} raised by ${raised.join(", ")}; ${bus.listeners.length} listener${bus.listeners.length === 1 ? "" : "s"}: ${owned.length ? `${owned.join(", ")} held on the dummy while an event that could have put it there is younger than its duration (expected values)` : "no buff on the dummy"}${bus.owned.blessings.length ? `; ${bus.owned.blessings.join(", ")} Blessing gains through the chance accumulator` : ""}${bus.owned.reapBlessings?.length ? `; ${bus.owned.reapBlessings.join(", ")} Blessing gains on your Reaps` : ""}${blurText}${inflictText}${stacksText}${useText}${minionRegainText}${bus.owned.firstFlake ? "; First Flake of Strange Snow's deemed Frostbite Rating counts the types on the loop" : ""}${read.size ? `; read on the loop by ${[...read].join(", ")}` : ""}`;
+}
+
+// A hit's crit chance as a function of the Fervor Rating held (census C1): the Fervor crit rating line is an increased term, so each crit state's
+// rating loses (base + flat) × its additional factor × the line's percent × (1 − R ÷ held), at most 100% per state, Lucky-converted per state
+// (src/crit-time-states.js). Null when the crit is fixed (guaranteed, cannot crit) or the reconstruction does not give back the planner's chance.
+// Lucky Critical Strike re-rolls a determination: 1 − (1 − p)^rolls (src/lucky-damage.js luckyCritChance; kept here, the engine modules import no planner module).
+const luckyCritChance = (percent, rolls) => (1 - (1 - Math.max(0, Math.min(1, percent / 100))) ** rolls) * 100;
+function fervorCritChance(hit, percent) {
+  const crit = hit.crit;
+  if (!crit || crit.guaranteedCrit || crit.cannotCritShare > 0 || !(percent > 0)) return null;
+  const rolls = crit.luckyCritCombat ? 2 : 1;
+  const attack = crit.attackCrit;
+  let states, step;
+  if (attack && Number.isFinite(attack.weaponRating)) {
+    // A support's rating on the attack (Precise: Fearless's Melee rating) sits on top of the weapon's states.
+    const extra = crit.supportRating?.rating > 0 ? crit.supportRating.rating - attack.rating : 0;
+    states = (attack.states?.length ? attack.states : [{ weight: 1, rating: attack.rating }]).map((state) => ({ weight: state.weight, rating: state.rating + extra }));
+    step = (attack.weaponRating + (attack.flatRating || 0)) * (attack.additionalRatingFactor ?? 1) * percent / 100;
+  } else {
+    const base = (Number(crit.baseRating) || 0) + (Number(crit.flatRating) || 0);
+    if (!(base > 0) || !(crit.rating > 0)) return null;
+    const additional = crit.rating / (base * (1 + (Number(crit.increasedRatingPercent) || 0) / 100));
+    states = [{ weight: 1, rating: crit.rating }];
+    step = base * additional * percent / 100;
+  }
+  const chanceAt = (lost) => states.reduce((sum, state) => { const plain = Math.max(0, Math.min(100, (state.rating - lost) / 100)); return sum + state.weight * (rolls > 1 ? luckyCritChance(plain, rolls) : plain); }, 0);
+  const held = chanceAt(0);
+  if (!(Math.abs(held - crit.chancePercent) < 1e-6)) return null;
+  return (share) => chanceAt(step * (1 - share)) - held;
+}
+
+// The per-use damage outside the components (src/tick-ledger.js "extras": a Spacetime Illusion's damage factor on the whole use) scales with an
+// additional line every component holds: a claimed line comes out of its base too, so the line's modifier reaches the whole use.
+function withExtras(target, line) {
+  const components = target.parts.filter((part) => target.componentOf(part)), extras = target.parts.filter((part) => !target.componentOf(part));
+  if (line.layer !== "additional" || !components.length || !extras.length) return;
+  if (!components.every((part) => { const component = target.componentOf(part); return inList(component.additional, line) || inList(component.combatAdditional, line); })) return;
+  for (const part of extras) part.base /= 1 + line.value / 100;
+  delete line.types;
+}
+
+function fervorReaders(ctx, fervor, read) {
+  const share = (world) => world.bus.useStacks(fervor.key) / fervor.rating;
+  const damage = fervor.readers.filter((reader) => reader.kind === "damage"), critDamage = fervor.readers.filter((reader) => reader.kind === "critDamage");
+  const critRating = fervor.readers.filter((reader) => reader.kind === "critRating").reduce((sum, reader) => sum + reader.value, 0);
+  const held = [];
+  for (const target of ctx.targets) {
+    let any = false;
+    for (const line of target.claim("triggerBus", (item) => item.layer !== "taken" && damage.some((reader) => reader.source === item.source && reader.text === item.text))) {
+      withExtras(target, line);
+      target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", steadyAmount: line.value, amount: (world) => line.value * share(world) });
+      any = true;
+    }
+    if (target.crit) {
+      const sources = target.hit.crit?.increasedCriticalDamageSources || [];
+      for (const reader of critDamage.filter((item) => sources.some((source) => source.source === item.source && source.value === item.value))) {
+        target.crit.damagePercent -= reader.value;
+        target.modifiers.push({ source: reader.source, text: reader.text, layer: "critDamage", liveKey: "triggerBus", steadyAmount: reader.value, amount: (world) => reader.value * share(world) });
+        any = true;
+      }
+      const chance = critRating ? fervorCritChance(target.hit, critRating) : null;
+      if (chance) { target.modifiers.push({ source: "Fervor (keyword 740)", text: `+${critRating}% Critical Strike Rating at the Fervor Rating held now`, layer: "critChance", liveKey: "triggerBus", steadyAmount: 0, amount: (world) => chance(share(world)) }); any = true; }
+      else if (critRating) held.push(`${target.hit.name}'s crit chance`);
+    } else if (critRating || critDamage.length) held.push(`${target.hit.name}'s crit`);
+    if (any) read.add(`the Fervor Rating on ${target.hit.name}`);
+  }
+  if (held.length) ctx.assumptions.push(`Fervor Rating: ${[...new Set(held)].join(", ")} kept at the planner's held ${fervor.rating} (a time-shared or fixed crit the loop does not rebuild)`);
 }
 
 export function tidewellLayer(ctx) {
@@ -612,7 +689,8 @@ export function paralysisLayer(ctx) {
 }
 
 // An ailment lands on the hit of whoever inflicts it: the follower skill the planner names, else the targets dealing that type, else every target.
-function addAilmentEvent(ctx, type, effect, dealt = null) {
+// `ownEffect` (optional) replaces `effect` on your own hits (the follower's inflictions keep `effect`).
+function addAilmentEvent(ctx, type, effect, dealt = null, ownEffect = effect) {
   // The first source of the enemy-ailment model's entry on the dummy's unit buff set (src/unit-buff-set.js, W8 step 1), else its source map.
   const buffs = enemyBuffSet(ctx.planner.lineEffects?.state);
   const skill = String((buffs ? buffs.primary(type, { stage: "model" })?.source : ctx.planner.lineEffects?.state?.enemyAilmentSources?.[type]) || "").match(/^Follower: (.+?) [IVX]+\b/)?.[1];
@@ -622,7 +700,15 @@ function addAilmentEvent(ctx, type, effect, dealt = null) {
     return;
   }
   const dealing = dealt ? ctx.targets.filter((target) => dealsType(target, dealt)) : [];
-  for (const target of dealing.length ? dealing : ctx.targets) target.onHit.push(effect);
+  for (const target of dealing.length ? dealing : ctx.targets) target.onHit.push(ownEffect);
+}
+
+// "Inflicts N additional stack(s) of Numbed" (game record 173497728: node 343 on buff 170, layerNum p0, on the holder): each Numbed you inflict
+// adds N more layers. The combat pass lists these lines (src/combat-states.js PATTERNS.numbedExtra); their N (decimals kept) summed.
+const NUMBED_EXTRA = /^Inflicts (\d+(?:\.\d+)?) additional stack\(s\) of Numbed$/i;
+function numbedExtraStacks(planner) {
+  const entries = planner?.lineEffects?.combat?.entries || [];
+  return entries.reduce((sum, entry) => sum + (Number(String(entry?.text ?? "").replace(/\s+/g, " ").trim().match(NUMBED_EXTRA)?.[1]) || 0), 0);
 }
 
 export function frailLayer(ctx) {
@@ -680,8 +766,11 @@ export function numbedLayer(ctx) {
   // 2 s; Electroplated Motif's 4 s is read as 2 s here), then your hits add theirs.
   const opening = part?.schedule?.opening;
   ctx.collectors.push({ key: "numbed", windowSeconds: AILMENT_SECONDS.Numbed, ...(opening?.stacks > 0 ? { seed: [{ frame: 0, value: opening.stacks }] } : {}) });
-  addAilmentEvent(ctx, "Numbed", { kind: "collect", collector: "numbed" }, "Lightning");
-  ctx.reported("numbed").events = `one stack per Numbing hit, each on its own ${AILMENT_SECONDS.Numbed} s (keyword 762), up to ${stacks}; the per-damage threshold is not counted (open question tick-numbed-stacks)`;
+  // Your Numbing hits add 1 + the "Inflicts N additional stack(s) of Numbed" lines' N (record 173497728; 15 T Chain Lightning audit G4,
+  // 2026-11-18: the sustained figure holds 10 stacks already); the follower's inflictions add 1.
+  const extra = numbedExtraStacks(ctx.planner);
+  addAilmentEvent(ctx, "Numbed", { kind: "collect", collector: "numbed" }, "Lightning", extra > 0 ? { kind: "collect", collector: "numbed", value: 1 + extra } : undefined);
+  ctx.reported("numbed").events = `${extra > 0 ? `1 + ${extra} stacks per Numbing hit of yours ("Inflicts N additional stack(s) of Numbed", record 173497728), one per the follower's` : "one stack per Numbing hit"}, each on its own ${AILMENT_SECONDS.Numbed} s (keyword 762), up to ${stacks}; the per-damage threshold is not counted (open question tick-numbed-stacks)`;
 }
 
 export function curseLayer(ctx) {
@@ -825,7 +914,8 @@ export function markLayer(ctx) {
 }
 
 // "+X% Elemental Resistance Penetration when hitting an enemy with Elemental Damage, stacking up to N times" (Dreamweaver): own stacks gained on
-// hits, so full at engagement with prebuiltSelfBuffs, else from the first hit on. They go through the resistance step (layer "penetration"):
+// hits (record 747307 row 2: 1000030 on [Elemental, Hit], once a frame, node 306 mode 3, 4 s each, up to 4), so gained only from the dummy: from 0 at
+// engagement, built from the first hit on (census C9, user decision 2026-11-15; before, full at engagement with prebuiltSelfBuffs). They go through the resistance step (layer "penetration"):
 // each part's static factor loses the stacks' share and takes it back per stack. The "recently" is read as 4 s; hits renew them every fraction of
 // a second, so nothing depends on it.
 export function penetrationLayer(ctx) {
@@ -852,10 +942,9 @@ export function penetrationLayer(ctx) {
     }
     if (!any) return;
     ctx.reported("penetrationStacks").lines.push({ layer: "penetration", source: source.source, text: body.derivedText, value });
-    if (ctx.prebuilt) ctx.initialBuffs.push({ buff, stacks, seconds: RECENT_SECONDS });
     taken.push(`+${value / stacks}% up to ${stacks}`);
   });
-  if (taken.length) ctx.reported("penetrationStacks").events = `${taken.join(", ")}, through the resistance step${ctx.prebuilt ? "; full at engagement (prebuilt)" : "; from the first hit"}`;
+  if (taken.length) ctx.reported("penetrationStacks").events = `${taken.join(", ")}, through the resistance step; from 0 at engagement, from the first hit (gained only from the dummy)`;
 }
 
 // The recount's timed effects on a hit (src/timed-effects.js: pact and kismet effects on their own clocks, Empower and hero timed parts), as one

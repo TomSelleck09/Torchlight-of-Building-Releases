@@ -715,12 +715,9 @@ body.unified-planner #pacts-view .pactspirit-grid{display:grid;grid-template-col
 .pact-tree-outer{width:48px;height:48px}
 .pact-tree-node img{display:block;width:100%;height:100%;object-fit:contain}
 .pact-tree-node:focus-visible{outline:2px solid #ffae69;outline-offset:2px}
-.pact-tree-outer{box-shadow:0 0 0 2px #ef8b26,0 0 12px #df782b80}
-.pact-tree-destiny.fate-unlocked{box-shadow:0 0 0 2px #ad69dc,0 0 12px #9047ce88}
 .pact-tree-extra{border:2px dashed #778397;color:#d5e4f3;font:700 1.2rem/1 Arial,sans-serif}
 .pact-tree-extra:hover{border-color:#ffab67;color:#ffab67}
 .pact-tree-node.unallocated>img{opacity:.38;filter:grayscale(1)}
-.pact-tree-node.allocated{box-shadow:0 0 0 2px #6ad7a2,0 0 9px #39b77b66}
 .pact-tree-node[data-pact-node-allocate]{cursor:pointer}
 .pact-node-status{position:absolute;z-index:2;right:-5px;top:-7px;display:grid;place-items:center;width:17px;height:17px;border:1px solid #8c9aab;border-radius:50%;background:#17212a;color:#f4f8fb;font:700 11px/1 Arial,sans-serif;font-style:normal;pointer-events:none}
 .pact-tree-node.allocated .pact-node-status{border-color:#6ad7a2;background:#176b4a;color:#fff}
@@ -778,7 +775,15 @@ body.unified-planner .fate-slot-dialog>[data-clear-fate-slots]:hover{border-colo
   .pact-slot{grid-template-columns:minmax(0,1fr) 84px;column-gap:10px;padding-right:46px}
   .pact-slot>.pact-node-count{grid-column:1/-1;grid-row:3;justify-self:start}
 }
-.pact-tree-node.craftable{cursor:pointer}.pact-tree-node.craftable:hover{filter:brightness(1.16)}.pact-tree-node.has-kismet{box-shadow:0 0 0 2px #ae63dc,0 0 12px #833bae88}
+.pact-tree-node.craftable{cursor:pointer}.pact-tree-node.craftable:hover{filter:brightness(1.16)}
+/* The node ring shows what sits in it (pactNodeBorderClass, src/fate-slot-unlocks.js); allocation reads from the ✓ / + badge and the
+   dimmed image. Kept before the drop-target and over-limit rules so those still show above it. */
+.pact-tree-node.pact-border-normal{box-shadow:0 0 0 2px #8a96a3,0 0 6px #8a96a326}
+.pact-tree-node.pact-border-main{box-shadow:0 0 0 2px #ffd44f,0 0 9px #ffd44f66}
+.pact-tree-node.pact-border-legendary-kismet{box-shadow:0 0 0 2px #ffd44f,0 0 9px #ffd44f66}
+.pact-tree-node.pact-border-rare-kismet{box-shadow:0 0 0 2px #50d0f4,0 0 9px #50d0f466}
+.pact-tree-node.pact-border-fate{box-shadow:0 0 0 2px #ff3b3b,0 0 9px #ff3b3b66}
+.pact-tree-node.pact-border-epic-kismet{box-shadow:0 0 0 2px #ff5fb4,0 0 9px #ff5fb466}
 .pact-tree-node.has-kismet[data-kismet-node]{cursor:grab;touch-action:none;user-select:none}
 .pact-tree-node.kismet-drag-source{opacity:.45;cursor:grabbing}
 .pact-tree-node.kismet-drop-target{box-shadow:0 0 0 3px #f9ca65,0 0 16px rgba(249,202,101,.55)}
@@ -801,7 +806,7 @@ body.unified-planner .fate-slot-dialog>[data-clear-fate-slots]:hover{border-colo
 #kismet-search{width:100%;padding:11px 13px;border:1px solid #35414f;border-radius:5px;background:#11171e;color:#e8edf2}
 #kismet-choice-list{display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;align-content:start;gap:8px;min-height:0;overflow:auto;padding-right:6px}
 .kismet-choice{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:10px;height:82px;min-width:0;overflow:hidden;padding:9px;border:1px solid #35404c;border-radius:8px;background:#1a2028;color:#e8edf2;text-align:left;cursor:pointer}
-.kismet-choice:hover,.kismet-choice.selected{border-color:#e68a33;background:#2a2422}.kismet-choice img{display:block;width:46px;height:46px;max-width:100%;max-height:100%;justify-self:center;align-self:center;object-fit:contain}.kismet-choice span{min-width:0;overflow:hidden}.kismet-choice strong,.kismet-choice small{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical}.kismet-choice strong{font-size:.78rem;-webkit-line-clamp:1}.kismet-choice small{margin-top:5px;color:#a7b3c0;font-size:.68rem;line-height:1.3;-webkit-line-clamp:2}.kismet-choice em{align-self:start;justify-self:end;padding:3px 6px;border:1px solid #a35abb;border-radius:3px;color:#d59deb;font-size:.6rem;font-style:normal}.kismet-choice em.legendary{border-color:#b47a35;color:#efb56a}.kismet-no-results{color:#a7b3c0;font-size:.8rem}
+.kismet-choice:hover,.kismet-choice.selected{border-color:#e68a33;background:#2a2422}.kismet-choice img{display:block;width:46px;height:46px;max-width:100%;max-height:100%;justify-self:center;align-self:center;object-fit:contain}.kismet-choice span{min-width:0;overflow:hidden}.kismet-choice strong,.kismet-choice small{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical}.kismet-choice strong{font-size:.78rem;-webkit-line-clamp:1}.kismet-choice small{margin-top:5px;color:#a7b3c0;font-size:.68rem;line-height:1.3;-webkit-line-clamp:2}.kismet-choice em{align-self:start;justify-self:end;padding:3px 6px;border:1px solid #a35abb;border-radius:3px;color:#d59deb;font-size:.6rem;font-style:normal}.kismet-choice em.legendary{border-color:#b47a35;color:#efb56a}.kismet-choice em.epic{border-color:#9c4cb4;color:#d96bf2}.kismet-no-results{color:#a7b3c0;font-size:.8rem}
 .kismet-detail-pane{min-height:0;overflow:auto;padding:17px}.kismet-roll-row{display:grid;gap:7px;margin-bottom:14px;padding:10px 11px;border:1px solid #293442;border-radius:6px;color:#b9c3cd;font-size:.75rem}.kismet-roll-row>span{display:flex;justify-content:space-between}.kismet-roll-row>span strong{color:#ff9a43}.kismet-roll-row>div{display:flex;gap:10px;align-items:center}.kismet-roll-row input[type=range]{flex:1;accent-color:#ef8932}.kismet-roll-row input[type=number]{width:76px;padding:7px;border:1px solid #455263;border-radius:4px;background:#111820;color:#fff;text-align:center}.kismet-roll-row small{color:#8592a0;font-size:.66rem}.kismet-fixed-roll{margin:0 0 13px;color:#9eabb8;font-size:.75rem}
 #kismet-preview{padding:15px;border:1px solid #35404d;border-radius:8px;background:#11171e}.kismet-preview-head{display:flex;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid #2d3742}.kismet-preview-head img{width:48px;height:48px;object-fit:contain}.kismet-preview-head strong,.kismet-preview-head small{display:block}.kismet-preview-head strong{color:#f4bd80;font-size:.9rem}.kismet-preview-head small{margin-top:4px;color:#a4afbb;font-size:.69rem}#kismet-preview ul{display:grid;gap:8px;margin:13px 0;padding:0;list-style:none}#kismet-preview li{color:#edaa62;font-size:.77rem;line-height:1.35}#kismet-preview>p{margin:0;color:#8795a3;font-size:.7rem;font-style:italic}
 .kismet-crafter-dialog>footer{display:flex;justify-content:flex-end;gap:10px;padding:13px 17px;border-top:1px solid #35404b}.kismet-crafter-dialog>footer button{min-width:98px;padding:10px 16px;border:1px solid #394654;border-radius:6px;background:#1c2530;color:#dce5ed;cursor:pointer}.kismet-crafter-dialog>footer [data-confirm-kismet]{border-color:#f28a35;background:#f28a35;color:#191007;font-weight:700}.kismet-crafter-dialog>footer button:hover{filter:brightness(1.12)}
@@ -2172,7 +2177,8 @@ body.unified-planner #pactspirit-selector .pactspirit-choice.rarity-magic,
 .planner-tooltip.pact-tooltip[data-rarity="magic"]{--pact-accent:#69d6f5;--pact-border:#278bae;--pact-glow:#173c51;--pact-dark:#101f2b}
 body.unified-planner .pact-slot.rarity-rare,
 body.unified-planner #pactspirit-selector .pactspirit-choice.rarity-rare,
-.planner-tooltip.pact-tooltip[data-rarity="rare"]{--pact-accent:#e0a1f5;--pact-border:#a45cc1;--pact-glow:#40234e;--pact-dark:#21172d}
+.planner-tooltip.pact-tooltip[data-rarity="rare"],
+.planner-tooltip.pact-tooltip[data-rarity="epic"]{--pact-accent:#e0a1f5;--pact-border:#a45cc1;--pact-glow:#40234e;--pact-dark:#21172d}
 body.unified-planner .pact-slot.rarity-legendary,
 body.unified-planner #pactspirit-selector .pactspirit-choice.rarity-legendary,
 .planner-tooltip.pact-tooltip[data-rarity="legendary"]{--pact-accent:#ffd084;--pact-border:#b87934;--pact-glow:#49301c;--pact-dark:#241b16}
@@ -3038,6 +3044,9 @@ body.unified-planner #kismet-crafter .kismet-choice.selected{
 }
 body.unified-planner #kismet-crafter .kismet-choice.selected{box-shadow:inset 3px 0 #f9ca65}
 body.unified-planner #kismet-crafter .kismet-choice em.legendary{border-color:#a67736;color:#f9ca65;background:#292319}
+/* Epic kismets (Destiny item quality 3, config_item_base field 0; 2026-11-18): the planner's purple. */
+body.unified-planner #kismet-crafter .kismet-choice em.epic{border-color:#9c4cb4;color:#d96bf2;background:#2a1a30}
+.kismet-choice em.rare,body.unified-planner #kismet-crafter .kismet-choice em.rare{border-color:#2f7d99;color:#50d0f4;background:#10303d}
 body.unified-planner #kismet-crafter .kismet-roll-row,
 body.unified-planner #kismet-preview{border-color:#695437;border-radius:4px;background:linear-gradient(145deg,#20262b,#141c25)}
 body.unified-planner #kismet-crafter .kismet-roll-row>span strong,
@@ -3154,6 +3163,7 @@ body.unified-planner #equipment-view .equipment-item.rarity-legendary::before,
 .hero-memory-preview.memory-rarity-epic,
 .planner-tooltip.memory-tooltip[data-rarity="epic"],
 .planner-tooltip.pact-tooltip[data-rarity="rare"],
+.planner-tooltip.pact-tooltip[data-rarity="epic"],
 .hero-memory-socket.filled.memory-rarity-epic .hero-memory-art,
 .inventory-item.rarity-epic:not(.item-level-100),
 body.unified-planner #equipment-view .equipment-item.rarity-epic:not(.item-level-100),
@@ -4663,10 +4673,10 @@ body.unified-planner.layout-tabs #overview-board .overview-follower-skill[class*
    shown purple in game, the epic purple art; Magic the blue art: selectors added to those rules), with the gear tooltip's darkened
    head and body over it so the text stays readable. */
 .planner-tooltip.pact-tooltip[data-rarity="legendary"] .pact-tooltip-head{background:rgba(49,30,17,.48)}
-.planner-tooltip.pact-tooltip[data-rarity="rare"] .pact-tooltip-head{background:rgba(31,23,75,.45)}
+.planner-tooltip.pact-tooltip[data-rarity="rare"] .pact-tooltip-head,.planner-tooltip.pact-tooltip[data-rarity="epic"] .pact-tooltip-head{background:rgba(31,23,75,.45)}
 .planner-tooltip.pact-tooltip[data-rarity="magic"] .pact-tooltip-head{background:rgba(15,53,70,.44)}
 .planner-tooltip.pact-tooltip[data-rarity="legendary"] footer{background:rgba(24,16,11,.56)}
-.planner-tooltip.pact-tooltip[data-rarity="rare"] footer{background:rgba(18,16,46,.56)}
+.planner-tooltip.pact-tooltip[data-rarity="rare"] footer,.planner-tooltip.pact-tooltip[data-rarity="epic"] footer{background:rgba(18,16,46,.56)}
 .planner-tooltip.pact-tooltip[data-rarity="magic"] footer{background:rgba(12,30,40,.55)}
 /* Skill, support and Aura tooltips and the skill picker's preview cards take the Divinity Slate tooltip's look (user, 2026-10-30;
    replaces the 2026-10-29 rule that kept the type colours as accent lines): the slate background with no tint over it, border
@@ -4711,6 +4721,8 @@ body.layout-tabs #skill-selector .selector-preview:not([class*="follower-tint-"]
 body.layout-tabs .planner-tooltip.skill-tooltip .skill-added-damage-stat b,
 body.layout-tabs #skill-selector .selector-preview:not([class*="follower-tint-"]) .skill-added-damage-stat strong{color:#9fec65!important;font-weight:800}
 body.layout-tabs .planner-tooltip.skill-tooltip .skill-tooltip-source{color:#aeb5c0!important}
+/* Uptime section (user request 2026-11-15): the reason line in the tooltip's muted fact-label colour. */
+body.layout-tabs .planner-tooltip.skill-tooltip .skill-tooltip-uptime p.skill-tooltip-uptime-reason{color:#aab5c4!important}
 /* Overview Talent block: a small read-only copy of the Divinity Slate board beside the tree rows (user 2026-10-30), the Slates
    view's board (72 px cells, 432 px) scaled to the rows' height (x0.54, 233 px); centred in the free space; an empty board shows
    its grid faintly. It wraps under the rows where the block is too narrow. A click opens the Slates view. */

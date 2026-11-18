@@ -54,7 +54,7 @@
 //   consume. Each Overload casts the Main Skill once with Max Spell Burst × 3 (+200% additional) automatic casts, all cast by Spell
 //   Burst (SS14 removed Genius Idea Generator's "+1 Max Spell Burst and +60% additional Spell Damage" for them). Hyper-Resonance's
 //   buff is time-averaged; Contingency Inspiration Machines each cast the Main Skill every interval ÷ your Cast Speed for 5 s
-//   (triggered casts, no Spell Burst). Multi-Coupling Equation counts the enabled Empower / Defensive skills on the skill board.
+//   (triggered casts, no Spell Burst). Multi-Coupling Equation counts the Empower / Defensive buffs held, each at its own uptime (C5).
 
 import { normalizePercentageText } from "./percentage-text.js";
 import { ownBuffRecordOf, OWN_STATUS_TAGS } from "./unit-buff-set.js";
@@ -351,7 +351,7 @@ function creativeState(lines, modifierTexts, requestedConditions, facts, inputs)
   const flash = flashLine ? { chance: Number(flashLine.match[1]) / 100, intervalSeconds: Number(flashLine.match[2]) } : null;
   const overflow = overflowLine ? { base: Number(overflowLine.match[1]), per2: Number(overflowLine.match[2]), intervalSeconds: Number(overflowLine.match[3]) } : null;
   // Max Spell Burst: the build's lines + Multi-Coupling Equation's stacks. Record 53529464 counts the held buffs whose record carries the
-  // Empower (5100311) or Defensive (5100304) tag: the board's Empower / Defensive skills (best case: held), and the Defensive buffs an item
+  // Empower (5100311) or Defensive (5100304) tag: the board's Empower / Defensive skills (each at its buff's uptime, C5), and the Defensive buffs an item
   // alternates (`inputs.heldDefensiveBuffs`: Dual Kismet: Twin Cities' Frost Shield, buff 10140, and Delayed Pain, buff 10430, both tagged
   // 5100304; one held always, both 1 s in 4; user-approved 2026-11-09 "if the game files suggest that, yes", provisional: the kismet's own
   // rows are not extracted, its text gives the timing). Each held count holds its share of the time: `stacks` the whole stacks always held,
@@ -359,14 +359,26 @@ function creativeState(lines, modifierTexts, requestedConditions, facts, inputs)
   const couplingLine = one("coupling");
   const empowerDefensive = inputs.empowerDefensive || [];
   const heldDefensive = inputs.heldDefensiveBuffs || null;
-  const coupling = couplingLine ? { per: Number(couplingLine.match[1]), gain: Number(couplingLine.match[2]), maxStacks: Number(couplingLine.match[3]), count: empowerDefensive.length, names: empowerDefensive, held: heldDefensive } : null;
+  // Census C5 (user decision 2026-11-15): each board buff counts at its own share of the time held (`inputs.empowerDefensiveShares`, a
+  // Map name → share: an Empower Skill at its buff's steady uptime, src/empower-buffs.js; a skill with no buff model held), the buffs'
+  // timers independent (inferred). The count's distribution is the board buffs' (Poisson binomial) with the item's alternation.
+  const boardShares = empowerDefensive.map((name) => { const share = inputs.empowerDefensiveShares?.get?.(name); return { name, share: share == null ? 1 : Math.max(0, Math.min(1, Number(share) || 0)) }; });
+  const coupling = couplingLine ? { per: Number(couplingLine.match[1]), gain: Number(couplingLine.match[2]), maxStacks: Number(couplingLine.match[3]), count: empowerDefensive.length, names: empowerDefensive, shares: boardShares, held: heldDefensive } : null;
   if (coupling) {
     const stacksAt = (count) => Math.min(coupling.maxStacks, Math.floor(count / coupling.per + EPS));
-    const shares = heldDefensive?.counts?.length ? heldDefensive.counts : [{ count: 0, share: 1 }];
-    coupling.stacks = stacksAt(coupling.count + Math.min(...shares.map((item) => item.count)));
-    const expected = shares.reduce((total, item) => total + item.share * stacksAt(coupling.count + item.count), 0);
+    let board = [1];
+    for (const { share } of boardShares) { const next = new Array(board.length + 1).fill(0); board.forEach((p, k) => { next[k] += p * (1 - share); next[k + 1] += p * share; }); board = next; }
+    const itemCounts = heldDefensive?.counts?.length ? heldDefensive.counts : [{ count: 0, share: 1 }];
+    const dist = [];
+    board.forEach((p, k) => { for (const item of itemCounts) if (p * item.share > EPS) dist.push({ count: k + item.count, share: p * item.share }); });
+    const minCount = Math.min(...dist.map((item) => item.count));
+    // `stacks`: the whole stacks always held (the attribute pool's "+N Max Spell Burst" line); `partial`: the expected stacks above them
+    // (the Spell Burst model averages it, src/skill-hit-model.js).
+    coupling.stacks = stacksAt(minCount);
+    const expected = dist.reduce((total, item) => total + item.share * stacksAt(item.count), 0);
     coupling.partial = Math.max(0, expected - coupling.stacks);
-    if (heldDefensive) coupling.count += Math.min(...shares.map((item) => item.count));
+    coupling.count = minCount;
+    coupling.expectedCount = dist.reduce((total, item) => total + item.share * item.count, 0);
   }
   const maxSpellBurst = Math.max(0, Number(inputs.buildMaxSpellBurst) || 0) + (coupling ? (coupling.stacks + coupling.partial) * coupling.gain : 0);
   const gigWhimsy = one("gigWhimsy");
@@ -414,10 +426,22 @@ function creativeState(lines, modifierTexts, requestedConditions, facts, inputs)
       machines: contingency ? { count: Number(contingency.match[1]), intervalSeconds: Number(contingency.match[2]), lifetimeSeconds: machineSeconds, overloadsPerSecond: overloads, source: contingency.line.source } : null
     } : {}),
     // Multi-Coupling Equation's part-time extra stack (above): its time share of a Max Spell Burst stack, averaged by the Spell Burst model.
-    ...(partialStacks > 0 ? { spellBurstPartialStacks: partialStacks, spellBurstPartialSource: `Multi-Coupling Equation: ${heldDefensive?.text || "part-time stack"}` } : {})
+    ...(partialStacks > 0 ? { spellBurstPartialStacks: partialStacks, spellBurstPartialSource: `Multi-Coupling Equation: ${[...(coupling.shares || []).filter((item) => item.share < 1 - EPS).map((item) => `${item.name} up ${pct(item.share)}%`), ...(heldDefensive?.text ? [heldDefensive.text] : [])].join("; ") || "part-time stack"}` } : {})
   } : null;
   const switches = [], assumptions = [];
-  if (mind) switches.push({ id: WHIMSY_FIELD_SWITCH, label: "Mind Domain: standing in the Whimsy Explosion's energy field", enabled: fieldOn, active: fieldOn && explosions > 0, summary: `Whimsy held at ${whimsyStacks} stacks`, reason: fieldOn ? "best-case assumption (you stand in the field: 5 s, 6 m, Split 318305)" : "switched off: no Whimsy stacks" });
+  // Census C3 (user decision 2026-11-15: a stack gained only from the dummy starts at 0): the explosion needs your Spell Damage on an enemy, and
+  // record 605182080 gains a Whimsy stack every 0.5 s in its field (gate 184 on buff 82186's field buff 82185, gate 206 0.5 s), so the windows
+  // and the 60 s recount build it: the first explosion at your first Spell hit (Whimsy Essence pre-built at 100: inferred), the field 0.5 s
+  // later (Split 318305), stack k after k × 0.5 s in it, up to the cap; the sustained figure keeps the held stacks at their uptime. One timed
+  // part on your Spell hits, its level the stacks' (multiplies) share of the full stacks × the uptime.
+  const whimsyPart = (() => {
+    if (!(whimsyPercent > 0) || !(whimsyStacks > 0) || !(whimsyUptime > 0)) return null;
+    const perStack = 1 + KEYWORDS.whimsy.percent * (1 + whimsyEffect / 100) / 100, full = (perStack ** whimsyStacks - 1) * 100;
+    const first = (Number.isFinite(facts?.firstSpellHitSeconds) ? facts.firstSpellHitSeconds : 0) + 0.5;
+    const points = Array.from({ length: whimsyStacks }, (_, index) => [first + 0.5 * (index + 1), whimsyUptime * (perStack ** (index + 1) - 1) * 100 / full]);
+    return { type: null, reach: "hit", percent: full, ...(facts?.spellHitKeys?.length ? { keys: facts.spellHitKeys } : {}), schedule: { kind: "steps", points, sustained: whimsyUptime } };
+  })();
+  if (mind) switches.push({ id: WHIMSY_FIELD_SWITCH, label: "Mind Domain: standing in the Whimsy Explosion's energy field", enabled: fieldOn, active: fieldOn && explosions > 0, summary: `Whimsy held at ${whimsyStacks} stacks`, ...(whimsyPart && fieldOn ? { parts: [whimsyPart] } : {}), reason: fieldOn ? "best-case assumption (you stand in the field: 5 s, 6 m, Split 318305)" : "switched off: no Whimsy stacks" });
   if (explosionsOn) assumptions.push({ id: "bing:whimsy", value: explosions, text: `Bing – Creative Genius (provisional): ${round(cadence.whimsyPerSecond)} Whimsy Essence/s → ${round(explosions)} Whimsy Explosions/s${cadence.flashExplosions ? ` (${round(cadence.flashExplosions)}/s from Flash of Brilliance)` : ""} (each deals 1 Physical, not affected by Stats: no DPS); Whimsy Signal on the dummy ${pct(signalUptime)}% of the time (+${round(signalFull)}% additional Spell Damage taken, Spell hits only)${mind ? `; Mind Domain: ${fieldOn ? `${whimsyStacks} Whimsy stacks held ${pct(whimsyUptime)}% of the time` : "switched off"}` : ""}; ${overloadOn ? `Ingenuity Overload every ${fmt(1 / overloads)} s (${round(cadence.ingenuityPerSecond)} Ingenuity Essence/s): the Main Skill once + ${round(overloadStacks)} Spell Burst casts${contingency ? `, ${contingency.match[1]} Contingency Inspiration Machines for ${round(machineSeconds)} s` : ""}` : `no Ingenuity Overload (${overloadWhy})`}.` });
   const needsRates = explosionsOn && Boolean(overflow || flash || overloadLines);
   return { active: explosionsOn, dealsSpell, measured, machines: Boolean(machinesLine), explosionsOn, recoveryPercent, cadence, explosions, signal: { base: signalBase, second: signalSecond, full: round(signalFull), effect: signalEffect, uptime: signalUptime, percent: signalPercent },
@@ -538,8 +562,10 @@ function whimsyRead(key, match, c) {
     case "autoWhimsy": return c.explosionsOn ? feedsOverload(`${match[1]}% Whimsy Essence Recovery Speed`) : inactive(noSpell);
     case "coupling": {
       const cp = c.coupling, body = `+${(cp?.stacks || 0) * (cp?.gain || 0)} Max Spell Burst`;
-      const partText = cp?.partial > 0 ? `; ${cp.held?.text || "a held Defensive buff"}: +${round(cp.partial * cp.gain)} Max Spell Burst on average (a further stack ${round(cp.partial * 100)}% of the time; provisional)` : "";
-      return cp && (cp.stacks > 0 || cp.partial > 0) ? inCalc(`${cp.count} Empower / Defensive buff(s) held (${[...cp.names, ...(cp.held?.names || [])].join(", ")}; best case: the board's all affecting you): ${body}${partText}`, cp.stacks > 0 ? [body] : []) : inactive(`${cp?.count || 0} enabled Empower or Defensive skill(s) on the skill board (needs ${match[1]})`);
+      const partTimers = [...(cp?.shares || []).filter((item) => item.share < 1 - EPS).map((item) => `${item.name} up ${pct(item.share)}%`), ...(cp?.held?.text ? [cp.held.text] : [])];
+      const partText = cp?.partial > 0 ? `; +${round(cp.partial * cp.gain)} Max Spell Burst on average above that (${partTimers.join("; ") || "part-time buffs"}; each buff at its own uptime, independent; provisional)` : "";
+      const listed = [...(cp?.shares || []).map((item) => item.share < 1 - EPS ? `${item.name} ${pct(item.share)}%` : item.name), ...(cp?.held?.names || [])].join(", ");
+      return cp && (cp.stacks > 0 || cp.partial > 0) ? inCalc(`${round(cp.expectedCount ?? cp.count)} Empower / Defensive buff(s) affecting you on average (${listed}): ${body} always held${partText}`, cp.stacks > 0 ? [body] : []) : inactive(`${cp?.count || 0} enabled Empower or Defensive skill(s) on the skill board (needs ${match[1]})`);
     }
     case "hyper": {
       const body = `+${c.hyper.percent}% additional Spell Burst Charge Speed`;

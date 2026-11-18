@@ -11,8 +11,9 @@
 //   lands as the area ends (reading `areaTicks`, default "planner"; "whole" drops it, "fromCast" starts the ticks at the cast). A part
 //   that deals one hit lands at the use, or at the area's end when its note says so (Flame Jet's eruption).
 // - channel: one event per hit at hit.rate.hitsPerSecond, because the blades of Ring of Blades do not follow Cast Speed (run 2026-10-11).
-// - combo cycle: one step per attack with its own attack time, each step dealing its own components (the profile's cycle.steps; a support
-//   that changes one step's time is not exposed by the hit, so the steps scale together: provisional).
+// - combo cycle: one step per attack with its own attack time, each step dealing its own components (the planner's rate.cycleSteps: its
+//   later Finishers and step speed lines; the press share stretches the steps, Multistrike scales their hits). Rehan's Seething Spirit
+//   casts of it are their own action.
 // Demolisher Charge runs live on a cast skill: a charge every N s, held to the next hit, which reads the skill's bonus in full and spends
 // it. The ledger's average line is taken out, as a Youga layer does. The opening charge follows prebuiltSelfBuffs (provisional).
 //
@@ -69,6 +70,11 @@ function batchedFirstUse(rate, seconds, batch) {
 // Each use of a batch fires its own effects.
 export const repeatEffects = (effects, batch) => batch > 1 ? Array.from({ length: batch }, () => effects).flat() : effects;
 
+// The player's own per-use damage of a hit whose merged rate holds the Seething Spirit's casts (src/planner.js: rate.usesPerSecond and
+// combat.perUse are the player's and the Spirit's together). On the loop the cycle places the Spirit's casts as their own action
+// (compilePlainProgram below), so the player's cycle takes only its own per-use; src/tick-ledger.js compileParts reads it.
+export const ownPerUse = (hit) => hit.rehanSpirit?.modeled && hit.rehanSpirit.playerUsesPerSecond > 0 ? (hit.combat.dps - hit.rehanSpirit.dps) / hit.rehanSpirit.playerUsesPerSecond : hit.combat.perUse;
+
 const componentOf = (hit, part) => hit.components[Number(String(part.key).split("#")[1])] ?? null;
 // A later Combo Finisher of the cycle (src/skill-hit-model.js finisherCharges: `<key>:chargeN`) lands with its Finisher step.
 const baseKey = (key) => String(key).split(/[+>]/)[0].replace(/:charge\d+(?::none)?$/, "");
@@ -105,11 +111,24 @@ function areaEffects(hit, path, reading, paths) {
   return { effects, text: counts.join("; ") };
 }
 
+// The cycle's steps: the planner's own list (rate.cycleSteps: Heart of Animitta's later Finishers, the Starter / Finisher speed lines) when
+// the hit exposes it, else the profile's. A `<key>:chargeN` component lands on the N-th Finisher step. A Main Skill that keeps only a share
+// of its action time (rate.rotation, an action budget as in useTiming) stretches every step ÷ that share, and the Multistrike rate factor
+// (rate.multistrike.rateFactor: a repeated sequence counts as more of the same cycle) scales each step's hits, so the loop's long-run cycle
+// rate × count is the planner's player use rate (research/spectral-slash-cycle-rate-2026-11-14.md).
+const chargeOf = (key) => { const match = String(key).split(/[+>]/)[0].match(/:charge(\d+)(?::none)?$/); return match ? Number(match[1]) : null; };
 function cycleSteps(hit, path, paths) {
   const { rate } = hit, scale = rate.intervalSeconds / rate.useTimeSeconds;
+  const rotation = rate.rotation && !(rate.rotation.pressEverySeconds > 0) && rate.rotation.timeBound !== false ? Math.max(1e-9, Math.min(1, rate.rotation.share ?? 1)) : 1;
+  const multistrike = rate.multistrike?.rateFactor > 0 ? rate.multistrike.rateFactor : 1;
+  const source = rate.cycleSteps?.length ? rate.cycleSteps : hit.profile.cycle.steps;
   const mapped = new Set();
-  const steps = hit.profile.cycle.steps.map((step, index) => {
-    const parts = path.parts.filter((part) => { const component = componentOf(hit, part); return component && step.keys.includes(baseKey(component.key)); });
+  const steps = source.map((step, index) => {
+    const parts = path.parts.filter((part) => {
+      const component = componentOf(hit, part);
+      if (!component || !step.keys.includes(baseKey(component.key))) return false;
+      return step.finisher === undefined || (chargeOf(component.key) ?? 1) === (step.finisher ?? 1);
+    });
     parts.forEach((part) => mapped.add(part));
     return { index, step, parts };
   });
@@ -118,7 +137,8 @@ function cycleSteps(hit, path, paths) {
     const list = index === steps.length - 1 ? [...parts, ...path.parts.filter((part) => !mapped.has(part))] : parts;
     const key = `${hit.key}:step${index + 1}`;
     paths[key] = subPath(path, key, list);
-    return { useSeconds: step.seconds * scale, label: `${hit.name} step ${index + 1}`, effects: [{ kind: "hit", path: key, ...(step.share !== undefined ? { count: step.share } : {}) }] };
+    const count = (step.share ?? 1) * multistrike;
+    return { useSeconds: step.seconds * scale / rotation, label: `${hit.name} step ${index + 1}`, effects: [{ kind: "hit", path: key, ...(step.share !== undefined || count !== 1 ? { count } : {}) }] };
   });
 }
 
@@ -202,7 +222,18 @@ export function compilePlainProgram(planner, hits, staticPaths, readings = {}, a
     if (kind === "cycle") {
       const steps = cycleSteps(hit, path, paths).map((step) => ({ ...step, ...(speedKey ? { useSeconds: { baseSeconds: step.useSeconds * rate.speedFactor, speed: speedKey } } : {}), effects: [...onUse, ...step.effects.map((effect) => effect.kind === "hit" && onHit.length ? { ...effect, onHit } : effect), ...after] }));
       actions.push({ ...base, steps });
-      assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: kind, text: `${hit.name}: a cycle of ${steps.length} attacks, each landing its own components at its end (the steps scale together with the planner's interval: provisional).` });
+      assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: kind, text: `${hit.name}: a cycle of ${steps.length} attacks, each landing its own components at its end (the planner's step list and step times${rate.rotation ? ", stretched by its press share" : ""}${rate.multistrike?.rateFactor > 0 && rate.multistrike.rateFactor !== 1 ? `, hits × ${Math.round(rate.multistrike.rateFactor * 1e4) / 1e4} Multistrike` : ""}).` });
+      // Rehan's Seething Spirit casts the Main Skill as its own actor: one full use of the Spirit's per-use damage on the skill's path, at
+      // rehanSpirit.usesPerSecond. Like a cast kind with no firstUseSeconds, its first cast lands one interval in (1 ÷ its rate), then one
+      // every interval (provisional: the Spirit's phase against your cycle is not traced). Its hits fire the layers' on-hit events; your own
+      // use events (onUse) stay on your cycle, as the planner counts the Spirit's 1000074 uses apart (src/planner.js seethingSpiritUses).
+      const spirit = hit.rehanSpirit;
+      if (spirit?.modeled && spirit.usesPerSecond > 0) {
+        const every = 1 / spirit.usesPerSecond, batch = usesPerPlacement(every);
+        const count = spirit.perUse / ownPerUse(hit);
+        actions.push({ key: `${hit.key}:spirit`, label: `Seething Spirit casts of ${hit.name}`, actor: "player", useSeconds: every * batch, ...timerField(readings), effects: repeatEffects([{ ...strike, count }], batch) });
+        assumptions.push({ id: `tick:plain:${hit.setupKey}:spirit`, value: Math.round(spirit.usesPerSecond * 1e4) / 1e4, text: `${hit.name}: the Seething Spirit's ${Math.round(spirit.usesPerSecond * 1e4) / 1e4} casts/s as their own action, each ${Math.round(count * 1e4) / 1e4} × your cycle's damage, the first one interval in (phase provisional).` });
+      }
     } else if (kind === "channel") {
       const count = 1 / rate.hitsPerUse, every = 1 / rate.hitsPerSecond, batch = usesPerPlacement(every);
       actions.push({ ...base, useSeconds: every * batch, ...batchedFirstUse(rate, every, batch), effects: repeatEffects([...onUse, { ...strike, ...(count !== 1 ? { count } : {}) }, ...after, ...dotEffects], batch) });

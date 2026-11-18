@@ -438,9 +438,10 @@ function erikaLightningEntry(line, module, state, { entry, derive, neutral, time
   // Another Numbed source already holds the dummy at 10 stacks: Feline Figure's stack count changes the figure only through
   // Swift as Lightning's rate or Charging Tail's share (Charging Equation's per-stack bonus reads the 10 held).
   const countClause = [P.electrify, P.trigger, P.perStack, P.maxElectrify, P.doubled, P.chargingTrigger].some((pattern) => pattern.test(text));
-  // Kept by your Lightning hits' store: the opening still starts it (Electrify, the trigger, its Numbed); its count and duration do not
-  // (the store holds 10 whatever they are; with Swift as Lightning the count sets its windows' first stacks, so the skip below spares it).
-  const opening = [P.electrify, P.trigger, P.perStack].some((pattern) => pattern.test(text));
+  // Kept by your Lightning hits' store: the opening still starts it (Electrify, the trigger, its Numbed, and the Max Electrify Stacks that set how
+  // many stacks the opening lands at t = 0 beside the store's, 5e9fa48: the windows read that count; badge movement probe 2026-11-15); its
+  // duration does not (the store holds 10 whatever it is; with Swift as Lightning the count sets its windows' first stacks, so the skip spares it).
+  const opening = [P.electrify, P.trigger, P.perStack, P.maxElectrify].some((pattern) => pattern.test(text));
   // Charging Equation's own recast decides which stack count its per-stack Numbed Effect reads (the held 10, or the opening's).
   const recastRead = P.chargingTrigger.test(text) && Boolean(ff.chargingEffect);
   if (countClause && active && !recastRead && (ff.otherNumbed || (ff.storeKept && !opening)) && !ff.swift && !(ff.tail?.share > 0)) { neutral("No DPS effect", `${ff.storeKept ? "your Lightning hits keep the dummy" : "another Numbed source already holds the dummy"} at ${ff.totalStacks} stacks (the cap), so Feline Figure's own stacks (${ff.stacks} on average) add none, and nothing in this build reads its trigger rate`); return; }
@@ -724,7 +725,7 @@ export function resolveHeroModules(modifierTexts = [], state = {}) {
     // Bing (B12; src/bing-traits.js bingLineRead): each clause's status and its derived lines; the best-case switches once per call.
     if (module.key === "bombs" || module.key === "whimsy") {
       const bingState = state.bing || null;
-      if (!bing.switched) { bing.switched = true; for (const item of bingState?.switches || []) timedEffects.push({ ...item, source: module.label, target: "self", toggle: true, provisional: true, parts: [] }); }
+      if (!bing.switched) { bing.switched = true; for (const item of bingState?.switches || []) timedEffects.push({ ...item, source: module.label, target: "self", toggle: true, provisional: true, parts: item.parts || [] }); }
       const read = bingLineRead(heroId, line.clean, bingState, { revived: line.origin === "memory" });
       if (!read) { entry(line, { ...module, status: "Not modeled" }, false, "this Bing clause is not read"); continue; }
       const active = read.status === "In calc";

@@ -1158,20 +1158,15 @@ export const FOLLOWER_BUFFS = [
     // damage event. So the follower's own Projectile crits put it on the dummy, and every hit and DoT the dummy takes (yours
     // included) takes it; your own crits do not fire it (user-confirmed in game 2026-11-11: only the follower's own Projectile
     // crits trigger it). The follower's crit chance: 100% on a skill that
-    // always crits, else its Critical Strike Rating 500 (config_mercenary_attr attr 4802 on all 48 letter rows; ÷ 100 = 5%, as
-    // the Minion model reads the Minions' 500), one crit check per cast (the crit cache: one per hit group per use). Uptime per
+    // always crits, else its Critical Strike Rating 500 (config_mercenary_attr attr 4802 on all 48 table rows; ÷ 10,000 = 5%, as
+    // the Minion model reads the Minions' 500: FOLLOWER_CRIT_RATING), one crit check per cast (the crit cache: one per hit group per use). Uptime per
     // skill: min(1, 1 s × uses/s) for a certain crit, 1 − (1 − p)^(uses/s × 1 s) for a chance (the Tendonslicer rule, timed
     // schedule "chance"); several skills 1 − Π(1 − uptime). Provisional: the 5% crit chance, open question follower-crit-chance.
     id: "followerRampagingRat", trait: "rampaging-rat", label: "Rampaging Rat: damage taken on Projectile crits", target: "enemy", needsNear: false, engine: "all",
     pattern: /^\+(\d+(?:\.\d+)?)% additional damage taken by enemies for (\d+(?:\.\d+)?) ?s when a Projectile Skill lands a Critical Strike$/i,
     derive: (match, ctx) => {
       const duration = Number(match[2]), percent = Number(match[1]);
-      const sources = [...(ctx?.cadence?.values() || [])].filter((entry) => entry.skill.tags.includes("Projectile") && OWN_DAMAGE[entry.skill.name] && heldUses(entry) > 0).map((entry) => {
-        const chance = followerCritChance(entry.skill), rate = heldUses(entry);
-        const schedule = chance >= 1 ? { kind: "periodic", durationSeconds: duration, periodSeconds: 1 / rate } : { kind: "chance", chancePercent: chance * 100, hitsPerSecond: rate, durationSeconds: duration, firstHitSeconds: Math.max(0, Number(entry.firstUseSeconds) || 0) };
-        const uptime = chance >= 1 ? Math.min(1, duration * rate) : 1 - (1 - chance) ** (rate * duration);
-        return { entry, chance, rate, schedule, uptime };
-      });
+      const sources = [...(ctx?.cadence?.values() || [])].filter((entry) => entry.skill.tags.includes("Projectile") && OWN_DAMAGE[entry.skill.name] && heldUses(entry) > 0).map((entry) => followerCritUptime(entry, duration));
       if (!sources.length) return { inactive: "no equipped follower Projectile Skill deals a hit, so none lands a Critical Strike (game affix 9561181: trigger 1000030 on the follower's own damage with the Critical Strike and Projectile tags; your own crits do not fire it)" };
       const uptime = 1 - sources.reduce((rest, source) => rest * (1 - source.uptime), 1);
       const schedule = sources.length === 1 ? sources[0].schedule : { kind: "union", schedules: sources.map((source) => source.schedule) };
@@ -1271,12 +1266,27 @@ const GUARANTEED_CRIT = /^This skill is guaranteed to land Critical Strikes$/i;
 // Evil Might (Nether Grasp): read held by AFFIX_MARKERS, part-time by AFFIX_EFFECTS.
 const EVIL_MIGHT = /^The Follower and nearby allies gain Profane for (\d+(?:\.\d+)?) ?s when casting this skill$/i;
 const alwaysCrits = (skill) => [...(skill?.lines || []), ...(skill?.affixLines || [])].some((text) => GUARANTEED_CRIT.test(clean(text)) || /guaranteed to land Critical Strikes/i.test(String(text)));
-// The follower's Critical Strike Rating: config_mercenary_attr attr 4802 = 500 on all 48 letter rows (2026-11-11; a fixed value
-// like the row's Movement Speed and Alert Radius, not one of its small per-level column indexes), read as a flat 5% (rating ÷ 100,
-// the Minion model's reading of the Minions' 500) with no line of its skills raising it. Read only by Rampaging Rat so far (provisional; open question
-// follower-crit-chance); the other crit readers keep a crit only on a skill that always crits.
+// The follower's Critical Strike Rating: config_mercenary_attr attr 4802 mod 1 = 500 on all 48 table rows (32 named, 16 test rows;
+// the rows are not keyed by letter id, but every row writes the same 500: research/follower-crit-chance-2026-11-18.md §1). A fixed
+// value like the row's Movement Speed, not one of its small per-level column indexes. Rating ÷ 10,000 (the panel formulas 21200 and
+// 150067 divide attr 4802 by 10000; the combat roll 0x141fc07a0 compares a random value with the attacker's own attr 4802, the scale
+// inferred from the panel): 5% per crit determination, with no line of its skills raising it (nothing on the fixtures writes crit to
+// the follower; "allies" crit grants, filter 20, are not read: open). One determination per cast (the crit cache, Split 572773's
+// damage component does not switch it off; the cache gate for a follower is not traced). Read by every follower "lands a Critical
+// Strike" line: Rampaging Rat, High Voltage (Lightning Infiltration), Bursting Pierce (provisional; open question follower-crit-chance).
 export const FOLLOWER_CRIT_RATING = 500;
 const followerCritChance = (skill) => alwaysCrits(skill) ? 1 : Math.min(1, FOLLOWER_CRIT_RATING / 100 / 100);
+// One follower skill's "for N s when it lands a Critical Strike" uptime: min(1, N × uses/s) for a certain crit (periodic schedule),
+// 1 − (1 − p)^(uses/s × N) for a chance (the Tendonslicer rule; timed schedule "chance" from the skill's first cast).
+function followerCritUptime(entry, duration) {
+  const chance = followerCritChance(entry.skill), rate = heldUses(entry);
+  const schedule = chance >= 1 ? { kind: "periodic", durationSeconds: duration, periodSeconds: 1 / rate } : { kind: "chance", chancePercent: chance * 100, hitsPerSecond: rate, durationSeconds: duration, firstHitSeconds: Math.max(0, Number(entry.firstUseSeconds) || 0) };
+  const uptime = !(rate > 0) ? 0 : chance >= 1 ? Math.min(1, duration * rate) : 1 - (1 - chance) ** (rate * duration);
+  return { entry, chance, rate, schedule, uptime };
+}
+const critChanceText = (source) => `${round(source.rate)} casts/s × ${round(source.chance * 100)}% crit chance (the follower's Critical Strike Rating ${FOLLOWER_CRIT_RATING}, one check per cast)`;
+// Lightning Infiltration's duration when the follower inflicts it (buff 3461, duration −2: the record default, 10 s; chunk 14 §5).
+const FOLLOWER_INFILTRATION_SECONDS = 10;
 const cadenceOf = (ctx) => ctx?.cadence?.get(ctx?.skill?.name) || null;
 // The skill deals damage on the dummy at its cadence (a modeled own-damage skill that is cast).
 const dealsDamage = (ctx) => Boolean(OWN_DAMAGE[ctx?.skill?.name]) && cadenceOf(ctx)?.castsPerSecond > 0;
@@ -1382,7 +1392,14 @@ const AFFIX_MARKERS = [
     texts: (match, ctx) => dealsDamage(ctx) && alwaysCrits(cadenceOf(ctx)?.skill) ? ["The Follower inflicts Lightning Infiltration on the dummy"] : [],
     // In calc only where your damage includes Lightning (the follower's own hits do not read the dummy's Infiltration; batch 7 badge
     // fixes, 2026-10-28: it read In calc on builds with no Lightning damage).
-    read: (match, ctx) => !dealsDamage(ctx) ? { status: "Inactive", reason: NO_DAMAGE } : alwaysCrits(cadenceOf(ctx)?.skill) ? (ctx?.state && !ctx.state.hitTypes?.has?.("Lightning") ? { status: "Inactive", reason: "the skill always crits, so it inflicts Lightning Infiltration each cast (+13% additional Lightning Damage taken), but no modeled hit of your build deals Lightning Damage" } : (ctx?.state?.enemyDebuffs?.ownInfiltration || []).includes("Lightning") ? { status: "No DPS effect", reason: "the skill always crits, so it inflicts Lightning Infiltration each cast, but your build already keeps Lightning Infiltration on the dummy (one Infiltration of a type whoever inflicts it)" } : { status: "In calc", reason: "the skill always crits, so it inflicts Lightning Infiltration each cast: +13% additional Lightning Damage taken (src/combat-states.js)" }) : { status: "Inactive", reason: "the follower's crit chance is not published; only a skill that always crits (its text, or Critical Strike Rating Increase) lands one each cast" }
+    // A skill that does not always crit: null here, read part-time by AFFIX_EFFECTS followerAffixHighVoltage (the follower's 5% crit chance).
+    read: (match, ctx) => {
+      if (!dealsDamage(ctx)) return { status: "Inactive", reason: NO_DAMAGE };
+      const always = alwaysCrits(cadenceOf(ctx)?.skill), how = always ? "the skill always crits, so it inflicts Lightning Infiltration each cast" : "the follower inflicts Lightning Infiltration on its crits with this skill";
+      if (ctx?.state && !ctx.state.hitTypes?.has?.("Lightning")) return { status: "Inactive", reason: `${how} (+13% additional Lightning Damage taken), but no modeled hit of your build deals Lightning Damage` };
+      if ((ctx?.state?.enemyDebuffs?.ownInfiltration || []).includes("Lightning")) return { status: "No DPS effect", reason: `${how}, but your build already keeps Lightning Infiltration on the dummy (one Infiltration of a type whoever inflicts it)` };
+      return always ? { status: "In calc", reason: "the skill always crits, so it inflicts Lightning Infiltration each cast: +13% additional Lightning Damage taken (src/combat-states.js)" } : null;
+    }
   },
   {
     pattern: /^Inflicts Cold Infiltration when this skill deals damage to enemies with (\d+) or more Frostbite Rating$/i,
@@ -1529,8 +1546,12 @@ function armourShredReading(match, ctx) {
     const share = match[4] === "Trauma" ? minionAilmentShare(ctx, "Trauma") : 1;
     uptime = uptimeFor(seconds, ctx) * share; when = `each hit on the dummy with ${match[4]}${share < 1 ? ` (Trauma from your Minions ${round(share * 100)}% of the time)` : ""}`;
   } else if (/Critical Strike/i.test(match[3])) {
-    if (!alwaysCrits(entry?.skill)) return { inactive: "the follower's crit chance is not published; only a skill that always crits (its text, or Critical Strike Rating Increase) lands one each cast" };
-    uptime = uptimeFor(seconds, ctx); when = "each cast (the skill always crits)";
+    if (alwaysCrits(entry?.skill)) { uptime = uptimeFor(seconds, ctx); when = "each cast (the skill always crits)"; }
+    else {
+      // The follower's 5% crit chance, one check per cast (provisional; open question follower-crit-chance).
+      const source = followerCritUptime(entry, seconds);
+      uptime = source.uptime; when = `each Critical Strike of the skill: ${critChanceText(source)} → 1 − (1 − ${round(source.chance)})^(${round(source.rate)} × ${seconds} s) (provisional, open question follower-crit-chance)`;
+    }
   } else {
     const rate = steepRateOf(entry);
     if (!(rate > 0)) return { inactive: "the skill launches no Steep Strike (no Steep Strike chance on it or its support affixes)" };
@@ -1656,6 +1677,32 @@ export const AFFIX_EFFECTS = [
       return { text: `+${value}% additional ${types[0]} Damage taken`, texts: types.slice(1).map((type) => ({ text: `+${value}% additional ${type} Damage taken`, origin: "derived" })), origin: "derived", summary: `${types.join(", ")} Infiltration on the dummy: ${base}% × (1 + ${match[1]}% × ${round(uptime * 100)}% uptime) over its ${base}% = +${value}% additional damage taken of each type (${cadenceText(cadenceOf(ctx))}; your own Infiltration Effect lines are not folded in: provisional)` };
     },
     reason: "best case: the follower's skill keeps hitting the dummy while it carries an Infiltration" },
+  // High Voltage on a skill that does not always crit (2026-11-18; research/follower-crit-chance-2026-11-18.md): affix 1033360273, trigger 1000030
+  // on the follower's own damage with [crit 5001010, this skill] (one success per frame per source entity), node 301 buff 3461 Lightning
+  // Infiltration on the dummy (filter 101), duration −2 = 10 s; buff 3461's 101010553 is +13% additional Lightning Damage taken (mod 4, its
+  // own factor) × GetEffectScale on the caster, the follower, which has no Effect lines. Uptime 1 − (1 − 5%)^(casts/s × 10 s), a new crit
+  // restarting the 10 s (inferred, as Rampaging Rat's 1 s); a timed "chance" part from the skill's first cast for the windows. The marker
+  // (AFFIX_MARKERS) settles a skill that always crits, no Lightning hit of yours, and your own Lightning Infiltration.
+  { id: "followerAffixHighVoltage", label: "High Voltage: Lightning Infiltration on crit", target: "enemy", needsNear: false, engine: "all",
+    pattern: /^Inflicts Lightning Infiltration when this skill lands a Critical Strike$/i,
+    derive: (match, ctx) => {
+      const entry = cadenceOf(ctx);
+      if (!dealsDamage(ctx) || !(heldUses(entry) > 0)) return { inactive: NO_DAMAGE };
+      // One Lightning Infiltration whoever inflicts it: every equipped damaging skill carrying High Voltage is one source. A carrier that
+      // always crits holds it (the marker); else the first carrier reads the union 1 − Π(1 − uptime) and the others are counted there.
+      const carriers = (ctx?.selection?.skills || []).filter((item) => (item.affixes || []).some((affix) => affix.lines.some((text) => /^Inflicts Lightning Infiltration when this skill lands a Critical Strike$/i.test(clean(text))))).map((item) => ctx.cadence?.get(item.skill.name)).filter((item) => item && OWN_DAMAGE[item.name] && heldUses(item) > 0);
+      const holder = carriers.find((item) => alwaysCrits(item.skill));
+      if (holder) return { inactive: `the follower's ${holder.skill.shortName || holder.name} always crits and holds Lightning Infiltration already (one Infiltration of a type whoever inflicts it)` };
+      if (carriers.length > 1 && carriers[0].name !== entry.name) return { inactive: `counted with the follower's ${carriers[0].skill.shortName || carriers[0].name}'s High Voltage (one Lightning Infiltration, its uptime the union of the carriers')` };
+      const sources = (carriers.length ? carriers : [entry]).map((item) => followerCritUptime(item, FOLLOWER_INFILTRATION_SECONDS));
+      const uptime = 1 - sources.reduce((rest, source) => rest * (1 - source.uptime), 1), percent = FOLLOWER_KEYWORD_VALUES.infiltration, value = round(percent * uptime);
+      const schedule = sources.length === 1 ? sources[0].schedule : { kind: "union", schedules: sources.map((source) => source.schedule) };
+      const each = sources.map((source) => `${source.entry.skill.shortName || source.entry.name}: ${critChanceText(source)} → 1 − (1 − ${round(source.chance)})^(${round(source.rate)} × ${FOLLOWER_INFILTRATION_SECONDS} s) = ${round(source.uptime * 100)}%`).join("; ");
+      const summary = `Lightning Infiltration (buff 3461: +${percent}% additional Lightning Damage taken, ${FOLLOWER_INFILTRATION_SECONDS} s) on each crit of the follower's ${each}${sources.length > 1 ? `; together ${round(uptime * 100)}%` : ""} uptime, +${value}% time-averaged (from its first cast in the windows)`;
+      return { text: `+${value}% additional Lightning Damage taken`, origin: "derived", parts: uptime < 1 ? [{ type: "Lightning", reach: "all", percent, schedule }] : [], summary,
+        reason: `the follower's crits with this skill at its 5% crit chance (Critical Strike Rating ${FOLLOWER_CRIT_RATING}, one check per cast): ${round(uptime * 100)}% uptime, +${value}% additional Lightning Damage taken on average (provisional: open question follower-crit-chance)` };
+    },
+    reason: "the follower's own crits with this skill (provisional: its 5% crit chance, open question follower-crit-chance)" },
   { id: "followerAffixWeaknessInsight", label: "Weakness Insight: Frail Effect taken", target: "enemy", needsNear: false, engine: "spellTaken",
     pattern: /^Inflicts Frail on enemies and \+(\d+(?:\.\d+)?)% Frail Effect taken by enemies when casting this skill$/i,
     derive: (match, ctx) => {
@@ -2109,12 +2156,13 @@ function applyAffixEffect(result, reading, base, { selection, near, on }) {
     return;
   }
   const active = on && (!effect.needsNear || near);
-  const reason = !on ? `the "${effect.label}" best-case switch is off: left out` : !active ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away, outside the follower's area` : effect.reason;
+  const reason = !on ? `the "${effect.label}" best-case switch is off: left out` : !active ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away, outside the follower's area` : derived.reason || effect.reason;
   const texts = [{ text: derived.text, origin: derived.origin }, ...(derived.texts || [])].filter((item) => item.text);
   const derivedText = texts.map((item) => item.text).join("; ") || derived.summary;
   result.lines.push({ ...base, status: active ? "In calc" : "Inactive", reason, toggle: effect.id, derivedText, active, summary: derived.summary });
   result.buffs.push({ id: effect.id, label: effect.label, source: base.source, active, on, text: derivedText, summary: derived.summary, reason });
-  result.timedEffects.push({ ...timed, active, reason, summary: derived.summary });
+  // `parts`: a timed effect for the 5 s / 20 s windows and the loop (High Voltage's chance schedule); none on the other readings.
+  result.timedEffects.push({ ...timed, active, reason, summary: derived.summary, parts: active ? derived.parts || [] : [] });
   if (!active) return;
   for (const item of texts) result.derived.push({ text: item.text, source: `${base.source}: ${effect.label}`, origin: item.origin, multiplier: 1, derivedFrom: base.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) } });
   for (const item of derived.armour || []) result.armourShreds.push({ ...item, source: base.source });

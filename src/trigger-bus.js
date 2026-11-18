@@ -95,8 +95,8 @@
 //     record), and each Reap (type 4, a fixed amount). A Reap event carries no hit, crit, DoT-flow or skill tag (inferred: it is not the skill's
 //     own damage, and a "when dealing Damage Over Time" Reap does not fire from one, W2), only "dealing damage" 5001160.
 //
-// Toggle TLI_TRIGGER_BUS (env, or setTriggerBusMode for a test): "layers" (default) leaves everything on the layers; "bus" gives the bus every
-// trigger it implements; "bus:1000033[,…]" those ids only (an id the bus does not implement yet stays on its layer, listed in `ignored`).
+// Toggle TLI_TRIGGER_BUS (env, or setTriggerBusMode for a test): "bus" (the default since 2026-11-15, user decision) gives the bus every
+// trigger it implements; "layers" the layers with only the decided readings (LAYER_READINGS; "layers:held" none); "bus:1000033[,…]" those ids only (an id the bus does not implement yet stays on its layer, listed in `ignored`).
 //
 // What the bus owns for each id it drives (held by you; Minion-held rows hear your Minions' hits and the follower's its own, so neither is yours):
 // - Crowd control a recipe row holds on the dummy (src/crowd-control-recipes.js, the planner's recipe holders in src/combat-states.js): Blind
@@ -257,15 +257,36 @@ const GATE_BLESSING_BUFFS = Object.freeze({ 320: "agility", 380: "focus" });
 
 // ---- Mode ----
 let override = null;
-/** Dev and tests: "layers", "bus" or "bus:<id>,<id>"; null restores the default (the env flag, else "layers"). */
+// The decided readings the layers run from the bus's own listeners without the rest of the bus (user decision 2026-11-15: "model any skills
+// that have a build up time or don't have permanent uptime"; research/buildup-uptime-census-2026-11-15.md §2.6, §2.8, §2.10), each with the
+// trigger ids it hears:
+// - useBlessing (C6): a Blessing gained on a skill use is renewed by the loop's uses (each layer its own timer, user decision 2026-11-04);
+// - profane (C8): Profane gained on applying Wilt (190801728 on 1000150) starts at 0 at engagement and builds from your applications (user
+//   decision 2026-11-04);
+// - reapBlur (C10): Blur gained only from your Reaps (258217104 on 1000032) starts at 0 at engagement and builds from the Reaps; a Blur with a
+//   gain that needs no target stays pre-built (user decision 2026-11-04).
+export const LAYER_READINGS = Object.freeze({ useBlessing: USE_TRIGGERS, profane: Object.freeze([INFLICT_TRIGGER]), reapBlur: Object.freeze([REAP_TRIGGER]) });
+export const DEFAULT_LAYER_READINGS = Object.freeze(Object.keys(LAYER_READINGS));
+/**
+ * Dev and tests: "layers" (the layers with the decided readings), "layers:held" (the layers alone: every reading held as before),
+ * "layers:<reading>,<reading>", "bus" or "bus:<id>,<id>"; null restores the default (the env flag, else "bus": the full bus drives the windows and the 60 s recount since 2026-11-15, user decision; "layers" stays the old reading with the decided readings).
+ */
 export function setTriggerBusMode(mode) { override = mode ?? null; }
-/** { mode: "layers" | "bus", ids: Set of the implemented ids the bus owns, ignored: ids asked for that it does not implement }. */
+const layerReadings = (text) => {
+  if (!text.includes(":")) return new Set(DEFAULT_LAYER_READINGS);
+  const asked = text.slice(text.indexOf(":") + 1).split(/[,\s]+/).filter(Boolean);
+  return new Set(asked.filter((name) => name in LAYER_READINGS));
+};
+/**
+ * { mode: "layers" | "bus", ids: Set of the implemented ids the bus owns, ignored: ids asked for that it does not implement, readings: on the
+ * layers, the decided readings run from the bus's listeners (LAYER_READINGS) }.
+ */
 export function triggerBusMode(flag = override ?? globalThis.TLI_TRIGGER_BUS ?? globalThis.process?.env?.TLI_TRIGGER_BUS ?? null) {
-  const text = String(flag ?? "layers").trim();
-  if (!/^bus\b/.test(text)) return { mode: "layers", ids: new Set(), ignored: [] };
+  const text = String(flag ?? "bus").trim();
+  if (!/^bus\b/.test(text)) return { mode: "layers", ids: new Set(), ignored: [], readings: /^layers\b/.test(text) ? layerReadings(text) : new Set(DEFAULT_LAYER_READINGS) };
   const asked = text.includes(":") ? text.slice(text.indexOf(":") + 1).split(/[,\s]+/).map(Number).filter(Number.isFinite) : [...BUS_TRIGGERS];
   const ids = new Set(asked.filter((id) => BUS_TRIGGERS.includes(id)));
-  return { mode: ids.size ? "bus" : "layers", ids, ignored: asked.filter((id) => !BUS_TRIGGERS.includes(id)) };
+  return { mode: ids.size ? "bus" : "layers", ids, ignored: asked.filter((id) => !BUS_TRIGGERS.includes(id)), readings: ids.size ? null : new Set(DEFAULT_LAYER_READINGS) };
 }
 
 const clean = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
@@ -308,7 +329,7 @@ function rowTags(recipeId, index, fallbackMine = []) {
 // An event's skill and tags (a hit: one; a DoT record: one per skill that applies it, each with its share) against a listener's row. A row with
 // alternative tag objects fits when one of them does (step 4b).
 const tagsFit = (mine, notMine, tags) => mine.every((tag) => tags.has(tag)) && !notMine.some((tag) => tags.has(tag));
-const variantFits = (listener, variant) => (!listener.setupKey || listener.setupKey === variant.setupKey)
+const variantFits = (listener, variant) => (!listener.setupKey || listener.setupKey === variant.setupKey) && !listener.notSetups?.has(variant.setupKey)
   && (listener.tags.alts?.length ? listener.tags.alts.some((item) => tagsFit(item.mine, item.notMine, variant.tags)) : tagsFit(listener.tags.mine, listener.tags.notMine, variant.tags));
 const critFits = (listener, event) => (listener.tags.crit !== "crit" || event.critShare > 0) && (listener.tags.crit !== "nonCrit" || event.critShare < 1);
 // The share of an event a listener hears: 1 for a hit that fits (exactly, so a hit reads as in step 1), the fitting skills' shares for a DoT record.
@@ -337,8 +358,17 @@ const fits = (listener, event) => fitWeight(listener, event) > 0;
  */
 export function compileTriggerBus(planner, { mode = undefined, blessingSeconds = null } = {}) {
   const busMode = triggerBusMode(mode === undefined ? undefined : mode);
-  const ids = busMode.ids;
-  if (busMode.mode !== "bus" || !ids.size) return null;
+  // On the layers the bus runs only the decided readings (LAYER_READINGS): their ids, and of their listeners only the reading's own.
+  const all = busMode.mode === "bus";
+  const readings = all ? null : busMode.readings || new Set();
+  const want = (reading) => all || readings.has(reading);
+  const ids = all ? busMode.ids : new Set([...readings].flatMap((reading) => LAYER_READINGS[reading] || []));
+  if (!ids.size) return null;
+  // Main Skill 6020000 on the planner's Main Skill only (src/support-compatibility.js setupEventTagIds adds it for every setup in a "main" role,
+  // which every active-slot skill of a custom board has): a "when using a Non-Main Skill" row (Kismet: Pale Fox 425305952, notMine 6020000) heard
+  // none of Erika's Spiral Strike presses (census C6).
+  const mainSetupKey = planner?.mainSkill?.setupKey ?? null;
+  const eventTagIds = (setup, tags = []) => { const out = setupEventTagIds(setup, tags); if (setup?.setupKey !== mainSetupKey) out.delete(MAIN_SKILL_TAG); return out; };
   const onHit = ids.has(HIT_TRIGGER), onDamage = ids.has(DAMAGE_TRIGGER);
   const combat = planner?.lineEffects?.combat;
   const holds = combat?.triggerHolds || null;
@@ -360,7 +390,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   // are still counted), with no trigger.
   const makeUseEvent = (setup, setupKey, skill, profileTags, shares, { tangle = false, repeatsYours = true, phases = ["creation", "release"] } = {}) => {
     if (!useIds.length) return null;
-    const tags = setupEventTagIds(setup, profileTags || []);
+    const tags = eventTagIds(setup, profileTags || []);
     const total = USE_SOURCES.reduce((sum, source) => sum + Math.max(0, Number(shares[source]) || 0), 0);
     if (!(total > 0)) return null;
     const variants = [];
@@ -431,7 +461,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
     const setupKey = (minion.setupKeys || [])[0] ?? null;
     for (const skill of minion.skills || []) {
       if (minionEvents.has(`${minion.key}:${skill.name}`)) continue;
-      const tags = setupEventTagIds({ name: skill.name, tags: skill.tags || [] });
+      const tags = eventTagIds({ name: skill.name, tags: skill.tags || [] });
       for (const tag of [HIT_TAG, HIT_OTHERS_TAG, DEALT_DAMAGE_TAG]) tags.add(tag);
       if (DEALT_TYPE_TAGS[skill.type]) tags.add(DEALT_TYPE_TAGS[skill.type]);
       if (ELEMENTAL_TYPES.has(skill.type)) tags.add(ELEMENTAL_TAG);
@@ -481,7 +511,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
       setup = applierKey === "beam" ? inflictBeamSetup : applier ? setups.get(modeledHits.get(applier.key)?.setupKey ?? applier.setupKey) ?? null : null;
       layersPerApplication = Math.max(1, (Number(planner?.ailments?.[ailmentKey]?.stacksPerApplication) || 1) + (Number(applier?.extraStacks) || 0));
     }
-    const tags = setup ? setupEventTagIds(setup) : new Set();
+    const tags = setup ? eventTagIds(setup) : new Set();
     for (const tag of (skillKey ? null : AILMENT_DOTS[ailmentKey]?.tags) ?? [DOT_STATE_TAG]) tags.add(tag);
     const shared = { kind: "inflict", holder: "you", setupKey: setup?.setupKey ?? null, skill: setup?.name ?? null, ailment: ailmentKey, tags, types: [], hitsPerUnit: 1, critChecksPerUnit: 1, critShare: 0, triggeredShare: 0 };
     const event = {
@@ -500,7 +530,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
 
   // 1. Crowd control a recipe row holds on a driven id (1000033 your hits; 1000030 your hits and DoT ticks): one listener per recorded hold.
   const ownedTypes = new Map();
-  for (const [type, entry] of Object.entries(holds?.crowdControl || {})) {
+  for (const [type, entry] of Object.entries(all ? holds?.crowdControl || {} : {})) {
     const recipe = entry.recipe || [];
     const mine = recipe.filter(({ holder }) => OWNED_CROWD_CONTROL.has(type) && drivenHolder(ids, holder));
     if (!mine.length) continue;
@@ -567,7 +597,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   // sources stay held as they are.
   const intimidatedSources = holds?.intimidated || [];
   const intimidatedListeners = [];
-  for (const item of intimidatedSources.filter((source) => source.active && source.line)) {
+  for (const item of intimidatedSources.filter((source) => all && source.active && source.line)) {
     const reading = recipeBuffHolds(item.line, INTIMIDATED);
     for (const row of reading?.rows || []) {
       if (!ids.has(row.trigger) || (row.trigger === HIT_TRIGGER && !item.onHit) || row.runner !== "you" || row.unknown.length) continue;
@@ -594,7 +624,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
       if (!line) continue;
       const reading = recipeBuffHolds(line, BLESSING_BUFFS);
       for (const row of reading?.rows || []) {
-        if (!ids.has(row.trigger) || row.runner !== "you" || !row.types.some((type) => type.type === entry.name)) continue;
+        if (!ids.has(row.trigger) || (!all && !(USE_TRIGGER_SET.has(row.trigger) && want("useBlessing"))) || row.runner !== "you" || !row.types.some((type) => type.type === entry.name)) continue;
         // The crowd control reader rates no 1000032 or 1000074 event (src/crowd-control-recipes.js CROWD_CONTROL_EVENTS); the bus raises them from your
         // Reaps and your uses.
         const unknown = row.unknown.filter((item) => !((row.trigger === REAP_TRIGGER || row.trigger === MANUAL_USE_TRIGGER || INFLICT_TRIGGER_SET.has(row.trigger)) && item === `trigger ${row.trigger}`));
@@ -639,7 +669,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
     const reading = recipeBuffHolds(line, BLUR_BUFF);
     for (const row of reading?.rows || []) {
       // A Blur gained on a skill use needs no target (step 3b): it keeps the whole Blur pre-built, so the bus does not hear it.
-      if (!ids.has(row.trigger) || USE_TRIGGER_SET.has(row.trigger) || row.runner !== "you") continue;
+      if (!ids.has(row.trigger) || (!all && !(row.trigger === REAP_TRIGGER && want("reapBlur"))) || USE_TRIGGER_SET.has(row.trigger) || row.runner !== "you") continue;
       if (row.unknown.some((item) => !((row.trigger === REAP_TRIGGER || INFLICT_TRIGGER_SET.has(row.trigger)) && item === `trigger ${row.trigger}`))) continue;
       const tags = rowTags(reading.id, row.row, row.triggerTags);
       if (!tags.othersFit) continue;
@@ -664,7 +694,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   //   run (Reaping Agony's Reaps of its own DoT, or all of them when its Reap of your DoT stays averaged) arrive on the follower model's schedule.
   const reapInputs = planner?.dummyRecount?.inputs?.reaping || [];
   const stackCounters = [];
-  if (ids.has(REAP_TRIGGER)) {
+  if (all && ids.has(REAP_TRIGGER)) {
     const recent = new Map();
     for (const reap of reapInputs) if (reap.holder !== "follower" && reap.duration?.recentPercent > 0) for (const item of reap.duration.recent || []) {
       const key = `${item.affixId ?? ""}\u0000${item.source}\u0000${item.text}`;
@@ -708,7 +738,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   // automatic casts, the Multistrike repeats of your uses, a channel's paid loop steps; never a triggered use). Its reader: the clause's ledger line
   // on that skill's hits, ((1 + X%)^stacks − 1).
   const willpower = [];
-  if (ids.has(MANUAL_USE_TRIGGER)) for (const [setupKey, effects] of Object.entries(planner?.supportEffects || {})) {
+  if (all && ids.has(MANUAL_USE_TRIGGER)) for (const [setupKey, effects] of Object.entries(planner?.supportEffects || {})) {
     for (const clause of effects?.clauses || []) {
       if (clause.family !== "conditionalAdditional" || clause.condition !== "standingStill" || !clause.multiplies || !clause.active || !(clause.value > 0) || !(clause.appliedValue > 0)) continue;
       const cap = Math.round(Math.log(1 + clause.appliedValue / 100) / Math.log(1 + clause.value / 100));
@@ -720,12 +750,44 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   }
   listeners.push(...willpower);
 
+  // 12. The Fervor Rating (census C1, user decision 2026-11-15: a stack gained only from the dummy starts at 0 at engagement and builds from those
+  // events). Buff 390's fight resource carries affix 411268 [1]: node 627 +1 to resource 1 on 1000033 against a Rare (5002030) or Boss (5002000)
+  // target (the dummy is a Boss), unless label 3050320 is held, bTriggerOnceWithSameSourceEntity false, so one point per landing hit of yours; and
+  // +1 on a kill (1000010, not on the dummy). Cap 100, no decay row (research/build-15t-illusion-g5-g6-2026-11-15.md §4.1, proven). A Spacetime
+  // Illusion's casts are its own unit's hits (I'm an Illusion: the hit's `illusion` with no player casts), so they build none; they read Youga's
+  // Rating (§4.2). The planner's readers linear in the Rating (src/combat-states.js `fervorLive`) read the Rating held on the tick; a fixed Rating
+  // stays the planner's. The steady path keeps the held Rating.
+  const fervorLive = planner?.lineEffects?.combat?.buffs?.fervorLive ?? null;
+  const fervor = all && ids.has(HIT_TRIGGER) && fervorLive?.readers?.length ? {
+    key: "fervorRating", trigger: HIT_TRIGGER, holder: "you", kind: "selfStacks", name: "Fervor Rating", source: "Fervor (buff 390, resource affix 411268)", text: "+1 Fervor Rating per hit of yours on a Boss", recipeId: 411268, row: 3,
+    tags: { thisSkill: false, crit: null, mine: [], notMine: [], othersFit: true, once: false }, chance: 1, cooldownSeconds: null, seconds: Infinity, cap: fervorLive.max, startStacks: 0, rating: fervorLive.rating, readers: fervorLive.readers,
+    notSetups: new Set((planner?.skillHits || []).filter((hit) => hit?.illusion && hit.illusion.playerCasts === false).map((hit) => hit.setupKey))
+  } : null;
+  if (fervor) listeners.push(fervor);
+
+  // 13. Cruelty / Precise: Cruelty's own stacks (census, user decision 2026-11-15: gained only from the dummy, so from 0 at engagement). Record
+  // 50355540 row 2: 1000033 against an Elite (5001990; the dummy is a Boss), bTriggerOnceWithSameSourceEntity true (at most one gain a frame on the
+  // dummy), node 188 at p1 (40%), node 374 adds p2 (5) stacks of buff 15184 for p4 s (4 s, Precise 8 s); row 3 reads GetBuffStack(15184) × p3
+  // (2.5%) as one additional Aura Effect term on the Aura's tags. Row 1 (1 stack on a kill) is not on the dummy. Each add read as refreshing the one
+  // timer of the stacks (inferred: buff 15184's stack mode is not traced). The steady path keeps the user-confirmed 40 (2026-10-28).
+  const cruelty = all && ids.has(HIT_TRIGGER) ? (planner?.aura?.entries || []).filter((entry) => entry.ownStackEffect?.stacks > 0).map((entry) => {
+    const own = entry.ownStackEffect, buffKey = `auraStacks:${entry.name}`;
+    // The Aura's values its Aura Effect scales (the stats whose effective value differs from the base): their ledger lines on the hits.
+    const scaled = Object.entries(entry.effectiveEffects || {}).filter(([key, value]) => Number(value) && value !== entry.baseEffects?.[key]).map(([, value]) => Number(value));
+    return {
+      key: `auraStacks:${entry.name}`, trigger: HIT_TRIGGER, holder: "you", kind: "auraStacks", name: `${entry.name} stacks`, source: entry.name, text: `+${own.chancePercent}% chance to gain ${own.stacksPerGain} stacks when hitting an Elite`, recipeId: own.affixId, row: 2,
+      tags: { thisSkill: false, crit: null, mine: [], notMine: [], othersFit: true, once: true }, chance: own.chancePercent / 100, cooldownSeconds: null, seconds: own.durationSeconds,
+      buffKey, accumulatorKey: buffKey, stacks: own.stacksPerGain, maxStacks: own.maxStacks, aura: entry.name, perStackPercent: own.perStackPercent, heldFactor: own.factor, scaled
+    };
+  }) : [];
+  listeners.push(...cruelty);
+
   // 8. "if you have used a <tag> Skill recently" (step 3b; records 437971, 556993 and kin: node 306 mode 2 on 1000074 with the tag, a 4 s buff
   // refreshed by each use of yours that carries it). The planner holds the line while a skill you use yourself has the tag (src/line-conditions.js
   // usedSkillTag). On the loop: the window, held at engagement with prebuiltSelfBuffs (a use needs no target), refreshed by each fitting use, and its
   // derived damage lines on the hits read the share of the tick it is held. Penetration and Regain bodies keep the planner's reading.
   const recentWindows = [];
-  if (ids.has(MANUAL_USE_TRIGGER)) for (const entry of (planner?.lineEffects?.lines || []).filter((item) => item.condition === "usedSkillTag" && item.status === "In calc" && item.active !== false)) {
+  if (all && ids.has(MANUAL_USE_TRIGGER)) for (const entry of (planner?.lineEffects?.lines || []).filter((item) => item.condition === "usedSkillTag" && item.status === "In calc" && item.active !== false)) {
     const line = lines.find((item) => item.source === entry.source && clean(item.text) === clean(entry.text));
     const reading = line ? lineTriggerRows(line) : null;
     const carrier = reading ? affixStackCarriers(reading.id).find((row) => row.trigger === MANUAL_USE_TRIGGER && row.mode === 2 && row.durationSeconds > 0) : null;
@@ -781,7 +843,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   // Potent Profane) keeps it the planner's, and the bus only sees it.
   const profaneListeners = [];
   let profaneReason = null;
-  if (ids.has(INFLICT_TRIGGER)) {
+  if (ids.has(INFLICT_TRIGGER) && want("profane")) {
     const holders = (planner?.lineEffects?.lines || []).filter((item) => item.status === "In calc" && item.active !== false && /^(?:Has Profane\b|Gains Profane when\b)/i.test(clean(item.text)));
     const unheard = [];
     for (const holder of holders) {
@@ -815,7 +877,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   // on (src/reaping-model.js and src/tick-ailments.js successAilment: the named one, else the highest chance). The row's tags are read from the
   // record of a line of the Reap's source when one resolves, else from its trigger label (INFLICT_REAP_TAGS).
   const inflictReaps = new Map();
-  if (ids.has(INFLICT_TRIGGER)) for (const reap of reapInputs.filter((item) => item.holder !== "follower" && INFLICT_REAP_TAGS[item.trigger])) {
+  if (all && ids.has(INFLICT_TRIGGER)) for (const reap of reapInputs.filter((item) => item.holder !== "follower" && INFLICT_REAP_TAGS[item.trigger])) {
     const recordRow = lines.filter((item) => item.source === reap.source).map((item) => lineTriggerRows(item)).filter(Boolean)
       .flatMap((reading) => reading.rows.filter((row) => row.trigger === INFLICT_TRIGGER && (row.nodes || []).includes(631)).map((row) => ({ reading, row })))[0] ?? null;
     const tags = recordRow ? { ...rowTags(recordRow.reading.id, recordRow.row.index), thisSkill: false } : { thisSkill: false, crit: null, mine: [...INFLICT_REAP_TAGS[reap.trigger]], notMine: [], othersFit: true, once: false };
@@ -843,7 +905,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
     // Finding (a): one event per landing (each projectile, strike or Shadow on the dummy), not the falloff-weighted strike hits.
     const landed = strikeHitsPerUse(components, landingsPerUse), landings = landed > 0 ? landed : strikes;
     const setup = setups.get(hit.setupKey) || { name: hit.name, tags: hit.profile?.tags || [] };
-    const tags = setupEventTagIds(setup, hit.profile?.tags || []);
+    const tags = eventTagIds(setup, hit.profile?.tags || []);
     tags.add(HIT_TAG);
     tags.add(HIT_OTHERS_TAG);
     tags.add(DEALT_DAMAGE_TAG);
@@ -866,7 +928,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   // beam setup's; a stream that is not yours (no setup of yours) keeps its share out of the event.
   const beamSetup = [...setups.values()].find((setup) => setup.name === "Scorching Beam" && setup.enabled !== false) ?? null;
   const dotTags = (setup, type, stateTags) => {
-    const tags = setupEventTagIds(setup);
+    const tags = eventTagIds(setup);
     for (const tag of [DOT_FLOW_TAG, DOT_STATE_TAG, DEALT_DAMAGE_TAG, ...stateTags]) tags.add(tag);
     if (DEALT_TYPE_TAGS[type]) tags.add(DEALT_TYPE_TAGS[type]);
     if (ELEMENTAL_TYPES.has(type)) tags.add(ELEMENTAL_TAG);
@@ -996,6 +1058,19 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
     return null;
   };
   const profaneDots = new Map(profaneOwned ? dotKeys.map((key) => [key, profaneDotOff(key)]).filter(([, off]) => off) : []);
+  // The Fervor Rating's additional damage readers on a DoT (section 12): each reader line in the DoT's additional lists (Ghost Slaughter's Ailment
+  // Damage on an ailment's), as the attacker's own buff, fixed at each application. An increased reader there stays the planner's (no pool here).
+  const fervorDots = new Map(fervor ? dotKeys.map((key) => {
+    const dot = (planner?.skillDots || []).find((item) => item?.key === key && item.modeled), ailment = planner?.ailments?.[key];
+    const lists = dot ? [dot.ledger?.additional || [], dot.ledger?.combatAdditional || []] : ailment?.shared?.ledger ? [ailment.shared.ledger.additional || [], ailment.shared.ledger.extraTown || [], ailment.shared.ledger.combatOutgoing || [], ailment.shared.ledger.extraCombat || [], ailment.sources?.typed?.additional || []] : [];
+    const seen = new Set(), found = [];
+    for (const line of lists.flat()) {
+      const reader = fervor.readers.find((item) => item.kind === "damage" && item.source === line?.source && clean(item.text) === clean(line?.text) && Number(line?.value) === item.value);
+      const id = reader ? `${reader.source}\u0000${reader.text}` : null;
+      if (reader && !seen.has(id)) { seen.add(id); found.push(reader); }
+    }
+    return [key, found];
+  }).filter(([, found]) => found.length) : []);
   const profaneHits = new Map(profaneOwned ? [...hits.values()].map((hit) => [hit.key, new Map((hit.components || []).map((component, index) => [`${component.key}#${index}`, profaneOff([component.additional || [], component.combatAdditional || []])]).filter(([, off]) => off))]).filter(([, parts]) => parts.size) : []);
 
   const ccHolds = holds?.crowdControl || {};
@@ -1026,7 +1101,23 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
       // Step 3c: the Blessings a Regain or your Minions' damage renews, your Minions' ailment types, the "Regained in the last N s" windows.
       eventBlessings: [...new Set([...eventBlessingGains.values()].map((listener) => listener.name))], minionAilments: [...minionAilmentShares.keys()], regainWindows: regainCounters.map((counter) => counter.text),
       // Step 4b: Profane from your applications, the Reaps on applying an ailment (by Reap key: the ailments that fire each).
-      profane: profaneOwned, inflictReaps: Object.fromEntries([...inflictReaps].map(([key, listener]) => [key, [...listener.ailments]])) },
+      profane: profaneOwned, inflictReaps: Object.fromEntries([...inflictReaps].map(([key, listener]) => [key, [...listener.ailments]])),
+      // Section 12: the Fervor Rating from 0 on your hits.
+      fervor: Boolean(fervor),
+      // Section 13: an Aura's own stacks from 0 on your hits.
+      auraStacks: cruelty.map((listener) => listener.aura) },
+    /** The Fervor Rating listener (section 12) with its readers, or null; src/tick-layers.js puts the readers on the hits. */
+    fervor: fervor ? { key: fervor.key, rating: fervor.rating, cap: fervor.cap, readers: fervor.readers } : null,
+    /** The Aura own-stack listeners (section 13): src/tick-layers.js reads their Aura's scaled lines at the stacks held. */
+    auraStacks: cruelty.map((listener) => ({ aura: listener.aura, buffKey: listener.buffKey, perStackPercent: listener.perStackPercent, heldFactor: listener.heldFactor, maxStacks: listener.maxStacks, scaled: listener.scaled })),
+    /** The Fervor Rating's reader on one DoT (section 12): one modifier (the attacker's own buff, fixed at each application), or null. */
+    fervorDotCorrection(key) {
+      const found = fervorDots.get(key);
+      if (!found) return null;
+      const held = found.reduce((factor, reader) => factor * (1 + reader.value / 100), 1);
+      return { source: "Fervor Rating (trigger bus)", text: `${found.map((reader) => `${reader.source}: ${reader.text}`).join("; ")} at the Fervor Rating held on the loop (from 0 on your hits), in place of the planner's held ${fervor.rating}, fixed at each application`, liveKey: "triggerBus", layer: "additional", steadyAmount: 0, attacker: true,
+        amount: (world) => { const share = world.bus.useStacks(fervor.key) / fervor.rating; return (found.reduce((factor, reader) => factor * (1 + reader.value * share / 100), 1) / held - 1) * 100; } };
+    },
     // Step 4b: the buff-application ids the bus raises, each application's events (src/tick-engine.js applyAilment through the runtime's emitInflict).
     inflictIds, inflictEventFor,
     /** The ailments whose applications fire an "inflicting …" Reap of yours (by its recount key), or null when the bus does not own that Reap. */
@@ -1304,6 +1395,16 @@ export function createTriggerBusRuntime(compiled, { buffExpiryFrame, fixedInterv
         // only counts what it heard.
         if (listener.kind === "reapTrigger") { stat.expected += listener.chance * event.hitsPerUnit * units * scale; continue; }
         // Willpower's stacks (step 3b): one per use of yours of its skill, the use's fitting share, up to the cap.
+        // An Aura's own stacks (section 13): the frame's one success (the once flag) through the accumulator, each adding the stacks and refreshing
+        // their one timer.
+        if (listener.kind === "auraStacks") {
+          let miss = missOf(listener, event, units);
+          if (scale !== 1) miss = 1 - (1 - miss) * scale;
+          const expected = successOf(listener, world, miss);
+          stat.expected += expected;
+          if (expected > 1e-12) fire([{ kind: "chance", key: listener.accumulatorKey, probability: Math.min(1, expected), effects: [{ kind: "buff", buff: listener.buffKey, seconds: listener.seconds, stacks: listener.stacks, maxStacks: listener.maxStacks }] }]);
+          continue;
+        }
         if (listener.kind === "selfStacks") {
           const state = selfStacks.get(listener.key), gain = listener.chance * event.hitsPerUnit * units * scale;
           state.stacks = Math.min(listener.cap, state.stacks + gain);

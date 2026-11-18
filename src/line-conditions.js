@@ -1,7 +1,7 @@
 import { dummyTarget, dummyTargetWord, explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS } from "./dummy-target.js";
 import { BOSS_ENEMY_COUNT, bossCountedRecordFor } from "./boss-enemy-count.js";
 import { ailmentStateNames } from "./enemy-ailments.js";
-import { BY_YOU, auraTagCount, empowerTagCount, enemyBuffSet, playerBuffSet, ownCombatHeld } from "./unit-buff-set.js";
+import { BY_YOU, atLeastShare, auraTagCount, empowerTagShares, enemyBuffSet, playerBuffSet, ownCombatHeld } from "./unit-buff-set.js";
 import { CONSUMED_COMBO_POINTS, COMBO_POINTS_PER_STARTER } from "./combo-points.js";
 import { regainsIn } from "./regain-model.js";
 import { WORLD_WITHIN_LINE, worldWithinChances } from "./world-within.js";
@@ -60,8 +60,9 @@ const ownBlessingMaxStacks = (state) => { const own = playerBuffSet(state); retu
 // Spirit Magi out, Barrier, Blur and the combat block chance.
 // The Aura types the game counts: buffs tagged 5100305 (a Focus skill in an Aura slot is not one; W9 step 4, src/unit-buff-set.js putAuras).
 const ownAuraCount = (state) => auraTagCount(state) ?? state.auraCount;
-// The held Empower buffs the game counts (buff tag 5100311; W9 step 4, src/unit-buff-set.js empowerTagCount).
-const ownEmpowerCount = (state) => empowerTagCount(state) ?? state.empowerSkillCount;
+// The Empower buffs the game counts (buff tag 5100311; W9 step 4) and each one's share of the time held (census C5, 2026-11-15:
+// src/unit-buff-set.js empowerTagShares); with no Empower stage the board count, all held.
+const ownEmpowerShares = (state) => { const shares = empowerTagShares(state); return shares ? [...shares.entries()] : Array.from({ length: Number(state.empowerSkillCount) || 0 }, (_, index) => [`Empower Skill ${index + 1}`, 1]); };
 const ownLevel = (state, name, old) => { const own = playerBuffSet(state), value = own?.level(name); return value != null ? value : old; };
 const ownBlock = (state) => { const own = playerBuffSet(state); return own?.staged("block") ? { attack: own.level("Attack Block") || 0, spell: own.level("Spell Block") || 0 } : state.blockChance; };
 const ownBlur = (state) => { const own = playerBuffSet(state); if (!own?.staged("blur")) return state.blurHeld; const entry = own.entryOf("Blur", { stage: "blur" }); return entry && entry.share > 0 ? { rating: entry.value, effectPercent: entry.effectPercent } : null; };
@@ -497,7 +498,9 @@ const LINE_RULES = [
   [new RegExp(`^\\+${N}% (.+?) for every (\\d+) (${STAT_WORDS})$`), (m) => ({ body: `+${m[1]}% ${m[2]}`, key: "perStat", params: { per: num(m[1]), every: num(m[3]), stat: m[4].toLowerCase(), template: m[2] } })],
   // Spell Critical Strike Rating revived memory family (reference data Memory Revival; game affix 7397413 "+P2% Spell Critical Strike Rating
   // for every P1 Intelligence. Up to +P3%"): the same per-stat reading with its cap (the T1 text prints no "+").
-  [new RegExp(`^\\+?${N}% (.+?) for every (\\d+) (${STAT_WORDS})\\. Up to \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[1])}% ${m[2]}`, key: "perStat", params: { per: num(m[1]), every: num(m[3]), stat: m[4].toLowerCase(), template: m[2], cap: num(m[5]) } })],
+  // Ralph's Journey "+1% Movement Speed for every 20 Dexterity, up to +300%" (game record 101140049: node 114 from Dexterity, attr 21, into
+  // Movement Speed, attr 41 mod 3, 1 per 20, upper 300, no GetFloorInt: linear; 15 T Chain Lightning audit G2, 2026-11-18): the same reading.
+  [new RegExp(`^\\+?${N}% (.+?) for every (\\d+) (${STAT_WORDS})(?:\\. Up to|, up to) \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[1])}% ${m[2]}`, key: "perStat", params: { per: num(m[1]), every: num(m[3]), stat: m[4].toLowerCase(), template: m[2], cap: num(m[5]) } })],
   // Affliction Effect revived memory family (reference data Memory Revival; game affix 1393437): "For every enemy within 20 m nearby, +X%
   // Affliction Effect, up to +Y%". The training dummy is the one enemy, within 10 m (src/dummy-target.js); its node 700 carries
   // calcCountByRarity, so the Boss dummy counts as 5 enemies (src/boss-enemy-count.js; 2026-11-13).
@@ -804,9 +807,14 @@ function resolveKey(condition, state) {
     case "singleEnemy": return on("the dummy is the only enemy nearby", { appliedValue: value });
     // Gear affix batch C (2026-10-22). Empowered Insight: the Empower Skills active on the skill board, their buffs read as up
     // (best case, own buffs pre-built; provisional).
+    // Census C5 (2026-11-15): GetBuffCfgIdCountByTag([5100311]) reads the buffs held at the moment (record 972411968), so the line holds
+    // the share of the time at least N of them are up, each at its own buff's uptime (independent; inferred).
     case "empowerSkills": {
-      const count = Number(ownEmpowerCount(state)) || 0;
-      return count >= (condition.min ?? 1) ? on(`${count} Empower Skill${count === 1 ? "" : "s"} on the skill board, their buffs held (best case; provisional)`, { appliedValue: value, provisional: true }) : off(`${count} Empower Skill${count === 1 ? "" : "s"} on the skill board, fewer than ${condition.min}`, { appliedValue: 0 });
+      const shares = ownEmpowerShares(state), min = condition.min ?? 1;
+      const share = atLeastShare(shares.map(([, item]) => item), min);
+      const listed = shares.map(([name, item]) => item >= 1 - 1e-9 ? name : `${name} ${round(item * 100)}%`).join(", ");
+      if (!(share > 0)) return off(`${shares.length} Empower buff${shares.length === 1 ? "" : "s"} (${listed || "none"}), fewer than ${min} held at once`, { appliedValue: 0 });
+      return on(share >= 1 - 1e-9 ? `${shares.length} Empower buff${shares.length === 1 ? "" : "s"} held (${listed}; provisional)` : `at least ${min} Empower buff${min === 1 ? "" : "s"} up ${round(share * 100)}% of the time (${listed}; each at its own uptime, independent; provisional)`, { appliedValue: round(value * share), provisional: true });
     }
     // Empowered Channeling: the dummy is channeled at continuously (own buffs pre-built), so the stacks sit at their cap.
     case "channelSeconds": return on(`channeled continuously: ${condition.cap} × ${value}% held (own buffs pre-built; provisional)`, { appliedValue: round(value * (condition.cap ?? 1)), provisional: true });

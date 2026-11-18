@@ -5,7 +5,8 @@
 // Reading (2026-10-14, provisional):
 // - Uptime: the buff refreshes on every Critical Strike of the supported skill, so it is up all the time when its crit hits
 //   come at least once per buff duration (crit hits per second × duration ≥ 1), else that share: min(1, crit hits/s × 2 s).
-//   The crit hit rate comes from the planner's hit pass (src/planner.js hitRateFacts); before it is measured the buff is held.
+//   The crit hit rate comes from the planner's hit pass (src/planner.js hitRateFacts); before it is measured the buff is held. A
+//   supported skill that never fires (its weapon restriction) is measured at 0 crits: uptime 0 (2026-11-18).
 // - While up, Numbed inflicted by the supported skill has +X% Numbed Effect. Numbed (keyword 762) is one debuff on the dummy
 //   (src/enemy-ailments.js, src/combat-states.js: +5% Lightning Damage taken per stack, max 10, or a changed base effect); the
 //   build's other Numbed sources carry only the build-wide Numbed Effect, so the stronger one is the supported skill's, and the
@@ -34,13 +35,17 @@ export function resolveCritNumbedBuffs({ setups = [], activeNames = new Set(), e
       const lightning = Boolean(lightningHitters.get(setup.setupKey));
       const facts = hitRateFacts?.get?.(setup.setupKey) || null;
       const critHitsPerSecond = facts && Number.isFinite(facts.critHitsPerSecond) ? facts.critHitsPerSecond : null;
-      const uptime = !numbed || !lightning ? 0 : critHitsPerSecond == null ? 1 : Math.min(1, critHitsPerSecond * clause.seconds);
+      // A skill that can never fire (its weapon restriction, src/skill-hit-model.js inactiveReason) has no crits: uptime 0 (15 T Chain
+      // Lightning audit G3, 2026-11-18), not held.
+      const inactive = facts?.inactive || null;
+      const uptime = inactive || !numbed || !lightning ? 0 : critHitsPerSecond == null ? 1 : Math.min(1, critHitsPerSecond * clause.seconds);
       const value = round(clause.value * uptime);
-      const reason = !numbed ? "the build inflicts no Numbed (enemy-ailment model)"
+      const reason = inactive ? `${setup.name} never fires (${inactive}): no Critical Strike, no buff`
+        : !numbed ? "the build inflicts no Numbed (enemy-ailment model)"
         : !lightning ? `${setup.name} deals no modeled Lightning hits, so it inflicts no Numbed`
         : critHitsPerSecond == null ? "crit hit rate not measured yet (held for this pass)"
         : `${round(critHitsPerSecond)} crit hits/s × ${clause.seconds} s = ${round(critHitsPerSecond * clause.seconds)} → uptime ${round(uptime)}`;
-      entries.push({ setupKey: setup.setupKey, skill: setup.name, support: clause.support, base: clause.value, seconds: clause.seconds, critHitsPerSecond, uptime: round(uptime), value, active: value > 0, reason });
+      entries.push({ setupKey: setup.setupKey, skill: setup.name, support: clause.support, base: clause.value, seconds: clause.seconds, critHitsPerSecond, uptime: round(uptime), value, active: value > 0, reason, ...(inactive ? { inactive: true } : {}) });
     }
   }
   // The dummy keeps the stronger Numbed: the largest supported skill's buff (other sources carry only the build-wide effect).

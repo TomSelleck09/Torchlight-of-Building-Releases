@@ -269,7 +269,7 @@ const doubleDamageFactorAt = (chancePercent) => 1 + Math.floor(Math.max(0, Math.
 /**
  * A path's value at the given modifier amounts: Σ parts of base × (1 + (increased + active)%) × additional × Π(1 + active%), times the
  * expected crit and Double Damage factors when the path carries them. Modifier layers: "increased", "additional" (default),
- * "critDamage" (+% to the Critical Strike Damage sum), "critOnly" (a crit-only multiplier), "doubleDamage" (+% chance), "penetration"
+ * "critDamage" (+% to the Critical Strike Damage sum), "critOnly" (a crit-only multiplier), "critChance" (+ percentage points of crit chance), "doubleDamage" (+% chance), "penetration"
  * (+% penetration through the resistance step: a part's base carries (100 − netResistancePercent)% and it goes to (100 − net + amount)%,
  * `netResistancePercent` being the resistance after the static penetration), "affliction" (the amount is the dummy's rating and the
  * modifier carries `perPoint`: ×(1 + rating × perPoint)). A modifier with `types` reaches only the parts of those damage types, one
@@ -277,12 +277,14 @@ const doubleDamageFactorAt = (chancePercent) => 1 + Math.floor(Math.max(0, Math.
  */
 export function pathValueAt(path, amounts = []) {
   const modifiers = path.modifiers || [];
-  let total = 0, critDamage = path.crit?.damagePercent, critOnly = path.crit?.onlyFactor ?? 1, doubleChance = path.doubleDamage?.chancePercent;
+  let total = 0, critDamage = path.crit?.damagePercent, critOnly = path.crit?.onlyFactor ?? 1, critChance = path.crit?.chancePercent, doubleChance = path.doubleDamage?.chancePercent;
   modifiers.forEach((modifier, index) => {
     const amount = amounts[index] || 0;
     if (!amount) return;
     if (modifier.layer === "critDamage") critDamage += amount;
     else if (modifier.layer === "critOnly") critOnly *= 1 + amount / 100;
+    // A crit chance in percentage points (the Fervor Rating on the loop, census C1: the chance at the rating held now, less the planner's).
+    else if (modifier.layer === "critChance") critChance += amount;
     else if (modifier.layer === "doubleDamage") doubleChance += amount;
   });
   for (const part of path.parts) {
@@ -298,7 +300,7 @@ export function pathValueAt(path, amounts = []) {
     if (penetration) additional *= (100 - part.netResistancePercent + penetration) / (100 - part.netResistancePercent);
     total += part.base * (1 + increased / 100) * additional;
   }
-  if (path.crit) total *= critFactorAt({ ...path.crit, damagePercent: critDamage, onlyFactor: critOnly });
+  if (path.crit) total *= critFactorAt({ ...path.crit, chancePercent: Math.max(0, Math.min(100, critChance)), damagePercent: critDamage, onlyFactor: critOnly });
   if (path.doubleDamage) total *= doubleDamageFactorAt(doubleChance);
   return total;
 }
@@ -474,7 +476,7 @@ function createWorld(spec, frames, trace) {
     queues: new Set(), queueOrder: spec.queueOrder ?? "ready", queueEnds: new Map(), queueLast: new Map(),
     periodics: byActor(spec.periodics).map((item) => ({ spec: item, gate: newGate(), fires: 0 })),
     triggers: byActor(spec.triggers).map((item) => ({ spec: item, gate: newGate(), cooldown: item.cooldown ? newCooldown(item.cooldown) : null, fires: 0 })),
-    accumulators: new Map(), buffTicks: new Map(), buffExpiries: new Map(),
+    accumulators: new Map(), buffTicks: new Map(), buffExpiries: new Map(), buffWindowTicks: new Map(),
     dotSpecs: new Map([...(spec.dots || []), ...(spec.ailments || [])].map((item) => [item.key, item])),
     reaps, reapByKey: new Map(reaps.map((reap) => [reap.spec.key, reap])),
     // Approaching Nightfall (spec.nightfall): the share of the remaining DoT each Reap of yours settles, then every DoT record goes.
@@ -1363,12 +1365,18 @@ const STAGES = {
       if (buff.stacks > held.peak) held.peak = buff.stacks;
       world.buffTicks.set(key, held);
     }
+    // The opening windows' buff averages (display only, skill tooltips 2026-11-15): a copy of the counts at the window's last tick.
+    const opening = BUFF_WINDOW_SECONDS.find((seconds) => Math.round(seconds * TICKS_PER_SECOND) === world.frame);
+    if (opening) world.buffWindowTicks.set(opening, new Map([...world.buffTicks].map(([key, held]) => [key, { ticks: held.ticks, stackTicks: held.stackTicks }])));
   },
   // 10. CastEvent, End: damage is already binned by tick; the bin of tick n is n − 1, so a 54 s run is exactly bins 0–1619.
   end() {}
 };
 
 const STAGE_LIST = SYSTEM_ORDER.map((name) => [name, STAGES[name]]);
+
+/** The opening windows whose buff averages a run reports beside the whole run's (run.buffWindows): the planner's 5 s and 20 s windows. */
+export const BUFF_WINDOW_SECONDS = [5, 20];
 
 /** What the loop takes as given, for the result's assumptions list. */
 function engineAssumptions() {
@@ -1475,6 +1483,8 @@ export function runTickEngine(spec, { seconds = spec?.seconds ?? 54, trace = fal
     // Per buff: the share of ticks it was held, the average stacks over the run, how often it ran out and the most stacks it held (a buff built from 0
     // that never runs out reads an uptime below 1 from its opening alone).
     buffs: Object.fromEntries([...world.buffTicks].map(([key, held]) => [key, { uptime: held.ticks / frames, averageStacks: held.stackTicks / frames, expiries: world.buffExpiries.get(key) || 0, peakStacks: held.peak }])),
+    // The same averages over each opening window the run reaches (BUFF_WINDOW_SECONDS: the 5 s and 20 s windows), by window length in seconds.
+    buffWindows: Object.fromEntries([...world.buffWindowTicks].map(([windowSeconds, counts]) => { const ticks = Math.round(windowSeconds * TICKS_PER_SECOND); return [windowSeconds, Object.fromEntries([...counts].map(([key, held]) => [key, { uptime: held.ticks / ticks, averageStacks: held.stackTicks / ticks }]))]; })),
     // The rating the DoT pass read, over the run.
     affliction: { averageRating: world.affliction.readSum / frames, ticksAtMax: world.affliction.ticksAtMax, removals: world.affliction.removers.reduce((sum, item) => sum + item.fires, 0), finalRating: world.affliction.rating, ...(world.affliction.clears.length ? { cleared: world.affliction.clears.reduce((sum, item) => sum + item.cleared, 0) } : {}), ...(world.affliction.initial !== undefined ? { initial: world.affliction.initial, initialFrame: world.affliction.inflictedFrame } : {}) },
     // Expected successes, lapses and ticks held; the mean base while it was held.

@@ -402,7 +402,7 @@ export function skillLevelFromFacts(facts, skill) {
     const role = wanted.filter((tag) => tag === "Active" || tag === "Main Skill");
     const rest = wanted.filter((tag) => tag !== "Active" && tag !== "Main Skill");
     if (role.includes("Active") && !takesActive) continue;
-    if (role.includes("Main Skill") && skill.role !== "main") continue;
+    if (role.includes("Main Skill") && !(skill.isMainSkill ?? skill.role === "main")) continue;
     // "+N Minion Skill Level" raises Summon skills (user decision 2026-10-22).
     if (!rest.every((tag) => tags.has(tag) || (tag === "Minion" && tags.has("Summon")))) continue;
     total += fact.value;

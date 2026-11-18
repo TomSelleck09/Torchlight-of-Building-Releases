@@ -1066,6 +1066,9 @@ function clauseStatus(clause, support, ctx) {
         return s("In calc", attack ? "attack rate (weapon Attack Speed with the support's lines)" : "skill use rate", ["skill-hit"]);
       }
       if (clause.kind === "both" && name === "Quick Decision" && clause.additional) return s("In calc", "the setup's own cast rate", ["cast-rate"]);
+      // Scorching Beam reads every support's Cast Speed clause (src/scorching-beam-cast-rate.js; 2026-11-14, validation refresh item 1).
+      if (beam && (clause.kind === "cast" || clause.kind === "both")) return s("In calc", `Scorching Beam's cast rate (${clause.additional ? "its own additional factor" : "the increased Cast Speed pool"})`, ["cast-rate"]);
+      if (beam && clause.kind === "attack") return s("No DPS effect", "Scorching Beam is a Spell: it uses Cast Speed");
       return s("Not modeled", "this speed wording is read for skill hits only");
     case "cooldown":
       if (ctx.windRhythmTerraDot) return s("Provisional", "Cooldown Recovery Speed shortens Wind Rhythm's trigger cooldown (provisional)", [engine]);
@@ -1081,6 +1084,9 @@ function clauseStatus(clause, support, ctx) {
     case "critBuff": {
       // Thunder Spike: Tremble (2026-10-14): Numbed Effect while the crit buff is up, on Numbed the supported skill inflicts.
       if (engine !== "skill-hit") return s("Not modeled", "read for skill hits only (the crit hit rate drives the uptime)");
+      // A supported skill that never fires (its weapon restriction; the hit pass measures it at 0, src/planner.js) gives the buff nothing.
+      const neverFires = ctx.conditions?.critHitsBySetup?.get?.(ctx.statusSetupKey)?.inactive;
+      if (neverFires) return s("Inactive", `${ctx.skillName || "the supported skill"} never fires (${neverFires}), so it never crits and the buff is never up`);
       const numbed = enemyBuffSet(ctx.conditions)?.holds("Numbed") ?? (ctx.conditions?.enemyAilments || []).includes("Numbed");
       if (!numbed) return s("Inactive", "the build inflicts no Numbed (enemy-ailment model), so there is no Numbed for the buff to raise");
       if (!types.includes("Lightning")) return s("Inactive", "the supported skill deals no Lightning hits, so it inflicts no Numbed here");
@@ -1411,7 +1417,10 @@ function amEventStatus(clause, ctx) {
   if (clause.event === "lockOn" && !explicitRadiusHolds(clause.meters, ctx.conditions?.nearTarget)) return s("Inactive", `needs a Locked-On enemy within ${clause.meters} m; the Distant alternative stands ${DISTANT_STANDING_METERS} m away`);
   if (clause.event === "burstFull") {
     if (ctx.conditions && !(ctx.conditions.maxSpellBurst >= 1)) return s("Inactive", "the build has no Max Spell Burst, so Spell Burst is never fully charged");
-    return s("Provisional", "triggered at every full Spell Burst charge (2 s ÷ Charge Speed, game manual), then its own Spell Burst: the triggered cast + Max Spell Burst automatic casts, all cast by Spell Burst; uses per second = 1 / max(full charge time, effective cooldown) (rate rule user-confirmed 2026-10-12 for Activation Medium: Boss; no use time; provisional)", [engine]);
+    // A Spell Burst refill line (record 32278) on the uses of yours (src/spell-burst-refill.js; 15 T Chain Lightning audit G1, 2026-11-18).
+    const refill = ctx.conditions?.spellBurstRefill;
+    const charge = refill && refill.usesPerSecond > 0 ? `every full Spell Burst charge: the regular charge (2 s ÷ Charge Speed, game manual) and the Spell Burst Charge your uses gain (${Math.round(refill.usesPerSecond * 10000) / 10000} uses/s of yours roll the "chance to immediately gain N stack(s) of Spell Burst Charge when using a skill" lines: ${refill.names.join(", ")}; record 32278), the row checked each frame (record 987090624 row 1 has no trigger) on a 30 Hz walk of the charge, each activation emptying it (src/spell-burst-refill.js)` : "every full Spell Burst charge (2 s ÷ Charge Speed, game manual)";
+    return s("Provisional", `triggered at ${charge}, then its own Spell Burst: the triggered cast + Max Spell Burst automatic casts, all cast by Spell Burst; uses per second = 1 / max(full charge time, effective cooldown) (rate rule user-confirmed 2026-10-12 for Activation Medium: Boss; no use time; provisional)`, [engine]);
   }
   if (clause.eventIntervalSeconds === null) return s("Inactive", clause.eventRateText || `no ${label} on the board`);
   const how = clause.eventRateText ? `${clause.eventRateText}` : `the event rate is measured on the planner's hit pass (${label})`;
@@ -1766,7 +1775,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
   const engine = ctx.engine ?? profile?.engine ?? (setup?.name === "Scorching Beam" ? "scorching-beam" : null);
   const tags = new Set([...(ctx.tags || profile?.tags || setup?.tags || []), ...(profile?.lineScopeTags || [])]);
   const full = {
-    ...ctx, engine, tags, skillName: ctx.skillName ?? setup?.name ?? null,
+    ...ctx, engine, tags, skillName: ctx.skillName ?? setup?.name ?? null, statusSetupKey: setup?.setupKey || setup?.instanceId || setup?.name || null,
     dealtTypes: ctx.dealtTypes || profile?.dealtTypes || (profile?.damageType ? [profile.damageType] : []),
     damageType: ctx.damageType ?? profile?.damageType ?? null,
     speedType: ctx.speedType ?? null,

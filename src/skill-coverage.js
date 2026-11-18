@@ -7,6 +7,8 @@ import { curseTakenEffect, NO_DUMMY_EFFECT_CURSES } from "./curse-effects.js";
 import { refdataSkillCatalogSs13, refdataSupportCatalogSs13 } from "./data/catalogs/refdata-ss13.js";
 import { installedSupportRejected, supportRuleText } from "./support-compatibility.js";
 import { isMinionOwnedSkill, minionOwnedSkill } from "./minion-skill-owners.js";
+import { engineLineStatus, plannerEngines } from "./line-coverage.js";
+import { CURSE_SECONDS } from "./press-schedule.js";
 
 // Coverage badges for skills, auras, curses and supports, derived from the
 // planner's own outputs (ledgers, aura entries, Aim sources, curse limit,
@@ -119,8 +121,11 @@ function contributions(planner) {
   // beam; the beam hit ledger with the beam; an ailment with a base. Lists of lines an engine did not apply are skipped.
   const active = planner.activation?.activeNames || new Set();
   const beam = active.has("Scorching Beam");
-  const ailmentEntries = Object.values(planner.ailments || {}).filter((entry) => entry && typeof entry === "object" && (entry.base?.max ?? 1) > 0);
-  const anyDot = ailmentEntries.length > 0 || (planner.skillDots || []).some((dot) => dot?.modeled) || (planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && (beam || (planner.igniteAppliers || []).length > 0));
+  // An ailment counts with a base and a chance to inflict it (badge movement probe 2026-11-15: a Base Ignite or Base Ailment line on the no-gear
+  // Hammer of Ash, whose hits have no Ignite or Trauma chance, opened the ledger, so Fearless Warcry's Ailment Damage line counted and the press
+  // rotation pressed it for nothing).
+  const ailmentEntries = Object.values(planner.ailments || {}).filter((entry) => entry && typeof entry === "object" && (entry.base?.max ?? 1) > 0 && !(entry.chancePercent === 0 && !(entry.combat?.steadyDps > 0)));
+  const anyDot = ailmentEntries.length > 0 || (planner.skillDots || []).some((dot) => dot?.modeled) || (planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && (beam || (planner.igniteAppliers || []).some((applier) => applier.chancePercent > 0)));
   const igniteActive = planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && (planner.igniteAppliers || []).some((applier) => applier.chancePercent > 0);
   if (beam || igniteActive || !planner.activation) {
     visit(planner.theoretical?.combat?.ledger, 0);
@@ -270,7 +275,10 @@ function buffReachesSomething(planner, entry) {
   const prefix = entry.kind === "warcry" ? `${entry.skill}: Warcry buff` : `${entry.skill}: `;
   const minions = (planner?.minions || []).filter((minion) => minion.modeled);
   const anyHit = hits.length > 0 || Boolean(planner?.activation?.activeNames?.has?.("Scorching Beam"));
-  const anyDot = (planner?.skillDots || []).length > 0 || Object.values(planner?.ailments || {}).some((ailment) => ailment?.base?.max > 0) || planner?.theoretical?.totals?.baseIgniteDamage?.max > 0;
+  // An ailment with a base but no chance to inflict it is no DoT on the dummy (badge movement probe 2026-11-15: a Base Ignite line on the no-gear
+  // Hammer of Ash, which has no Ignite chance, made Fearless Warcry's Ailment Damage line read and the press rotation press it for nothing).
+  const igniteChance = (planner?.igniteAppliers || []).some((applier) => applier.chancePercent > 0) || planner?.theoretical?.totals?.applicationChancePercent > 0;
+  const anyDot = (planner?.skillDots || []).length > 0 || Object.values(planner?.ailments || {}).some((ailment) => ailment?.base?.max > 0 && (ailment.chancePercent > 0 || ailment.combat?.steadyDps > 0)) || (planner?.theoretical?.totals?.baseIgniteDamage?.max > 0 && igniteChance);
   return (entry.lines || []).some((line) => {
     // The Warcry buff lines carry no `kind` (src/empower-buffs.js WARCRY buffs): a damage line, or a Minion line when flagged.
     // Before 2026-10-27 they matched no branch, so Shockwave Warcry read Inactive on a Combo skill whose Finisher took it
@@ -370,7 +378,10 @@ function classifySkill(planner, skillName, setup) {
   // A Focus skill's own buff (src/focus-buffs.js, W6c 2026-11-03) holds while the skill is on the board, whether its hits fire or not
   // (Ice Focus without Frostbite still gives its additional Cold Damage).
   const focusBuffLines = (planner?.modifierTexts || []).filter((line) => line.focusBuff === skillName && line.origin === "derived");
-  if (idleHit && focusBuffLines.length) return result("In calc", `Focus buff: ${[...new Set(focusBuffLines.map((line) => line.text))].join(", ")}; its own hits: ${idleHit.inactiveReason || "they never fire on the dummy in this build (0 uses per second)"}`);
+  // The buff counts where one of its lines reaches the build's damage (src/line-coverage.js engineLineStatus): Ice Focus's additional Cold Damage
+  // on a build with no Cold damage reads nothing (badge movement probe 2026-11-15: In calc on nine Fire / Physical probes, moving none).
+  const focusBuffRead = idleHit && focusBuffLines.length ? focusBuffLines.filter((line) => engineLineStatus(line.text, planner) === "In calc") : [];
+  if (idleHit && focusBuffLines.length) return result(focusBuffRead.length ? "In calc" : "Inactive", `Focus buff: ${[...new Set(focusBuffLines.map((line) => line.text))].join(", ")}${focusBuffRead.length ? "" : " (no line of it reaches this build's damage)"}; its own hits: ${idleHit.inactiveReason || "they never fire on the dummy in this build (0 uses per second)"}`);
   if (idleHit) return result("Inactive", idleHit.inactiveReason || "it never fires on the dummy in this build (0 uses per second)");
   if (damageSource) {
     const level = matchingContributions(planner, skillName).find((entry) => /level/.test(entry.source));
@@ -432,6 +443,13 @@ function classifySkill(planner, skillName, setup) {
     if (skillName === "Ominous" && planner?.illOmen?.main?.reason) return result("Not on dummy", `Ill Omen: ${planner.illOmen.main.reason} (src/ill-omen.js)`);
     if (skillName === "Scorch" && planner?.conditions?.scorch !== false && (planner?.minions || []).some((minion) => minion.modeled && (minion.skills || []).some((skill) => skill.type === "Fire" || skill.baseType === "Fire"))) return result("In calc", "+Fire Damage taken on the Minions' Fire hits");
     if (NO_DUMMY_EFFECT_CURSES[skillName]) return result("Not on dummy", NO_DUMMY_EFFECT_CURSES[skillName]);
+    // The two curses with their own models (src/curse-effects.js DEDICATED_CURSE_MODELS) where no ledger row names them: a build with no damage
+    // of their reach (badge movement probe 2026-11-15: both read "Not modeled" on Physical / Erosion probes, as though the curse were unread).
+    const engines = plannerEngines(planner);
+    const fire = !engines || engines.beam || engines.ignite || engines.dotTypes.has("Fire") || engines.hits.some((hit) => [...(hit.dealtTypes || [hit.damageType]), ...(hit.components || []).flatMap((component) => [component.type, component.originalType])].includes("Fire"));
+    if (skillName === "Scorch" && !fire) return result("Inactive", "Scorch lowers the dummy's Fire Resistance: the build deals no Fire damage that reads it");
+    const anyDot = (planner?.skillDots || []).some((dot) => dot?.modeled) || Object.values(planner?.ailments || {}).some((ailment) => ailment?.combat?.steadyDps > 0) || planner?.theoretical?.totals?.applicationChancePercent > 0;
+    if (skillName === "Entangled Pain" && !anyDot) return result("Inactive", "Entangled Pain's additional Damage Over Time taken: the build deals no damage over time that reads it");
   }
   // A Spirit Magus's Empower Skill sits on the catalog with role "empower": it belongs to its summon, and the Minion model casts it (chunk 7).
   if (isMinionOwnedSkill(skillName)) return result("In calc", `a Minion skill of ${minionOwnedSkill(skillName)?.owner || "its summon"}: the Minion model casts it`);
@@ -447,6 +465,30 @@ function incompatibleSupport(supportName, skillName, setup) {
   const skill = refdataSkillCatalogSs13.find((entry) => entry.name === skillName);
   if (!installed?.incompatible && !installedSupportRejected(support, skill, setup?.supports || [])) return null;
   return supportRuleText(support);
+}
+
+// Terrain of Malice on a curse the press rotation would press when it lapses (src/press-schedule.js: every 5 s, its Split's duration): one cast
+// holds the curse in its area, so it takes none of the Main Skill's time (badge movement probe 2026-11-15: ×1.25 on the no-gear Hammer of Ash with
+// Scorch while it read No DPS effect). Null when it is not that case (the rotation off, or the curse not on the board).
+function terrainHeldCurse(planner, supportName, setup) {
+  if (supportName !== "Terrain of Malice" || !setup?.setupKey || !planner?.pressRotation) return null;
+  const input = (planner.hitRateFacts?.pressInputs?.skills || []).find((item) => item.key === setup.setupKey);
+  return input?.kind === "held" ? result("In calc", `one cast holds ${setup.name} on the dummy in its area, so it is not pressed again every ${CURSE_SECONDS} s (src/press-schedule.js: the Main Skill keeps that time); the curse's own effect is unchanged`) : null;
+}
+
+// A trigger clause (an Activation Medium's trigger, a Tangle) that makes a setup the press rotation would press triggered-only (src/press-schedule.js
+// untriggeredKind "pressed"): the Main Skill keeps that press's time, so the figure moves even where the trigger's own condition is not modeled
+// (badge movement probe 2026-11-15: Activation Medium: Life / Rejuvenation on Resurrection Warcry, a Tangle on Bull's Rage beside an attack read
+// Not modeled and moved): Provisional, for a clause that otherwise reads Not modeled (a medium another model reads, Activation Medium: Sentry's
+// re-deploy, keeps its own reading). On a setup the rotation would not press (its buff read by nothing) it frees nothing: the clause keeps its reading.
+const TRIGGER_CLAUSE = /attempts to trigger|triggers the supported skill|\bcast as a (?:Spell )?Tangle\b|\bCreates Tangles?\b/i;
+function pressFreedBy(planner, supportName, setup, clause) {
+  if (!setup?.setupKey || !planner?.pressRotation || !(clause.family === "trigger" || TRIGGER_CLAUSE.test(clause.text || ""))) return null;
+  const input = (planner.hitRateFacts?.pressInputs?.skills || []).find((item) => item.key === setup.setupKey);
+  if (input?.kind !== "triggered" || input.untriggeredKind !== "pressed") return null;
+  const tangle = /tangle/i.test(supportName) && /triggered by a Tangle/.test(input.reason || "");
+  if (!tangle && !String(input.reason || "").includes(`triggered by ${supportName}:`)) return null;
+  return result("Provisional", `makes ${setup.name} triggered-only, so the Main Skill keeps the time its press took (src/press-schedule.js); the trigger's own condition and casts are not modeled`);
 }
 
 function classifySupport(planner, supportName, skillName, setup) {
@@ -472,6 +514,8 @@ function classifySupport(planner, supportName, skillName, setup) {
     if (OWN_DAMAGE_OR_AREA_SUPPORTS[supportName]) return result("No DPS effect", OWN_DAMAGE_OR_AREA_SUPPORTS[supportName]);
   }
   if (role === "curse") {
+    const held = terrainHeldCurse(planner, supportName, setup);
+    if (held) return held;
     if (CURSE_UPTIME_SUPPORTS.has(supportName)) return result("No DPS effect", "duration/cooldown only; curse uptime is already continuous");
     if (OWN_DAMAGE_OR_AREA_SUPPORTS[supportName]) return result("No DPS effect", OWN_DAMAGE_OR_AREA_SUPPORTS[supportName]);
   }
@@ -625,6 +669,8 @@ function refineSupportClause(planner, setup, supportName, clause, base) {
   if (skillName === AEGIS_OF_FIRE) return aegisClauseStatus(planner, supportName, clause);
   if (setup?.role === "aura") { const status = auraClauseStatus(planner, setup, supportName, clause); if (status) return status; }
   if (setup?.role === "empower" && skillName === "Aim") return aimClauseStatus(planner, supportName, clause);
+  const freed = keep.status === "Not modeled" ? pressFreedBy(planner, supportName, setup, clause) : null;
+  if (freed) return freed;
   // Elemental Duo's Max Summonable Minions (G3, src/planner.js): In calc when the map cap gave this Magus skill its extra Magus.
   if (clause.family === "minionCount" && keep.status === "In calc") {
     const minion = (planner?.minions || []).find((item) => item?.modeled && (item.setupKeys || []).includes(setup?.setupKey));
@@ -680,6 +726,8 @@ function refineSupportClause(planner, setup, supportName, clause, base) {
     if (speedHit && speedHit.projectileSpeed.sources.some((line) => line.source === clause.source && line.text === clause.text)) return result("In calc", `joins ${skillName}'s +${round(speedHit.projectileSpeed.increasedPercent)}% increased Projectile Speed, which ${speedHit.projectileSpeed.converters.map((line) => `${line.source} (${line.share}%)`).join(", ")} turns into ${speedHit.projectileSpeed.lines.map((line) => line.text.split(" (")[0]).join(", ")}`);
   }
   if (setup?.role === "curse" && noEngine) {
+    const held = /persistently|instant-cast/i.test(clause.text) ? terrainHeldCurse(planner, supportName, setup) : null;
+    if (held) return held;
     if (/^[+-]?\d+(?:\.\d+)?% (?:additional )?Curse Effect/i.test(clause.text)) return base.status === "In calc" ? result("In calc", base.reason) : result("Not modeled", "curse effect from supports is not applied");
     return result("No DPS effect", ["trigger", "cooldown", "duration"].includes(clause.family) ? "duration/cooldown only; curse uptime is already continuous" : ["additional", "increased"].includes(clause.family) ? "applies only to the supported skill's own damage; the curse deals none" : "curse area / cast behaviour only; curse uptime is already continuous");
   }

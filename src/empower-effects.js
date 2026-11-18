@@ -166,10 +166,14 @@ function summonCastRate(setups, activeNames) {
  * @param {boolean} p.prebuiltSelfBuffs combat condition (CLAUDE.md)
  * @param {object} p.context Empower buff inputs (src/empower-buffs.js): { focusBlessingStacks, minionCount, spiritMagi, hitsPerSecond, hasAttackAggression, anyHit }
  * @param {boolean} p.warcriesOnCooldown best-case switch: Warcries cast whenever ready (their own buffs and Storm's Command)
+ * @param {Function} [p.itemSkillLevel] (name, printedLevel, line) → { baseLevel, addedLevels, effectiveLevel }: an item-triggered skill's levels (src/planner.js;
+ *   user decision 2026-11-16: the printed level + the build's skill level lines). Without it the printed level.
  * @returns {{ lines: object[], entries: object[], sharedDebuffSetupKeys: Set<string>, numbedEffectBuffs, lucky, markSources }}
  */
-export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), damagingSetupKeys = new Set(), hitProfiles = new Map(), modifierTexts = [], enemyAilments = [], enemyBuffs = null, prebuiltSelfBuffs = true, multistrikeEventsPerSecond = null, context = {}, warcriesOnCooldown = true } = {}) {
+export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), damagingSetupKeys = new Set(), hitProfiles = new Map(), modifierTexts = [], enemyAilments = [], enemyBuffs = null, prebuiltSelfBuffs = true, multistrikeEventsPerSecond = null, context = {}, warcriesOnCooldown = true, itemSkillLevel = null } = {}) {
   const lines = [], entries = [], sharedDebuffSetupKeys = new Set(), buffCandidates = [];
+  // The levels an item-triggered buff skill casts at (user decision 2026-11-16): the printed level + the build's skill level lines.
+  const itemLevels = (name, level, line) => itemSkillLevel?.(name, level, line) || { baseLevel: level, addedLevels: 0, effectiveLevel: level };
   // Buff inputs (src/empower-buffs.js): Focus Blessing stacks, Minions on the field, Spirit Magi, hits per second (null before the
   // hit pass), whether Attack Aggression is already held, whether the build hits, Numbed on the dummy.
   // Numbed / Frostbitten from the dummy's unit buff set (W8 step 2; `enemyBuffs`), else the names list.
@@ -238,7 +242,8 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
   }
   // Item triggers (census items #2 / #7): "+X% chance to trigger Lv. N Bull's Rage and Burst of Anger on hit. Cooldown: 4 s" (game
   // recipe 607440: on hit, probability P1, a 4 s cooldown gate) and "Triggers Lv. N Fearless Warcry when hitting an enemy. Interval:
-  // 8 s" (Varagon's Attack): the same buff at the item's level, Empower Effect from the character's lines only (no supports).
+  // 8 s" (Varagon's Attack): the same buff at the triggered skill's level (the item's + the build's skill level lines, user decision
+  // 2026-11-16), Empower Effect from the character's lines only (no supports).
   const itemEffect = empowerEffectFactor([], { globalIncreasedPercent, globalSources, prebuiltSelfBuffs, globalAdditional });
   const itemEffectFor = (name) => namedSources.has(name) ? empowerEffectFactor([], { ...namedGlobal(name), prebuiltSelfBuffs, globalAdditional }) : itemEffect;
   // "Unable to trigger Empower Skills" (Tyrant's Smoldering Hold; record 993987840, node 243 bCannotTrigger on tag 6001230): an item cannot trigger one.
@@ -248,7 +253,8 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
     const pair = noEmpowerTriggers ? null : parseChanceTriggerPair(line.text);
     if (pair) {
       for (const name of pair.names.filter((item) => EMPOWER_BUFF_SPECS[item])) {
-        const entry = empowerBuffEntry({ name, level: pair.level, effect: itemEffectFor(name), empowerScaled: true, modifierTexts, ctx: buffContext, item: { chancePercent: pair.chancePercent, cooldownSeconds: pair.cooldownSeconds, hitsPerSecond: buffContext.hitsPerSecond, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${name}` });
+        const levels = itemLevels(name, pair.level, line);
+        const entry = empowerBuffEntry({ name, level: levels.effectiveLevel, levels, effect: itemEffectFor(name), empowerScaled: true, modifierTexts, ctx: buffContext, item: { chancePercent: pair.chancePercent, cooldownSeconds: pair.cooldownSeconds, hitsPerSecond: buffContext.hitsPerSecond, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${name}` });
         if (entry) buffCandidates.push(entry);
       }
       continue;
@@ -256,13 +262,15 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
     const trigger = parseItemTrigger(line.text);
     if (trigger?.name && WARCRY_BUFF_NAMES.includes(trigger.name) && trigger.intervalSeconds > 0 && !trigger.unmodeled && !trigger.notOnDummy) {
       const hits = trigger.event !== "hit" || buffContext.anyHit;
-      if (hits && warcriesOnCooldown !== false) buffCandidates.push(warcryBuffEntry({ name: trigger.name, level: trigger.level, modifierTexts, effect: warcryEffect, item: { intervalSeconds: trigger.intervalSeconds, source: line.source, text: line.text }, setupKey: `item-warcry:${line.source}:${trigger.name}` }));
+      const levels = itemLevels(trigger.name, trigger.level, line);
+      if (hits && warcriesOnCooldown !== false) buffCandidates.push(warcryBuffEntry({ name: trigger.name, level: levels.effectiveLevel, levels, modifierTexts, effect: warcryEffect, item: { intervalSeconds: trigger.intervalSeconds, source: line.source, text: line.text }, setupKey: `item-warcry:${line.source}:${trigger.name}` }));
     }
     // An Empower on a stated interval: Arcane Shield's Secret Origin Unleash (670766272: a 6 s gate, then a cast), Mind Infusion's Dark Gate and Dazzling Bloom (723410752,
-    // 11486053: moving, then a cooldown gate). The same buff at the line's level, as the chance pairs above (chunk 12).
+    // 11486053: moving, then a cooldown gate). The same buff at the triggered skill's level, as the chance pairs above (chunk 12).
     if (trigger?.name && EMPOWER_BUFF_SPECS[trigger.name] && trigger.intervalSeconds > 0 && !noEmpowerTriggers) {
       const event = itemTriggerEvent(trigger, { moving: buffContext.moving, mobilityUsesPerSecond: buffContext.mobilityUsesPerSecond, anyHit: buffContext.anyHit });
-      const entry = event.active ? empowerBuffEntry({ name: trigger.name, level: trigger.level, effect: itemEffectFor(trigger.name), empowerScaled: true, modifierTexts, ctx: buffContext, item: { intervalSeconds: event.intervalSeconds ?? trigger.intervalSeconds, when: event.reason, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${trigger.name}` }) : null;
+      const levels = itemLevels(trigger.name, trigger.level, line);
+      const entry = event.active ? empowerBuffEntry({ name: trigger.name, level: levels.effectiveLevel, levels, effect: itemEffectFor(trigger.name), empowerScaled: true, modifierTexts, ctx: buffContext, item: { intervalSeconds: event.intervalSeconds ?? trigger.intervalSeconds, when: event.reason, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${trigger.name}` }) : null;
       if (entry) buffCandidates.push(entry);
     }
   }

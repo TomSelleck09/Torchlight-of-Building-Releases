@@ -75,6 +75,7 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { classifyDoubleDamageLine } from "./double-damage.js";
 import { BASE_BLESSING_SECONDS, layerStacksAt } from "./blessing-layers.js";
+import { prophecyReplacementsFor } from "./prophecy-of-revelation.js";
 
 export const WISDOM = "thea-wisdom-of-the-gods";
 export const INCARNATION = "thea-incarnation-of-the-gods";
@@ -449,6 +450,23 @@ function timeMean(fn) {
   return total / frames;
 }
 
+// Prophecy of Revelation's replaced talents the build allocates: a talent line ("<tree> talent (c,r)") on a node the trait replaces whose text
+// is its replacement's (src/prophecy-of-revelation.js; an unreplaced node keeps its own text).
+function revelationReplacedLines(modifierTexts = []) {
+  let count = 0;
+  for (const line of modifierTexts || []) {
+    if (line?.origin !== "talent") continue;
+    const match = String(line.source || "").match(/^(.+) talent \((\d+),(\d+)\)$/);
+    const row = match ? prophecyReplacementsFor(match[1]).get(`${match[2]},${match[3]}`) : null;
+    if (row && String(row.description).split(/\s*\|\s*/).some((clause) => clause.trim() === String(line.text || "").trim())) count++;
+  }
+  return count;
+}
+// A "+N to Max <Blessing> Blessing Stacks" line changes the stacks only where they reach above the max without it: the Divine Blessing cycle's
+// own layers (each type one per 6 s for its duration) hold its peak, so a raised max the peak never meets changes nothing. `raise` is the line's
+// N on that Blessing (twice N on Agility where Tenacity's max change is also applied to it).
+const capBinds = (B, raise) => B.stacks > 0 && Number(B.peak) > Number(B.maxStacks) - raise + EPS;
+
 function wisdomState(lines, state, facts) {
   const P = THEA_PATTERNS;
   const base = firstOf(lines, P.boonBase), auto = firstOf(lines, P.boonAuto), maxLine = firstOf(lines, P.boonMax);
@@ -516,7 +534,7 @@ function wisdomState(lines, state, facts) {
     boonPercent: maxLine ? Number(maxLine.match[1]) : 0, consumedMax: Boolean(cycle), purity: Boolean(purity), overlaps,
     cooldownBinds: Boolean(cycle) && cooldownSeconds > cycle.refillSeconds + EPS,
     reincarnation, farewell, area, oracle, revelation, punishment, quadruple: Boolean(quadruple), doubleDamageChancePercent,
-    justice: state.thea?.shared || null
+    justice: state.thea?.shared || null, revelationReplaced: revelationReplacedLines(facts.modifierTexts)
   };
 }
 
@@ -685,7 +703,7 @@ function wisdomRead(key, text, state) {
       const timed = c && !c.instantRefill && r.share < 1 ? [{ id: "theaRevelation", label: "Prophecy of Revelation: all three Blessings", target: "self", toggle: false, enabled: true, active: true, parts: [{ type: null, reach: "all", percent: r.percent, schedule: { kind: "steps", points: stepsFrom((t) => c.focusAt(t) > 0 ? 1 : 0, c.times), sustained: r.share } }] }] : [];
       return inCalc(`all three Blessings held ${pct(r.share)}% of the time (Focus is 0 for 6 s after each God's Boon): +${r.percent}% × ${round(r.share)} = ${body} (provisional)`, { bodies: [body], timed });
     }
-    case "revelationTalents": return inCalc("provisional: the 4th activated Talent Panel, when it is a God of Might, Goddess of Hunting or Goddess of Knowledge class tree, has its listed talents replaced (client talent-group table: 48 talents in 12 trees, each by its own record; src/prophecy-of-revelation.js), and every replacement reads like any talent line: see its badge on the panel. Whether the server applies the same list is inferred");
+    case "revelationTalents": return !(w?.revelationReplaced > 0) ? inactive("no allocated talent is replaced: the 4th activated Talent Panel is not a God of Might, Goddess of Hunting or Goddess of Knowledge class tree, or none of its replaced talents has a point (src/prophecy-of-revelation.js)") : inCalc("provisional: the 4th activated Talent Panel, when it is a God of Might, Goddess of Hunting or Goddess of Knowledge class tree, has its listed talents replaced (client talent-group table: 48 talents in 12 trees, each by its own record; src/prophecy-of-revelation.js), and every replacement reads like any talent line: see its badge on the panel. Whether the server applies the same list is inferred");
     case "justiceShare": {
       const shared = state.thea?.shared;
       return shared?.value > 0 ? inCalc(`+${shared.value} to Max Focus Blessing Stacks (the biggest of Agility's / Tenacity's max-stack bonus): Focus max ${state.blessings.Focus.maxStacks}`) : inactive("neither Agility nor Tenacity Blessing has a max-stack bonus");
@@ -732,6 +750,12 @@ function wisdomRead(key, text, state) {
       const B = state.blessings[name];
       if (!B) return inactive("not a Blessing line");
       const used = name === "Focus" ? B.perStackDamage > 0 || Boolean(w?.cycle) : name === "Agility" ? B.stacks > 0 : Boolean(w?.oracle) || Boolean(w?.revelation) || Boolean(state.thea?.shared?.value);
+      // Raised max stacks count only where the stacks reach above the max without the line (capBinds), or for Focus where God's Boon's
+      // cycle (it fires at max Focus) depends on the max; Predicted Justice also applies Agility's / Tenacity's raise to Focus.
+      const raise = Number(match[1]), focus = state.blessings.Focus;
+      const focusBinds = (B2) => capBinds(B2, raise) || Boolean(w?.cycle) || cycleFocusPeak(B2.durationSeconds) >= B2.maxStacks - raise;
+      const binds = name === "Focus" ? focusBinds(B) : capBinds(B, raise) || (Boolean(state.thea?.shared?.value) && focusBinds(focus));
+      if (B.stacks > 0 && used && !binds) return neutral(`${name} Blessing max ${B.maxStacks}: the Divine Blessing cycle's stacks peak at ${round(B.peak)}, below the max without this line, so it changes no stack count`);
       return B.stacks > 0 && used ? inCalc(`${name} Blessing max ${B.maxStacks} (held by the Divine Blessing cycle${name === "Focus" && w?.cycle ? `; God's Boon consumes ${w.cycle.maxFocus}` : ""})`) : B.stacks > 0 ? neutral(`${name} Blessing's stacks change no damage figure in this build`) : inactive(`${name} Blessing holds no stack`);
     }
     default: return notModeled("this Wisdom of The Gods clause is not read");
@@ -809,7 +833,13 @@ function incarnationRead(key, text, state) {
       const value = Number(cleanThea(text).match(THEA_PATTERNS.realmEnemy)[1]), body = `+${round(value * realm.uptime)}% additional damage`;
       return realm.active ? inCalc(`the dummy is in the Divine Realm (cast on it): ${body}`, { bodies: [body] }) : inactive(noRealm);
     }
-    case "crossing": return realm.inside ? inactive(where) : inCalc(`outside the Divine Realm: +${cleanThea(text).match(THEA_PATTERNS.crossing)[1]} to max stacks of every Blessing (Tenacity's also reaches Agility): Focus ${B.Focus.maxStacks}, Agility ${B.Agility.maxStacks}, Tenacity ${B.Tenacity.maxStacks}`, { group: "theaRealm" });
+    case "crossing": {
+      if (realm.inside) return inactive(where);
+      const raise = Number(cleanThea(text).match(THEA_PATTERNS.crossing)[1]);
+      const binds = CYCLE.order.some((name) => capBinds(B[name], raise * (name === "Agility" && n.transfer ? 2 : 1)));
+      if (!binds) return neutral(`outside the Divine Realm: +${raise} to max stacks of every Blessing (Focus ${B.Focus.maxStacks}, Agility ${B.Agility.maxStacks}, Tenacity ${B.Tenacity.maxStacks}), but the Divine Blessing cycle's stacks peak below the max without it (Focus ${round(B.Focus.peak)}, Agility ${round(B.Agility.peak)}, Tenacity ${round(B.Tenacity.peak)}), so it changes no stack count`, { group: "theaRealm" });
+      return inCalc(`outside the Divine Realm: +${cleanThea(text).match(THEA_PATTERNS.crossing)[1]} to max stacks of every Blessing (Tenacity's also reaches Agility): Focus ${B.Focus.maxStacks}, Agility ${B.Agility.maxStacks}, Tenacity ${B.Tenacity.maxStacks}`, { group: "theaRealm" });
+    }
     default: return notModeled(outsideOnly || "this Incarnation of the Gods clause is not read");
   }
 }

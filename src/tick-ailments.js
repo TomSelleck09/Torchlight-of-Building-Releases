@@ -111,6 +111,9 @@ function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null)
   // Profane held on the loop when the trigger bus owns it (W10 step 4b, src/trigger-bus.js profaneCorrection): the same, on this DoT's Profane line.
   const profane = bus?.profaneCorrection ? bus.profaneCorrection({ kind: "dot", key: ailment.key }) : null;
   if (profane) modifiers.push(profane);
+  // The Fervor Rating held on the loop (census C1, src/trigger-bus.js section 12): its additional damage readers on this DoT, the same way.
+  const fervor = bus?.fervorDotCorrection ? bus.fervorDotCorrection(ailment.key) : null;
+  if (fervor) modifiers.push(fervor);
   return {
     label: ailment.name, kind: "dot",
     parts: [{ key: "dot", type, base: ailment.damagePerBase / (live ? 1 + configuredRating * perPoint : 1) / heldBlessing, increasedPercent: 0, additionalFactor: 1 }],

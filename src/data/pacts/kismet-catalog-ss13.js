@@ -236,7 +236,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Aura Effect",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(2–3)% Aura Effect"
     ],
@@ -246,7 +246,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Affliction Effect",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(10–13)% Affliction Effect"
     ],
@@ -256,7 +256,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Block Ratio",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–3)% Block Ratio"
     ],
@@ -266,7 +266,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Critical Strike Damage",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(12–15)% Critical Strike Damage",
       "+(12–15)% Minion Critical Strike Damage"
@@ -277,7 +277,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Seal Compensation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–3)% Sealed Mana Compensation"
     ],
@@ -287,7 +287,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Curse Effect",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–3)% Curse Effect"
     ],
@@ -297,7 +297,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Movement Speed",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–3)% Movement Speed"
     ],
@@ -307,7 +307,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Energy Shield Restored on Defeat",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "Restores (0.1–0.2)% of Energy Shield on defeat"
     ],
@@ -317,7 +317,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Life Restored on Defeat",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "Restores (0.2–0.3)% of Life on defeat"
     ],
@@ -327,7 +327,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Command",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+ (1–2) Command per second"
     ],
@@ -337,7 +337,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Double Damage Chance",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–3)% chance to deal Double Damage",
       "+(1–3)% chance for Minions to deal Double Damage"
@@ -348,7 +348,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Multistrike Increment",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "Multistrikes deal (4–6)% increasing damage"
     ],
@@ -358,7 +358,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Growth",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(10–12) initial Growth for Spirit Magi"
     ],
@@ -368,7 +368,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Max Fire Resistance",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–2)% Max Fire Resistance"
     ],
@@ -378,7 +378,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Max Cold Resistance",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–2)% Max Cold Resistance"
     ],
@@ -388,7 +388,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Max Lightning Resistance",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–2)% Max Lightning Resistance"
     ],
@@ -398,7 +398,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Max Erosion Resistance",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(1–2)% Max Erosion Resistance"
     ],
@@ -408,7 +408,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Origin of Spirit Magus",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(7–9)% Origin of Spirit Magus effect"
     ],
@@ -418,7 +418,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Deterioration Chance",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(2–4)% Deterioration Chance"
     ],
@@ -428,7 +428,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Deterioration Duration",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(3–5)% additional Deterioration Duration"
     ],
@@ -438,7 +438,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Ignite Damage Mitigation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "(-36–-30)% additional Ignite Damage taken",
       "(-36–-30)% Ignite Effect received"
@@ -449,7 +449,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Numbed Effect Mitigation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "(-55–-45)% Numbed Effect received"
     ],
@@ -459,7 +459,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Wilt Damage Mitigation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "(-36–-30)% Wilt Damage taken"
     ],
@@ -469,7 +469,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Trauma Damage Mitigation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "(-36–-30)% Trauma Damage taken"
     ],
@@ -479,7 +479,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Slow Effect Mitigation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "(-55–-45)% Slow Effect received"
     ],
@@ -489,7 +489,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Paralysis Effect Mitigation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "(-55–-45)% Paralysis Effect received"
     ],
@@ -499,7 +499,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Weaken Effect Mitigation",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "(-55–-45)% Weaken Effect received"
     ],
@@ -509,7 +509,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Micro Fate: Numbed Effect",
     "kind": "micro",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(6–8)% Numbed Effect"
     ],
@@ -752,7 +752,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Aura Effect",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(5–7)% Aura Effect"
     ],
@@ -762,7 +762,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Affliction Effect",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(20–26)% Affliction Effect"
     ],
@@ -772,7 +772,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Block Ratio",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(4–6)% Block Ratio"
     ],
@@ -782,7 +782,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Critical Strike Damage",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(24–30)% Critical Strike Damage",
       "+(24–30)% Minion Critical Strike Damage"
@@ -793,7 +793,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Seal Compensation",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(4–6)% Sealed Mana Compensation"
     ],
@@ -803,7 +803,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Curse Effect",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(4–6)% Curse Effect"
     ],
@@ -813,7 +813,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Movement Speed",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(4–6)% Movement Speed"
     ],
@@ -823,7 +823,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Energy Shield Restored on Defeat",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "Restores (0.2–0.4)% of Energy Shield on defeat"
     ],
@@ -833,7 +833,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Life Restored on Defeat",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "Restores (0.4–0.6)% of Life on defeat"
     ],
@@ -843,7 +843,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Command",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+ (2–4) Command per second"
     ],
@@ -853,7 +853,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Double Damage Chance",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(4–6)% chance to deal Double Damage",
       "+(4–6)% chance for Minions to deal Double Damage"
@@ -864,7 +864,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Multistrike Increment",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "Multistrikes deal (10–12)% increasing damage"
     ],
@@ -874,7 +874,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Growth",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(20–24) initial Growth for Spirit Magi"
     ],
@@ -884,7 +884,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Max Fire Resistance",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(2–4)% Max Fire Resistance"
     ],
@@ -894,7 +894,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Max Cold Resistance",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(2–4)% Max Cold Resistance"
     ],
@@ -904,7 +904,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Max Lightning Resistance",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(2–4)% Max Lightning Resistance"
     ],
@@ -914,7 +914,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Max Erosion Resistance",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(2–4)% Max Erosion Resistance"
     ],
@@ -924,7 +924,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Origin of Spirit Magus",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(15–18)% Origin of Spirit Magus effect"
     ],
@@ -934,7 +934,7 @@ export const kismetCatalogSs13 = [
   {
     "name": "Medium Fate: Numbed Effect",
     "kind": "medium",
-    "rarity": "Rare",
+    "rarity": "Epic",
     "affixes": [
       "+(14–16)% Numbed Effect"
     ],

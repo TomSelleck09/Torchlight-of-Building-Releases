@@ -2,9 +2,11 @@
 // other skills rather than the supported skill's own damage. src/support-effects.js classifies them (family "censusBuff", Phantom
 // Trace's "censusDetail" Blur grant); this module turns them into derived lines and per-setup additions the planner applies.
 //
-// - Empowered Element (game recipe 446081152: 5727 Elemental Damage, increased, node 292 "while the supported skill lasts"): a
-//   build-wide "+X% Elemental Damage" while the supported Empower Skill's buff lasts. Its buff is read as held (best case, own buffs
-//   pre-built, as Empowered Insight's Empower buffs; provisional, open question support-buff-uptimes).
+// - Empowered Element (game recipe 446081152: node 292 "while the supported skill lasts" on filter 106, then node 101 attr 5727 mod 3
+//   with no tag on the holder, removed from unfiltered entities): a build-wide "+X% Elemental Damage" while the supported Empower
+//   Skill's effect lasts. Census C11 (user decision 2026-11-15): at that skill's uptime (`uptimeFor`: an Empower buff's steady uptime,
+//   src/empower-buffs.js; Aim's uptime, src/aim-model.js), time-averaged; a skill with no uptime model (a trait skill) stays held
+//   (provisional, open question support-buff-uptimes).
 // - Gladiator's Roar (recipe 654286: on casting the supported Warcry, a p2 s timed 57191 additional damage on the player when an Elite
 //   is inside 6 m × Skill Area): the dummy is an Elite (a Boss) within 10 m, inside the area at both distances. Uptime min(1, buff
 //   seconds ÷ the Warcry's effective cooldown), the Warcry cast whenever its cooldown allows (best case); without a cooldown held.
@@ -49,10 +51,12 @@ export function phantomTraceBlurSources({ setups = [], activeNames = new Set(), 
  * @param {(setup: object) => number} p.cooldownFor the setup's base cooldown in seconds (0 = none)
  * @param {boolean} p.mobilitySkillUsed combat condition (default on)
  * @param {Map<string, object>|null} p.hitRateFacts setupKey → { spellBurstActivationsPerSecond } from the hit pass (null before it)
+ * @param {(setup: object) => ({ uptime: number, reason: string } | null)} p.uptimeFor the supported skill's share of the time its effect
+ *   lasts (Empowered Element), or null when it has no uptime model (held)
  * @returns {{ lines: object[], entries: object[] }} lines: derived modifier texts; Psychic Surge is added to the Spell-Bursting setups'
  *   supportEffects.spellBurst (kind "hitAdditional") in place.
  */
-export function resolveSupportBuffs({ setups = [], activeNames = new Set(), cooldownFor = () => 0, mobilitySkillUsed = true, hitRateFacts = null } = {}) {
+export function resolveSupportBuffs({ setups = [], activeNames = new Set(), cooldownFor = () => 0, mobilitySkillUsed = true, hitRateFacts = null, uptimeFor = () => null } = {}) {
   const lines = [], entries = [];
   const active = setups.filter((setup) => setup.enabled !== false && activeNames.has(setup.name));
   const cooldownOf = (setup) => {
@@ -62,8 +66,12 @@ export function resolveSupportBuffs({ setups = [], activeNames = new Set(), cool
   };
   for (const setup of active) {
     for (const line of clausesOf(setup, "empoweredElement")) {
-      lines.push({ text: `+${round(line.value)}% Elemental Damage`, source: `${setup.name}: ${line.support} (while the Empower Skill lasts; held, provisional)`, origin: "derived", multiplier: 1, supportBuff: true });
-      entries.push({ setupKey: setup.setupKey, support: line.support, value: line.value, uptime: 1, text: `${setup.name}: ${line.support} +${line.value}% Elemental Damage, the Empower buff held (best case; provisional)` });
+      const timing = uptimeFor(setup);
+      const uptime = timing ? Math.max(0, Math.min(1, Number(timing.uptime) || 0)) : 1;
+      const value = round(line.value * uptime);
+      const how = timing ? `${timing.reason}: uptime ${round(uptime)}` : `${setup.name} has no uptime model: held`;
+      if (value) lines.push({ text: `+${value}% Elemental Damage`, source: `${setup.name}: ${line.support} (+${round(line.value)}% while ${setup.name} lasts × ${round(uptime)} uptime; provisional)`, origin: "derived", multiplier: 1, supportBuff: true });
+      entries.push({ setupKey: setup.setupKey, support: line.support, value, uptime: round(uptime), text: `${setup.name}: ${line.support} +${line.value}% Elemental Damage while ${setup.name} lasts (game recipe 446081152), ${how} = +${value}% (provisional)` });
     }
     // Howling Gale: Eye of the Gale (game record 239448224, buff 10851 on the holder; wiring fix W6b): the Gale follows you, so while
     // the skill channels you stand in it (held: best case, as Rapid Sweep's Gale): your additional Attack and Cast Speed and your

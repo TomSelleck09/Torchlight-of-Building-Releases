@@ -314,7 +314,10 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
       case "addedAttacks": lines.added.push({ ...entry, type: parsed.type, min: parsed.min * (line.multiplier ?? 1), max: parsed.max * (line.multiplier ?? 1) }); break;
       case "addedMainHand": addRange(addedMainHand, parsed.type, { min: parsed.min * (line.multiplier ?? 1), max: parsed.max * (line.multiplier ?? 1) }); break;
       case "doubleBlade": if (dualWielding) { mainHandCritPercent += value; addRange(addedOffHand, parsed.type, { min: parsed.min * (line.multiplier ?? 1), max: parsed.max * (line.multiplier ?? 1) }); doubleBladeSources.push(entry); } break;
-      case "twoHandedBase": twoHandedBasePercent += value; break;
+      // Record 101010697: attr 5719 mod 4 on the Attack tag, gated by node 21 on a two-handed weapon held (tag 5000792), no node 321 /
+      // 363 / 364, so not local to the weapon: each copy is its own additional factor on every Attack hit (added flat parts included)
+      // while a two-hander is held (research/compare-recipes-disagreements-2026-11-14.md A1). `twoHandedBasePercent` keeps the sum shown.
+      case "twoHandedBase": twoHandedBasePercent += value; if (twoHanded && mainHand?.weapon) lines.additional.push({ ...entry, category: "Additional damage", condition: "holding a Two-Handed Weapon" }); break;
       case "offHandBase": offHandBasePercent += value; break;
       // `hand: "main"`: in alternate dual wielding only the main-hand swings take it (src/skill-hit-model.js per-hand rolls).
       case "mainHandDamage": lines.additional.push({ ...entry, category: "Additional damage", condition: "Main-Hand Weapon attacks", hand: "main" }); break;
@@ -327,15 +330,15 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
     }
   }
 
-  // Per-weapon damage with handedness layers: Two-Handed base bonus on a two-hander, Off-Hand base bonus on the
-  // off-hand weapon, "Adds … to the Main-Hand Weapon" on the main hand only.
+  // Per-weapon damage with handedness layers: Off-Hand base bonus on the off-hand weapon, "Adds … to the Main-Hand Weapon" on the
+  // main hand only (the Two-Handed base bonus is an additional damage line above, not a weapon base factor).
   const weaponDamage = (weapon, role) => {
     if (!weapon?.weapon) return {};
     const out = {};
     for (const [type, range] of Object.entries(weapon.damage)) out[type] = { ...range };
     if (role === "main") for (const [type, range] of Object.entries(addedMainHand)) addRange(out, type, range);
     if (role === "off") for (const [type, range] of Object.entries(addedOffHand)) addRange(out, type, range);
-    const factor = (weapon.hands === "two" ? 1 + twoHandedBasePercent / 100 : 1) * (role === "off" ? 1 + offHandBasePercent / 100 : 1);
+    const factor = role === "off" ? 1 + offHandBasePercent / 100 : 1;
     for (const type of Object.keys(out)) out[type] = scale(out[type], factor);
     return out;
   };

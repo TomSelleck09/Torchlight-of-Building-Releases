@@ -1,6 +1,39 @@
 import { enemyBuffSet } from "./unit-buff-set.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { curseTakenEffect, DEDICATED_CURSE_MODELS, NO_DUMMY_EFFECT_CURSES } from "./curse-effects.js";
+import { isTowerSequenceLine } from "./gear-unique-modules.js";
+
+// The level of a skill an item or a support triggers (user decision 2026-11-16, replacing the 2026-10-27 reading "a 'Triggers Lv. N …'
+// skill stays at the item's level"): it starts at the printed level and takes the build's skill level lines like any skill of yours: All
+// Skills, Active and the triggered skill's own tag levels (src/skill-level-bonuses.js skillLevelBonus, role "item-trigger": an active skill,
+// never the Main Skill). Past Lv.20 each reader keeps its own level lookup (game level maps, the generic +10% / +8% per level). The records
+// cast the skill with node 2320 at the level parameter (Illusory Chimera's Aim 39246804, the curse triggers 608752704 / 870632064 /
+// 299813824, the chance pairs 607440 / 933011, Fearless Warcry 2113, Ice Lances: Permafrost's 888393792, …); the 30 T build's town panel
+// fits its Aim at Lv.29 = Lv.20 + the build's +9 Spell Skill Level (research/town-panel-unplaced-factors-2026-11-15.md). Whether the client
+// adds the caster's level attributes to a node-2320 cast is not traced (inferred from that panel).
+// Unchanged: a TOWER Sequence line and a hero trait line keep the printed level (`fixed`; open question tower-granted-support-level), and a
+// line that puts the curse buff on the enemy at a level ("Nearby enemies within N m are cursed by Lv. N X": node 301 overrideBuffLevel; no
+// skill is cast) keeps it too (src/build-mechanics.js).
+export const isFixedLevelTriggerLine = (line) => Boolean(line) && (line.origin === "trait" || isTowerSequenceLine(line.text));
+
+/**
+ * The triggered skill's levels: { baseLevel, addedLevels, effectiveLevel, levelBonusSources, fixedLevel? }.
+ * @param {object} p
+ * @param {number} p.level the printed level
+ * @param {boolean} [p.fixed] a TOWER Sequence or hero trait grant: the printed level
+ * @param {{ total: number, contributions: object[] }|null} [p.bonus] the build's level lines for the skill (skillLevelBonus)
+ */
+export function triggeredSkillLevel({ level, fixed = false, bonus = null } = {}) {
+  const baseLevel = Math.max(1, Math.floor(Number(level) || 1));
+  const addedLevels = fixed ? 0 : Math.trunc(Number(bonus?.total) || 0);
+  return { baseLevel, addedLevels, effectiveLevel: Math.max(1, baseLevel + addedLevels), levelBonusSources: fixed ? [] : [...(bonus?.contributions || [])], ...(fixed ? { fixedLevel: true } : {}) };
+}
+
+/** "Lv.20 +9" (src/app.js skillLevelLabel, as text): the printed level and the build's added levels. */
+export const triggeredLevelLabel = (levels) => {
+  const added = Number(levels?.addedLevels) || 0;
+  return `Lv.${levels?.baseLevel ?? levels?.effectiveLevel ?? 20}${added ? ` ${added > 0 ? "+" : ""}${added}` : ""}`;
+};
 
 // Skills that gear and pact lines trigger ("Triggers Lv. 20 Secret Origin Unleash every 6 s", "When moving, triggers a Lv. 20
 // Split Shot every 0.6 s", "Triggers Lv. 20 Ice Shot if you have inflicted Frostbite recently. Interval: 0.3s"). Gear-pact

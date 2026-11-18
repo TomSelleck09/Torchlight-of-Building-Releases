@@ -11,6 +11,10 @@ const levelPattern = /([+-]\d+)\s+(?:to\s+)?([A-Za-z]+(?:\s+[A-Za-z]+){0,2})\s+(
 // A skill takes "Active Skill Level" lines when it is an active-role skill, or a Spirit Magus that Iris placed in an active skill
 // slot (`activeSlotMagus`, set by src/planner.js from src/magus-active-slot.js `magusTakesActiveSkillLevels`; user-confirmed
 // 2026-10-19). An Aura-slot Magus stays Aura-role and does not.
+// The Main Skill is the planner's Main Skill (skill.isMainSkill, set by src/planner.js; 2026-11-15): every active-slot skill of a custom board
+// has role "main", so the role alone gave every board skill the "Main Skill Level" lines (game records 101080104, 404339744, 183539 write field
+// 2006400 / 20064002 on Main Skill 6020000 only). A skill object without the flag keeps the role reading.
+export const isMainSkillForLevels = (skill) => skill.isMainSkill ?? skill.role === "main";
 const takesActiveLevels = (skill) => skill.role !== "aura" && skill.role !== "support" || skill.activeSlotMagus === true;
 
 function matchingBonusDetail(text, skill) {
@@ -35,7 +39,7 @@ function matchingBonusDetail(text, skill) {
     // once, so a line is never added twice through two categories.
     const activeTagged = words.length > 1 && words.includes("active") && takesActiveLevels(skill) && words.filter((word) => word !== "active").every((word) => tags.has(word));
     const activeLine = category === "active" && takesActiveLevels(skill) || activeTagged;
-    const applies = category === "all" || activeLine || category === "passive" && skill.role === "aura" || category === "main" && skill.role === "main" || tagged;
+    const applies = category === "all" || activeLine || category === "passive" && skill.role === "aura" || category === "main" && isMainSkillForLevels(skill) || tagged;
     if (!applies) continue;
     total += Number(match[1]);
     if (activeLine && !tagged && skill.role === "aura") activeSlot += Number(match[1]);
@@ -58,7 +62,7 @@ export function emptySlotLevelLine(text) {
   const match = String(text || "").replace(/\s+/g, " ").trim().match(EMPTY_SLOT_LEVEL);
   return match ? { per: Number(match[1]), target: match[2].toLowerCase(), slot: match[3].toLowerCase() } : null;
 }
-export const emptySlotLevelApplies = (line, skill) => line.target === "main" ? skill.role === "main" : line.target === "passive" ? skill.role === "aura" : takesActiveLevels(skill);
+export const emptySlotLevelApplies = (line, skill) => line.target === "main" ? isMainSkillForLevels(skill) : line.target === "passive" ? skill.role === "aura" : takesActiveLevels(skill);
 
 // Levels a line derives from what the build holds (chunk 12): `facts` come from the planner's first pass (src/planner.js levelFacts:
 // the resistances are resolved after the skill levels, and a level moves neither). Levels are whole (the planner's own truncation).
@@ -97,7 +101,7 @@ export function derivedLevelLine(text, skill, facts) {
     return { levels: Math.trunc(Math.min(Number(match[3]), Math.max(0, Number(facts?.resistances?.Fire?.total) || 0) / Number(match[2]) * Number(match[1]))), note: `Fire Resistance ${Number(facts?.resistances?.Fire?.total) || 0}% ÷ ${match[2]}` };
   }
   match = line.match(SEALED_LIFE_LEVEL);
-  if (skill.role !== "main" || !facts?.fullMana) return { levels: 0 };
+  if (!isMainSkillForLevels(skill) || !facts?.fullMana) return { levels: 0 };
   return { levels: Math.trunc((Number(facts.lifeSealedPercent) || 0) / Number(match[1]) * Number(match[2])), note: `${Number(facts.lifeSealedPercent) || 0}% Life sealed ÷ ${match[1]}, at Full Mana` };
 }
 
@@ -108,7 +112,7 @@ export function derivedLevelLine(text, skill, facts) {
 // the line's origin, source and text, the skill's role, tags and active-slot Magus flag); each call gets a fresh copy.
 const levelDetailCache = new Map();
 function levelDetail(text, skill, origin, source) {
-  const key = [hitPathMode(), recipeDataVersion(), origin ?? "\u0002", source ?? "\u0002", String(text ?? ""), skill.role ?? "\u0002", skill.activeSlotMagus === true ? 1 : 0, (skill.tags || []).join("\u0002")].join("\u0001");
+  const key = [hitPathMode(), recipeDataVersion(), origin ?? "\u0002", source ?? "\u0002", String(text ?? ""), skill.role ?? "\u0002", skill.isMainSkill == null ? 2 : skill.isMainSkill ? 1 : 0, skill.activeSlotMagus === true ? 1 : 0, (skill.tags || []).join("\u0002")].join("\u0001");
   let hit = levelDetailCache.get(key);
   if (!hit) {
     hit = levelDetailUncached(text, skill, origin, source);

@@ -17,7 +17,7 @@
 // triggerBusLayer, placeHitGains, paralysisLayer, frostbiteLayer; the timed corrections on the DoT, beam and Minion paths).
 import { TICK_LAYERS, TICK_LAYER_KEYS, compileYougaProgram, yougaCoreHit } from "./tick-youga-layers.js";
 import { GENERAL_LAYERS, GENERAL_ORDER, addTarget, createLayerContext, finishTarget, generalHeldLayers, minionTypeModifiers } from "./tick-layers.js";
-import { compilePlainProgram, plainUseKind, repeatEffects, timerField } from "./tick-plain-skills.js";
+import { compilePlainProgram, ownPerUse, plainUseKind, repeatEffects, timerField } from "./tick-plain-skills.js";
 import { usesPerPlacement } from "./tick-engine.js";
 import { compileAilmentProgram } from "./tick-ailments.js";
 import { compileMinionProgram } from "./tick-minions.js";
@@ -45,7 +45,7 @@ const TIME_VARYING_LAYERS = Object.freeze([
 
 const copyLines = (lines) => (lines || []).map((line) => ({ source: line.source, text: line.text, value: line.value }));
 
-function compileParts(hit) {
+function compileParts(hit, { ownUse = false } = {}) {
   const parts = [], dropped = [];
   hit.components.forEach((component, index) => {
     const perUse = component.perHit * component.hitsPerUse;
@@ -66,8 +66,9 @@ function compileParts(hit) {
   });
   // Per-use damage outside the components (Deterioration, Spell Ripple, Sweeping Fury) stays one static part.
   const inParts = parts.reduce((sum, part) => sum + part.perUse, 0);
-  const rest = hit.combat.perUse - inParts;
-  if (Math.abs(rest) > 1e-9 * hit.combat.perUse) parts.push({ key: "extras", label: "Other per-use damage in the planner's figure", type: null, hitsPerUse: 1, base: rest, increasedPercent: 0, additionalFactor: 1, perUse: rest });
+  const perUse = ownUse ? ownPerUse(hit) : hit.combat.perUse;
+  const rest = perUse - inParts;
+  if (Math.abs(rest) > 1e-9 * perUse) parts.push({ key: "extras", label: "Other per-use damage in the planner's figure", type: null, hitsPerUse: 1, base: rest, increasedPercent: 0, additionalFactor: 1, perUse: rest });
   return { parts, dropped };
 }
 
@@ -99,8 +100,8 @@ function averagedLayersOf(planner, hit, program = null) {
   return [...layers, { key: "castSpeed", label: program ? "Static Cast Speed in the use time" : "Cast Speed total in the use time", path: hit.key, lines: (hit.rate.castSpeedSources || []).map((line) => ({ layer: "rate", source: line.source, text: line.text, value: line.value })) }];
 }
 
-function hitPath(hit) {
-  const { parts, dropped } = compileParts(hit);
+function hitPath(hit, { ownUse = false } = {}) {
+  const { parts, dropped } = compileParts(hit, { ownUse });
   const rate = hit.rate;
   return {
     key: hit.key, label: `${hit.name} hits`, kind: "hit",
@@ -169,13 +170,15 @@ function averagedSources(planner, paths, onLoop) {
  */
 export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEYS, readings = {}, bus: compiledBus = null } = {}) {
   const hits = (planner?.skillHits || []).filter((hit) => hit?.modeled && !hit.inactiveReason);
-  const paths = Object.fromEntries(hits.map((hit) => [hit.key, hitPath(hit)]));
+  // A Combo cycle on the loop with the Seething Spirit's casts merged into its rate: its parts take the player's own per-use (the Spirit's
+  // casts are their own action; research/spectral-slash-cycle-rate-2026-11-14.md). Static streams keep the merged rate and per-use.
+  const paths = Object.fromEntries(hits.map((hit) => [hit.key, hitPath(hit, { ownUse: live.length > 0 && hit.rehanSpirit?.modeled && plainUseKind(hit) === "cycle" })]));
   const core = live.length ? yougaCoreHit(planner, hits) : null;
   // Plain skills: the rest of the board, on the Youga build too. `live: []` keeps every skill a static stream.
   const plainHits = live.length ? hits.filter((hit) => hit !== core && plainUseKind(hit)) : [];
   // One layer context for the build (src/tick-layers.js): the Core's skill first (speed "cast"), then every plain skill. The general layers
   // run over all of them in one pass; the Core's own layers on the Core (src/tick-youga-layers.js).
-  // The trigger bus (W10): null on the layers (the default), and with no layer context (`live: []` holds every layer at the planner's average).
+  // The trigger bus (W10): null on the layers with nothing to own (the default is the bus since 2026-11-15), and with no layer context (`live: []` holds every layer at the planner's average).
   const bus = live.length ? compiledBus : null;
   const options = { ...readings, live, layers: core ? TICK_LAYERS : GENERAL_LAYERS, bus };
   const layerContext = live.length ? createLayerContext(planner, options) : null;
