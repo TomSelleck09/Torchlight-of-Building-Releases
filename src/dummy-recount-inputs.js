@@ -102,6 +102,17 @@ function pooledChancePercent(ailment, rate) {
   return rate > 0 ? 100 * (ailment.combat?.successesPerSecond || 0) / rate : 0;
 }
 
+// The chance while nothing of yours is held, pooled the same way: an applier's steady not-Ignited chance ("+X% Ignite Chance against enemies
+// that haven't been Ignited", src/ailment-model.js steadyNotActiveChancePercent: the share another unit leaves the dummy un-Ignited), else its
+// regular chance (10 T Barrier Burst triage L1, 2026-11-18). The tick engine gates it on the loop instead (src/tick-ailments.js).
+function pooledNotActiveChancePercent(ailment, rate) {
+  const active = (ailment.appliers || []).filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0);
+  if (!active.some((applier) => applier.steadyNotActiveChancePercent !== undefined)) return pooledChancePercent(ailment, rate);
+  const fresh = (applier) => applier.steadyNotActiveChancePercent ?? applier.chancePercent ?? 0;
+  if (active.length === 1 && Math.abs(active[0].applicationsPerSecond - rate) < 1e-9) return fresh(active[0]);
+  return rate > 0 ? 100 * active.reduce((sum, applier) => sum + applier.applicationsPerSecond * fresh(applier) / 100, 0) / rate : 0;
+}
+
 // A skill DoT's Max Affliction lines (Pain Amplification, src/skill-dot-model.js maxAfflictionAdditional) are in its steady
 // combat factor; before the dummy first reaches 100 Affliction the DoT runs at 1 / factor of it (same ratio form as the
 // max-Affliction resistance reduction above; frost-terra audit 2026-10-13). Nothing removes Affliction for a skill DoT here.
@@ -143,7 +154,7 @@ function otherAilment({ ailment, retention, count: mainCount, critChancePercent,
     // A skill DoT its link keeps on the target (Mind Control: src/skill-damage-profiles.js `linked`): the tick engine adds it again the frame after a
     // removal (Approaching Nightfall). The recount does not read it.
     ...(ailment.profile?.linked ? { relink: true } : {}),
-    chance: clampChance(chancePercent), notActiveChance: clampChance(chancePercent),
+    chance: clampChance(chancePercent), notActiveChance: clampChance(pooledNotActiveChancePercent(ailment, rate)),
     duration: ailment.durationSeconds,
     ...(uses ? { uses } : {}),
     damagePerBase: ailment.combat.factor,

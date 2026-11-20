@@ -126,7 +126,7 @@ export function patchBeamHitLedger(ledger, { modifierTexts = [], beamTags = new 
   const out = [], deferred = [], differences = [], residuals = [];
   // A recipe entry keeps the text fields its text-path entry had (`text`, `lineText` or only `matchText`), so the readers that place an entry
   // by its text (the panel compare, the badges) see it as before.
-  const recipeEntry = (item, entry, template = null) => ({ source: template?.source && !BEAM_AGGREGATES[template.source] ? template.source : item.line.source, bucket: entry.bucket, percent: entry.percent, ...(template && !template.text && !template.lineText ? { matchText: item.line.text } : { text: item.line.text }), ...(template?.lineText ? { lineText: template.lineText } : {}), recipe: { affixId: entry.affixId, ...(entry.conditions?.length ? { conditions: entry.conditions } : {}) } });
+  const recipeEntry = (item, entry, template = null) => ({ source: template?.source && !BEAM_AGGREGATES[template.source] ? template.source : item.line.source, bucket: entry.bucket, percent: entry.percent, ...(template && !template.text && !template.lineText ? { matchText: item.line.text } : { text: item.line.text }), ...(template?.lineText ? { lineText: template.lineText } : {}), recipe: { affixId: entry.affixId, ...(entry.conditions?.length ? { conditions: entry.conditions } : {}) }, ...(item.line.rotation ? { rotation: item.line.rotation } : {}) });
   // A line's recipe entries, once: those in `bucket` go to `into`, the others to the end of the ledger.
   const emit = (item, bucket, into, template) => {
     if (emitted.has(item.index)) return [];
@@ -153,7 +153,7 @@ export function patchBeamHitLedger(ledger, { modifierTexts = [], beamTags = new 
         if (!value) continue;
         attributed += value;
         matched.add(item.index);
-        if (item.use !== "recipe") { parts.push({ source: item.line.source, text: item.line.text, percent: value }); continue; }
+        if (item.use !== "recipe") { parts.push({ source: item.line.source, text: item.line.text, percent: value, ...(item.line.rotation ? { rotation: item.line.rotation } : {}) }); continue; }
         note(item, entry.bucket, value);
         emit(item, entry.bucket, parts, null);
       }

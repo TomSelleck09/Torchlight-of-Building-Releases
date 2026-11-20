@@ -241,8 +241,26 @@ export function applyCapturedEnergyCosts(setups, profile) {
   return setups.map((setup, index) => ({ ...setup, enabledSupportSlots: profile.enabledSupportSlotsBySetup[index], energyCost: energyCostForSupportSlots(setup.role, profile.enabledSupportSlotsBySetup[index], profile) }));
 }
 
-export function calculateAuraReservation({ baseSealedPercent, installedSupportCount, fixedSupportMultiplierPercent = 100, globalCompensationPercent = 0, localCompensationPercent = 0, additionalCompensationPercents = [], convertedToLife = false }) {
-  const supportMultiplier = (fixedSupportMultiplierPercent / 100) ** installedSupportCount;
+/**
+ * One Aura's (or Passive summon's) seal: base × Π support Mana Multipliers ÷ ((1 + global + local compensation) × Π (1 + additional)).
+ * The support Mana Multiplier (2026-11-19, closes open question aura-seal-support-mana-multiplier; research/build-20t-bing-psionic-
+ * audit-2026-11-19.md G5): each installed support's own stone multiplier (config_skill_stone, the level map after the header
+ * strings: 110 on most supports, 100 on the Aura supports and the Activation Mediums; equal to the catalog's manaCostMultiplierPercent
+ * on all 497 support stones), unless a "Support Skill's Mana Multiplier is fixed at N%" line (Off The Beaten Track, field 2010063)
+ * replaces every support's with N, the same rule as an active skill's cost (src/resource-consumption.js setupCost). SS14 client
+ * (static, proven): a skill's seal entry (0x142073d70 → 0x141e01680, the stone's third cost table) is multiplied by 0x141dffab0,
+ * the product over the installed supports of each support stone's level map at the support's level ÷ 100, or field 2010063 ÷ 100
+ * per support under the fixed label (that 0x2dedf8 is the fixed label is inferred); the entry is kept per skill in the skill
+ * possessor's map (0x141f24470, rebuilt when Sealed Mana Compensation, Max Mana or Max Life change) that the reserve sum
+ * 0x142073570 adds up. In game: the Aura tooltips "Sealed Mana 55%" = 50% × Increased Area's 110%
+ * (src/data/skills/selena-complete-skill-loadout-ss13.js), and the 20 T Bing HUD's Sealed Mana 510 of 525 (Summon Fire Magus 20% ×
+ * Exhaustion's 110% ÷ 1.255, each Mana term floored). The planner reads the catalog's flat value (only Cost Conversion's map varies
+ * by level). supportMultiplierPercents lists the supports' own percents; without it every support counts at the fixed value (the
+ * older call form).
+ */
+export function calculateAuraReservation({ baseSealedPercent, installedSupportCount, fixedSupportMultiplierPercent = 100, supportMultiplierPercents = null, globalCompensationPercent = 0, localCompensationPercent = 0, additionalCompensationPercents = [], convertedToLife = false }) {
+  const ownPercents = Array.isArray(supportMultiplierPercents) && fixedSupportMultiplierPercent === 100 ? supportMultiplierPercents.map((percent) => Number(percent) || 100) : null;
+  const supportMultiplier = ownPercents ? ownPercents.reduce((product, percent) => product * percent / 100, 1) : (fixedSupportMultiplierPercent / 100) ** installedSupportCount;
   const initialAfterSupports = baseSealedPercent * supportMultiplier;
   const totalCompensationPercent = globalCompensationPercent + localCompensationPercent;
   const denominator = 1 + totalCompensationPercent / 100;
@@ -250,7 +268,7 @@ export function calculateAuraReservation({ baseSealedPercent, installedSupportCo
   const additionalCompensationMultiplier = additionalCompensationPercents.reduce((total, percent) => total * (1 + percent / 100), 1);
   if (additionalCompensationMultiplier <= 0) throw new RangeError("additional Sealed Mana Compensation produced a non-positive multiplier");
   const uncappedReservedPercent = initialAfterSupports / denominator / additionalCompensationMultiplier;
-  return { resource: convertedToLife ? "life" : "mana", baseSealedPercent, installedSupportCount, fixedSupportMultiplierPercent, supportMultiplier: round(supportMultiplier, 6), initialAfterSupports: round(initialAfterSupports, 4), globalCompensationPercent, localCompensationPercent, totalCompensationPercent, additionalCompensationPercents, additionalCompensationMultiplier: round(additionalCompensationMultiplier, 6), uncappedReservedPercent: round(uncappedReservedPercent, 4), reservedPercent: round(Math.min(99.99, uncappedReservedPercent), 4) };
+  return { resource: convertedToLife ? "life" : "mana", baseSealedPercent, installedSupportCount, fixedSupportMultiplierPercent, ...(ownPercents?.some((percent) => percent !== 100) ? { supportMultiplierPercents: ownPercents } : {}), supportMultiplier: round(supportMultiplier, 6), initialAfterSupports: round(initialAfterSupports, 4), globalCompensationPercent, localCompensationPercent, totalCompensationPercent, additionalCompensationPercents, additionalCompensationMultiplier: round(additionalCompensationMultiplier, 6), uncappedReservedPercent: round(uncappedReservedPercent, 4), reservedPercent: round(Math.min(99.99, uncappedReservedPercent), 4) };
 }
 
 export function energyCostForSupportPositions(role, occupiedSlots, profile) {
@@ -304,7 +322,9 @@ export function calculateAuraLedger(setups, options) {
     // Precise forms except Precise: Rejuvenation). Before 2026-10-14 only the two Flame Focus entries carried it and every
     // other Aura fell back to options.baseSealedPercent (50); Precise: Swiftness read 50 against the in-game tooltip's 10.
     const baseSealedPercent = setup.sealedManaPercent ?? options.baseSealedPercent;
-    const ownReservation = calculateAuraReservation({ baseSealedPercent, installedSupportCount: enabledSupports.length, fixedSupportMultiplierPercent: options.fixedSupportMultiplierPercent, globalCompensationPercent: compensation.globalPercent, localCompensationPercent: compensation.localPercent, additionalCompensationPercents: compensation.additionalPercents, convertedToLife });
+    // Each installed support's own Mana Multiplier multiplies the seal unless a fixed value replaces it (calculateAuraReservation).
+    const supportMultiplierPercents = enabledSupports.map((support) => support.manaCostMultiplierPercent ?? 100);
+    const ownReservation = calculateAuraReservation({ baseSealedPercent, installedSupportCount: enabledSupports.length, fixedSupportMultiplierPercent: options.fixedSupportMultiplierPercent, supportMultiplierPercents, globalCompensationPercent: compensation.globalPercent, localCompensationPercent: compensation.localPercent, additionalCompensationPercents: compensation.additionalPercents, convertedToLife });
     // An item-granted Aura (src/planner.js, Lone Walker's Boots) seals no Mana or Life (user-confirmed 2026-10-13).
     const reservation = setup.granted ? { ...ownReservation, granted: true, uncappedReservedPercent: 0, reservedPercent: 0 } : ownReservation;
     const baseEffects = auraBaseEffects(setup);

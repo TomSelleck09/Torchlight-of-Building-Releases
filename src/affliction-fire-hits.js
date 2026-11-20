@@ -34,14 +34,16 @@ const round = (value, digits = 4) => Math.round(value * 10 ** digits) / 10 ** di
  * @param {Array<{ source: string, value: number }>} p.additionalAfflictionEffect the build-wide "additional Affliction effect" terms
  *   (the Affliction core's +30% …), the main skill's Cataclysm left out (it is the skill's own: `ownAdditionalPercent` below)
  */
-export function afflictionFireHitState({ modifierTexts = [], trueFlameCore = false, ignited = false, afflictionRating = 0, afflictionEffectIncreasedPercent = 0, additionalAfflictionEffect = [] } = {}) {
+// `ignitedBy` (with the True Flame core; 10 T Barrier Burst triage L1 (B), 2026-11-18): another unit's Ignite on the dummy (src/ailment-applications.js
+// othersIgniteHolds: the follower's markers, your Minions' share), which the tick engine's True Flame layer reads beside your own Ignite on the loop.
+export function afflictionFireHitState({ modifierTexts = [], trueFlameCore = false, ignited = false, afflictionRating = 0, afflictionEffectIncreasedPercent = 0, additionalAfflictionEffect = [], ignitedBy = null } = {}) {
   const magmaskull = [];
   for (const line of modifierTexts) {
     if (line?.origin === "derived" || line?.lineEffect) continue;
     const match = clean(line?.text).match(MAGMASKULL_AFFLICTION_FIRE_LINE);
     if (match) magmaskull.push({ source: line.source, text: clean(line.text), value: Number(match[1]) * (line.multiplier ?? 1), cap: Number(match[2]) });
   }
-  return { trueFlameCore: Boolean(trueFlameCore), ignited: Boolean(ignited), afflictionRating: Math.max(0, Number(afflictionRating) || 0), afflictionEffectIncreasedPercent: Number(afflictionEffectIncreasedPercent) || 0, additionalAfflictionEffect, magmaskull };
+  return { trueFlameCore: Boolean(trueFlameCore), ignited: Boolean(ignited), afflictionRating: Math.max(0, Number(afflictionRating) || 0), afflictionEffectIncreasedPercent: Number(afflictionEffectIncreasedPercent) || 0, additionalAfflictionEffect, magmaskull, ...(trueFlameCore && ignitedBy ? { ignitedBy: { followerSources: [...(ignitedBy.followerSources || [])], minionShare: Math.max(0, Math.min(1, Number(ignitedBy.minionShare) || 0)) } } : {}) };
 }
 
 /**

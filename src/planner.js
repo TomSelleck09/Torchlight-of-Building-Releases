@@ -42,7 +42,7 @@ import { collectModifierTexts } from "./modifier-texts.js";
 import { followerModifierTexts, followerSelection, followerBlessingLines, settleFollowerBuffs, settleFollowerReaps, followerBlurSources, followerReapSources, followerDamageSources, followerWindowDps, enemyArmourWithFollower, ILL_WILL, illWillResistance, illWillTimedParts } from "./follower-model.js";
 import { plannerEngines } from "./line-coverage.js";
 import { ailmentBaseSettle, calculateAilment, collectAilmentTypedSources, combineAilmentChance, hasAilmentBase } from "./ailment-model.js";
-import { collectAilmentApplierCandidates, ailmentAppliersFor, igniteGlobalChanceSources } from "./ailment-applications.js";
+import { collectAilmentApplierCandidates, ailmentAppliersFor, igniteGlobalChanceSources, igniteNotIgnitedChanceSources, applierAttempts, othersIgniteHolds } from "./ailment-applications.js";
 import { buildAilmentSharedLayers } from "./ailment-shared.js";
 import { ailmentInputs, planAilmentRecipe, planTraumaRecipe, rewriteTraumaShared, traumaAilmentInputs, traumaPathMode, traumaPlanSummary, traumaReapingModifiers } from "./recipe-trauma-layers.js";
 import { dotPathMode, dotPlanSummary, planReapingRecipe, planSkillDotRecipe, planWiltRecipe, reapPathMode, recipeReapingModifiers, recipeSharedOptions, wiltPathMode } from "./recipe-dot-layers.js";
@@ -263,6 +263,24 @@ const exclusiveConditionGroups = [
     }]
   },
   {
+    // Hit recently (user request 2026-11-19): "if you haven't been hit recently" lines (Preserver of Eternity's "+40% Movement Speed …",
+    // records 611469 / 633564, gate node 611 Not on being hit, data type 1000037, over 4 s; Deflection's "Gains max stacks of Deflection
+    // …", Adaptive Defense's Injury Buffer) cannot hold together with the "Hit or blocked recently" best case (user decision 2026-10-12,
+    // condition blockedRecently). The default stays hit recently; Not hit recently is compared only when the build has a not-hit line,
+    // and wins only on more 20 s damage (a tie keeps Hit). Every reader of the condition follows the choice: the hit / blocked / evaded
+    // recently lines, Blessing gains on hit, Barrier on taking damage and Barrier Burst's cast gate, the Regain best case, Paralysis on
+    // Blocking, Deflection. A stored "Hit or blocked recently" switch (combat.bestCaseOverrides.blockedRecently) pins the choice. Placed
+    // before Life and Mana: the Regain and Life balance those groups read follow it.
+    label: "Hit recently",
+    defaultLabel: "Hit or blocked recently",
+    present: (planner) => hasNotHitRecentlyLine(planner),
+    alternatives: [{
+      label: "Not hit recently",
+      overrides: { blockedRecently: false },
+      possible: (planner) => planner.conditions?.blockedRecently !== false && hasNotHitRecentlyLine(planner)
+    }]
+  },
+  {
     // Life (talent batch chunk 2): "at Low Life" and "when not at Low Life" / Full Life lines cannot both hold. Sealed Life
     // sets Low Life (src/low-resource-model.js); otherwise the dummy never attacks, so Full Life is the default and Low
     // Life is compared only when a passive line depends on it. Choosing Low Life also turns the Full Life pact lines off.
@@ -304,6 +322,13 @@ const exclusiveConditionGroups = [
     }]
   }
 ];
+
+// A line read only while not hit recently ("… if you haven't been hit recently"; the "Hit recently" group above), by wording on the
+// build's own lines (passive lines, Deflection gains, hero traits, cores).
+const NOT_HIT_RECENTLY = /haven['’]t been hit recently/i;
+function hasNotHitRecentlyLine(planner) {
+  return (planner.modifierTexts || []).some((line) => line.origin !== "derived" && NOT_HIT_RECENTLY.test(String(line.text ?? "")));
+}
 
 // State the shared line-condition resolver reads (src/line-conditions.js; talent batch chunk 2, §7.1), built once per
 // pass from models that already exist. Life and Mana: sealed resources set them (src/low-resource-model.js, Low = below
@@ -960,7 +985,8 @@ function barrierAssumption(planner) {
 // while mapping and against bosses, so lines that need them are best-case assumptions, switched together by the Blocked
 // recently condition. Listed only when a modeled line depends on them.
 function hitOrBlockAssumption(planner) {
-  const on = requestedCombatConditions(planner.state?.combat || {}).blockedRecently !== false;
+  // The resolved condition: the "Hit recently" group may have chosen Not hit recently (src/planner.js exclusiveConditionGroups).
+  const on = planner.conditions?.blockedRecently ?? requestedCombatConditions(planner.state?.combat || {}).blockedRecently !== false;
   const uses = [
     ...[...(planner.block?.damageSources || []), ...(planner.block?.ratingSources || [])].map((line) => `${line.source}: ${line.text}`),
     ...(planner.lineEffects?.lines || []).filter((line) => line.condition === "hitByEnemy").map((line) => `${line.source}: ${line.text}`),
@@ -1171,6 +1197,8 @@ export function calculatePlanner(input) {
     let chosenOverrides = {};
     const pins = exclusiveChoicePins(state.combat);
     for (const group of exclusiveConditionGroups) {
+      // A group whose lines the build does not carry is never compared (its pin, a stored switch, applies as before).
+      if (group.present && !group.present(planner)) continue;
       // A choice pinned on the Config tab ("Choices that can't both hold"): the pinned option applies (the state already
       // carries it), and the comparison runs without the pin only to mark which option is the best case.
       const keys = [...new Set(group.alternatives.flatMap((option) => Object.keys(option.overrides)))];
@@ -1206,6 +1234,8 @@ export function calculatePlanner(input) {
   // Each skill's uptime for its hover tooltip (display only, src/skill-uptime.js; user request 2026-11-15): read from this result.
   let uptime = {};
   try { uptime = skillUptimeOf(planner); } catch (error) { planner.warnings.push(`Skill uptimes could not be listed (${error?.message || error}).`); }
+  // With the "Hit recently" choice on the Config tab, the "Hit or blocked recently" switch would be a second control on the same key.
+  if (assumptions.some((item) => item.group === "Hit recently")) bestCase = bestCase.filter((item) => item.toggle !== "blockedRecently");
   return { ...planner, assumptions, dummyRecount, bestCaseAssumptions: bestCase, skillUptime: uptime };
 }
 
@@ -2633,7 +2663,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // skills with their own DoT component keep their paths.
   cataclysmAilments = cataclysmHitAilments({
     hitSources: skillHitSources, excludedKeys: new Set([...skillHitDotSources.map((source) => source.setupKey), ...setups.filter((setup) => setup.name === "Scorching Beam").map((setup) => setup.setupKey)]),
-    modifierTexts, igniteBaseMax: theoretical.totals.baseIgniteDamage.max, igniteGlobalSources: igniteGlobalChanceSources(theoretical),
+    modifierTexts, igniteBaseMax: theoretical.totals.baseIgniteDamage.max, igniteGlobalSources: igniteGlobalChanceSources(theoretical), igniteNotIgnitedSources: activeNames.has("Scorching Beam") ? [] : igniteNotIgnitedChanceSources(theoretical),
     auraChancePercent: aura.entries.filter((entry) => activeNames.has(entry.name)).reduce((sum, entry) => sum + (entry.effectiveEffects?.ailmentChancePercent || 0), 0)
   });
   skillDotAfflictionRate += cataclysmAilments.afflictionPerSecond;
@@ -2650,10 +2680,20 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // Cataclysm-supported hit skills opened the Affliction condition).
   const hitAilmentInflicters = cataclysmAilments.setups.length ? cataclysmAilments : cataclysmHitAilments({
     hitSources: skillHitSources, excludedKeys: new Set(setups.filter((setup) => setup.name === "Scorching Beam").map((setup) => setup.setupKey)),
-    modifierTexts, igniteBaseMax: theoretical.totals.baseIgniteDamage.max, igniteGlobalSources: igniteGlobalChanceSources(theoretical), includeUnsupported: true,
+    modifierTexts, igniteBaseMax: theoretical.totals.baseIgniteDamage.max, igniteGlobalSources: igniteGlobalChanceSources(theoretical), igniteNotIgnitedSources: activeNames.has("Scorching Beam") ? [] : igniteNotIgnitedChanceSources(theoretical), includeUnsupported: true,
     auraChancePercent: aura.entries.filter((entry) => activeNames.has(entry.name)).reduce((sum, entry) => sum + (entry.effectiveEffects?.ailmentChancePercent || 0), 0)
   });
   if (!(canIgnite || (activeNames.has("Scorching Beam") && otherAilmentBase) || skillDotSources.length || skillHitDotSources.length || permafrostTerraDots || hitAilmentInflicters.setups.length) || theoretical.townTooltip.passiveAfflictionPerSecond + skillDotAfflictionRate <= 0) conditions.affliction = false;
+  // 10 T Barrier Burst triage L1 (2026-11-18): an Ignite whose only chance is "+X% Ignite Chance against enemies that haven't been Ignited" (record
+  // 2214789) makes its skill an inflicter (the dummy starts clean), so the Affliction above opens. When it is your only DoT record and another unit
+  // keeps the dummy Ignited for good (the follower's Additional Ignite, share 1 on the enemy-ailment model), the gate stays shut after your first
+  // Ignite: you hold one record for one Ignite duration, and the rating gains only while you hold one (R1.3), so the steady rating is capped at the
+  // rate × that duration (src/affliction-rating.js). Provisional: open question ignite-not-ignited-gate.
+  const othersIgnite = othersIgniteHolds({ modifierTexts, minionUptime: mechanics.enemyAilments.types.find((type) => type.name === "Ignite" && type.byMinions)?.uptime ?? 0 });
+  const othersIgniteShare = othersIgnite.share;
+  const gatedIgniteOnly = !canIgnite && !(activeNames.has("Scorching Beam") && otherAilmentBase) && !skillDotSources.length && !skillHitDotSources.length && !permafrostTerraDots && hitAilmentInflicters.setups.length > 0
+    && hitAilmentInflicters.setups.every((item) => item.igniteNotIgnitedOnly && item.ailments.length === 1 && item.ailments[0] === "ignite");
+  const afflictionAccrualSeconds = gatedIgniteOnly && othersIgniteShare >= 1 ? theoretical.totals.igniteDurationSeconds ?? 4 : Infinity;
   // Automatic mode derives the dummy's Affliction rating from the build: Affliction per second,
   // capped at 100, reset by Reaps that remove Affliction (affliction-rating.js). Manual mode keeps
   // the configured average. Affliction per second and Reap recovery do not depend on the rating.
@@ -2661,7 +2701,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const followerAfflictionClears = lineEffects.follower?.afflictionClears || [];
   const resolveAfflictionRating = (compiled) => {
     if (state.combat.conditionMode === "manual") return null;
-    const derived = deriveAfflictionRating({ afflictionPerSecond: compiled.townTooltip.passiveAfflictionPerSecond + skillDotAfflictionRate, removers: compiled.combat.afflictionRemovers || [], clears: followerAfflictionClears });
+    const derived = deriveAfflictionRating({ afflictionPerSecond: compiled.townTooltip.passiveAfflictionPerSecond + skillDotAfflictionRate, removers: compiled.combat.afflictionRemovers || [], clears: followerAfflictionClears, ...(Number.isFinite(afflictionAccrualSeconds) ? { accrualSeconds: afflictionAccrualSeconds, initialRating: initialAfflictionLine(modifierTexts)?.value ?? 0 } : {}) });
     damageCombat.afflictionAverage = derived.rating;
     damageCombat.afflictionDerivation = derived.text;
     return derived;
@@ -2996,7 +3036,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const afflictionFireState = afflictionFireHitState({ modifierTexts, trueFlameCore: coreNames.has("True Flame"), ignited: enemyBuffSet(mechanics.enemyAilments)?.holds("Ignite") ?? mechanics.enemyAilments.types.some((type) => type.name === "Ignite"),
     afflictionRating: conditions.affliction !== false ? Number(damageCombat.afflictionAverage) || 0 : 0,
     afflictionEffectIncreasedPercent: theoretical.ledger.filter((line) => line.category === "Affliction effect").reduce((sum, line) => sum + line.value, 0),
-    additionalAfflictionEffect: theoretical.ledger.filter((line) => line.category === "Additional Affliction effect" && !/Cataclysm/.test(String(line.source))).map((line) => ({ source: String(line.source), value: line.value })) });
+    additionalAfflictionEffect: theoretical.ledger.filter((line) => line.category === "Additional Affliction effect" && !/Cataclysm/.test(String(line.source))).map((line) => ({ source: String(line.source), value: line.value })),
+    ignitedBy: { followerSources: othersIgnite.followerSources, minionShare: othersIgnite.minionShare } });
   // The beam's added flat damage by type (batch 7 damage fixes 2026-10-28; src/scorching-beam-added-damage.js): Fire joins the beam's
   // packets; every other type (the Added Cold / Physical / Lightning / Erosion Damage supports at their stone values, and those types added
   // to Spells) is its own hit part after the conversions the generic skill hits apply (the beam's supports and the build's passive lines),
@@ -3915,7 +3956,9 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // (tests/ignite-chance-paths.test.js).
   // User-confirmed in game (2026-10-11): Flame Jet and Fire Burst apply Ignite when the build has Ignite
   // chance and some base Ignite, so non-beam hitting skills are Ignite appliers like the beam.
-  const igniteAppliers = withCataclysmEffect(ailmentAppliersFor({ ailmentKey: "ignite", candidates: applierCandidates, modifierTexts, shared: igniteShared, overlyModified, channeledAilmentLine: singWithTheTide.channeledLine, mainSetupKey: resolvedMain?.setupKey ?? null, globalChanceSources: igniteGlobalChanceSources(theoretical) }), igniteShared);
+  // "+X% Ignite Chance against enemies that haven't been Ignited" (record 2214789; 10 T Barrier Burst triage L1, 2026-11-18): off the beam path each
+  // applier also carries its chance while the dummy is not Ignited (notActiveChancePercent); the beam keeps its ledger's own reading.
+  const igniteAppliers = withCataclysmEffect(ailmentAppliersFor({ ailmentKey: "ignite", candidates: applierCandidates, modifierTexts, shared: igniteShared, overlyModified, channeledAilmentLine: singWithTheTide.channeledLine, mainSetupKey: resolvedMain?.setupKey ?? null, globalChanceSources: igniteGlobalChanceSources(theoretical), notActiveChanceSources: activeNames.has("Scorching Beam") ? [] : igniteNotIgnitedChanceSources(theoretical) }), igniteShared);
   const applies = (applier) => !applier.blocked && applier.applicationsPerSecond > 0 && (applier.chancePercent ?? 0) > 0;
   let igniteAttemptsPerSecond = beamCastRate.castsPerSecond;
   let igniteChanceForRecount = null;
@@ -3952,11 +3995,13 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const igniteBaseLines = theoretical.ledger.filter((line) => line.category === "Base Ignite" && !line.beamSettle);
   const igniteBase = { min: igniteBaseLines.reduce((sum, line) => sum + (line.value || 0), 0), max: igniteBaseLines.reduce((sum, line) => sum + (line.max ?? line.value ?? 0), 0) };
   const igniteFlatBase = Boolean(ailmentFlatAdded) && collectAilmentTypedSources("ignite", modifierTexts).flatBase.length > 0;
-  if (!canIgnite && (igniteBase.max > 0 || igniteFlatBase) && igniteAppliers.some((applier) => !applier.beam && applies(applier))) {
+  if (!canIgnite && (igniteBase.max > 0 || igniteFlatBase) && igniteAppliers.some((applier) => !applier.beam && applierAttempts(applier))) {
     ailments.ignite = { ...calculateAilment({
       ailmentKey: "ignite", modifierTexts, shared: igniteShared, crit: ailmentCrit, appliers: igniteAppliers.filter((applier) => !applier.beam), combat: damageCombat, flatAdded: ailmentFlatAdded,
       auraChancePercent: ailmentChanceFromAuras, auraDurationPercent: ailmentDurationFromAuras, enemyAilmentTypes, fieryFantasy: coreNames.has("Fiery Fantasy"),
-      overrides: { chance: combineAilmentChance(igniteGlobalChanceSources(theoretical)), base: igniteBase, durationSeconds: theoretical.totals.igniteDurationSeconds, stackLimit: igniteLimit, stacksPerApplication: 1 + theoretical.totals.additionalInflictedStacks, stacking: "strongest", skipTypedDamage: true },
+      // The not-Ignited chance reaches the attempts that find the dummy Ignited by no one: in the steady figure, the share another unit (the
+      // follower, your Minions) leaves it un-Ignited (`notActiveOthersShare`).
+      overrides: { chance: combineAilmentChance(igniteGlobalChanceSources(theoretical)), base: igniteBase, durationSeconds: theoretical.totals.igniteDurationSeconds, stackLimit: igniteLimit, stacksPerApplication: 1 + theoretical.totals.additionalInflictedStacks, stacking: "strongest", skipTypedDamage: true, notActiveOthersShare: othersIgniteShare, notActiveMinionShare: othersIgnite.minionShare, notActiveFollowerSources: othersIgnite.followerSources },
       // The typed layers the Ignite ledger does not hold (crit-only, recent crits, crit-damage conversion, double damage, base from
       // flat) from the game recipes too (TLI_IGNITE_PATH; src/recipe-trauma-layers.js AILMENT_RECIPE.ignite).
       inputs: ignitePathMode() === "recipe" ? ailmentInputs(planAilmentRecipe(modifierTexts, "ignite")) : null

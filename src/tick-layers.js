@@ -54,6 +54,8 @@ export const GENERAL_LAYERS = Object.freeze([
   { key: "mark", label: "Mark" },
   { key: "penetrationStacks", label: "Penetration stacks" },
   { key: "trueFlame", label: "True Flame Immolation's Blessing cycle" },
+  { key: "othersIgnite", label: "Another unit's Ignite (the not-Ignited chance)" },
+  { key: "afflictionFire", label: "True Flame and Magmaskull's Affliction hit lines" },
   { key: "incisive", label: "Incisive (Vendetta's casts)" },
   { key: "timed", label: "Timed effects (the recount's series)" }
 ]);
@@ -986,7 +988,12 @@ export function timedLayer(ctx) {
 // life when the skill text gives them. In the actor order, after the player's. Without layer followerActor each cast is taken at the rate
 // the planner gives it, all from t = 0. With it the follower is one actor (client AI_SelectMercenarySkill, chunk 14): one cast at a time, each skill at
 // its Split's use time, ready again after its cooldown from the press, the first ready skill after the last one used going next, slot 1 first. An area
-// is not a gate: a recast replaces it, so a skill pressed sooner than its area ends lands only that many strikes.
+// is not a gate: a recast replaces it (follower-area-recast). An area skill (src/follower-model.js followerDamageSources' `area`: Nether Grasp,
+// Frost Terra, Lightning Storm, Tidewell; 2026-11-19) holds one area per cast on the engine (effect areaStream): its strikes every N s from one
+// interval in (open question tick-area-ticks; Tidewell's Torrents on Split 204541's 0.8 s timer, at most 7) and its damage per second frame by
+// frame over the area's life; a recast replaces the area and the run part of its next tick lands then. A ring pressing it sooner than the
+// area ends deals the area's own tick rate: one held area's rate where the strikes fill the area (Nether Grasp 12 × 0.5 s = 6 s), one
+// strike per interval where they do not (Tidewell 7 × 0.8 s = 5.6 s of a 6 s area), as the closed form (src/follower-model.js areaDamageUses).
 export function followerProgram(ctx) {
   const follower = ctx.planner.follower;
   const oneActor = ctx.isLive("followerActor");
@@ -1001,6 +1008,30 @@ export function followerProgram(ctx) {
     const source = sources.get(entry.skill);
     // A skill with no modeled damage still takes the follower's time.
     if (!source) { ctx.actions.push({ key: `follower:${entry.skill}`, actor: "follower", label: entry.skill, ...queued(entry), effects: [] }); continue; }
+    const live = ctx.isLive("followerCasts");
+    const onStrike = ctx.followerEvents.get(source.skill) || [];
+    const area = source.area;
+    if (area) {
+      // A held area: its strikes and its damage per second as streams one area at a time (a recast replaces them).
+      const effects = [], streamKey = `follower-area:${source.key}`;
+      const strikeKey = `${source.key}:strike`, dotKey = `${source.key}:dot`, dotTicks = Math.round(area.seconds * 30);
+      if (live) {
+        ctx.paths[source.key] = { label: source.name, kind: "hit", parts: [{ key: "hit", type: source.type, base: source.perUse, increasedPercent: 0, additionalFactor: 1 }], modifiers: [], working: { skill: source.skill, text: source.text, perUse: source.perUse, area: area.seconds, strikes: area.strikes?.count ?? 0 } };
+        if (area.strikes) ctx.paths[strikeKey] = { ...ctx.paths[source.key], key: strikeKey, source: source.key, parts: [{ key: "hit", type: source.type, base: source.perUse * area.strikes.share / area.strikes.count, increasedPercent: 0, additionalFactor: 1 }] };
+        if (area.dot) ctx.paths[dotKey] = { ...ctx.paths[source.key], key: dotKey, source: source.key, parts: [{ key: "hit", type: source.type, base: source.perUse * area.dot.share / dotTicks, increasedPercent: 0, additionalFactor: 1 }] };
+      }
+      if (area.strikes) effects.push({ kind: "areaStream", stream: `${streamKey}:strike`, everySeconds: area.strikes.everySeconds, count: area.strikes.count, effect: live ? { kind: "hit", path: strikeKey, onHit: onStrike } : { kind: "event", effects: onStrike } });
+      // A DoT-only area keeps its one event per cast (no hits to carry them).
+      else if (onStrike.length) effects.push({ kind: "event", effects: onStrike });
+      if (area.dot && live) effects.push({ kind: "areaStream", stream: `${streamKey}:dot`, everySeconds: 1 / 30, count: dotTicks, effect: { kind: "hit", path: dotKey } });
+      if (source.skill === "Tartarus: Tidewell" && ctx.tidewell) effects.push({ kind: "buff", buff: "tidewell", seconds: ctx.tidewell.seconds });
+      const coercion = ctx.paralysis && source.skill === ctx.paralysis.skill;
+      ctx.actions.push({
+        key: source.key, actor: "follower", label: source.name, ...(oneActor ? queued(entry) : { useSeconds: 1 / source.usesPerSecond, firstUseSeconds: source.firstUseSeconds }),
+        ...(coercion ? { pressEffects: [{ kind: "buff", buff: "paralysis", seconds: ctx.paralysis.seconds }] } : {}), effects
+      });
+      continue;
+    }
     const strikes = String(source.text).match(/(\d+) (?:strikes|Torrents) \(every ([\d.]+) s/);
     const printed = strikes ? Number(strikes[1]) : 1;
     // Flame Core's shockwaves run between casts at the source's own rate, not one per press.
@@ -1008,12 +1039,9 @@ export function followerProgram(ctx) {
     const every = shockwaves ? 1 / source.usesPerSecond : strikes ? Number(strikes[2]) : 0;
     // A recast replaces the area, so a cast lands the strikes that fit before the next press of the same skill.
     const count = shockwaves ? Math.max(1, Math.round(entry.periodSeconds * source.usesPerSecond)) : strikes && oneActor && entry.periodSeconds > 0 ? Math.min(printed, Math.max(1, Math.round(entry.periodSeconds / every))) : printed;
-    const onStrike = ctx.followerEvents.get(source.skill) || [];
-    const live = ctx.isLive("followerCasts");
     if (live) ctx.paths[source.key] = { label: source.name, kind: "hit", parts: [{ key: "hit", type: source.type, base: source.perUse / printed, increasedPercent: 0, additionalFactor: 1 }], modifiers: [], working: { skill: source.skill, text: source.text, perUse: source.perUse, strikes: count } };
     const strike = live ? { kind: "hit", path: source.key, onHit: onStrike } : { kind: "event", effects: onStrike };
     const effects = [strike, ...Array.from({ length: count - 1 }, (_, index) => ({ kind: "delay", seconds: every * (index + 1), effects: [strike] }))];
-    if (source.skill === "Tartarus: Tidewell" && ctx.tidewell) effects.push({ kind: "buff", buff: "tidewell", seconds: ctx.tidewell.seconds });
     const coercion = ctx.paralysis && source.skill === ctx.paralysis.skill;
     ctx.actions.push({
       key: source.key, actor: "follower", label: source.name, ...(oneActor ? queued(entry) : { useSeconds: 1 / source.usesPerSecond, firstUseSeconds: source.firstUseSeconds }),
@@ -1057,8 +1085,79 @@ export function trueFlameLayer(ctx) {
   ctx.reported("trueFlame").events = `each cast reads Focus ${focus.consumptionCycle.held} and Tenacity ${tenacity.consumptionCycle.held} (the planner's held stacks), removes them all and grants ${focus.consumptionCycle.refill} / ${tenacity.consumptionCycle.refill} back (${Math.round(focus.consumptionCycle.cooldownRecoveryPercent * 100) / 100}% Cooldown Recovery Speed)`;
 }
 
+// Another unit's Ignite on the dummy (10 T Barrier Burst triage L1, 2026-11-18). "+X% Ignite Chance against enemies that haven't been Ignited"
+// (record 2214789: node 108 on field 2006480 gated on the target not in state 4000130, which any Ignite on it carries, whoever inflicted it) is rolled
+// only while the dummy holds no Ignite. Your own Ignite is the ailment run's held probability (src/tick-engine.js applyAilment); the follower's is
+// a buff its inflicting skill's strikes put on the dummy for an Ignite's 4 s (each strike rolls its Additional Ignite at +100%: held, as the
+// planner holds every follower ailment); your Minions' at their steady share (the static blend in the stream's chance). A follower Ignite whose
+// skill is not on the loop gates nothing here (your Ignite then re-applies after it lapses; listed). Provisional: open question
+// ignite-not-ignited-gate.
+export const OTHERS_IGNITE_BUFF = "others:Ignite";
+const FOLLOWER_SKILL = /^Follower: (.+?) [IVX]+\b/;
+export function othersIgniteLayer(ctx) {
+  if (!ctx.isLive("othersIgnite") || !ctx.first("othersIgnite")) return;
+  const { planner } = ctx;
+  const gated = (planner.ailments?.ignite?.appliers || []).some((applier) => applier.notActiveChancePercent !== undefined && !applier.blocked && applier.applicationsPerSecond > 0);
+  // The True Flame core on the loop (afflictionFireLayer) reads whether the dummy is Ignited by anyone, so it needs the follower's Ignite too.
+  const ignitedBy = planner.afflictionFireHits?.state?.ignitedBy ?? null;
+  if (!gated && !(ctx.isLive("afflictionFire") && ignitedBy && trueFlameApplied(planner))) return;
+  const sources = new Set((planner.follower?.damageSources || []).map((source) => source.skill));
+  // The follower's Ignite markers (the planner's own reading, src/ailment-applications.js othersIgniteHolds), named by their skill.
+  const skills = [...new Set((planner.ailments?.ignite?.notActiveFollowerSources || ignitedBy?.followerSources || []).map((source) => String(source).match(FOLLOWER_SKILL)?.[1]).filter(Boolean))];
+  const placed = skills.filter((skill) => sources.has(skill)), missing = skills.filter((skill) => !sources.has(skill));
+  for (const skill of placed) {
+    if (!ctx.followerEvents.has(skill)) ctx.followerEvents.set(skill, []);
+    ctx.followerEvents.get(skill).push({ kind: "buff", buff: OTHERS_IGNITE_BUFF, seconds: AILMENT_SECONDS.Ignite });
+  }
+  const minionShare = Math.max(0, Math.min(1, Number(planner.ailments?.ignite?.notActiveMinionShare ?? ignitedBy?.minionShare) || 0));
+  ctx.othersIgnite = { buff: placed.length ? OTHERS_IGNITE_BUFF : null, followerSkills: placed, followerUnplaced: missing, minionShare, gated };
+  ctx.reported("othersIgnite").events = `your not-Ignited chance rolls only while the dummy holds no Ignite: your own (the run's held probability)${placed.length ? `, the follower's (${placed.join(", ")}: each strike puts its Ignite on the dummy for ${AILMENT_SECONDS.Ignite} s)` : ""}${minionShare > 0 ? `, your Minions' (${Math.round(minionShare * 1000) / 10}% of the time, a static share)` : ""}${missing.length ? `; the follower's ${missing.join(", ")} is not on the loop, so its Ignite gates nothing here` : ""} (open question ignite-not-ignited-gate)`;
+}
+
+// The True Flame core's and Magmaskull's Affliction hit lines on the loop (10 T Barrier Burst triage L1 (B), user-approved 2026-11-18; src/affliction-
+// fire-hits.js). The planner holds them at its steady rating from the first hit; the windows and the recount start on a clean dummy (ailments and
+// Affliction build from zero), so here each reads the loop's state. True Flame (record 863429: trigger 1000031 on a hit against a target in state
+// 4000130, node 632 from field 53, the target's Affliction points, linear): its held value × the rating now ÷ the planner's × the probability the
+// dummy is Ignited by anyone now: your Ignite's held probability, the follower's Ignite (othersIgniteLayer's buff; one whose skill is not on the loop
+// counts as held, the planner's reading), your Minions' share, read as independent. Magmaskull's (record 16021013: node 184, the target holds buff
+// 400): in full while the dummy has Affliction (rating > 0); its cap is in the value, Magmaskull's first infliction (1000022) in the rating. Only
+// where the engine runs the rating (afflictionModel "simulated"); the sustained figure stays the closed form. Provisional: open question
+// tick-affliction-fire-hit-live.
+export const TRUE_FLAME_HIT_SOURCE = "Core talent: True Flame (Affliction on an Ignited dummy)";
+const MAGMASKULL_HIT_SOURCE = /: Affliction's added effect$/;
+function trueFlameApplied(planner) {
+  return Object.values(planner.afflictionFireHits?.bySetup || {}).some((entries) => (entries || []).some((entry) => entry.key === "trueFlame" && entry.applied));
+}
+export function afflictionFireLayer(ctx) {
+  if (!ctx.isLive("afflictionFire") || !ctx.first("afflictionFire")) return;
+  const { planner } = ctx, state = planner.afflictionFireHits?.state, inputs = planner.dummyRecount?.inputs;
+  if (!(state?.afflictionRating > 0) || inputs?.options?.afflictionModel !== "simulated" || !(inputs.afflictionPerSecond > 0)) return;
+  const heldRating = state.afflictionRating, others = ctx.othersIgnite || null;
+  const minionShare = Math.max(0, Math.min(1, Number(others?.minionShare ?? state.ignitedBy?.minionShare) || 0));
+  // A follower Ignite the loop cannot time (its skill is not on it) is held, as the planner holds it.
+  const followerAlways = Boolean(others?.followerUnplaced?.length);
+  const ownHeld = (world) => { const run = world.ailmentRuns?.get("ignite"); return Math.max(0, Math.min(1, run?.store?.held ?? run?.chain?.held ?? 0)); };
+  const followerHeld = (world) => followerAlways || (others?.buff && (world.buffs.get(others.buff)?.stacks || 0) > 0) ? 1 : 0;
+  const ignited = (world) => 1 - (1 - ownHeld(world)) * (1 - followerHeld(world)) * (1 - minionShare);
+  const rating = (world) => Math.max(0, Number(world.affliction?.rating) || 0);
+  const counts = { trueFlame: 0, magmaskull: 0 };
+  for (const target of ctx.targets) {
+    for (const line of target.claim("afflictionFire", (item) => item.source === TRUE_FLAME_HIT_SOURCE)) {
+      target.addModifier(line, { percent: line.value, amount: (world) => line.value * rating(world) / heldRating * ignited(world), steadyAmount: line.value });
+      counts.trueFlame += 1;
+    }
+    for (const line of target.claim("afflictionFire", (item) => MAGMASKULL_HIT_SOURCE.test(item.source))) {
+      target.addModifier(line, { percent: line.value, amount: (world) => rating(world) > 0 ? line.value : 0, steadyAmount: line.value });
+      counts.magmaskull += 1;
+    }
+  }
+  if (!counts.trueFlame && !counts.magmaskull) return;
+  const ignitedBy = ["your Ignite's held probability", others?.buff ? `the follower's Ignite (${others.followerSkills.join(", ")})` : "", followerAlways ? `the follower's ${others.followerUnplaced.join(", ")} held (not on the loop)` : "", minionShare > 0 ? `your Minions' (${Math.round(minionShare * 1000) / 10}%)` : ""].filter(Boolean).join(", ");
+  ctx.reported("afflictionFire").events = [counts.trueFlame ? `True Flame: its value × the rating now ÷ ${Math.round(heldRating * 1000) / 1000} × the dummy Ignited by anyone (${ignitedBy})` : "", counts.magmaskull ? "Magmaskull: in full while the dummy has Affliction" : ""].filter(Boolean).join("; ") + "; from a clean dummy (open question tick-affliction-fire-hit-live)";
+}
+
 /** The general builders in their order; the Youga program interleaves its own among them (src/tick-youga-layers.js). */
-export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, incisiveLayer, timedLayer, followerProgram]);
+export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, incisiveLayer, othersIgniteLayer, afflictionFireLayer, timedLayer, followerProgram]);
 
 /** What stays held on purpose on any build, with why. */
 export function generalHeldLayers(ctx) {

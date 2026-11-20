@@ -180,8 +180,12 @@ export function expandScriptedItemLine(itemName, text) {
 // Rotating buffs (Kaleidoscope, research/unique-item-coverage-2026-10-13.md #21 / §4.3): "Gains the following buffs by turns.
 // Each buff lasts for 8 s:" followed by k "+X% additional … Damage" lines. Each buff is up 1/k of the time, so each line is
 // read at its time average, X / k (Provisional, survey Q5: the user may prefer the best case, one buff held for the whole 5 s
-// window). For a build that one buff reaches this is exact over a full cycle; a build two of the buffs reach gets
-// (1 + a/k)(1 + b/k) rather than 1 + (a + b)/k, a small overstatement.
+// window). For a hit one buff reaches this is exact over a full cycle. A hit two of the buffs reach (a Physical → Cold part reads the
+// Physical and the Elemental buff: a converted part reads every type in its chain) would get (1 + a/k)(1 + b/k) from two separate
+// lines; the lines of one row carry a `rotation` tag (rotationLineTags, set by src/modifier-texts.js) and the hit readers add the
+// tagged lines a part reads into one additional term, 1 + (a + b)/k, the average over the turns (src/rotating-buffs.js; 2026-11-19,
+// research/build-20t-bing-psionic-audit-2026-11-19.md §5 G3; game record 980071: each buff's row is gated on one local counter,
+// l0 = 0, 1, 2, so one buff is up at a time).
 const ROTATION_HEADER = /^Gains the following buffs by turns\. Each buff lasts for ([\d.]+) ?s:$/i;
 const ROTATION_BUFF = /^\+(\([\d.]+–[\d.]+\)|[\d.]+)% (additional .+)$/i;
 const round4 = (value) => Math.round(value * 10000) / 10000;
@@ -217,6 +221,32 @@ export function randomLuckyRow(row) {
   const effects = rest.match(/(?:Unlucky|Lucky) (?:Critical Strike|Damage)/gi) || [];
   if (effects.length < 2 || effects.join(" ") !== rest || !effects.every((item) => RANDOM_EFFECT.test(item))) return null;
   return `${header[0].replace(/:$/, "")}\nRandom Lucky / Unlucky (each 1/${effects.length} of the time): ${effects.join(", ")}`;
+}
+
+/**
+ * The rotation tags of an item's lines: Map(line index → { key, turns, seconds }) for each time-averaged buff line of a rotating-buff
+ * row (`rows`: the item's raw rows; `lines`: its effective lines, src/engine.js effectiveGearModifierTexts; `keyPrefix`: the item's
+ * place, so two items with the row are two rotations). A row's lines are found as its header followed by its averaged lines.
+ */
+export function rotationLineTags(rows = [], lines = [], keyPrefix = "") {
+  const tags = new Map();
+  const squash = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim();
+  const squashed = lines.map(squash);
+  const used = new Set();
+  rows.forEach((row, rowIndex) => {
+    const rotation = rotatingBuffRow(row);
+    if (!rotation) return;
+    const header = squash(rotation.header), buffs = rotation.averaged.map(squash);
+    for (let start = 0; start < squashed.length; start += 1) {
+      if (used.has(start) || squashed[start] !== header) continue;
+      if (!buffs.every((text, offset) => squashed[start + 1 + offset] === text)) continue;
+      used.add(start);
+      const tag = Object.freeze({ key: `${keyPrefix}#${rowIndex}`, turns: rotation.buffs.length, seconds: rotation.seconds });
+      buffs.forEach((_, offset) => tags.set(start + 1 + offset, tag));
+      return;
+    }
+  });
+  return tags;
 }
 
 /** The row with its rotating buffs at their time average (the same text when it is not a rotating-buff row). */

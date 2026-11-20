@@ -34,6 +34,8 @@
 // value = source ÷ fromValue × toLower, then the max and min limits; placed by `toMod` (1 base, 2 base + span, 3 increased, 4 one more
 // additional factor). Mode "legacy" (default): records are held and listed but not evaluated, because today's paths read each such line
 // through their own reading (a derived line, a hit model's Projectile Speed converter): the pool reproduces today exactly.
+import { mergeRotationTurns, mergedEntry } from "./rotating-buffs.js";
+
 let sequence = 0;
 const nextSeq = () => ++sequence;
 
@@ -218,6 +220,9 @@ export class AttributePool {
       if (write.group !== null && write.group !== undefined) { if (groups.has(write.group)) continue; groups.add(write.group); }
       writes.push(write);
     }
+    // A rotating buff set (one buff up at a time, equal turns; src/rotating-buffs.js): the additional writes of one rotation this read
+    // admits are one additional term, Σ of their time-averaged values.
+    if (writes.some((write) => write.rotation)) writes.splice(0, writes.length, ...mergeRotationTurns(writes, { eligible: (write) => write.mod === 4, merge: (first, total, copies) => ({ ...first, value: total, entry: first.entry ? mergedEntry(first.entry, total, copies.map((write) => write.entry ?? write)) : null, rotationParts: copies }) }));
     const result = summarize(writes);
     // Conversions: traced mode evaluates each admitted record at this read, with this query (trace §3).
     const mode = options.conversions ?? this.conversionMode;

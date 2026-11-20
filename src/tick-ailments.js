@@ -124,12 +124,21 @@ function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null)
 
 // The inflicting skills of an ailment, with the attempt rate and the whole-percent chance each has. The beam's Ignite keeps its own raw
 // chances: the recount's are pooled into a per-use figure, and here each stream runs at its own rate.
-function streamsOf(planner, ailment) {
+// `othersIgnite` (src/tick-layers.js othersIgniteLayer): an applier's not-Ignited chance ("+X% Ignite Chance against enemies that haven't been
+// Ignited", record 2214789; 10 T Barrier Burst triage L1, 2026-11-18) is the chance an attempt rolls while nothing of yours is held, unless another
+// unit's Ignite is on the dummy: the follower's buff on the tick (`othersBuff`, read by the engine), your Minions' at their static share.
+function streamsOf(planner, ailment, othersIgnite = null) {
   if (ailment.silent) return [{ key: "beam", name: "Scorching Beam", chance: wholeChance(ailment.chance), notActiveChance: wholeChance(ailment.notActiveChance) }];
   const own = planner.ailments?.[ailment.key];
-  const live = (appliers) => (appliers || []).filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && applier.chancePercent > 0);
+  const live = (appliers) => (appliers || []).filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && (applier.chancePercent > 0 || applier.notActiveChancePercent > 0));
+  const notActive = (applier) => {
+    if (applier.notActiveChancePercent === undefined) return {};
+    const chance = wholePercentRoll(applier.chancePercent) / 100, gated = wholePercentRoll(applier.notActiveChancePercent) / 100;
+    const minionShare = Math.max(0, Math.min(1, Number(othersIgnite?.minionShare) || 0));
+    return { notActiveChance: chance + (gated - chance) * (1 - minionShare), ...(othersIgnite?.buff ? { othersBuff: othersIgnite.buff } : {}) };
+  };
   // Stacks per success: the ailment's own plus the skill's expected extra stacks (src/ailment-model.js stacksOf).
-  if (own?.appliers?.length) return live(own.appliers).map((applier) => ({ key: applier.key, name: applier.name, applicationsPerSecond: applier.applicationsPerSecond, chance: wholePercentRoll(applier.chancePercent) / 100, applier, value: applier.averageApplication, stacks: (own.stacksPerApplication ?? 1) + (applier.extraStacks || 0) }));
+  if (own?.appliers?.length) return live(own.appliers).map((applier) => ({ key: applier.key, name: applier.name, applicationsPerSecond: applier.applicationsPerSecond, chance: wholePercentRoll(applier.chancePercent) / 100, ...notActive(applier), applier, value: applier.averageApplication, stacks: (own.stacksPerApplication ?? 1) + (applier.extraStacks || 0) }));
   if (ailment.key !== "ignite") return [];
   const ignite = planner.theoretical?.combat?.expectedActiveIgnite;
   return live(planner.igniteAppliers).map((applier) => applier.key === "beam"
@@ -213,8 +222,8 @@ function heldStoreSpec(planner, ailment, streams, weights, aimBuff) {
   };
 }
 
-function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null, bus = null } = {}) {
-  const streams = streamsOf(planner, ailment), independent = ailment.stacking === "independent";
+function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null, bus = null, othersIgnite = null } = {}) {
+  const streams = streamsOf(planner, ailment, othersIgnite), independent = ailment.stacking === "independent";
   // On the loop when its hit gains landed on a hit or Reaps can build it (with no Reap on the loop src/tick-ledger.js holds it full, the planner's value).
   const blessings = targetBlessings.filter((item) => item.hitPlaced || (item.gains?.reap && inputs.reaping?.length)).map((item) => ({ ...item, percent: targetBlessingPercent(planner, ailment.key, item) }));
   // `relink`: a linked skill DoT is added again by its link the frame after a removal (src/tick-engine.js; Approaching Nightfall).
@@ -233,7 +242,7 @@ function compileAilment(planner, ailment, type, timedLayers, inputs, targetBless
 
 const streamEffect = (ailment, stream, index) => ({
   kind: "ailment", ailment: ailment.key, key: `${ailment.key}:${stream.key}`, stream: index,
-  chance: stream.chance, ...(stream.notActiveChance !== undefined ? { notActiveChance: stream.notActiveChance } : {}),
+  chance: stream.chance, ...(stream.notActiveChance !== undefined ? { notActiveChance: stream.notActiveChance } : {}), ...(stream.othersBuff ? { othersBuff: stream.othersBuff } : {}),
   ...(ailment.stacking === "independent" && stream.value !== undefined ? { value: stream.value, stacks: stream.stacks } : {})
 });
 
@@ -325,12 +334,12 @@ function hitsIn(item, series) {
  * @returns {{ paths, ailments, affliction, actions, periodics, dotEffect, attach, layers, assumptions, held }} `attach` puts each stream on its
  *   skill's hits and returns what lands on the loop, Reaps included; `dotEffect` is the application effect of a skill DoT
  */
-export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null, bus = null } = {}) {
+export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null, bus = null, othersIgnite = null } = {}) {
   const inputs = planner?.dummyRecount?.inputs;
   if (!inputs) return null;
   const simulated = inputs.options?.afflictionModel === "simulated";
   const timedLayers = (inputs.timedDotLayers || []).map((layer, index) => ({ ...layer, buff: `timedDot:${index}` }));
-  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff, bus }) }]));
+  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff, bus, othersIgnite }) }]));
   const removers = (inputs.reaping || []).filter((source) => source.trigger === "full Affliction").map((source) => ({ key: source.key, label: source.source, baseSeconds: source.timing?.baseSeconds ?? source.recoverySeconds ?? 0, speedFactor: source.timing?.speedFactor ?? 1, removedPercent: Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 100)), settle: readings.reapSettle ?? "lastDot" }));
   // Magmaskull's first infliction (src/initial-affliction.js): only where the rating builds from 0 (a configured rating holds from the start).
   const initial = simulated && Number.isFinite(inputs.initialAffliction?.value) ? inputs.initialAffliction.value : undefined;

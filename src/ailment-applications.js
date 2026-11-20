@@ -131,7 +131,11 @@ export function skillAilmentDuration(setup, ailmentKey) {
   return { increased: lines.filter((line) => !line.additional).reduce((total, line) => total + line.value, 0), additional: lines.filter((line) => line.additional).reduce((total, line) => total * Math.max(0, 1 + line.value / 100), 1), sources: lines };
 }
 
-export function ailmentAppliersFor({ ailmentKey, candidates = [], modifierTexts = [], shared = {}, mainSetupKey = null, auraChancePercent = 0, globalChanceSources = null, overlyModified = null, channeledAilmentLine = null }) {
+// `notActiveChanceSources` (Ignite: igniteNotIgnitedChanceSources, the ledger's "Ignite chance vs not-Ignited dummy" lines; 10 T Barrier Burst
+// triage L1, 2026-11-18): the chance an attempt adds while the dummy is not Ignited. Each non-beam applier then carries a second chance,
+// `notActiveChancePercent` (its regular chance plus these lines, one whole-percent roll), read by src/ailment-model.js and the tick engine on
+// the attempts that find the dummy not Ignited by anyone. The beam keeps its ledger's own not-Ignited chance.
+export function ailmentAppliersFor({ ailmentKey, candidates = [], modifierTexts = [], shared = {}, mainSetupKey = null, auraChancePercent = 0, globalChanceSources = null, notActiveChanceSources = [], overlyModified = null, channeledAilmentLine = null }) {
   const globalChance = globalChanceSources || textGlobalChanceSources(ailmentKey, modifierTexts, auraChancePercent);
   const mainScopedFactor = shared.mainScopedFactor || 1;
   return candidates.map((candidate) => {
@@ -223,12 +227,29 @@ export function ailmentAppliersFor({ ailmentKey, candidates = [], modifierTexts 
       const chance = skillAilmentChance({ ailmentKey, globalSources: [...globalChance, ...attackChance, ...critChance], setup: candidate.setup });
       ({ sources: chanceSources, percent: chancePercent, rawPercent: rawChancePercent, shownPercent: shownChancePercent } = chance);
     }
+    // The chance while the dummy is not Ignited (record 2214789: node 108 on field 2006480, gated on the target not in state 4000130): the
+    // regular sources plus the not-Ignited lines, one roll.
+    const notActive = !candidate.beam && notActiveChanceSources?.length ? skillAilmentChance({ ailmentKey, globalSources: [...globalChance, ...attackChance, ...critChance, ...notActiveChanceSources], setup: candidate.setup }) : null;
     // B8: the skill's own scoped base and its supports' extra stacks belong to its applications only.
     const ownBase = skillScopedAilmentBase(candidate.setup, ailmentKey);
     const extraStacks = skillExtraAilmentStacks(candidate.setup, ailmentKey);
-    return { key: candidate.key, name: candidate.name, setupKey: candidate.setupKey, main: isMain, beam: candidate.beam, tags: candidate.tags || [], level: candidate.level, ownDuration: skillAilmentDuration(candidate.setup, ailmentKey), applicationsPerSecond: candidate.applicationsPerSecond, critChancePercent: candidate.critChancePercent, chancePercent, shownChancePercent, rawChancePercent, chanceSources, blocked, scale, scaleSources, baseExtra: ownBase, extraStacks: extraStacks.value, extraStackSources: extraStacks.sources };
+    return { key: candidate.key, name: candidate.name, setupKey: candidate.setupKey, main: isMain, beam: candidate.beam, tags: candidate.tags || [], level: candidate.level, ownDuration: skillAilmentDuration(candidate.setup, ailmentKey), applicationsPerSecond: candidate.applicationsPerSecond, critChancePercent: candidate.critChancePercent, chancePercent, shownChancePercent, rawChancePercent, chanceSources, ...(notActive && notActive.percent > (chancePercent ?? 0) ? { notActiveChancePercent: notActive.percent, notActiveChanceSources: notActive.sources } : {}), blocked, scale, scaleSources, baseExtra: ownBase, extraStacks: extraStacks.value, extraStackSources: extraStacks.sources };
   });
 }
+
+// Another unit's Ignite on the dummy, which shuts the not-Ignited gate (state 4000130 is on the target whoever inflicted it): the follower's
+// "The Follower inflicts Ignite on the dummy" markers (src/follower-model.js: Additional Ignite and the like; held, as the planner holds every
+// follower ailment) and your Minions' Ignite at its uptime (src/minion-ailment-types.js; the enemy-ailment model lists it only where no source of
+// yours holds Ignite). Read from the lines and the model's types, so the unit buff set's mode does not change it.
+const FOLLOWER_IGNITE_MARKER = /^The Follower inflicts Ignite on the dummy$/i;
+export function othersIgniteHolds({ modifierTexts = [], minionUptime = 0 } = {}) {
+  const followerSources = [...new Set(modifierTexts.filter((line) => FOLLOWER_IGNITE_MARKER.test(normalizePercentageText(String(line?.text ?? "")).trim())).map((line) => String(line.source || "")))];
+  const minionShare = Math.max(0, Math.min(1, Number(minionUptime) || 0));
+  return { followerSources, minionShare, share: followerSources.length ? 1 : minionShare };
+}
+
+/** An applier attempts the ailment: a regular chance, or a chance while the dummy is not Ignited (Ignite's not-Ignited lines). */
+export const applierAttempts = (applier) => !applier.blocked && applier.applicationsPerSecond > 0 && ((applier.chancePercent ?? 0) > 0 || (applier.notActiveChancePercent ?? 0) > 0);
 
 // "+X% additional Ailment Damage dealt by Combo Finishers" lines (Shockwave Warcry's buff; census item #9).
 export const FINISHER_AILMENT_LINE = /^\+?([+-]?\d+(?:\.\d+)?)% additional Ailment Damage dealt by Combo Finishers$/i;
@@ -278,6 +299,14 @@ export function textGlobalChanceSources(ailmentKey, modifierTexts = [], auraChan
 export function igniteGlobalChanceSources(theoretical) {
   return (theoretical?.ledger || []).filter((line) => line.category === "Ignite application chance" && !line.skillScoped)
     .map((line) => ({ source: line.source, text: line.text || "Ignite application chance", value: line.value }));
+}
+
+// "+X% Ignite Chance against enemies that haven't been Ignited" (Warlord (6,3), record 2214789: node 108 on field 2006480 gated on the target not in
+// state 4000130 Ignited): the Ignite ledger's "Ignite chance vs not-Ignited dummy" entries. Only while the dummy holds no Ignite, by anyone, so a
+// second chance beside the regular one (10 T Barrier Burst triage L1, 2026-11-18).
+export function igniteNotIgnitedChanceSources(theoretical) {
+  return (theoretical?.ledger || []).filter((line) => line.category === "Ignite chance vs not-Ignited dummy" && !line.skillScoped && Number(line.value))
+    .map((line) => ({ source: line.source, text: line.text || "Ignite chance vs not-Ignited dummy", value: line.value, notIgnited: true }));
 }
 
 // One skill's chance for one ailment: the build-wide sources plus the lines scoped to that skill (its own

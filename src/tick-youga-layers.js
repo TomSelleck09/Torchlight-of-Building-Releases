@@ -43,6 +43,8 @@ export const TICK_LAYERS = Object.freeze([
   general("mark"),
   { key: "spearTravel", label: "Spear travel from the Core" },
   { key: "penetrationStacks", label: "Dreamweaver penetration stacks" },
+  general("othersIgnite"),
+  general("afflictionFire"),
   general("timed")
 ]);
 export const TICK_LAYER_KEYS = Object.freeze(TICK_LAYERS.map((layer) => layer.key));

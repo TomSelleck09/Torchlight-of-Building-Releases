@@ -38,7 +38,11 @@ const AILMENTS = ["ignite", "trauma", "wilt"];
  * @param {number} p.auraChancePercent active Auras' ailment chance
  * @returns {{ setups: object[], afflictionPerSecond: number, bySetupKey: Map<string, object> }}
  */
-export function cataclysmHitAilments({ hitSources = [], excludedKeys = new Set(), modifierTexts = [], igniteBaseMax = 0, igniteGlobalSources = [], auraChancePercent = 0, includeUnsupported = false } = {}) {
+// `igniteNotIgnitedSources` (src/ailment-applications.js igniteNotIgnitedChanceSources): "+X% Ignite Chance against enemies that haven't been
+// Ignited" (record 2214789). The dummy starts clean, so a skill whose only Ignite chance is that line inflicts Ignite on its first applications
+// (10 T Barrier Burst triage L1, 2026-11-18; that it lands before another unit's Ignite is inferred, open question ignite-not-ignited-gate); its
+// entry says so (`igniteNotIgnitedOnly`).
+export function cataclysmHitAilments({ hitSources = [], excludedKeys = new Set(), modifierTexts = [], igniteBaseMax = 0, igniteGlobalSources = [], igniteNotIgnitedSources = [], auraChancePercent = 0, includeUnsupported = false } = {}) {
   const setups = [];
   const seen = new Set();
   for (const source of hitSources) {
@@ -52,6 +56,7 @@ export function cataclysmHitAilments({ hitSources = [], excludedKeys = new Set()
     // Affliction gate: the dummy's Affliction reaches those ailments' DoT too).
     if (!includeUnsupported && !(perSecond > 0) && !effectPercent) continue;
     const attack = (setup.tags || source.profile?.tags || []).some((tag) => String(tag).toLowerCase() === "attack");
+    let igniteNotIgnitedOnly = false;
     const ailments = AILMENTS.filter((ailmentKey) => {
       const name = ailmentDefinitions[ailmentKey]?.name;
       if (ailmentBlockFor(setup, ailmentKey) || buildWideAilmentBlock(modifierTexts, name)) return false;
@@ -60,10 +65,14 @@ export function cataclysmHitAilments({ hitSources = [], excludedKeys = new Set()
       if (!base) return false;
       const global = ailmentKey === "ignite" ? igniteGlobalSources : textGlobalChanceSources(ailmentKey, modifierTexts, auraChancePercent);
       const chance = skillAilmentChance({ ailmentKey, globalSources: [...global, ...(attack ? attackAilmentChanceLines(ailmentKey, modifierTexts) : [])], setup });
-      return chance.percent > 0;
+      if (chance.percent > 0) return true;
+      if (ailmentKey !== "ignite" || !igniteNotIgnitedSources.length) return false;
+      const notIgnited = skillAilmentChance({ ailmentKey, globalSources: [...global, ...(attack ? attackAilmentChanceLines(ailmentKey, modifierTexts) : []), ...igniteNotIgnitedSources], setup });
+      if (notIgnited.percent > 0) igniteNotIgnitedOnly = true;
+      return notIgnited.percent > 0;
     });
     if (!ailments.length) continue;
-    setups.push({ setupKey: key, name: source.name ?? setup.name, ailments, afflictionPerSecond: perSecond, additionalAfflictionEffectPercent: effectPercent });
+    setups.push({ setupKey: key, name: source.name ?? setup.name, ailments, afflictionPerSecond: perSecond, additionalAfflictionEffectPercent: effectPercent, ...(igniteNotIgnitedOnly ? { igniteNotIgnitedOnly: true } : {}) });
   }
   return { settled: true, setups, afflictionPerSecond: setups.reduce((sum, item) => sum + item.afflictionPerSecond, 0), bySetupKey: new Map(setups.map((item) => [item.setupKey, item])) };
 }

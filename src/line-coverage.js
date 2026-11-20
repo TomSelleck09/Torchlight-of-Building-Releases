@@ -51,7 +51,7 @@ import { COMMAND_FAMILIES, COMMAND_GATED, COMMAND_SPEED } from "./minion-cores.j
 import { setupBoardTab } from "./magus-active-slot.js";
 import { legendaryLineStatus } from "./legendary-line-status.js";
 import { TROOP_FAMILIES } from "./moto-iris-traits.js";
-import { MAGMASKULL_AFFLICTION_FIRE_LINE } from "./affliction-fire-hits.js";
+import { MAGMASKULL_AFFLICTION_FIRE_LINE, TRUE_FLAME_CORE_LINE } from "./affliction-fire-hits.js";
 import { isFocusRateProfile } from "./focus-speed.js";
 import { nightfallLineStatus } from "./approaching-nightfall.js";
 import { mobilityPressInterval } from "./press-schedule.js";
@@ -271,6 +271,10 @@ function buffTimingLineStatus(text, planner) {
     // A held "while moving" Max Energy Shield line (G3d): In calc under the Movement group's moving, Inactive standing still.
     const moving = line.match(/^(.+) while moving$/i);
     if (moving && parseCharacterStatClause(moving[1]).some((item) => item.stat === "maxEnergyShield")) return (planner.lineEffects?.lines || []).some((entry) => entry.condition === "moving" && entry.active && normalizePercentageText(String(entry.text || "")).trim() === line) ? "In calc" : "Inactive";
+    // A held "if you have triggered Shield Regain in the last N s" Max Energy Shield line (A Corner of Divinity, record 4507661; 2026-11-18):
+    // In calc while the Energy Shield pool Regains under the 'Regain events' best case, Inactive otherwise.
+    const regained = line.match(/^(.+) if you have triggered (?:Shield|Energy Shield|Life) Regain in the last [\d.]+ ?s$/i);
+    if (regained && parseCharacterStatClause(regained[1]).some((item) => item.stat === "maxEnergyShield")) return (planner.lineEffects?.lines || []).some((entry) => entry.condition === "regained" && entry.active && normalizePercentageText(String(entry.text || "")).trim() === line) ? "In calc" : "Inactive";
     if (stats.has("maxLife") && !(planner.modifierTexts || []).some((item) => /^Your Max Life is set to [\d.]+$/i.test(String(item.text || "").trim()))) return "In calc";
   }
   if (/^Elixir Skills gain [\d.]+ Charging Progress every second$/i.test(line)) {
@@ -398,7 +402,9 @@ export function plannerEngines(planner = context) {
   const baseIgnite = planner.theoretical?.totals?.baseIgniteDamage?.max > 0;
   const igniteAppliers = beam || (planner.igniteAppliers || []).length > 0;
   // An applier with Ignite chance (src/ailment-applications.js): without one a base Ignite line starts nothing.
-  const igniteChance = (planner.igniteAppliers || []).some((applier) => applier.chancePercent > 0);
+  // A not-Ignited chance alone ("+X% Ignite Chance against enemies that haven't been Ignited") counts: the dummy starts clean (10 T Barrier Burst
+  // triage L1, 2026-11-18).
+  const igniteChance = (planner.igniteAppliers || []).some((applier) => applier.chancePercent > 0 || applier.notActiveChancePercent > 0);
   const otherAilment = ["trauma", "wilt"].some((key) => planner.ailments?.[key]?.base?.max > 0);
   const ignite = baseIgnite && igniteChance;
   return {
@@ -1904,6 +1910,14 @@ export function refineCoverage(status, text, planner = context, baseForClause = 
     const applied = Object.values(planner.afflictionFireHits.bySetup || {}).some((entries) => entries.some((entry) => entry.key === "magmaskull" && entry.applied));
     const firing = (planner.skillHits || []).some((hit) => hit.modeled && (hit.components || []).some((component) => component.type === "Fire") && hit.rate?.usesPerSecond > 0);
     return applied && firing ? "In calc" : "Inactive";
+  }
+  // The True Flame core's text (game recipe 863429; src/affliction-fire-hits.js and the beam's core model): In calc where a modeled Fire skill hit or
+  // the beam takes it (an Ignited dummy with Affliction), else Inactive (10 T Barrier Burst triage L1, 2026-11-18: it read Not modeled by its text).
+  if (planner?.afflictionFireHits && TRUE_FLAME_CORE_LINE.test(normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim())) {
+    const applied = Object.values(planner.afflictionFireHits.bySetup || {}).some((entries) => entries.some((entry) => entry.key === "trueFlame" && entry.applied));
+    const firing = (planner.skillHits || []).some((hit) => hit.modeled && (hit.components || []).some((component) => component.type === "Fire") && hit.rate?.usesPerSecond > 0);
+    const beam = (planner.coreTalents?.lines || []).some((line) => line.source === "True Flame" && line.value > 0) && planner.activation?.activeNames?.has?.("Scorching Beam");
+    return (applied && firing) || beam ? "In calc" : "Inactive";
   }
   // A name-read core grant ("[Subtle Impact] +30% additional Damage Over Time while Blur is active", a Pedigree of Gods slate core
   // carried as origin core, or a gear grant): the core model applies it by the core's name (src/granted-core-lines.js), so it takes

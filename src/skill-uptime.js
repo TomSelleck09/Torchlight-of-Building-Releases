@@ -48,7 +48,8 @@ function windowsOf(entry) {
 }
 
 const ENGINE_LABELS = { aim: "Aim", periodicBurst: "Periodic Burst", focus: "Focus Blessing", agility: "Agility Blessing", tenacity: "Tenacity Blessing", curse: "Curse",
-  spellAggression: "Spell Aggression", tidewell: "Tidewell", paralysis: "Paralysis", frail: "Frail", frostbite: "Frostbite", mark: "Mark", trueFlame: "True Flame Immolation" };
+  spellAggression: "Spell Aggression", tidewell: "Tidewell", paralysis: "Paralysis", frail: "Frail", frostbite: "Frostbite", mark: "Mark", trueFlame: "True Flame Immolation",
+  "others:Ignite": "The follower's Ignite on the dummy" };
 
 /**
  * The tick engine's buffs over the opening windows (display only, 2026-11-15; the skill tooltips' build-up): run.buffs (the whole run) and

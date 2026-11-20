@@ -125,8 +125,10 @@ function contributions(planner) {
   // Hammer of Ash, whose hits have no Ignite or Trauma chance, opened the ledger, so Fearless Warcry's Ailment Damage line counted and the press
   // rotation pressed it for nothing).
   const ailmentEntries = Object.values(planner.ailments || {}).filter((entry) => entry && typeof entry === "object" && (entry.base?.max ?? 1) > 0 && !(entry.chancePercent === 0 && !(entry.combat?.steadyDps > 0)));
-  const anyDot = ailmentEntries.length > 0 || (planner.skillDots || []).some((dot) => dot?.modeled) || (planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && (beam || (planner.igniteAppliers || []).some((applier) => applier.chancePercent > 0)));
-  const igniteActive = planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && (planner.igniteAppliers || []).some((applier) => applier.chancePercent > 0);
+  // An applier's not-Ignited chance alone counts (10 T Barrier Burst triage L1, 2026-11-18: the dummy starts clean).
+  const igniteApplies = (applier) => applier.chancePercent > 0 || applier.notActiveChancePercent > 0;
+  const anyDot = ailmentEntries.length > 0 || (planner.skillDots || []).some((dot) => dot?.modeled) || (planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && (beam || (planner.igniteAppliers || []).some(igniteApplies)));
+  const igniteActive = planner.theoretical?.totals?.baseIgniteDamage?.max > 0 && (planner.igniteAppliers || []).some(igniteApplies);
   if (beam || igniteActive || !planner.activation) {
     visit(planner.theoretical?.combat?.ledger, 0);
     visit(planner.theoretical?.ledger, 0);
@@ -277,7 +279,7 @@ function buffReachesSomething(planner, entry) {
   const anyHit = hits.length > 0 || Boolean(planner?.activation?.activeNames?.has?.("Scorching Beam"));
   // An ailment with a base but no chance to inflict it is no DoT on the dummy (badge movement probe 2026-11-15: a Base Ignite line on the no-gear
   // Hammer of Ash, which has no Ignite chance, made Fearless Warcry's Ailment Damage line read and the press rotation press it for nothing).
-  const igniteChance = (planner?.igniteAppliers || []).some((applier) => applier.chancePercent > 0) || planner?.theoretical?.totals?.applicationChancePercent > 0;
+  const igniteChance = (planner?.igniteAppliers || []).some((applier) => applier.chancePercent > 0 || applier.notActiveChancePercent > 0) || planner?.theoretical?.totals?.applicationChancePercent > 0;
   const anyDot = (planner?.skillDots || []).length > 0 || Object.values(planner?.ailments || {}).some((ailment) => ailment?.base?.max > 0 && (ailment.chancePercent > 0 || ailment.combat?.steadyDps > 0)) || (planner?.theoretical?.totals?.baseIgniteDamage?.max > 0 && igniteChance);
   return (entry.lines || []).some((line) => {
     // The Warcry buff lines carry no `kind` (src/empower-buffs.js WARCRY buffs): a damage line, or a Minion line when flagged.

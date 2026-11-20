@@ -1161,10 +1161,10 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "A follower recasting an area before it ends",
     question: "The follower's AI gates a skill by its cooldown only, so Tidewell (1 s cooldown, 6 s area), a Terra (0.5 s, 6 s) and Lightning Storm (0.5 s, 1.5 s) come up again before their area ends. Does the new cast replace the old area, or do they run side by side?",
     evidence: "provisional",
-    current: "Provisional (chunk 14, 2026-11-01): a recast replaces the area, so the skill's damage is one held area's and the cast only takes the follower's time. Inferred from the areaLimit nodes of the Terra and Tidewell Splits and modify_limit on Lightning Storm's; their limits were not read. Split 204541 reads a Torrent every 0.8 s against the text's 0.7 s: kept on the text.",
+    current: "Provisional (chunk 14, 2026-11-01): a recast replaces the area, so the skill's damage is one held area's and the cast only takes the follower's time. Inferred from the areaLimit nodes of the Terra and Tidewell Splits and modify_limit on Lightning Storm's; their limits were not read. Tidewell's Torrents fall every 0.8 s, as Split 204541 reads (user decision 2026-11-19: game files over the tooltip text's 0.7 s), so a 6 s Water Area holds 7 from one interval in (0.8 … 5.6 s). On the tick loop (2026-11-19) each cast lays its area, which runs its strikes and its damage per second, and a recast replaces it: the old area stops and the run part of its next tick lands then (open question tick-area-ticks), so the loop keeps one held area's rate; the closed form reads the same rule (src/follower-model.js areaDamageUses): with the ring recasting Tidewell inside the Torrents' 5.6 s, one Torrent per 0.8 s, 50 ÷ 0.8 s before scaling.",
     alternatives: [
       { reading: "Areas run side by side", effect: "× the casts inside one area: Tidewell's Torrents and Double Damage window up to ×2.8 on the Youga rotation; its own hits are 35 damage each" },
-      { reading: "Torrents every 0.8 s", effect: "×0.875 on Tidewell's own hits" }
+      { reading: "Torrents every 0.7 s (the tooltip text), up to 8 per area", effect: "×1.143 on Tidewell's own hits" }
     ],
     test: "A follower with Tidewell and one other skill: count the Water Areas on the ground over 20 s, and the Torrents per second.",
     source: "SkillEditor Splits 204541, 489942, 699508, 725557; src/follower-model.js heldUses; research/followers-chunk14-2026-11-01.md §3",
@@ -3388,6 +3388,19 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => (Number(ctx.planner?.aura?.lifeReservedPercent) || 0) > 100 && ctx.hasText(/Life (?:is )?sealed|sealed Life/i)
   },
   {
+    id: "mana-seal-over-100",
+    title: "Mana sealed past 100%: are all the Auras and Spirit Magi active?",
+    question: "This build's Auras and Spirit Magi seal more than 100% of Max Mana, each with its supports' own Mana Multipliers (an Active-slot Magus with several 110% supports included). Does the game keep all of them active, or does a skill that no longer fits stay off?",
+    evidence: "provisional",
+    current: "Provisional (2026-11-19, research/build-20t-bing-psionic-audit-2026-11-19.md G5): every Aura and Magus counts (resource limits are warnings only, user decision 2026-10-21). The client sums the reservations without a cap and floors Mana after reservation at 0 (research/oq-shadows-seal-client-2026-11-05.md §2). Whether it refuses to activate a skill that cannot be sealed is not traced. The supports' Mana Multipliers on the seal are game code (SS14 client 0x141dffab0) and match a HUD (Sealed Mana 510 of 525 on the 20 T Bing build).",
+    alternatives: [
+      { reading: "A skill that no longer fits stays inactive", effect: "that Aura's or Magus's effects and Minions drop out" }
+    ],
+    test: "Read Sealed Mana on the HUD and check each Aura's and Spirit Magus's state with these supports installed.",
+    source: "src/engine.js calculateAuraReservation; research/build-20t-bing-psionic-audit-2026-11-19.md G5",
+    appliesWhen: (ctx) => (Number(ctx.planner?.aura?.manaReservedPercent) || 0) > 100
+  },
+  {
     id: "am-energy-shield-zero-max",
     title: "Activation Medium: Energy Shield with Max Energy Shield 0",
     question: "With Max Energy Shield fixed at 0 (No Loose Ends), does \"Always attempts to trigger the supported skill when Energy Shield is lower than X%\" fire whenever the skill is ready?",
@@ -3399,19 +3412,6 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "With No Loose Ends equipped, watch Bull's Rage's buff and Timid on the dummy without pressing them.",
     source: "src/support-effects.js; game affixes 331003744, 103360004",
     appliesWhen: (ctx) => (ctx.planner?.activation?.setups || []).some((setup) => (setup.supportEffects?.clauses || []).some((clause) => clause.esZero))
-  },
-  {
-    id: "aura-seal-support-mana-multiplier",
-    title: "An Aura's seal and its supports' own Mana Multipliers",
-    question: "Does a support's own Mana Multiplier (Increased Area 110% on its stone) multiply the Sealed Mana of the Aura it supports, as a fixed multiplier (Off The Beaten Track's 95%) does in the planner?",
-    evidence: "provisional",
-    current: "Provisional (2026-11-05 seal audit, research/build-15t-claim-audit-2026-11-05.md §8): the reservation multiplies the base seal by the fixed Support Mana Multiplier once per support (game affix 101070116 sets field 2010063) and by 100% per support otherwise, so a support's own multiplier (config_skill_stone mana: 110 on Increased Area, 100 on the Aura supports) never reaches an Aura's seal. No catalog fixture has a 110% support on an Aura without a fixed value.",
-    alternatives: [
-      { reading: "Each support's own Mana Multiplier multiplies the seal", effect: "×1.10 seal per Increased Area-type support on an Aura without a fixed multiplier" }
-    ],
-    test: "Without Off The Beaten Track, read an Aura's sealed Mana in its tooltip with and without Increased Area installed.",
-    source: "src/engine.js calculateAuraReservation; src/data/game/skill-game-values.generated.js (stone mana field)",
-    appliesWhen: (ctx) => (ctx.planner?.aura?.entries || []).some((entry) => !entry.reservation?.granted && entry.reservation?.fixedSupportMultiplierPercent === 100 && (ctx.planner?.activation?.setups || []).some((setup) => setup.name === entry.name && (setup.supports || []).some((support) => support.enabled !== false && (support.manaCostMultiplierPercent ?? 100) !== 100)))
   },
   {
     id: "hatch-out-energy-shield-gate",
@@ -3649,6 +3649,22 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "On a Fire hit build with Magmaskull and Cataclysm on the Main Skill, compare the dummy damage with Cataclysm socketed and removed (other Affliction sources kept so the dummy still reaches 100 Affliction).",
     source: "research/true-flame-immolation-build-2026-10-28.md §3; src/affliction-fire-hits.js",
     appliesWhen: (ctx) => ctx.hasText(/Affliction gains an additional effect: ?\+ ?[\d.]+ ?% additional Hit Fire Damage taken|also applied to your Fire Hit Damage/i)
+  },
+  // 10 T Barrier Burst triage L1 (user-approved 2026-11-18, "yes apply fixes 1 and 2"): the not-Ignited chance on a skill other than Scorching Beam.
+  {
+    id: "ignite-not-ignited-gate",
+    title: "\"+X% Ignite Chance against enemies that haven't been Ignited\" on a skill other than Scorching Beam",
+    question: "Warlord's \"+40% Ignite Chance against enemies that haven't been Ignited\" is rolled only while the dummy holds no Ignite. When it is your skill's only Ignite chance and the follower's Additional Ignite also ignites the dummy, does your first Ignite land before the follower's, and does that one Ignite open the Affliction the True Flame core reads for the rest of the fight?",
+    evidence: "provisional",
+    current: "Applied 2026-11-18 (research/triage-10t-barrier-burst-2026-11-18.md §3.1, \"Verification\", \"Check\"). Record 2214789 (node 108 on field 2006480 gated on the target not in state 4000130, which any Ignite on it carries, whoever inflicted it) is a second chance on every applier off the Scorching Beam path (src/ailment-applications.js notActiveChancePercent): an attempt that finds the dummy Ignited by no one rolls regular + not-Ignited chance, one Ignited by another unit its regular chance. The skill is an Ignite inflicter (the dummy starts clean), so the dummy's Affliction opens. Steady figure: the not-Ignited part × the share no other unit holds Ignite (the follower's share 1 on 10 T: your Ignite is not renewed after the opening), and when that Ignite is your only DoT record the rating is at most the rate × one Ignite duration (49/s × 4 s caps at 100; src/affliction-rating.js). Loop: your Ignite's held probability (the run's), the follower's Ignite a 4 s buff from each strike of its inflicting skill, your Minions' at their share (src/tick-layers.js othersIgniteLayer). Inferred links: your Ignite lands before the follower's (computed 99.87% on 10 T, the loop 99.95%); buff 400 (Buff_Worson's exit resets the rating) stays up while any DoT record of anyone ticks, so the follower's Ignite keeps the rating; your first Ignite record lands after Fire Explosion's buff in the frame, so the attacker's per-second sum holds 49, not 24; the gate's expected value is the product of independent holds.",
+    alternatives: [
+      { reading: "The follower's Ignite lands first (your gate never opens)", effect: "no Affliction on 10 T: True Flame reads 0, ×0.370 on every figure (the pre-2026-11-18 reading)" },
+      { reading: "The attacker sum snapshots 24/s at a first-hit success and is never rebuilt", effect: "the rating freezes at 96 on such a run: ×0.9748 on it, ×0.990 on the expectation (10 T)" },
+      { reading: "The follower's weaker Ignite is refused while yours is held (one Ignite limit)", effect: "your Ignite re-applies once in the gap after it lapses; the windows move by at most 2%" }
+    ],
+    test: "On your own character with this line and a follower that ignites, watch the Affliction counter: it should climb after your first hit and stay at its value once only the follower's Ignite holds the dummy.",
+    source: "research/triage-10t-barrier-burst-2026-11-18.md §3.1; config_affix_effect 2214789, 863429; research/oq-r1-r2-rea-2026-11-04.md R1.3; src/ailment-applications.js; src/ailment-model.js; src/tick-layers.js othersIgniteLayer; src/affliction-rating.js",
+    appliesWhen: (ctx) => (ctx.planner?.igniteAppliers || []).some((applier) => applier.notActiveChancePercent !== undefined)
   },
   {
     id: "bing-multi-coupling-alternating-defensive",
@@ -4246,14 +4262,14 @@ export const OPEN_QUESTIONS = Object.freeze([
     title: "How many ticks does a Terra or Sentry deal, and when is the first?",
     question: "An area deals a tick every N s over its life, so the planner's count is fractional (Flame Jet: 8.57 ticks in 6 s). The game can only deal whole ticks. Is the first one when the area lands, or one interval later?",
     evidence: "provisional",
-    current: "Provisional: the tick engine keeps the planner's count, the whole ticks at their real value and the leftover part of a tick as the area ends, so a use deals the planner's damage. Flame Jet's Lv16 run sits on whole ticks with the first one interval in: 126.5 and 114.6 against 126 and 114 in game, and 120.3 against 121 with the recount on the first hit. Flame Core's run does not choose.",
+    current: "Provisional: the tick engine keeps the planner's count, the whole ticks at their real value and the leftover part of a tick as the area ends, so a use deals the planner's damage. Flame Jet's Lv16 run sits on whole ticks with the first one interval in: 126.5 and 114.6 against 126 and 114 in game, and 120.3 against 121 with the recount on the first hit. Flame Core's run does not choose. The follower's areas (Nether Grasp's grasps, Lightning Storm's strikes, Tidewell's Torrents, a Terra's damage per second; 2026-11-19) take the same reading on the loop: whole ticks from one interval in, and when a recast replaces the area the part of its next tick that has run lands then.",
     alternatives: [
       { reading: "Whole ticks, the first one interval in", effect: "Flame Jet's bombs ×0.933 (8 ticks of 8.57), Flame Core ×0.938 (9 of 9.6)" },
       { reading: "Whole ticks, the first as the area lands", effect: "Flame Jet's bombs ×1.05 (9 ticks), Flame Core ×1.042 (10)" }
     ],
     test: "Cast Flame Jet once on a dummy and count its bomb numbers before the area ends: 16 or 18.",
     source: "src/tick-plain-skills.js; tests/tick-engine-references.test.js; research/tick-engine-prototype-2026-10-31.md",
-    appliesWhen: (ctx) => engineDrives(ctx) && ctx.skillHits.some((hit) => hit.rate?.terraDurationSeconds > 0)
+    appliesWhen: (ctx) => engineDrives(ctx) && (ctx.skillHits.some((hit) => hit.rate?.terraDurationSeconds > 0) || (ctx.planner.follower?.damageSources || []).some((source) => source.area))
   },
   {
     id: "tick-demolisher-opening",
@@ -4267,6 +4283,35 @@ export const OPEN_QUESTIONS = Object.freeze([
     test: "Attack the dummy once after waiting: a first floating number near 610 means a charge was banked; near 194, none.",
     source: "src/attack-hit-profiles.js DEMOLISHER; src/tick-plain-skills.js demolisherLayer; research/attack-weapon-tests-2026-10-12.md",
     appliesWhen: (ctx) => engineDrives(ctx) && ctx.skillHits.some((hit) => hit.rate?.demolisherShare > 0)
+  },
+  // 10 T Barrier Burst triage L1 (B), user-approved 2026-11-18: the True Flame and Magmaskull hit lines read the loop's state.
+  {
+    id: "tick-affliction-fire-hit-live",
+    title: "True Flame and Magmaskull on the loop: what does each hit read while the dummy's Affliction builds?",
+    question: "The True Flame core adds 65% of Affliction's per-point bonus to Fire hits against an Ignited enemy, and Magmaskull's added effect holds while the enemy has Affliction. On a clean dummy, does each hit read the rating and the Ignited state at that moment?",
+    evidence: "provisional",
+    current: "Applied 2026-11-18 (src/tick-layers.js afflictionFireLayer; research/triage-10t-barrier-burst-2026-11-18.md §3.1). Records: True Flame 863429 (trigger 1000031 on a hit, the target in state 4000130, node 632 from field 53, the target's Affliction points, linear); Magmaskull 16021013 (node 184, the target holds buff 400). On the 5 s / 20 s windows and the 60 s recount True Flame is its steady value × the rating now ÷ the planner's × the probability the dummy is Ignited by anyone now (your Ignite's held probability on the loop, the follower's Ignite from its strikes, your Minions' steady share; the three read as independent), Magmaskull's in full while the rating is above 0. The sustained figure keeps the closed form (Ignited held, the steady rating): on 25 T, with no follower Ignite, Whirlwind's own Ignite lapses between its 4 s and the next 40% hit, so the loop reads True Flame at 0.970 of the sustained figure's value (sustained ÷ the loop's 20–60 s 1.023). Inferred: the expected value of a hit is the value at the expected Ignited state (the held probability enters linearly); rating above 0 stands for buff 400 on the target; a follower Ignite the loop cannot time is held.",
+    alternatives: [
+      { reading: "Each hit reads the steady value from the first hit (the planner's reading before 2026-11-18)", effect: "5 s / 20 s / 60 s: 10 T ×1.1009 / ×1.0183 / ×1.0057, True Flame Immolation ×1.0388 / ×1.0088 / ×1.0029, 25 T ×1.0347 / ×1.0222 / ×1.0227" },
+      { reading: "True Flame reads your own Ignite only", effect: "after your Ignite lapses with only the follower's holding the dummy, True Flame reads 0: on 10 T ×0.37 from about 4.4 s" }
+    ],
+    test: "On your own Fire hit character with the True Flame core, read the first hits' damage numbers on a fresh dummy against those after the Affliction bar is full: they should grow with the bar.",
+    source: "research/triage-10t-barrier-burst-2026-11-18.md §3.1; config_affix_effect 863429, 16021013; src/tick-layers.js afflictionFireLayer; src/affliction-fire-hits.js",
+    appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.liveLayers || []).some((layer) => layer.key === "afflictionFire")
+  },
+  // 10 T Barrier Burst triage L1 (2026-11-18): the client's reset of the dummy's Affliction, not on the loop.
+  {
+    id: "tick-affliction-buff-400-reset",
+    title: "Does the dummy's Affliction return to 0 after 4 s with no damage over time on it?",
+    question: "The dummy's Affliction is buff 400, refreshed while damage over time ticks on it. When no DoT record of anyone has ticked for 4 s, does the rating drop back to 0?",
+    evidence: "game code (not tested)",
+    current: "Not modeled: the tick engine and the steady rating keep the Affliction with no expiry (nothing lowers it but a removing Reap or a clear). SS14 client (research/triage-10t-barrier-burst-2026-11-18.md, Verification): Buff_Worson's exit (slot 16, 0x141d13910) sets the target's rating object to 0, and the Affliction routine refreshes buff 400 on every frame a DoT record is added or written (0x141d48bc0, 0x141d4c590); that Buff_Worson is buff 400's behaviour and that the refresh is the 4 s one are inferred. No fixture's loop leaves the dummy 4 s without a DoT (×1 on all; about ×0.995 on True Flame Immolation's 60 s in a Monte Carlo of its gaps).",
+    alternatives: [
+      { reading: "The rating resets after 4 s with no DoT record ticking", effect: "only a build whose DoTs leave the dummy for 4 s or more: its rating builds again from 0" }
+    ],
+    test: "Apply one short DoT, let the Affliction bar fill, then stop all damage over time for 5 s: does the bar empty?",
+    source: "research/triage-10t-barrier-burst-2026-11-18.md (Verification 2026-11-18); research/oq-r1-r2-rea-2026-11-04.md R1.3; config_char_buff 400; src/tick-engine.js (Damage stage gain)",
+    appliesWhen: (ctx) => engineDrives(ctx) && (ctx.planner?.dummyRecount?.engine?.liveLayers || []).some((layer) => layer.key === "affliction")
   },
   // Tick engine session 4 (2026-10-31; src/tick-engine.js, src/tick-ailments.js): shown when the engine drives the figure (chunk 15, 2026-11-01).
   {
@@ -4989,6 +5034,20 @@ export const OPEN_QUESTIONS = Object.freeze([
     appliesWhen: (ctx) => ctx.planner?.initialAffliction?.status === "In calc"
   },
   // W10 step 4a (2026-11-04; src/consumption-procs.js regainAgilitySpend): shown when a Regain row spends Agility on this build.
+  {
+    id: "shield-regain-triggered-line",
+    title: "Does \"+X% additional Max Energy Shield if you have triggered Shield Regain in the last 8s\" hold on the dummy, and from when?",
+    question: "A Corner of Divinity's line holds after an Energy Shield Regain. The dummy never attacks: does the build's Energy Shield go missing so that it Regains, and is the buff up from the start of the fight or only from the first Shield Regain?",
+    evidence: "game data (partial)",
+    current: "Game record 4507661 (2026-11-18): trigger 1001210 (Energy Shield Regain), node 306 mode 3, 8 s, count 1, attr 1601 mod 4: one additional Max Energy Shield factor while a Shield Regain is held. The planner holds it while the Energy Shield pool Regains (src/regain-model.js), which on the 10 T Barrier Burst build rests only on the 'Hit or blocked recently' best case (the 'Regain events' condition): the build's own self-damage (the chest's 10 True Damage every 0.1 s, the belt's 100 per cast) is not read as missing Energy Shield. It is held from t = 0 in the 5 s / 20 s windows and the 60 s recount; in game it starts at the first Shield Regain (about the first hit, 0.43 s on that build).",
+    alternatives: [
+      { reading: "No Energy Shield goes missing on the dummy, so no Shield Regain", effect: "the line holds nothing: the 10 T Barrier Burst build ×0.8995 on every figure" },
+      { reading: "The buff starts at the first Shield Regain", effect: "a small drop on the windows, largest on the 5 s (about 1% on the 10 T build)" }
+    ],
+    test: "On the 10 T Barrier Burst build hit the dummy and read Max Energy Shield on the character panel (or its buff icon) before and after the first hit; it should rise by the line's 11.2% once a Shield Regain lands.",
+    source: "config_affix_effect 4507661; src/line-conditions.js regained (pool); src/character-stats.js heldConditionalPoolExtra; src/effective-hp.js energyShieldPoolExtra",
+    appliesWhen: (ctx) => ctx.hasText(/if you have triggered (?:Shield|Energy Shield|Life) Regain in the last/i)
+  },
   {
     id: "regain-agility-spend",
     title: "How much Agility Blessing is left when each Regain spends a stack?",

@@ -414,6 +414,12 @@ const LINE_RULES = [
   [new RegExp(`^When triggering a Critical Strike, gains the following buff for the next (\\d+(?:\\.\\d+)?) ?s: \\+${N}% additional damage and -${N}% Critical Strike Rating on Critical Strike\\. Interval: (\\d+(?:\\.\\d+)?) ?s$`), (m) => ({ bodies: [`+${m[2]}% additional damage on Critical Strike`, `-${m[3]}% Critical Strike Rating`], key: "keepItUp", params: { seconds: num(m[1]), every: num(m[4]), cap: 9 } })],
   [new RegExp(`^When triggering a Critical Strike, gains the following buff for the next (\\d+(?:\\.\\d+)?) ?s: \\+${N}% additional damage and (.+)$`), (m) => ({ body: `+${m[2]}% additional damage`, key: "critRecently", params: { seconds: num(m[1]), unread: m[3] } })],
   [/^(.+?) if you have (?:lost Life|taken damage) recently$/, (m) => ({ body: m[1], key: "hitByEnemy" })],
+  // "If you haven't been hit recently" (Preserver of Eternity's "+40% Movement Speed …", records 611469 / 633564; Adaptive Defense's
+  // Injury Buffer, 10711997: gate node 611 Not on data type 1000037, being hit, over 4 s): the other side of "Hit or blocked recently"
+  // (the "Hit recently" exclusive group in src/planner.js, user request 2026-11-19). Deflection's own "Gains max stacks of Deflection if
+  // you haven't been hit recently" stays with its reader (src/combat-states.js, src/carino-traits.js).
+  [/^(?!Gains max stacks of Deflection)(.+?) if you haven['’]t been hit recently$/, (m) => ({ body: m[1], key: "notHitRecently" })],
+  [/^If you haven['’]t been hit recently, (.+?)(?:\. This effect lasts for another \d+(?:\.\d+)? ?s when you are hit)?$/, (m) => ({ body: m[1], key: "notHitRecently" })],
   [/^(\+\d+ to Max \w+ Blessing Stacks) if you have taken damage in the last \d+(?:\.\d+)? ?s$/, (m) => ({ body: m[1], key: "hitByEnemy" })],
   // "Damaged in the last N s" (Vigilant Guard: "+100% Vigilance effect if you have taken damage within the last 8 seconds";
   // user decision 2026-10-15): the same "Hit or blocked recently" best case.
@@ -423,6 +429,9 @@ const LINE_RULES = [
   // Regain events (src/regain-model.js, 2026-10-14): on while the build Regains; the per-Regain stacks count min(M, Regains in N s).
   [/^(.+?) if you have Regained in the last (\d+(?:\.\d+)?) ?s$/, (m) => ({ body: m[1], key: "regained", params: { seconds: num(m[2]) } })],
   [/^(.+?) for each time you have Regained in the last (\d+(?:\.\d+)?) ?s\. Stacks up to (\d+) time\(s\)$/, (m) => ({ body: m[1], key: "regained", params: { seconds: num(m[2]), stacks: num(m[3]) } })],
+  // "if you have triggered Shield / Life Regain in the last N s" (A Corner of Divinity; record 4507661: trigger 1001210 Energy Shield Regain,
+  // node 306 mode 3, N s, count 1, one write): held while that pool Regains (the named pool's own Regain, not any pool's; 2026-11-18).
+  [/^(.+?) if you have triggered (Shield|Energy Shield|Life) Regain in the last (\d+(?:\.\d+)?) ?s$/, (m) => ({ body: m[1], key: "regained", params: { seconds: num(m[3]), pool: /Life/.test(m[2]) ? "life" : "energyShield" } })],
   // Durations may be decimal after Judgment scaling ("+14% additional damage for 5.6s after using Mobility Skills", 2026-10-27).
   [/^(.+?) for \d+(?:\.\d+)? ?s after using Mobility Skills$/, (m) => ({ body: m[1], key: "mobility" })],
   // Dual Kismet: Sky Piercer (census #5, 2026-10-27): "+20% Attack Horizontal Projectile Speed and +15% additional Attack Horizontal
@@ -716,7 +725,10 @@ export const CONDITION_GROUPS = {
   movedUnder: "movedDistance", movedAtLeast: "movedDistance",
   nearTarget: "distance", distant: "distance", noneNear: "distance", nearbyEnemiesAtLeast: "distance", enemiesWithin: "distance",
   lowLife: "life", notLowLife: "life", perLifeLost: "life", lifeLost: "life", fullLife: "life", notFullLife: "life", lifeOrShieldAtLeast: "life",
-  fullMana: "mana", lowMana: "mana", notFullMana: "mana"
+  fullMana: "mana", lowMana: "mana", notFullMana: "mana",
+  // Only the not-hit side carries the group: the hit side (hitByEnemy, blockedRecently, evadedRecently) is on most builds and is read
+  // by src/planner.js's "Hit recently" group through its own predicate.
+  notHitRecently: "hit"
 };
 
 const on = (conditionText, extra = {}) => ({ active: true, conditionText, ...extra });
@@ -1041,6 +1053,7 @@ function resolveKey(condition, state) {
       if (!(chance > 0)) return off(`no chance to Evade (Evasion ${round(Number(state.stats?.evasion) || 0)} against the Lv. 85 enemy Accuracy)`);
       return on(`evading while being hit: best-case assumption (user decision 2026-10-12, condition 'Hit or blocked recently'; the dummy itself never attacks): ${params.stacks} stacks held (Evade chance ${round(chance * 100)}%; ${params.every} Evasion per stack, ${params.seconds} s each), one additional term (provisional)`, { factor: params.stacks, provisional: true });
     }
+    case "notHitRecently": return state.hitRecently === false ? on("not hit recently ('Hit recently' choice: Not hit recently; the training dummy itself never attacks)") : off("hit recently (best case, 'Hit recently' choice); Not hit recently is compared automatically and can be picked in the condition settings");
     case "hitByEnemy": return state.hitRecently !== false ? on("hit by an enemy recently: best-case assumption (user decision 2026-10-12; the training dummy itself never attacks; condition 'Hit or blocked recently')", { provisional: true }) : off("hit recently is off (condition 'Hit or blocked recently')");
     // Recently moved (user rule 2026-10-14): you reposition between attacks, so it holds even when the Movement group chose
     // standing still; a best-case assumption switched by the movedRecently condition (src/planner.js bestCaseAssumptions).
@@ -1052,6 +1065,12 @@ function resolveKey(condition, state) {
       const regain = state.regain;
       if (!regain) return off("Regain events not resolved (no combat state)");
       if (!regain.active) return off(regain.reason);
+      if (params.pool) {
+        const pool = regain.pools?.[params.pool];
+        const label = params.pool === "life" ? "Life" : "Shield";
+        if (!pool?.active) return off(`no ${label} Regain: ${pool?.reason || "pool not resolved"}`);
+        return on(`${label} Regain triggered in the last ${params.seconds} s: ${pool.reason} (one every ${pool.effectiveIntervalSeconds} s); it rests on the best-case assumption 'Regain events', held from engagement (open question shield-regain-triggered-line)`, { provisional: true });
+      }
       if (!params.stacks) return on(`Regained in the last ${params.seconds} s: ${regain.reason} (best-case assumption 'Regain events')`, { provisional: true });
       const count = regainsIn(regain, params.seconds);
       const stacks = Math.min(params.stacks, count);

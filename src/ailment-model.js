@@ -365,15 +365,28 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   // a weaker application does nothing (the held store, below).
   const stacking = overrides.stacking || definition.stacking;
   // Application streams: one per inflicting skill (blocked skills — "cannot inflict" — apply nothing).
+  // "+X% Ignite Chance against enemies that haven't been Ignited" (record 2214789; src/ailment-applications.js notActiveChancePercent; 10 T Barrier Burst
+  // triage L1, 2026-11-18): an attempt that finds the dummy Ignited by no one rolls the applier's not-Ignited chance, one by another unit (the
+  // follower, your Minions) its regular chance. The steady figure reads the share another unit leaves the dummy un-Ignited
+  // (`overrides.notActiveOthersShare`, the share it holds): regular + (not-Ignited − regular) × (1 − that share). The held store below takes it as
+  // the chance while nothing of yours is held; the loop gates it on the tick (src/tick-ailments.js).
+  const othersShare = Math.max(0, Math.min(1, Number(overrides.notActiveOthersShare) || 0));
   const plainAppliers = (appliers || [{ key: "main", name: "Main skill", main: true, applicationsPerSecond, chancePercent: null, scale: 1 }])
     .map((applier) => ({ ...applier, applicationsPerSecond: Math.max(0, applier.applicationsPerSecond || 0), shownChancePercent: applier.shownChancePercent ?? applier.chancePercent ?? chance.shownPercent ?? chancePercent, chancePercent: applier.blocked ? 0 : applier.chancePercent == null ? chancePercent : wholePercentRoll(applier.chancePercent), scale: applier.scale ?? 1, critChancePercent: applier.critChancePercent ?? (crit.criticalChancePercent || 0) }))
-    .map((applier) => ({ ...applier, successesPerSecond: applier.applicationsPerSecond * applier.chancePercent / 100 }));
+    .map((applier) => {
+      const notActive = !applier.blocked && applier.notActiveChancePercent > applier.chancePercent ? wholePercentRoll(applier.notActiveChancePercent) : null;
+      return { ...applier, successesPerSecond: applier.applicationsPerSecond * applier.chancePercent / 100, ...(notActive !== null ? { notActiveChancePercent: notActive, steadyNotActiveChancePercent: applier.chancePercent + (notActive - applier.chancePercent) * (1 - othersShare) } : {}) };
+    });
+  // An applier that ever attempts: a regular chance, or a chance while the dummy is not Ignited.
+  const attempting = (applier) => !applier.blocked && applier.applicationsPerSecond > 0 && (applier.chancePercent > 0 || applier.notActiveChancePercent > 0);
+  // The chance an attempt rolls while nothing of yours is held, in the steady figure.
+  const freshChanceOf = (applier) => applier.steadyNotActiveChancePercent ?? applier.chancePercent;
   // An inflicting skill's own "additional Affliction effect" (Cataclysm on a hit skill, src/cataclysm-hit-ailments.js; game recipe
   // 943784 scopes it to the supported skill's damage). Shared by every applying stream (one inflicting skill): one more factor of the
   // Affliction per-point value, exact at every rating. Mixed streams: each stream's damage takes its own Affliction factor's ratio at
   // the combat rating through its scale (provisional; the recount's Affliction ramp then uses the shared per-point value).
   const ownAfflictionOf = (applier) => Number(applier.additionalAfflictionEffectFactor) > 0 ? Number(applier.additionalAfflictionEffectFactor) : 1;
-  const liveAppliers = plainAppliers.filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && applier.chancePercent > 0);
+  const liveAppliers = plainAppliers.filter(attempting);
   const ownAfflictionFactor = liveAppliers.length && liveAppliers.every((applier) => ownAfflictionOf(applier) === ownAfflictionOf(liveAppliers[0])) ? ownAfflictionOf(liveAppliers[0]) : 1;
   const ownAfflictionSources = ownAfflictionFactor !== 1 ? liveAppliers.map((applier) => applier.additionalAfflictionEffectSource).filter(Boolean).slice(0, 1) : [];
   const perPointWithout = AFFLICTION_DAMAGE_PER_POINT * (1 + (shared.afflictionEffectPercent || 0) / 100) * (shared.additionalAfflictionEffectFactor ?? 1);
@@ -384,7 +397,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     const factor = (1 + combatRatingNow * perPointWithout * ownAfflictionFactor * own) / (1 + combatRatingNow * perPointWithout * ownAfflictionFactor);
     return { ...applier, scale: applier.scale * factor, scaleSources: [...(applier.scaleSources || []), { source: applier.additionalAfflictionEffectSource?.source || "Additional Affliction effect", text: `${applier.additionalAfflictionEffectSource?.text || "own additional Affliction effect"} at Affliction ${Math.round(combatRatingNow * 100) / 100} (provisional)`, factor }] };
   });
-  const streams = resolvedAppliers.filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && applier.chancePercent > 0);
+  const streams = resolvedAppliers.filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && (applier.chancePercent > 0 || freshChanceOf(applier) > 0));
   const totalApplicationsPerSecond = resolvedAppliers.filter((applier) => !applier.blocked).reduce((sum, applier) => sum + applier.applicationsPerSecond, 0);
 
   // Crit-damage-scaled bonus (Instant Smash): counts Critical Strike Damage modifiers
@@ -454,6 +467,8 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const independent = stacking === "independent";
   const averageApplicationFor = (applier) => ((baseFor(applier).min + baseFor(applier).max) / 2) * applier.scale * (1 + (applier.critChancePercent / 100) * (critOnlyFactor - 1)) * (1 + doubleChancePercent / 100);
   const successesPerSecond = streams.reduce((sum, applier) => sum + applier.successesPerSecond, 0);
+  // Attempts that can land while nothing of yours is held (a not-Ignited chance with no regular chance lands only then).
+  const freshSuccessesPerSecond = streams.reduce((sum, applier) => sum + applier.applicationsPerSecond * freshChanceOf(applier) / 100, 0);
   // Stacks per second: each success adds stacksPerApplication plus the inflicting skill's expected extra stacks (B8).
   const stacksOf = (applier) => stacksPerApplication + (applier.extraStacks || 0);
   const stackRate = streams.reduce((sum, applier) => sum + applier.successesPerSecond * stacksOf(applier), 0);
@@ -474,7 +489,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const anyBase = base.max > 0 || streams.some((applier) => baseFor(applier).max > 0);
   // Shared-timer stacks above a limit of 1: the expected occupied stacks of a run of sustainedSeconds (unit-valued rolls).
   const steadyActiveStacks = independent ? Math.min(stackLimit, stackRate * durationSeconds)
-    : !(anyBase && successesPerSecond > 0) ? 0
+    : !(anyBase && (successesPerSecond > 0 || freshSuccessesPerSecond > 0)) ? 0
     : stackLimit > 1 ? heldStacks((applier) => applier.applicationsPerSecond * sustainedSeconds, true) : 1;
   const windowStacks = (seconds, held = settledSeconds) => { let total = 0; const slices = 80; for (let index = 0; index < slices; index++) total += activeStacksAt(seconds * (index + 0.5) / slices, held); return total / slices; };
   // Ignite and Trauma at a one-rank limit (every stream's application fills it): the held store on each stream's regular schedule (user decision
@@ -484,7 +499,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const heldRun = heldWeights ? heldStoreRun(heldStoreLevels(streams.map((applier, index) => {
     const roll = rollFor(applier);
     return { min: roll.min, max: roll.max, critChance: roll.critChancePercent / 100, critFactor: roll.critFactor, doubleChance: roll.doubleChancePercent / 100, weight: heldWeights[index] };
-  })), { streams: streams.map((applier, index) => ({ kind: index, rate: applier.applicationsPerSecond, chance: applier.chancePercent / 100 })), durationSeconds, windows: [5, 20] }) : null;
+  })), { streams: streams.map((applier, index) => ({ kind: index, rate: applier.applicationsPerSecond, chance: applier.chancePercent / 100, ...(applier.steadyNotActiveChancePercent !== undefined ? { notActiveChance: applier.steadyNotActiveChancePercent / 100 } : {}) })), durationSeconds, windows: [5, 20] }) : null;
   // combat.landedPerSecond: the applications that land (fill or replace the held stack); a strictly weaker one raises no success event (SS14
   // client, research/oq-r1-r2-rea-2026-11-04.md R1.2), so "when inflicting" Reaps read it (bug B1, 2026-11-04). successesPerSecond stays the
   // attempts × chance (the chance readers).
@@ -516,6 +531,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   const applierSummary = resolvedAppliers.map((applier) => ({
     key: applier.key, name: applier.name, setupKey: applier.setupKey ?? null, main: Boolean(applier.main), tags: applier.tags || [], level: applier.level ?? null,
     applicationsPerSecond: applier.applicationsPerSecond, chancePercent: applier.chancePercent, shownChancePercent: applier.shownChancePercent, successesPerSecond: applier.successesPerSecond,
+    ...(applier.notActiveChancePercent !== undefined ? { notActiveChancePercent: applier.notActiveChancePercent, steadyNotActiveChancePercent: applier.steadyNotActiveChancePercent, notActiveChanceSources: applier.notActiveChanceSources || null } : {}),
     share: successesPerSecond > 0 ? applier.successesPerSecond / successesPerSecond : 0,
     scale: applier.scale, scaleSources: applier.scaleSources || [], chanceSources: applier.chanceSources || null, blocked: applier.blocked || null, critChancePercent: applier.critChancePercent,
     averageApplication: averageApplicationFor(applier), baseExtra: applier.baseExtra || null, extraStacks: applier.extraStacks || 0
@@ -556,7 +572,8 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
     crit,
     shared,
     sources: { typed, chance: chanceSources, duration: durationSources, increasedPercent, townAdditional, combatAdditional, perCritDamageTown: perCritDamage(critBonusTown), perCritDamageCombat: perCritDamage(critBonusCombat) },
-    modeled: anyBase && (chancePercent > 0 || streams.length > 0)
+    modeled: anyBase && (chancePercent > 0 || streams.length > 0 || plainAppliers.some(attempting)),
+    ...(othersShare > 0 && plainAppliers.some((applier) => applier.notActiveChancePercent !== undefined) ? { notActiveOthersShare: othersShare, notActiveMinionShare: Math.max(0, Math.min(1, Number(overrides.notActiveMinionShare) || 0)), notActiveFollowerSources: [...(overrides.notActiveFollowerSources || [])] } : {})
   };
 }
 

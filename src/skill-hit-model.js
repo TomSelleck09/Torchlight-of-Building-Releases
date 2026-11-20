@@ -35,6 +35,7 @@ import { applyFocusSpeed } from "./focus-speed.js";
 import { reboundState } from "./ice-lances-rebound.js";
 import { maxChanneledStacksLine } from "./channeled-stack-lines.js";
 import { SPELL_BURST_USE_GAIN, spellBurstUseGainLines, spellBurstRefillWalk } from "./spell-burst-refill.js";
+import { mergeRotationTurns } from "./rotating-buffs.js";
 
 // Generic spell-hit engine (profile kind "hit", engine "skill-hit"; src/skill-hit-profiles.js).
 //
@@ -721,7 +722,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const parsed = pickHitReading(textParsed, recipeParsed);
     if (!parsed) continue;
     const scaled = (value) => value * (line.multiplier ?? 1);
-    const entry = { source: line.source, text: line.text, origin: line.origin, ...(parsed.recipe ? { recipe: parsed.recipe } : {}) };
+    const entry = { source: line.source, text: line.text, origin: line.origin, ...(parsed.recipe ? { recipe: parsed.recipe } : {}), ...(line.rotation ? { rotation: line.rotation } : {}) };
     if (hitPool && hitPool.addReading(parsed, line, entry, scaled)) continue;
     if (parsed.kind === "damage") damageLines.push({ ...entry, value: scaled(parsed.value), layer: parsed.layer, scope: parsed.scope, condition: parsed.condition, category: parsed.layer === "increased" ? "Increased damage" : "Additional damage" });
     else if (parsed.kind === "maxDamage") maxLines.push({ ...entry, value: scaled(parsed.value), scope: parsed.scope, category: "Additional Max Damage" });
@@ -2223,6 +2224,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const increased = [...(increasedRead ? increasedRead.entries : [...damageLines.filter((line) => line.layer === "increased" && applies(line)), ...supports.increased.filter((line) => applies(line))]), ...(channelState?.increased || []), ...weaponIncreased, ...componentIncreased, ...galeLines.filter((line) => line.layer === "increased")];
     const componentLines = (component.extraAdditional || []).map((line) => ({ ...line, category: "Additional damage", origin: "skill" }));
     const additional = [...(additionalRead ? additionalRead.entries : [...damageLines.filter((line) => line.layer === "additional" && appliesAdditional(line)), ...supports.additional.filter((line) => !line.scopeTypes || line.scopeTypes.some((type) => additionalTypes.includes(type)))]), ...levelLine, ...sentryNearbyLines, ...terraLine, ...grantedLines, ...speedBonusLine.filter((line) => line.value > 0), ...galeLines.filter((line) => line.layer === "additional"), ...(channelState?.additional || []), ...componentLines, ...auraLines.filter((line) => !line.types || line.types.some((type) => additionalTypes.includes(type))), ...mainStatLines, ...doubleDamageLines, ...weaponAdditional.filter((line) => !((handCrits || joinedMainHand(component)) && line.hand === "main")), ...(restrictionLine(typeRestriction, component.type, "hit damage") ? [restrictionLine(typeRestriction, component.type, "hit damage")] : []), ...(trinityLine(trinity, trinityByType, component.type) ? [trinityLine(trinity, trinityByType, component.type)] : [])];
+    // The ledger branch (TLI_POOL_HIT=ledger): a rotating buff set's lines this part reads are one additional term, as the pool reads them
+    // (src/rotating-buffs.js).
+    if (!additionalRead) additional.splice(0, additional.length, ...mergeRotationTurns(additional));
     // Combo Finisher crit and Double Damage extras (census item #9; src/combo-points.js comboExtraState), on the Finisher's hits only:
     // "+X% Critical Strike Damage for Combo Finishers" (727988544, flat crit damage) and "+X% additional damage for every 1 Combo Point
     // consumed on Critical Strike from Combo Finishers" (157017744, X × consumed points on the crit share) change the crit factor

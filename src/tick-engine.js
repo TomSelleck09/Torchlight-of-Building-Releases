@@ -462,7 +462,7 @@ function createWorld(spec, frames, trace) {
     paths, bySource, labels, stats, firstDamageFrame: null, trace: trace ? [] : null,
     pathCache: new Map(), snapIndexes: new Map(),
     speeds: new Map(Object.entries(spec.speeds || {}).map(([key, speed]) => [key, { ...speed, key: `speed:${key}`, parts: speed.parts ?? [{ base: 1, increasedPercent: speed.increasedPercent ?? 0, additionalFactor: speed.additionalFactor ?? 1 }] }])),
-    delayed: new Map(), dots: new Map(), areas: new Map(),
+    delayed: new Map(), dots: new Map(), areas: new Map(), streams: new Map(),
     ailmentSpecs: new Map((spec.ailments || []).map((item) => [item.key, item])),
     ailmentRuns: new Map((spec.ailments || []).map((item) => [item.key, newAilmentRun(item)])),
     ailmentTicks: new Map((spec.ailments || []).map((item) => [item.key, { activeTicks: 0, baseTicks: 0 }])),
@@ -692,6 +692,11 @@ function countReapUse(world, key) {
   if (reap) reap.uses += 1;
 }
 
+// The chance an attempt rolls while nothing of yours is held: the effect's own (the not-Ignited chance of "+X% Ignite Chance against enemies that
+// haven't been Ignited", record 2214789), or its regular chance while another unit's Ignite is on the dummy (`othersBuff`, the follower's: src/
+// tick-layers.js othersIgniteLayer; 10 T Barrier Burst triage L1, 2026-11-18).
+const notActiveChanceOf = (world, effect) => effect.othersBuff && buffStacks(world, effect.othersBuff) > 0 ? effect.chance : (effect.notActiveChance ?? effect.chance);
+
 // An application: the attempts of one event, each at the whole percent, its own when the ailment is absent. A fractional attempt is one attempt
 // at that share of the chance, so the expected count holds.
 function applyAilment(world, effect, origin) {
@@ -700,7 +705,7 @@ function applyAilment(world, effect, origin) {
   const key = effect.key ?? effect.ailment, run = world.ailmentRuns.get(spec.key);
   let state = world.accumulators.get(key);
   if (!state) { state = { sum: 0, gate: newGate(), fires: 0 }; world.accumulators.set(key, state); }
-  const attempts = effect.attempts ?? 1, whole = Math.floor(attempts + 1e-12), part = Math.max(0, attempts - whole);
+  const attempts = effect.attempts ?? 1, whole = Math.floor(attempts + 1e-12), part = Math.max(0, attempts - whole), notActive = notActiveChanceOf(world, effect);
   for (let index = 0; index <= whole; index += 1) {
     const share = index < whole ? 1 : part;
     if (!(share > 0)) continue;
@@ -708,19 +713,19 @@ function applyAilment(world, effect, origin) {
     if (run.store) {
       // Mode 6 at a one-rank limit (spec.store): compared on the application's own amount, a weaker one does nothing and is no success (no Reap "when inflicting", no bus event: R1.2, bug B1). The variant is the
       // application's own state that enters its amount (Aim's ailment line while Aim is up), read at the attempt.
-      const { store } = spec, state = run.store, fresh = Math.max(0, 1 - state.held) * (effect.notActiveChance ?? effect.chance) * share;
+      const { store } = spec, state = run.store, fresh = Math.max(0, 1 - state.held) * notActive * share;
       const variant = store.variantBuff && buffStacks(world, store.variantBuff) > 0 ? 1 : 0;
       const group = store.group(state, world.frame, buffExpiryFrame(world.frame, spec.seconds), snapshotAt(world, spec.path));
-      success = store.attempt(state, (effect.stream ?? 0) * (store.variantCount ?? 1) + Math.min(variant, (store.variantCount ?? 1) - 1), effect.chance * share, (effect.notActiveChance ?? effect.chance) * share, group, world.frame);
+      success = store.attempt(state, (effect.stream ?? 0) * (store.variantCount ?? 1) + Math.min(variant, (store.variantCount ?? 1) - 1), effect.chance * share, notActive * share, group, world.frame);
       successBase = state.successBase;
       const back = Math.min(run.ended, fresh);
       run.ended -= back;
       run.lapses += back;
       if (state.held > 0) { state.by = origin; world.dots.set(spec.key, state); }
       // Scorch's share reads the run's success count on a chain kept beside the store; its own lapse count stays out of the run's.
-      if (run.chain) attemptChain(world, spec, { chain: run.chain, ended: 0, lapses: 0 }, effect.chance * share, (effect.notActiveChance ?? effect.chance) * share, effect.stream);
+      if (run.chain) attemptChain(world, spec, { chain: run.chain, ended: 0, lapses: 0 }, effect.chance * share, notActive * share, effect.stream);
     } else if (run.chain) {
-      success = attemptChain(world, spec, run, effect.chance * share, (effect.notActiveChance ?? effect.chance) * share, effect.stream);
+      success = attemptChain(world, spec, run, effect.chance * share, notActive * share, effect.stream);
       successBase = run.chain.successBase;
       if (run.chain.held > 0) { run.chain.by = origin; world.dots.set(spec.key, run.chain); }
     } else {
@@ -1108,6 +1113,15 @@ function fireEffects(world, effects = [], origin) {
         note(world, "area", { area: effect.area, by: origin });
         break;
       }
+      case "areaStream": {
+        // A held area's ticks (a follower area's strikes, or its damage per second frame by frame; src/tick-layers.js followerProgram): tick k
+        // k × every s after the creation (on the first frame at or after it, one frame at least), a fractional last tick at count × every. A new
+        // area of the same key replaces it: the old one stops, and the part of its next tick it has run lands now, as damage only (no on-hit).
+        const old = world.streams.get(effect.stream);
+        if (old) streamLeftover(world, old);
+        world.streams.set(effect.stream, { start: world.frame, ticks: streamTicks(world.frame, effect.everySeconds, effect.count), next: 0, effect: effect.effect, origin });
+        break;
+      }
       case "delay": {
         // One-frame minimum on waits (§3.2): a delayed event lands on a later tick, in the Timer stage.
         const due = world.frame + Math.max(1, framesAtOrAfter(effect.seconds));
@@ -1121,6 +1135,33 @@ function fireEffects(world, effects = [], origin) {
   }
 }
 
+// A held area's tick frames: k × every s from the creation frame, k = 1 … ⌊count⌋, then a fractional tick at count × every.
+function streamTicks(startFrame, everySeconds, count) {
+  const ticks = [], whole = Math.floor(count + 1e-9), rest = count - whole;
+  const at = (seconds, share) => ticks.push({ frame: startFrame + Math.max(1, framesAtOrAfter(seconds)), seconds, share });
+  for (let k = 1; k <= whole; k += 1) at(k * everySeconds, 1);
+  if (rest > 1e-9) at(count * everySeconds, rest);
+  return ticks;
+}
+// One tick of a held area's effect at `share` of a whole tick: a hit scaled (its on-hit events only on a whole tick fired on its own frame), an
+// event only on a whole tick.
+function scaledStreamEffect(effect, share, onFrame) {
+  if (!(share > 1e-12)) return null;
+  const whole = onFrame && share >= 1 - 1e-12;
+  if (effect.kind === "hit") return whole ? effect : { kind: "hit", path: effect.path, count: (effect.count ?? 1) * share };
+  return whole ? effect : null;
+}
+// A replaced area's leftover: the part of its next tick that has run (elapsed since the tick before it ÷ the gap), as damage only.
+function streamLeftover(world, stream) {
+  const tick = stream.ticks[stream.next];
+  if (!tick) return;
+  const before = stream.next > 0 ? stream.ticks[stream.next - 1].seconds : 0;
+  const elapsed = (world.frame - stream.start) / TICKS_PER_SECOND;
+  const run = Math.min(1, Math.max(0, (elapsed - before) / (tick.seconds - before)));
+  const fired = scaledStreamEffect(stream.effect, run * tick.share, false);
+  if (fired) fireEffects(world, [fired], stream.origin);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The stages of a tick
 
@@ -1132,9 +1173,19 @@ const STAGES = {
   // 2. Timer, Event: delayed events.
   timerEvent(world) {
     const due = world.delayed.get(world.frame);
-    if (!due) return;
-    world.delayed.delete(world.frame);
-    for (const item of due) fireEffects(world, item.effects, item.origin);
+    if (due) {
+      world.delayed.delete(world.frame);
+      for (const item of due) fireEffects(world, item.effects, item.origin);
+    }
+    // Held areas' ticks (effect areaStream), after the delayed events.
+    for (const [key, stream] of world.streams) {
+      while (stream.next < stream.ticks.length && stream.ticks[stream.next].frame <= world.frame) {
+        const tick = stream.ticks[stream.next++];
+        const fired = scaledStreamEffect(stream.effect, tick.share, true);
+        if (fired) fireEffects(world, [fired], stream.origin);
+      }
+      if (stream.next >= stream.ticks.length) world.streams.delete(key);
+    }
   },
   // 3. Command: best-case input, press whenever ready. Skills start ready when the fight begins (user decision 2026-10-22): the press
   // is on tick 1 and the phase runs on the same tick, so a 1 s skill ends on tick 30, at 1 s. A cooldown runs from the press.
@@ -1441,6 +1492,9 @@ export const firstHitTimeline = (run) => ({ ...run, firstDamageSeconds: Number.i
  * { kind: "use", event, units } (a skill use for the trigger bus, W10 step 3b) | { kind: "consume", buff, stacks } | { kind: "ailment", ailment, key, chance, notActiveChance, attempts, stream, stacks, value, reapUses: [reap key] } |
  * { kind: "reapUse", reap } | { kind: "area", area, checks: [frame offsets], lifeFrames, layerFrames, effects, readd } (a buff area replacing the previous
  *   one of its key: `effects` at its creation, `readd` at each later check once its last layer has ended; src/area-dot-layers.js).
+ * { kind: "areaStream", stream, everySeconds, count, effect } (a held area's ticks: `effect`, a hit or an event, every `everySeconds` from one
+ *   interval in, `count` ticks, a fractional last one scaled; a new stream of the same key replaces it and the run part of its next tick lands
+ *   as damage only).
  * Modifiers (on a path or a speed): { buff | collector | count: [{ buff } | { held: true } | { level: world => share }] (with linear, capCount: a
  *   per-type sum) | affliction: true | maxAffliction: { ratioAtNone, ratioAtFull } | ailmentShare: { ailment, fractions } | amount: world => percent,
  *   requires: [buff], layer, percent, perStack, capPercent, perPoint, types, parts }.

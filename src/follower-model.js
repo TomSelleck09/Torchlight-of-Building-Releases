@@ -425,6 +425,17 @@ const totalCasts = (entry) => entry ? (entry.totalCastsPerSecond ?? entry.castsP
 // An area's damage: one held area, whatever the recasts (chunk 14: the rotation may press it again before it ends; provisional follower-area-recast).
 const heldUses = (entry) => entry?.areaSeconds > 0 ? Math.min(totalCasts(entry), 1 / entry.areaSeconds) : totalCasts(entry);
 
+// The damage uses of an area skill (2026-11-19): one held area's, as on the loop (src/tick-layers.js followerProgram, effect areaStream). An
+// area whose damage is only its strikes deals them from one interval in over strikes × every s; a recast inside that span replaces the
+// area and the run part of its next strike lands, so the ring pressing it sooner deals one strike per interval: perCast ÷ the strikes' span.
+// Where the strikes fill the area (Nether Grasp 12 × 0.5 s, Lightning Storm 6 × 0.25 s) or the area has a damage per second, the area's life
+// (heldUses). Tidewell: 7 Torrents × 0.8 s = 5.6 s of its 6 s area, 50 ÷ 0.8 s.
+function areaDamageUses(entry, model) {
+  const area = model?.area;
+  if (!(entry?.areaSeconds > 0) || !area || area.perSecond > 0 || !(area.strikes > 0 && area.everySeconds > 0)) return heldUses(entry);
+  return Math.min(totalCasts(entry), 1 / Math.min(entry.areaSeconds, area.strikes * area.everySeconds));
+}
+
 const cadenceText = (entry) => entry ? `cast every ${round(entry.periodSeconds)} s (${entry.notes.join("; ") || "on cooldown"})` : "not cast";
 const uptimeOf = (durationSeconds, entry) => entry && entry.castsPerSecond > 0 ? Math.min(1, durationSeconds * entry.castsPerSecond) : 0;
 // Warcry Skill Effect on the follower's own Warcries: Howl of the Pack's "+20% Warcry Skill Effect for the Follower and you"
@@ -1941,7 +1952,7 @@ function readAffixLine(line, base) {
 const OWN_DAMAGE = {
   "Tartarus: Black Hole": { type: "Erosion", perCast: 400, text: "100 per second for its 4 s" },
   "Tartarus: Thunder Spike": { type: "Lightning", perCast: 50, text: "one thrust (its Shadow is not counted)" },
-  "Tartarus: Lightning Storm": { type: "Lightning", perCast: 300, text: "6 strikes (every 0.25 s for 1.5 s)" },
+  "Tartarus: Lightning Storm": { type: "Lightning", perCast: 300, text: "6 strikes (every 0.25 s for 1.5 s)", area: { strikes: 6, everySeconds: 0.25, perStrike: 50 } },
   "Tartarus: Double Thrusts": { type: "Physical", perCast: 100, text: "two thrusts (its Shadow is not counted)" },
   "Tartarus: Ice Lances": { type: "Cold", perCast: 50, text: "one lance (its jumps need other enemies)" },
   "Tartarus: Forking Thunder": { type: "Lightning", perCast: 75, text: "one spear, always a crit (×1.5 assumed; its forks need other enemies)" },
@@ -1953,11 +1964,13 @@ const OWN_DAMAGE = {
   "Tartarus: Leap Attack": { type: "Physical", perCast: 50, text: "one slam" },
   "Tartarus: Swift Shadow Raid": { type: "Physical", perCast: 50, text: "one dash hit" },
   // A Terra's 2 s DoT is refreshed while the area stands (Split: the area's timer repeats its damage event; as your own Terra): 100 per second for the area's life.
-  "Tartarus: Nether Grasp": { type: "Erosion", perCast: 1200, text: "12 grasps (every 0.5 s for 6 s) and 100 per second for its 6 s" },
-  "Tartarus: Frost Terra": { type: "Cold", perCast: 600, text: "100 per second for its 6 s" },
+  "Tartarus: Nether Grasp": { type: "Erosion", perCast: 1200, text: "12 grasps (every 0.5 s for 6 s) and 100 per second for its 6 s", area: { strikes: 12, everySeconds: 0.5, perStrike: 50, perSecond: 100 } },
+  "Tartarus: Frost Terra": { type: "Cold", perCast: 600, text: "100 per second for its 6 s", area: { perSecond: 100 } },
   "Tartarus: Wilt Spike": { type: "Erosion", perCast: 50, text: "one thrust (its Shadow is not counted)" },
   "Tartarus: Frost Spike": { type: "Cold", perCast: 150, text: "one thrust and two Icy Blades (its Shadow is not counted)" },
-  "Tartarus: Tidewell": { type: "Cold", perCast: 400, text: "8 Torrents (every 0.7 s for 6 s)" },
+  // Tidewell's Torrents fall every 0.8 s (game Split 204541; user decision 2026-11-19: game files over the tooltip text's 0.7 s), from one
+  // interval in, so a 6 s Water Area holds 7 (0.8 … 5.6 s).
+  "Tartarus: Tidewell": { type: "Cold", perCast: 350, text: "7 Torrents (every 0.8 s for 6 s: game Split 204541; the tooltip text reads 0.7 s)", area: { strikes: 7, everySeconds: 0.8, perStrike: 50 } },
   "Tartarus: Lightning Beam": { type: "Lightning", perCast: 150, text: "three beams" },
   "Origin Tartarus: Black Hole": { type: "Physical", perCast: 400, text: "100 per second for its 4 s" },
   "Origin Tartarus: Scorching Pulse": { type: "Fire", perCast: 50, text: "one pulse" },
@@ -1980,7 +1993,7 @@ const OWN_DAMAGE = {
 const OWN_HITS_PER_USE = Object.freeze({
   "Tartarus: Black Hole": 0, "Tartarus: Frost Terra": 0, "Origin Tartarus: Black Hole": 0,
   "Tartarus: Lightning Storm": 6, "Tartarus: Double Thrusts": 2, "Tartarus: Blazing Meteor": 2, "Tartarus: Speed Phantom": 2, "Tartarus: Nether Grasp": 12,
-  "Tartarus: Frost Spike": 3, "Tartarus: Tidewell": 8, "Tartarus: Lightning Beam": 3
+  "Tartarus: Frost Spike": 3, "Tartarus: Tidewell": 7, "Tartarus: Lightning Beam": 3
 });
 const OWN_DAMAGE_LINE = /\b(?:Deals?|dealing)\b[^.]*?\d+(?:\.\d+)? ?- ?\d+(?:\.\d+)?|^\d+(?:\.\d+)? ?- ?\d+(?:\.\d+)? (?:Attack|Spell|Hit|Persistent)|Shockwaves deal \d|reaps? \d|Strikes once every|Creates a Nether Grasp/i;
 
@@ -2002,10 +2015,25 @@ export function followerDamageSources(selection, { resistanceFor = (type) => (ty
     const crit = !sentry && alwaysCrits(entry.skill) && !skill.lines.some((text) => GUARANTEED_CRIT.test(clean(text))) ? 1.5 : 1;
     const perUse = (sentry ? model.perShockwave : model.perCast) * crit * factor;
     // An extra trigger (Rekindled Embers) adds casts that hit like any other (withExtraTriggers).
-    const usesPerSecond = sentry ? 1 + spellCasts : heldUses(entry);
-    return [{ key: `follower:${skill.id}`, name: `${selection.follower.displayName}: ${skill.shortName} (follower)`, skill: skill.name, type: model.type, perUse, usesPerSecond, firstUseSeconds: entry.firstUseSeconds, dps: perUse * usesPerSecond, resistanceFactor: factor,
+    const usesPerSecond = sentry ? 1 + spellCasts : areaDamageUses(entry, model);
+    const area = sentry ? null : followerAreaContent(model, entry, skill.name);
+    return [{ ...(area ? { area } : {}), key: `follower:${skill.id}`, name: `${selection.follower.displayName}: ${skill.shortName} (follower)`, skill: skill.name, type: model.type, perUse, usesPerSecond, firstUseSeconds: entry.firstUseSeconds, dps: perUse * usesPerSecond, resistanceFactor: factor,
       text: `${skill.shortName}: ${model.text} = ${round(sentry ? model.perShockwave : model.perCast)} ${model.type} ${sentry ? "per shockwave" : "per cast"}${crit !== 1 ? " × 1.5 (always a crit: its support affix)" : ""} × ${round(factor)} resistance × ${round(usesPerSecond)} per second (${sentry ? `1 + ${round(spellCasts)} follower Spell casts` : `${cadenceText(entry)}${entry.extraTrigger ? `; ${entry.extraTrigger.text}` : ""}`}) = ${round(perUse * usesPerSecond)} DPS (reference data Lv.20 numbers, no follower scaling: provisional)` }];
   });
+}
+
+// A held area's content on the loop (src/tick-layers.js followerProgram; 2026-11-19): its strikes (a hit each, `everySeconds` apart, the
+// first one interval in: open question tick-area-ticks) and its damage per second over the area's life (a DoT part, no hit), each as its
+// share of the cast's damage (perCast). The closed form keeps one held area's damage (heldUses: perUse ÷ the area's life while the ring
+// recasts inside it; follower-area-recast); on the loop a recast replaces the area: the old one stops and the part of the tick it had run lands.
+function followerAreaContent(model, entry, skillName) {
+  if (!model?.area || !(entry?.areaSeconds > 0)) return null;
+  const { strikes = 0, everySeconds = 0, perStrike = 0, perSecond = 0 } = model.area;
+  return {
+    seconds: entry.areaSeconds,
+    strikes: strikes > 0 && everySeconds > 0 ? { count: strikes, everySeconds, share: strikes * perStrike / model.perCast } : null,
+    dot: perSecond > 0 ? { share: perSecond * (AREA_SECONDS[skillName] || 0) / model.perCast } : null
+  };
 }
 
 /**

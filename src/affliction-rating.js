@@ -50,9 +50,21 @@ export function afflictionClearCycle({ afflictionPerSecond = 0, clears = [] } = 
   return { average: sum / measure, atMaxFraction: atMax / measure, clearedPerSecond: cleared / (measure / CLEAR_FRAMES_PER_SECOND), sources: list.map((item) => item.source).filter(Boolean) };
 }
 
-export function deriveAfflictionRating({ afflictionPerSecond = 0, removers = [], clears = [] } = {}) {
+// `accrualSeconds` (10 T Barrier Burst triage L1, 2026-11-18): the rating gains only while one of your DoT records is on the dummy (SS14 client
+// 0x141d4cd50, research/oq-r1-r2-rea-2026-11-04.md R1.3, proven; the tick engine's rule). When your only DoT record is an Ignite applied while the
+// dummy is not Ignited and another unit keeps it Ignited for good (the follower's Additional Ignite), you hold a record for one Ignite duration
+// only, so the steady rating is at most the rate × that duration; nothing lowers it after (buff 400 stays up while any DoT record ticks).
+// `initialRating`: Magmaskull's first infliction (src/initial-affliction.js), the least that one held record gives.
+export function deriveAfflictionRating({ afflictionPerSecond = 0, removers = [], clears = [], accrualSeconds = Infinity, initialRating = 0 } = {}) {
   const rate = Math.max(0, Number(afflictionPerSecond) || 0);
   if (!(rate > 0)) return { rating: 0, afflictionPerSecond: 0, firstFullSeconds: Infinity, limitingRemover: null, text: "Affliction 0 (the build inflicts no Affliction per second)." };
+  const result = deriveUncapped(rate, removers, clears);
+  const cap = Number.isFinite(accrualSeconds) && accrualSeconds >= 0 ? Math.min(100, Math.max(rate * accrualSeconds, Number(initialRating) || 0)) : Infinity;
+  if (!(cap < result.rating)) return Number.isFinite(accrualSeconds) ? { ...result, accrualSeconds } : result;
+  return { ...result, rating: cap, accrualSeconds, text: `Affliction ${round(cap, 3)} (${round(rate, 3)}/s for the ${round(accrualSeconds, 3)} s your one Ignite is held; the rating gains only while one of your DoT records is on the dummy, and another unit's Ignite then keeps it from being renewed).` };
+}
+
+function deriveUncapped(rate, removers, clears) {
   const cleared = withClears(rate, clears);
   const firstFullSeconds = 100 / rate;
   let best = null;

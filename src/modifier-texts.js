@@ -1,4 +1,5 @@
 import { effectiveGearModifierTexts } from "./engine.js";
+import { rotationLineTags } from "./gear-unique-modules.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { activeKismetEffects } from "./kismet-effects.js";
 import { destinyNodeDamageLines, orderedPactspiritNodes, pactspiritEffectsAtLevel, pactspiritLevel } from "./pactspirit-levels.js";
@@ -52,8 +53,12 @@ export function collectModifierTexts({ equipment, disabledSlots = [], talents = 
   };
   for (const item of equipment?.candidateItems || []) {
     if (disabledSlots.includes(item.slot)) continue;
-    for (const text of effectiveGearModifierTexts(item)) {
-      push(text, item.name, "gear", 1, item.slot);
+    // A rotating-buff row's averaged lines carry their row (`rotation`; src/gear-unique-modules.js rotationLineTags): a hit that reads
+    // several of them takes them as one additional term (src/rotating-buffs.js).
+    const gearLines = effectiveGearModifierTexts(item);
+    const rotations = rotationLineTags([...(item.modifiers || []), ...(item.corrosionModifiers || [])], gearLines, `${item.slot}:${item.name}`);
+    for (const [index, text] of gearLines.entries()) {
+      push(text, item.name, "gear", 1, item.slot, undefined, rotations.has(index) ? { rotation: rotations.get(index) } : undefined);
       for (const line of NAMED_GEAR_AFFIX_LINES[String(text).trim()] || []) push(line, item.name, "gear", 1, item.slot);
     }
   }

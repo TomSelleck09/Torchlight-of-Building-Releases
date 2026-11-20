@@ -148,7 +148,8 @@ export class HitPool {
     switch (parsed.kind) {
       case "damage": {
         const item = { ...entry, value: scaled(parsed.value), layer: parsed.layer, scope: parsed.scope, condition: parsed.condition, category: parsed.layer === "increased" ? "Increased damage" : "Additional damage" };
-        const writes = this.#typed(HIT_ATTRS.damage, parsed.scope?.damageTypes ?? null, { unit, mod: modOfLayer(parsed.layer), value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item, derivedFrom: line.derivedFrom ?? null });
+        // A rotating buff's line keeps its rotation (src/rotating-buffs.js): the pool adds a rotation's lines one read admits into one term.
+        const writes = this.#typed(HIT_ATTRS.damage, parsed.scope?.damageTypes ?? null, { unit, mod: modOfLayer(parsed.layer), value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item, derivedFrom: line.derivedFrom ?? null, ...(line.rotation ? { rotation: line.rotation } : {}) });
         this.lineDamage.push({ item, writes });
         return true;
       }

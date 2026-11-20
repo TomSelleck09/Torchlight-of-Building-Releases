@@ -2,6 +2,7 @@ import { supportEffect } from "./support-model.js";
 import { supportDataMode, supportGameLine } from "./game-skill-data.js";
 import { slateAdditionalFireLines } from "./theoretical-sources.js";
 import { mergeDamageToLifeLines, isDamageToLifeEntry } from "./damage-to-life.js";
+import { mergeRotationTurns } from "./rotating-buffs.js";
 import { hitPathMode } from "./recipe-hit-layers.js";
 import { patchBeamHitLedger } from "./recipe-hit-aggregates.js";
 
@@ -134,6 +135,8 @@ export function scorchingBeamHitModifiers({ modifierTexts = null, beamActive = t
     }));
     // Every "damage applied to Life" copy is one game field: one summed additional term (src/damage-to-life.js; user decision 2026-10-25).
     own.splice(0, own.length, ...mergeDamageToLifeLines(own, { valueKey: "percent" }));
+    // A rotating buff set's lines this chain reads (one buff up at a time): one additional term, the average over the turns (src/rotating-buffs.js).
+    own.splice(0, own.length, ...mergeRotationTurns(own, { valueKey: "percent", eligible: (entry) => entry.bucket === "additional" }));
     const increasedPercent = own.filter((entry) => entry.bucket === "increased").reduce((sum, entry) => sum + entry.percent, 0);
     const additionalFactor = own.filter((entry) => entry.bucket === "additional").reduce((factor, entry) => factor * (1 + entry.percent / 100), 1);
     const maxDamageFactor = own.filter((entry) => entry.bucket === "max").reduce((factor, entry) => factor * (1 + entry.percent / 100), 1);

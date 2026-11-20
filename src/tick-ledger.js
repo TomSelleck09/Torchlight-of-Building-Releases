@@ -199,7 +199,7 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   const targetBlessings = readings.reapBlessing === "held" ? [] : layerContext?.targetBlessings ?? [];
   if (readings.reapBlessing === "held" && layerContext?.prebuilt) for (const item of layerContext.targetBlessings || []) layerContext.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: item.seconds, layered: true });
   // Aim's state on the loop (src/tick-layers.js aimLayer) enters a held Ignite or Trauma application's amount.
-  const ailmentProgram = live.length ? compileAilmentProgram(planner, { ...readings, targetBlessings }, timerField(readings), { aimBuff: layerContext?.once.has("aim") ? "aim" : null, bus }) : null;
+  const ailmentProgram = live.length ? compileAilmentProgram(planner, { ...readings, targetBlessings }, timerField(readings), { aimBuff: layerContext?.once.has("aim") ? "aim" : null, bus, othersIgnite: layerContext?.othersIgnite ?? null }) : null;
   const plain = live.length ? compilePlainProgram(planner, plainHits, paths, readings, ailmentProgram, layered, bus) : null;
   if (plain) Object.assign(paths, plain.paths);
   // Main Skill triggers (Vendetta) as loop actions (src/tick-trigger-main.js; chunk 15 §10.4): the casts and the Main Skill's own uses on one

@@ -496,7 +496,8 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   const inflictIds = INFLICT_TRIGGERS.filter((id) => ids.has(id));
   const inflictBeamSetup = [...setups.values()].find((setup) => setup.name === "Scorching Beam" && setup.enabled !== false) ?? null;
   const appliersOf = (key) => { const own = planner?.ailments?.[key]; return (own?.appliers?.length ? own.appliers : key === "ignite" ? planner?.igniteAppliers : null) || []; };
-  const liveAppliers = (key) => appliersOf(key).filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && applier.chancePercent > 0);
+  // An applier with a regular chance, or only a not-Ignited one (record 2214789; 10 T Barrier Burst triage L1, 2026-11-18).
+  const liveAppliers = (key) => appliersOf(key).filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && (applier.chancePercent > 0 || applier.notActiveChancePercent > 0));
   const inflictEvents = new Map();
   const inflictEventFor = (ailmentKey, effectKey = null) => {
     if (!inflictIds.length || !ailmentKey) return null;
@@ -947,8 +948,8 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
     } else if (AILMENT_DOTS[key]) {
       const own = planner?.ailments?.[key], type = own?.damageType ?? AILMENT_DOTS[key].type;
       const appliers = (own?.appliers?.length ? own.appliers : key === "ignite" ? planner?.igniteAppliers : null) || [];
-      const live = appliers.filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && applier.chancePercent > 0);
-      const weightOf = (applier) => applier.applicationsPerSecond * Math.min(100, applier.chancePercent) / 100;
+      const live = appliers.filter((applier) => !applier.blocked && applier.applicationsPerSecond > 0 && (applier.chancePercent > 0 || applier.notActiveChancePercent > 0));
+      const weightOf = (applier) => applier.applicationsPerSecond * Math.min(100, applier.chancePercent > 0 ? applier.chancePercent : applier.notActiveChancePercent ?? 0) / 100;
       const total = live.reduce((sum, applier) => sum + weightOf(applier), 0);
       const variants = [];
       for (const applier of live) {
