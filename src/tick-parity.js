@@ -34,13 +34,19 @@ export function hitBudget(run, path, { damage, perUse }, { settledFrame = 60, by
   const weight = (event) => byCount ? event.count ?? 1 : 1;
   const weighted = (list, value) => { const total = list.reduce((sum, event) => sum + weight(event), 0); return total ? list.reduce((sum, event) => sum + weight(event) * value(event), 0) / total : 0; };
   const layers = keys.map((key) => ({ key, factor: weighted(events, (event) => layerValue(key, event.amounts) / steady) }));
-  const valueFactor = weighted(events, (event) => event.amount / weight(event) / steady);
+  // A hit's delayed part (D1, Deterioration at its expiry) is its value too, dealt later on the same series.
+  const valueFactor = weighted(events, (event) => (event.amount + (event.delayedAmount || 0)) / weight(event) / steady);
   const product = layers.reduce((total, layer) => total * layer.factor, 1);
   const expectedHits = damage / perUse;
-  const countFactor = events.reduce((sum, event) => sum + weight(event), 0) / expectedHits;
+  // A delayed part (D1, Deterioration at its expiry) that falls past the run's end is not dealt: the count is the hits at the share of their
+  // value dealt inside the run (1 with no delayed part).
+  const delayedLanded = run.trace.filter((entry) => entry.event === "damage" && entry.kind === "delayed" && entry.path === path.key).reduce((sum, entry) => sum + entry.amount, 0);
+  const delayedAll = events.reduce((sum, event) => sum + (event.delayedAmount || 0), 0);
+  const delivered = delayedAll > 0 ? (events.reduce((sum, event) => sum + event.amount, 0) + delayedLanded) / (events.reduce((sum, event) => sum + event.amount, 0) + delayedAll) : 1;
+  const countFactor = events.reduce((sum, event) => sum + weight(event), 0) / expectedHits * delivered;
   const covariance = valueFactor / product;
   const settled = events.filter((event) => event.frame > settledFrame);
-  const settledCovariance = weighted(settled, (event) => event.amount / weight(event) / steady) / keys.reduce((total, key) => total * weighted(settled, (event) => layerValue(key, event.amounts) / steady), 1);
+  const settledCovariance = weighted(settled, (event) => (event.amount + (event.delayedAmount || 0)) / weight(event) / steady) / keys.reduce((total, key) => total * weighted(settled, (event) => layerValue(key, event.amounts) / steady), 1);
   return { hits: events.length, expectedHits, countFactor, valueFactor, layers, covariance, openingOverlap: covariance / settledCovariance, settledCovariance, total: countFactor * valueFactor, steady };
 }
 

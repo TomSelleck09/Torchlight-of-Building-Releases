@@ -48,7 +48,7 @@ export function consumptionShare(gainPerSecond, castsPerSecond) {
 function agilitySourceRate(text, facts) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   const stacks = Number(clean.match(/gain (\d+) stacks?(?:\(s\))? of Agility/i)?.[1]) || 1;
-  if (/Mobility Skill/i.test(clean)) return facts?.mobilityUsesPerSecond > 0 ? { rate: stacks * facts.mobilityUsesPerSecond, how: `${stacks} per Mobility Skill use, ${round(facts.mobilityUsesPerSecond)} uses/s on cooldown (best case)` } : { unmodeled: "Agility from using Mobility Skills (no Mobility Skill with a cooldown on the board)" };
+  if (/Mobility Skill/i.test(clean)) return facts?.mobilityUsesPerSecond > 0 ? { rate: stacks * facts.mobilityUsesPerSecond, how: `${stacks} per Mobility Skill use, ${round(facts.mobilityUsesPerSecond)} uses/s ${facts.mobilityUsesNote ? `(${facts.mobilityUsesNote})` : "on cooldown (best case)"}` } : { unmodeled: "Agility from using Mobility Skills (no Mobility Skill with a cooldown on the board)" };
   if (/upon reaching Max Multistrike|max stacks of Agility/i.test(clean)) return { unmodeled: "max-stack Agility grants (their event rate is not modeled)" };
   let match = clean.match(/upon inflicting damage\. Interval: ([\d.]+) ?s/i);
   if (match) { const cap = 1 / num(match[1]); return { rate: facts?.hitsPerSecond != null ? Math.min(cap, facts.hitsPerSecond) : cap, how: `1 per ${num(match[1])} s while hitting` }; }

@@ -2,6 +2,9 @@ import { statSheetModel } from "./stat-sheet.js";
 import { statSheetPanelModel } from "./stat-sheet-panel.js";
 import { toggleNumberMarkup } from "./dummy-recount-panel.js";
 import { summarizeRecount } from "./dummy-recount.js";
+import { ALL_SKILLS, skillDamageWindows } from "./sidebar-skill-damage.js";
+
+export { ALL_SKILLS };
 
 // Left stats sidebar of the tabbed layout (2026-10-29, step 1 of the user-approved layout; design reference
 // research/layout-mockup-2026-10-29/). It restates figures the stat sheet already computes (src/stat-sheet.js statSheetModel,
@@ -45,9 +48,39 @@ export function combinedSpeedRow(row) {
   return { ...row, value: `${combined < 0 ? "" : "+"}${combined.toFixed(2)}%`, title: [row.value, row.title].filter(Boolean).join("\n") };
 }
 
-/** The sidebar's figures for one planner pass: damage windows, offence / defence rows and the Config link counts. */
+/**
+ * The sidebar's figures for one planner pass: damage windows, offence / defence rows and the Config link counts. `selectedKey` is the
+ * picker's choice: ALL_SKILLS (or nothing) shows the build's totals, a skill its own damage (src/sidebar-skill-damage.js); the
+ * offence / defence rows follow the stat sheet's skill (the Main Skill with "All skills").
+ */
 export function statsSidebarModel(planner, selectedKey, resources, format) {
-  const model = statSheetModel(planner, selectedKey, resources);
+  let allSkills = selectedKey === undefined || selectedKey === null || selectedKey === "" || selectedKey === ALL_SKILLS;
+  const model = statSheetModel(planner, allSkills ? undefined : selectedKey, resources);
+  // A saved choice no longer on the board reads as "All skills" (the stat sheet falls back to the Main Skill).
+  if (!model.options.some((skill) => skill.setupKey === selectedKey || skill.name === selectedKey)) allSkills = true;
+  const view = sidebarTotalsModel(planner, model, format);
+  const options = model.options.map((skill) => ({ value: skill.setupKey || skill.name, name: skill.name, selected: !allSkills && skill === model.skill, baseLevel: skill.baseLevel, addedLevels: Number(skill.addedLevels) || 0 }));
+  if (!options.length) return { ...view, options };
+  // Its icon is the Main Skill's (user request 2026-11-22: not the Σ).
+  const mainSkillName = (planner?.mainSkill && model.options.find((skill) => skill.setupKey === planner.mainSkill.setupKey || skill.name === planner.mainSkill.name)?.name) || model.options[0]?.name || "";
+  const all = { value: ALL_SKILLS, name: "All skills", all: true, iconName: mainSkillName, selected: allSkills || !options.some((option) => option.selected), baseLevel: null, addedLevels: 0 };
+  if (all.selected || !model.skill) return { ...view, options: [all, ...options], skillName: model.skill?.name || "", allSkills: true };
+  // One skill: its own rows. Wholly its own build (every row with damage is this skill's) keeps the build's figures unsummed.
+  const own = skillDamageWindows(planner, model.skill.setupKey, SIDEBAR_RECOUNT_SECONDS);
+  const beamSetup = model.skill.name === "Scorching Beam";
+  const figure = (key, attributed) => {
+    if (!own.modeled) return 0;
+    const total = view.damage.find((item) => item.key === key).value;
+    if (own.whole && view.modeled) return total;
+    if (own.pathless && key !== "recount") return beamSetup && view.modeled ? total : 0;
+    return attributed;
+  };
+  const damage = view.damage.map((item) => ({ ...item, value: figure(item.key, { sustained: own.sustained, five: own.five, twenty: own.twenty, recount: own.recount }[item.key]),
+    note: item.note.replace(/^Total modeled DPS: steady state, every source/, `${model.skill.name}'s own DPS: steady state, its hits, own DoT, the ailments it inflicts and the Reaps settling them`).replace(/^Average DPS/, `${model.skill.name}'s average DPS`) }));
+  return { ...view, options: [all, ...options], damage, modeled: own.modeled, notModeled: own.modeled ? "" : `Damage not modeled for ${model.skill.name}`, allSkills: false };
+}
+
+function sidebarTotalsModel(planner, model, format) {
   const panel = statSheetPanelModel(model, planner, format);
   const timeline = planner.dummyRecount?.timeline;
   const modeledSource = (planner.damageSources || []).some((source) => source.status === "modeled" && source.name === model.skill?.name);
@@ -72,7 +105,6 @@ export function statsSidebarModel(planner, selectedKey, resources, format) {
     return { element, value: entry ? entry.effective : 0 };
   });
   return {
-    options: model.options.map((skill) => ({ value: skill.setupKey || skill.name, name: skill.name, selected: skill === model.skill, baseLevel: skill.baseLevel, addedLevels: Number(skill.addedLevels) || 0 })),
     skillName: model.skill?.name || "",
     modeled, notModeled, damage, offence, defence, resistances,
     assumptions: (planner.assumptions || []).length,
@@ -95,7 +127,8 @@ export function sidebarSkillPickerMarkup(view, escapeHtml, icon = () => "") {
   // No skill on the board (user request 2026-10-30): the box opens the skill board's picker for Active skill slot 1, the Main
   // Skill slot (src/app.js, data-sidebar-skill-add).
   if (!selected) return frame(`<button type="button" id="sidebar-skill" class="sidebar-skill-button sidebar-skill-add" aria-label="Choose a main skill" data-sidebar-skill-add><span id="sidebar-skill-button-text" class="sidebar-skill-current"><span class="sidebar-skill-icon sidebar-skill-empty" aria-hidden="true">+</span><span class="sidebar-skill-text"><strong>Choose a main skill</strong></span></span></button>`);
-  const body = (option) => `${icon(option.name)}<span class="sidebar-skill-text"><strong>${escapeHtml(option.name)}</strong><small>${levelText(option)}</small></span>`;
+  // "All skills" (user request 2026-11-22): the Main Skill's icon, no level (the gold Σ only when no Main Skill is known).
+  const body = (option) => `${option.all ? (option.iconName ? icon(option.iconName) : '<span class="sidebar-skill-icon sidebar-skill-all" aria-hidden="true">Σ</span>') : icon(option.name)}<span class="sidebar-skill-text"><strong>${escapeHtml(option.name)}</strong><small>${levelText(option)}</small></span>`;
   const options = view.options.map((option, index) => `<li role="option" id="sidebar-skill-option-${index}" class="sidebar-skill-option${option.selected ? " selected" : ""}" data-sidebar-skill-value="${escapeHtml(option.value)}" aria-selected="${option.selected ? "true" : "false"}">${body(option)}</li>`).join("");
   return frame(`<button type="button" id="sidebar-skill" class="sidebar-skill-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="sidebar-skill-list" aria-labelledby="sidebar-skill-label sidebar-skill-button-text" data-sidebar-skill-toggle><span id="sidebar-skill-button-text" class="sidebar-skill-current">${body(selected)}</span><b class="sidebar-skill-caret" aria-hidden="true">▾</b></button><ul id="sidebar-skill-list" class="sidebar-skill-list" role="listbox" tabindex="-1" aria-labelledby="sidebar-skill-label" hidden>${options}</ul>`);
 }

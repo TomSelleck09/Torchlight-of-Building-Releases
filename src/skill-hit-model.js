@@ -35,6 +35,7 @@ import { applyFocusSpeed } from "./focus-speed.js";
 import { reboundState } from "./ice-lances-rebound.js";
 import { maxChanneledStacksLine } from "./channeled-stack-lines.js";
 import { SPELL_BURST_USE_GAIN, spellBurstUseGainLines, spellBurstRefillWalk } from "./spell-burst-refill.js";
+import { landingEvents, oncePerFrameWalk, onceGateFrames, spellBurstExtraCastSpacing, useSchedule } from "./once-per-frame.js";
 import { mergeRotationTurns } from "./rotating-buffs.js";
 
 // Generic spell-hit engine (profile kind "hit", engine "skill-hit"; src/skill-hit-profiles.js).
@@ -85,6 +86,14 @@ const SENTRY_LINE_SPLIT = /\r?\n| \| /;
 export const FURY_LUCKY_LINE = /^Damage becomes Lucky and at least (\d+) stack\(s\) of Spell Burst Charge is consumed when Spell Burst is activated$/i;
 export const UNSTOPPABLE_FORCE_LINE = /^When a Combo Finisher is in Multistrike, it is guaranteed to deal damage equal to the Max Multistrike Count$/i;
 export const CAST_SPEED_TO_CHARGE_LINE = /^(\d+(?:\.\d+)?)% of the bonuses and additional bonuses to Cast Speed is also applied to Spell Burst Charge Speed$/i;
+// Insatiable Greed (Law of Greed and its Vorax Limb: Neck graft; game recipe 588396864): row 1 is node 130 (seal P1% Max Mana, its
+// `affixes` [2] runs row 2 while the seal holds); row 2 is one node 114 from attr 60011 (the last digit 1: attribute 6001, Attack Speed;
+// node-114 trace 2026-11-03, proven) mod 3 (Σ increased) into attr 63601 (6360, Spell Burst Charge Speed) mod 3 (increased) at 1.5 per 1,
+// no tags, no limits: +1.5 × the increased Attack Speed as increased Spell Burst Charge Speed, linear, a negative pool too. Additional
+// Attack Speed does not convert (no mod-4 node, unlike Play Safe). The hover text (hyperlink 10165) agrees: "150% of the bonuses to
+// Attack Speed is also applied to Spell Burst Charge Speed".
+export const INSATIABLE_GREED_LINE = /^Seals (\d+(?:\.\d+)?) ?% Max Mana\. Gains Insatiable Greed$/i;
+export const INSATIABLE_GREED_SHARE_PERCENT = 150;
 // Sweeping Fury (Ethereal Prism core; game affix 19348734) and its Projectile Quantity cap (555436864 / 101080025).
 // The planner's own Bard line (src/selena-tide.js hitLines): the one Channeled line a Bard Song bubble does not take.
 const BARD_STATE_LINE = /^Selena: Bard state/;
@@ -355,53 +364,91 @@ const falloffVolley = (falloff, nearTarget, fanLandsAll = false, landed = null) 
 // Damage Increment … its value will be multiplied by (100% + Additional Increment percentage)"; 1001020127 "The Multistrike
 // Count starts from 1 (E.g. When the Multistrike Chance is 200%, … a cycle of 1, 2, 3...). The Max Multistrike Count depends
 // on the Multistrike Chance"; 1001020123 / reference data: +20% Attack Speed during Multistrikes.
-// Attack j of a sequence (j = 0 the initial attack) has Multistrike Count 1 + initialCountBonus + j and takes
-// (count − 1) × increment. Provisional readings (Erika batch 2026-10-14, questions to the user):
-// - "+N initial Multistrike Count" shifts every count of the sequence by N; the number of attacks still follows the chance, so
-//   the Max Multistrike Count is the last attack's count (reading A). The alternative (the sequence stops at a fixed Max, so a
-//   higher start means fewer, stronger attacks) is not modeled.
+// Attack j of a sequence of T attacks (j = 0 the initial attack) has Multistrike Count c_j = min(M, max(1, 1 + initialCountBonus) + j), M = the
+// sequence's Max Multistrike Count = T + maxCountBonus (field 2006253), and takes (c_j − 1) × increment. SS14 client, static (6 T Corrosive
+// Throw C, user decision 2026-11-20 "follow the game files for C"; research/build-6t-corrosive-throw-g2-g3-2026-11-20.md §3): the stamp
+// 0x141e1e770 sets max = extra attacks + 1 + field 2006253 and the initial count = field 2006252 (default 1.0, + the "+N initial Multistrike
+// Count" adds; §2), clamped to 1 ≤ initial ≤ max; each repeat (0x141df07b0) adds 1 while the count is below the max; the damage record
+// (0x1423e9500) multiplies by 1 + attr 6350 × (count − 1). Every strike at the max carries tag 6010061 (record 7905245's "+X% additional
+// Attack Damage" for Hunting Instinct, `maxCountAdditionalPercent`, is written on it), so every such strike takes it. This replaces the
+// user-accepted 2026-10-14 reading that "+N initial Multistrike Count" shifts every count of the sequence: the shift holds only up to the
+// sequence's attack count. A sequence that rolls no extra attack is read as unstamped (count 0: no increment, no at-max tag; inferred, open
+// question multistrike-count-cap-links). With the chance's whole part w and remainder r, a sequence has w + 1 attacks (1 − r) or w + 2 (r).
+// Provisional readings kept over the capped count (Erika batch 2026-10-14, questions to the user):
 // - "+X% additional damage during Multistrike" (repeatAdditionalPercent) reaches the repeated attacks (j ≥ 1), not the
 //   initial attack (the planner's reading of "+20% Attack Speed during Multistrikes" too).
-// - "attacks that reach max Multistrike Count" (maxCountAdditionalPercent) is the last attack of a sequence that multistrikes;
-//   a sequence below 100% chance reaches it only when the repeat happens. One Max Multistrike Count event per such sequence.
+// - One Max Multistrike Count event per sequence that multistrikes (which flag raises the event, 1000071 on tag 6010061, is not read: if
+//   every strike at the max raised it, a sequence with an initial-count bonus raises several; open question multistrike-count-cap-links).
+// - "attacks that reach max Multistrike Count" (maxCountAdditionalPercent): every strike at the max count (tag 6010061).
 // - Additional Multistrike Damage Increment from several sources (Cat's Scratch, Thunder Slash's "2% additional damage
 //   increment for every +1% Steep Strike chance" = skillIncrementAdditionalPercent): game affixes 889828224 and 570299392 are two
 //   writes of attr 63501 mod 4, so each is its own factor on the increment (2026-10-31; research/hero-erika-chunk1-2026-10-31.md).
 //   This overrides the 2026-10-14 pasted AI answer that they shared one additive pool.
 // - Cat Dive (Erika, catDiveChancePercent; user-supplied reading, confirmed 2026-10-14, provisional): each repeated attack
-//   (j ≥ 1) has that chance to take the damage increment of the Max Multistrike Count attack instead of its own; expected
+//   (j ≥ 1) has that chance to take the damage increment of its sequence's Max Multistrike Count instead of its own; expected
 //   value chance × max-count strike + (1 − chance) × own strike. A Cat Dive trigger is not a Max Multistrike Count event
-//   (user-confirmed 2026-10-14), so maxCountAdditionalPercent and the event count do not change. The max-count strike is the
-//   last attack's count (whole + 1 when the remainder may add one more, else whole); each repeat's other multipliers
+//   (user-confirmed 2026-10-14), so maxCountAdditionalPercent and the event count do not change; each repeat's other multipliers
 //   (Stalker's repeat bonus) are kept.
 // Thunder Slash: Flurry (Noble; game affix 711264384: field 2006255 = 100 "deemed to have the Max Multistrike Count", field 2006256 = P1
 //   the Max Multistrike Count; skill-mechanics census batch 2, 2026-10-27; provisional, open question thunder-slash-flurry-keen-edge):
-//   `maxCountCap` caps the repeat attacks at P1 and `allAtMax` makes every repeat attack take the count-P1 increment and the "+X% on the
-//   attack that reaches the Max Multistrike Count" bonus, and count as a Max Multistrike Count event.
+//   `maxCountCap` caps the repeat attacks at P1 and `allAtMax` makes every repeat attack take the count-(1 + P1) increment (no initial-count
+//   bonus past it) and the "+X% on the attack that reaches the Max Multistrike Count" bonus, and count as a Max Multistrike Count event.
 // Thunder Slash: Keen Edge (Magnificent; game affix 491653184: attr 6001 Attack Speed mod 4 additional, this skill, gated on the
 //   Multistriking state 4000810): `repeatSpeedAdditionalPercent` speeds the repeat attacks (provisional: the state is read as the
 //   repeats only; the first attack keeps the skill's own speed).
-export function multistrikeSequence({ chancePercent = 0, incrementPercent = 0, initialCountBonus = 0, repeatAdditionalPercent = 0, maxCountAdditionalPercent = 0, incrementAdditionalPercent = 0, skillIncrementAdditionalPercent = 0, catDiveChancePercent = 0, firstAtMax = false, maxCountCap = null, allAtMax = false, repeatSpeedAdditionalPercent = 0 } = {}) {
+// `castBuff` ({ percent, cap, share }): a skill's own Multistrike buff (Corrosive Throw's record 103010108: on each use raising 1000074
+//   while Multistriking, gate 4000810, buff 10690 at GetSkillCastRepeatIndex − 1 stacks; node 624 bOnceToSkill writes on that strike's own
+//   instance, so no lag): strike j takes min(cap, c_j − 1) stacks × +percent% additional damage and its own time ÷ (1 + speedPercent% ×
+//   those stacks), on the `share` of the uses that raise it.
+export function multistrikeSequence({ chancePercent = 0, incrementPercent = 0, initialCountBonus = 0, maxCountBonus = 0, repeatAdditionalPercent = 0, maxCountAdditionalPercent = 0, incrementAdditionalPercent = 0, skillIncrementAdditionalPercent = 0, catDiveChancePercent = 0, firstAtMax = false, maxCountCap = null, allAtMax = false, repeatSpeedAdditionalPercent = 0, castBuff = null } = {}) {
   const expected = Math.min(Number.isFinite(maxCountCap) ? Math.max(0, maxCountCap) : Infinity, Math.max(0, chancePercent) / 100), whole = Math.floor(expected), remainder = expected - whole;
   const increment = incrementPercent * (1 + incrementAdditionalPercent / 100) * (1 + skillIncrementAdditionalPercent / 100) / 100;
   const dive = Math.min(1, Math.max(0, catDiveChancePercent / 100));
-  const maxIndex = remainder > 0 ? whole + 1 : whole;
-  const plainStrike = (index) => (1 + (initialCountBonus + index) * increment) * (index >= 1 ? 1 + repeatAdditionalPercent / 100 : 1);
-  // `firstAtMax` (Unstoppable Force, user-supplied 2026-10-19): the first attack of the sequence takes the Max Multistrike Count
-  // increment too (without the repeat-only bonus); otherwise only the repeated attacks dive.
-  const maxIncrementFirst = () => 1 + (initialCountBonus + maxIndex) * increment;
-  const strikeAt = (index) => index === 0 && firstAtMax && dive > 0 && maxIndex > 0 ? dive * maxIncrementFirst() + (1 - dive) * plainStrike(0) : index >= 1 && dive > 0 && index < maxIndex ? dive * plainStrike(maxIndex) + (1 - dive) * plainStrike(index) : plainStrike(index);
-  // The +X% on the attack that reaches the Max Multistrike Count (the last attack of the sequence) applies to whatever that
-  // attack deals, a Cat Dive included; the dive itself never makes an earlier attack count as reaching it.
+  const extraMax = Math.max(0, Math.floor(Number(maxCountBonus) || 0));
+  const start = Math.max(1, 1 + Math.floor(Number(initialCountBonus) || 0));
+  // The sequence's Max Multistrike Count and attack j's count (0: a sequence that rolls no extra attack is not stamped).
+  const maxOf = (attacks) => attacks + extraMax;
+  const countAt = (index, attacks) => attacks < 2 ? 0 : Math.min(maxOf(attacks), start + index);
+  const incrementAt = (count) => count > 1 ? 1 + (count - 1) * increment : 1;
+  const repeatAt = (index) => index >= 1 ? 1 + repeatAdditionalPercent / 100 : 1;
+  const buffAt = (count) => castBuff && count >= 1 ? 1 + (castBuff.share ?? 1) * castBuff.percent / 100 * Math.min(castBuff.cap, Math.max(0, count - 1)) : 1;
   const flurryIndex = allAtMax && Number.isFinite(maxCountCap) ? Math.max(0, maxCountCap) : null;
-  const strike = flurryIndex != null ? (index) => index >= 1 ? plainStrike(flurryIndex) : plainStrike(0) : strikeAt;
+  const flurryCount = flurryIndex != null ? Math.min(start + flurryIndex, 1 + flurryIndex + extraMax) : null;
+  const strike = (index, attacks) => {
+    const count = countAt(index, attacks);
+    if (flurryIndex != null && index >= 1) return incrementAt(flurryCount) * repeatAt(index) * buffAt(count);
+    // Cat Dive: a repeat takes its sequence's max-count increment; `firstAtMax` (Unstoppable Force, user-supplied 2026-10-19) the first attack
+    // too (without the repeat-only bonus).
+    const diving = dive > 0 && attacks >= 2 && (index >= 1 || firstAtMax) && count < maxOf(attacks);
+    const own = incrementAt(count);
+    return (diving ? dive * incrementAt(maxOf(attacks)) + (1 - dive) * own : own) * repeatAt(index) * buffAt(count);
+  };
+  const short = whole + 1, long = whole + 2;
   let damage = 0;
-  for (let index = 0; index <= whole; index++) damage += strike(index);
-  damage += remainder * strike(whole + 1);
+  for (let index = 0; index <= whole; index++) {
+    const a = strike(index, short), b = remainder > 0 ? strike(index, long) : a;
+    damage += a === b ? a : (1 - remainder) * a + remainder * b;
+  }
+  damage += remainder * strike(whole + 1, long);
   const atMax = maxCountAdditionalPercent / 100;
-  if (atMax) damage += flurryIndex != null ? atMax * expected * strike(1) : atMax * ((whole >= 1 ? (1 - remainder) * strike(whole) : 0) + remainder * strike(whole + 1));
-  const cycleIntervals = 1 + expected / (1.2 * (1 + Math.max(-99, repeatSpeedAdditionalPercent) / 100));
-  return { chancePercent, incrementPercent, skillIncrementAdditionalPercent, catDiveChancePercent: dive * 100, effectiveIncrementPercent: increment * 100, initialCountBonus, expectedExtraAttacks: expected, damagePerCycle: damage, cycleIntervals, rateFactor: (1 + expected) / cycleIntervals, averageDamageFactor: damage / (1 + expected), maxCountEventsPerCycle: flurryIndex != null ? expected : whole >= 1 ? 1 : remainder, maxCount: flurryIndex != null ? 1 + initialCountBonus + flurryIndex : 1 + initialCountBonus + whole + (remainder > 0 ? 1 : 0), ...(flurryIndex != null ? { allAtMax: true, maxCountCap } : {}), ...(repeatSpeedAdditionalPercent ? { repeatSpeedAdditionalPercent } : {}) };
+  const atMaxSum = (attacks) => { let total = 0; for (let index = 0; index < attacks; index++) if (countAt(index, attacks) === maxOf(attacks)) total += strike(index, attacks); return total; };
+  if (atMax) damage += flurryIndex != null ? atMax * expected * strike(1, long) : atMax * ((short >= 2 ? (1 - remainder) * atMaxSum(short) : 0) + remainder * atMaxSum(long));
+  // The buff's Attack Speed half (castBuff.speedPercent, field 2600252: record 103010108's 60011 mod 4 on the strike's own instance; user
+  // decision 2026-11-20): strike j's own time ÷ (1 + speed% × its stacks), on the `share` of the uses that raise 1000074 (the rest keep it).
+  const repeatTime = 1 / (1.2 * (1 + Math.max(-99, repeatSpeedAdditionalPercent) / 100));
+  const buffSpeed = castBuff && castBuff.speedPercent > 0 ? castBuff.speedPercent / 100 : 0;
+  const timeOf = (index, attacks) => {
+    const own = index >= 1 ? repeatTime : 1, stacks = Math.min(castBuff.cap, Math.max(0, countAt(index, attacks) - 1)), share = castBuff.share ?? 1;
+    return share * own / (1 + buffSpeed * stacks) + (1 - share) * own;
+  };
+  let cycleIntervals = 1 + expected / (1.2 * (1 + Math.max(-99, repeatSpeedAdditionalPercent) / 100));
+  if (buffSpeed > 0) {
+    cycleIntervals = 0;
+    for (let index = 0; index <= whole; index++) cycleIntervals += (1 - remainder) * timeOf(index, short) + (remainder > 0 ? remainder * timeOf(index, long) : 0);
+    cycleIntervals += remainder * timeOf(whole + 1, long);
+  }
+  const maxCount = flurryIndex != null ? flurryCount : maxOf(remainder > 0 ? long : short);
+  return { chancePercent, incrementPercent, skillIncrementAdditionalPercent, catDiveChancePercent: dive * 100, effectiveIncrementPercent: increment * 100, initialCountBonus, ...(extraMax ? { maxCountBonus: extraMax } : {}), expectedExtraAttacks: expected, damagePerCycle: damage, cycleIntervals, rateFactor: (1 + expected) / cycleIntervals, averageDamageFactor: damage / (1 + expected), maxCountEventsPerCycle: flurryIndex != null ? expected : whole >= 1 ? 1 : remainder, maxCount, ...(flurryIndex != null ? { allAtMax: true, maxCountCap } : {}), ...(repeatSpeedAdditionalPercent ? { repeatSpeedAdditionalPercent } : {}), ...(castBuff ? { castBuff: { ...castBuff } } : {}) };
 }
 // Steep Strike chance per Slash-Strike skill (2026-10-14): the skill's own chance (profile.steepStrike, reference data "This skill +20%
 // Steep Strike chance") + "The supported skill +X% Steep Strike chance" on its supports (Raging Slash) + the build's plain
@@ -473,7 +520,8 @@ export function shotgunEffectGrant({ setup = null, modifierTexts = [], tags = []
 
 /** Steep Strikes per use from stored attempts (Thunder Slash; see steepStrikeState): { share, repeatsPerUse, fromRepeats, window }. */
 // Without the Multistrike sequence model (no Multistrike chance on the skill's supports or the build's lines) the profile's own
-// reading holds: `ownRepeatsPerUse` repeated attacks per use (Thunder Slash: its +20% Multistrike chance as 0.2 repeated sweeps).
+// reading holds: `ownRepeatsPerUse` repeated attacks per use (no profile sets it since 2026-11-20: Thunder Slash's own +20% Multistrike Chance
+// is in its Multistrike sequence, 6 T Corrosive Throw audit G4).
 export function steepAttemptShare({ multistrike = null, perRepeats = 2, window = false, ownRepeatsPerUse = 0 } = {}) {
   const extra = multistrike ? Math.max(0, multistrike.expectedExtraAttacks || 0) : 0;
   const repeatsPerUse = multistrike ? extra / (1 + extra) : Math.max(0, ownRepeatsPerUse);
@@ -481,12 +529,19 @@ export function steepAttemptShare({ multistrike = null, perRepeats = 2, window =
   return { share: window ? 1 : fromRepeats, repeatsPerUse, fromRepeats, window: Boolean(window) };
 }
 
+// Expected sequence time (attack intervals) over weighted states, as multistrikeStatesDamage (the weights read as sequence shares).
+export function multistrikeStatesTiming(base, states = []) {
+  const total = states.reduce((sum, state) => sum + (Number(state.weight) || 0), 0);
+  if (!(total > 0)) return multistrikeSequence(base).cycleIntervals;
+  return states.reduce((sum, state) => sum + (Number(state.weight) || 0) / total * multistrikeSequence({ ...base, ...state, initialCountBonus: (base.initialCountBonus || 0) + (state.initialCountBonus || 0), maxCountBonus: (base.maxCountBonus || 0) + (state.maxCountBonus || 0) }).cycleIntervals, 0);
+}
+
 // Expected damage per sequence over weighted states ({ weight, ...multistrikeSequence options }).
 export function multistrikeStatesDamage(base, states = []) {
   const total = states.reduce((sum, state) => sum + (Number(state.weight) || 0), 0);
   if (!(total > 0)) return multistrikeSequence(base).damagePerCycle;
-  // A state's initial Multistrike Count adds to the build's own ("+N initial Multistrike Count" lines, Preemptive Strike).
-  return states.reduce((sum, state) => sum + (Number(state.weight) || 0) / total * multistrikeSequence({ ...base, ...state, initialCountBonus: (base.initialCountBonus || 0) + (state.initialCountBonus || 0) }).damagePerCycle, 0);
+  // A state's initial and Max Multistrike Count bonuses add to the build's own ("+N initial Multistrike Count" lines, Preemptive Strike).
+  return states.reduce((sum, state) => sum + (Number(state.weight) || 0) / total * multistrikeSequence({ ...base, ...state, initialCountBonus: (base.initialCountBonus || 0) + (state.initialCountBonus || 0), maxCountBonus: (base.maxCountBonus || 0) + (state.maxCountBonus || 0) }).damagePerCycle, 0);
 }
 
 /**
@@ -562,7 +617,7 @@ export function movementFocusProfile(profile, moveSpeed) {
   return { ...profile, focus: { ...profile.focus, pointsPerSecond }, useModel: { ...profile.useModel, usesPerSecond, firstUseSeconds: pointsPerSecond > 0 ? perUse / pointsPerSecond : Infinity, note } };
 }
 
-export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null, projectileHits = null, isMainSkill = null, spellBurstUseStreams = null } = {}) {
+export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null, projectileHits = null, isMainSkill = null, spellBurstUseStreams = null, deteriorationShared = null, attackSpeedToChargePool = null } = {}) {
   // A Focus skill that gains its Focus Pts per metre moved (Thunder Focus) at the player's movement speed (user decision 2026-11-10).
   profile = movementFocusProfile(profile, moveSpeed);
   // The Main Skill is the planner's Main Skill (isMainSkill, from src/planner.js resolvedMain; 2026-11-15): every active-slot skill of a
@@ -632,7 +687,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     critRating: [...supportsRaw.critRating, ...auraTagCrit],
     conversion: [...supportsRaw.conversion, ...passive.conversion.map((line) => ({ source: line.source, text: line.text, from: capType(line.from), to: capType(line.to), percent: line.percent }))],
     addedAs: [...supportsRaw.addedAs, ...passive.addedAs.map((line) => ({ source: line.source, text: `${line.text} (provisional reading)`, from: capType(line.from), to: capType(line.to), percent: line.percent }))],
-    effects: { ...supportsRaw.effects, multistrike: [...supportsRaw.effects.multistrike, ...passive.multistrike], quantity: [...supportsRaw.effects.quantity, ...passive.quantity] }
+    // A skill's own "+X% Multistrike Chance for this skill" (stone records 668630 / 101080120: field 2006240 on this skill; Corrosive Throw and
+    // Thunder Slash +20%) is part of the Multistrike chance like any other line (6 T Corrosive Throw audit G4, 2026-11-20: the panel's 399%).
+    effects: { ...supportsRaw.effects, multistrike: [...supportsRaw.effects.multistrike, ...passive.multistrike, ...(profile.ownMultistrikeChancePercent ? [{ kind: "chance", value: profile.ownMultistrikeChancePercent, source: `${profile.name} (skill text)`, text: `+${profile.ownMultistrikeChancePercent}% Multistrike Chance for this skill (record 668630: field 2006240 on this skill)` }] : [])], quantity: [...supportsRaw.effects.quantity, ...passive.quantity] }
   };
   notes.push(...supports.notes);
   // The tagged attribute pool (W9 step 3; src/attribute-pool-hit.js), TLI_POOL_HIT=pool: the lines' hit readings, the supports' damage,
@@ -717,6 +774,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     if (ringStacks?.ringSlot) { if (ringStacks.active) channelLines.push({ kind: "maxStacks", value: ringStacks.value * (line.multiplier ?? 1), source: line.source, text: line.text, origin: line.origin }); continue; }
     const channelParsed = channel ? classifyChannelLine(line.text) : null;
     if (channelParsed) { channelLines.push({ ...channelParsed, source: line.source, text: line.text, origin: line.origin, value: channelParsed.value * (line.multiplier ?? 1) }); continue; }
+    // A skill with no channel: the per-additional-max-stack lines still apply (records 328531744 / 996307264: node 114 from field 20060502
+    // with no tag, so any skill's damage; 2026-11-20, 15 T Split Shot audit G4). "+X% damage for Channeled Skills" stays a channel line.
+    const stackParsed = channel ? null : classifyChannelLine(line.text);
+    if (stackParsed && (stackParsed.kind === "perStackIncreased" || stackParsed.kind === "perStackAdditional")) { channelLines.push({ ...stackParsed, source: line.source, text: line.text, origin: line.origin, value: stackParsed.value * (line.multiplier ?? 1) }); continue; }
     const textParsed = classifyHitLine(line.text, { targetCursed, enemyAilments });
     const recipeParsed = readRecipe ? hitLineFromFacts(readRecipe(line), textParsed, recipeState) : undefined;
     const parsed = pickHitReading(textParsed, recipeParsed);
@@ -782,6 +843,17 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const own = profile.channel?.perAdditionalMaxStackAdditionalPercent;
     if (own) additional.push({ source: `${profile.name}: additional Max Channeled Stacks`, text: `+${own}% additional damage for every +1 additional Max Channeled Stack(s) (${additionalMaxStacks} additional; skill text)`, origin: "skill", value: own * additionalMaxStacks, category: "Additional damage" });
     return { baseMaxStacks: base, baseMaxSource: profile.channel?.baseMaxSource || null, maxStacks, additionalMaxStacks, fullStacks: maxStacks, sources, increased, additional: additional.filter((line) => line.value !== 0) };
+  })();
+  // A skill with no channel reads the same field (20060502, the stacks above the base: this setup's "+N Max Channeled Stacks for the
+  // supported skill" and the build's "+N Max Channeled Stacks" lines, ring-slot lines from their slot) for the per-stack lines above.
+  // channelState stays null (other readers take it as "this skill channels"). Hits only, as on a channel skill.
+  const stackLineState = (() => {
+    if (channel || !channelLines.length) return null;
+    const sources = [...supports.maxStacks, ...modifierTexts.map((line) => { const read = maxChanneledStacksLine(line); return read?.active ? { source: line.source, text: line.text, value: read.value * (line.multiplier ?? 1) } : null; }).filter(Boolean)];
+    const additionalMaxStacks = Math.max(0, sum(sources));
+    const increased = channelLines.filter((line) => line.kind === "perStackIncreased").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: line.value * additionalMaxStacks, category: "Increased damage" }));
+    const additional = channelLines.filter((line) => line.kind === "perStackAdditional").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: line.value * additionalMaxStacks / line.per, category: "Additional damage" }));
+    return { additionalMaxStacks, sources, increased: increased.filter((line) => line.value !== 0), additional: additional.filter((line) => line.value !== 0) };
   })();
 
   // Use rate (before the components: tick intervals scale with cast speed). Attack skills (speed type "attack-speed")
@@ -905,9 +977,22 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       ...(additional ? [{ source: line.source, text: `${round(additional)}% additional Spell Burst Charge Speed`, note: `${round(additional)}% additional Cast Speed → additional Spell Burst Charge Speed ${note}`, castSpeedShare: true }] : [])
     ];
   }) : [];
-  const spellBurstCharge = spellBurstChargeTime([...modifierTexts, ...castToChargeLines, ...supports.effects.spellBurst.filter((line) => line.kind === "chargeIncreased" || line.kind === "chargeAdditional")
+  // Insatiable Greed (game recipe 588396864, INSATIABLE_GREED_LINE): 150% of the increased Attack Speed joins the increased Spell Burst
+  // Charge Speed. Node 114 reads its source with the reader's own query (node-114 trace 2026-11-03), so the pool is the character's
+  // increased Attack Speed (the weapon model's untagged and "Attack and Cast Speed" lines with the held Aura / Aim / Blessing / support-buff
+  // lines; planner `attackSpeedToChargePool`) plus the tag-scoped lines this skill's tags reach; the setup's own support lines are left
+  // out, as for Play Safe (inferred: the query the charge speed is read with; open question insatiable-greed-attack-speed-pool).
+  const greedLines = attackSpeedToChargePool ? modifierTexts.flatMap((line) => {
+    if (!INSATIABLE_GREED_LINE.test(lineText(line))) return [];
+    const share = INSATIABLE_GREED_SHARE_PERCENT * (line.multiplier ?? 1) / 100;
+    const pool = Number(attackSpeedToChargePool.increasedPercent) || 0;
+    const value = share * pool;
+    return [{ source: line.source, text: `${value.toFixed(10)}% Spell Burst Charge Speed`, value, note: `${round(share * 100)}% of ${round(pool)}% increased Attack Speed → ${round(value)}% Spell Burst Charge Speed (${line.source}: Insatiable Greed, game recipe 588396864; additional Attack Speed does not convert)` }];
+  }) : [];
+  const spellBurstCharge = spellBurstChargeTime([...modifierTexts, ...castToChargeLines, ...greedLines, ...supports.effects.spellBurst.filter((line) => line.kind === "chargeIncreased" || line.kind === "chargeAdditional")
     .map((line) => ({ source: line.source, text: `${line.value}% ${line.kind === "chargeAdditional" ? "additional " : ""}Spell Burst Charge Speed` }))]);
   spellBurstCharge.castSpeedShare = castToChargeLines.map((line) => ({ source: line.source, text: line.note }));
+  if (greedLines.length) spellBurstCharge.attackSpeedShare = greedLines.map((line) => ({ source: line.source, text: line.note, value: line.value, poolPercent: Number(attackSpeedToChargePool.increasedPercent) || 0 }));
   // Fifth Cosmic Velocity (Youga – Spacetime Illusion revival; hero trait audit B4, provisional): "100% chance to immediately gain 2
   // stack(s) of Spell Burst Charge. Interval: 0.03s": stacks gained on that interval fill Max Spell Burst in interval × ⌈N ÷ gain⌉
   // (÷ chance), whichever of that and the charge time is shorter.
@@ -1012,15 +1097,27 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // attack; provisional reading of "increasing damage"); a cycle lasts 1 + E ÷ 1.2 attack intervals. Provisional.
   // Thunder Slash: Steep Strike chance → additional Multistrike damage increment (steepStrikeState), its own ledger line.
   const skillIncrementAdditionalPercent = canMultistrike ? steepStrike?.incrementAdditionalPercent || 0 : 0;
-  // "+N initial Multistrike Count" (Preemptive Strike, game affix 713584 field 2006252; src/passive-support-lines.js): every count
-  // of the sequence shifts by N (multistrikeSequence initialCountBonus; the user-accepted reading for Cat's Punches), so it moves
-  // damage only through the Multistrike damage increment. Its own ledger line.
+  // "+N initial Multistrike Count" (Preemptive Strike, game affix 713584 field 2006252; src/passive-support-lines.js): the first count is
+  // 1 + N and each repeat adds 1 until the sequence's Max Multistrike Count, its attacks (multistrikeSequence; SS14 client, user decision
+  // 2026-11-20, replacing the 2026-10-14 shift of every count), so it moves damage only through the Multistrike damage increment. Its own
+  // ledger line.
   const initialCountLines = canMultistrike ? supports.effects.multistrike.filter((line) => line.kind === "initial" && line.value > 0) : [];
   const initialCountBonus = Math.floor(sum(initialCountLines));
   // Thunder Slash: Flurry / Keen Edge (skill-mechanics census batch 2; multistrikeSequence maxCountCap / allAtMax / repeatSpeedAdditionalPercent).
   const flurryLine = canMultistrike ? supports.effects.multistrike.find((line) => line.kind === "flurry" && line.value >= 0) || null : null;
   const repeatSpeedLines = canMultistrike ? supports.effects.multistrike.filter((line) => line.kind === "repeatSpeed" && line.value) : [];
   const sequenceExtra = { ...(flurryLine ? { maxCountCap: flurryLine.value, allAtMax: true } : {}), ...(repeatSpeedLines.length ? { repeatSpeedAdditionalPercent: (repeatSpeedLines.reduce((factor, line) => factor * (1 + line.value / 100), 1) - 1) * 100 } : {}) };
+  // A skill's own Multistrike buff (Corrosive Throw, record 103010108; 6 T Corrosive Throw G3, user decision 2026-11-20 "G3 damage only";
+  // research/build-6t-corrosive-throw-g2-g3-2026-11-20.md §4): strike j gains min(3 + field 2600251, c_j − 1) stacks of buff 10690, each
+  // + field 2600253 % additional damage on that strike (Swift Strike's roll, record 691396864; Augmentation's +3 to 2600251, 675984960); the
+  // first strike passes the 4000810 gate and node 624's bOnceToSkill puts the write on the strike's own instance (no lag). Only on uses that
+  // raise 1000074 (your own uses: Activation Medium: Still Attack's casts count, user-stated 2026-11-11 for Motionless; a triggered use raises
+  // 1000060 instead). Its Attack Speed half (field 2600252, Swift Strike's +10% per stack; user decision 2026-11-20 after
+  // research/google-ai-mode-answers-2026-11-20.md): each strike's own time ÷ (1 + field 2600252 % × its stacks), so the sequence's time, the
+  // uses per second and every rate reader follow (multistrikeSequence castBuff.speedPercent; the hero states' timing below).
+  const castBuffDamage = canMultistrike && profile.multistrikeBuff ? sum(supports.effects.multistrike.filter((line) => line.kind === "buffDamage")) : 0;
+  const castBuffSpeed = canMultistrike && profile.multistrikeBuff ? sum(supports.effects.multistrike.filter((line) => line.kind === "buffSpeed")) : 0;
+  const castBuff = castBuffDamage > 0 || castBuffSpeed > 0 ? { percent: castBuffDamage, speedPercent: castBuffSpeed, cap: (profile.multistrikeBuff.cap || 0) + sum(supports.effects.multistrike.filter((line) => line.kind === "buffCap")), share: triggered ? 0 : 1, record: profile.multistrikeBuff.record } : null;
   const plainMultistrike = canMultistrike ? multistrikeSequence({ chancePercent: multistrikeChance, incrementPercent: multistrikeIncrement, ...sequenceExtra }) : null;
   const initialMultistrike = canMultistrike ? multistrikeSequence({ chancePercent: multistrikeChance, incrementPercent: multistrikeIncrement, initialCountBonus, ...sequenceExtra }) : null;
   const multistrike = canMultistrike ? multistrikeSequence({ chancePercent: multistrikeChance, incrementPercent: multistrikeIncrement, skillIncrementAdditionalPercent, initialCountBonus, ...sequenceExtra }) : null;
@@ -1036,13 +1133,21 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   if (repeatSpeedLines.length) notes.push(`${profile.name}: ${repeatSpeedLines.map((line) => line.source.replace(/^Support: /, "")).join(", ")}: +${round(sequenceExtra.repeatSpeedAdditionalPercent)}% additional Attack Speed on the repeat attacks (game affix 491653184; provisional)`);
   if (multistrike) {
     supports.additional.push({ source: "Multistrike (supports)", text: `Multistrikes: ${round(plainMultistrike.expectedExtraAttacks)} extra attacks per attack at +${multistrikeIncrement}% increasing damage each; average ×${round(plainMultistrike.averageDamageFactor)} per strike (provisional)`, value: (plainMultistrike.averageDamageFactor - 1) * 100, category: "Additional damage" });
-    if (initialCountBonus && initialMultistrike.damagePerCycle !== plainMultistrike.damagePerCycle) supports.additional.push({ source: initialCountLines.map((line) => line.source).join(" + "), text: `+${initialCountBonus} initial Multistrike Count: every count of the sequence shifts by ${initialCountBonus} (counts ${1 + initialCountBonus}…${initialMultistrike.maxCount}), each strike +${initialCountBonus} × ${round(multistrike.effectiveIncrementPercent)}% increment (game affix 713584; shift reading user-accepted 2026-10-14)`, value: (initialMultistrike.damagePerCycle / plainMultistrike.damagePerCycle - 1) * 100, category: "Additional damage" });
+    if (initialCountBonus && initialMultistrike.damagePerCycle !== plainMultistrike.damagePerCycle) supports.additional.push({ source: initialCountLines.map((line) => line.source).join(" + "), text: `+${initialCountBonus} initial Multistrike Count: the count starts at ${1 + initialCountBonus} and rises by 1 per attack until the sequence's Max Multistrike Count (its attacks, ${initialMultistrike.maxCount} at most), each strike at its count's increment (${round(multistrike.effectiveIncrementPercent)}% per count above 1; game affixes 713584 / 661214080, field 2006252; SS14 client 0x141e1e770, user decision 2026-11-20; provisional, open question multistrike-count-cap-links)`, value: (initialMultistrike.damagePerCycle / plainMultistrike.damagePerCycle - 1) * 100, category: "Additional damage" });
+    const buffedMultistrike = castBuff ? multistrikeSequence({ chancePercent: multistrikeChance, incrementPercent: multistrikeIncrement, skillIncrementAdditionalPercent, initialCountBonus, ...sequenceExtra, castBuff }) : null;
+    if (buffedMultistrike) {
+      const sources = supports.effects.multistrike.filter((line) => line.kind === "buffDamage" || line.kind === "buffSpeed" || line.kind === "buffCap").map((line) => line.source.replace(/^Support: /, ""));
+      supports.additional.push({ source: `${profile.name}: Multistrike buff (record ${castBuff.record})`, text: castBuff.share > 0 ? `each strike of a Multistrike gains its count − 1 stacks, up to ${castBuff.cap}, × +${castBuff.percent}% additional damage on that strike${castBuff.speedPercent > 0 ? ` and +${castBuff.speedPercent}% additional Attack Speed on its own time` : ""} (${[...new Set(sources)].join(", ")}; the skill's uses raise 1000074: your own, Still Attack's casts included; provisional)` : `no stacks: the skill's uses are triggered (they raise 1000060, not the 1000074 the buff's row needs)`, value: (buffedMultistrike.damagePerCycle / multistrike.damagePerCycle - 1) * 100, category: "Additional damage" });
+      multistrike.castBuff = { ...castBuff, factor: buffedMultistrike.damagePerCycle / multistrike.damagePerCycle };
+      if (!(castBuff.percent > 0)) supports.additional.pop();
+    }
     if (skillIncrementAdditionalPercent) supports.additional.push({ source: `${profile.name}: Steep Strike chance → Multistrike damage increment`, text: `+${steepStrike.perChance}% additional Multistrike damage increment per +1% Steep Strike chance × ${round(steepStrike.chancePercent)}% = +${round(skillIncrementAdditionalPercent)}%: increment ${multistrikeIncrement}% → ${round(multistrike.effectiveIncrementPercent)}% (skill text; manual 1001020126; its own factor beside Cat's Scratch, game affixes 570299392 and 889828224; was: user-supplied answer 2026-10-14; provisional)`, value: (multistrike.damagePerCycle / initialMultistrike.damagePerCycle - 1) * 100, category: "Additional damage" });
     notes.push(`${profile.name}: Multistrike ${multistrikeChance}% → ${round(multistrike.expectedExtraAttacks)} extra attacks per attack (reference data glossary), cycle ${round(multistrike.cycleIntervals)} attack intervals (+20% Attack Speed during Multistrikes), strikes ×${round(multistrike.rateFactor)} per second; increasing damage read as +${multistrikeIncrement}% × count (provisional).`);
     // Hero states on the sequence (Erika: Stalker, initial Multistrike Count, Hunting Instinct; src/erika-wind-stalker.js): each
     // step's expected damage per sequence over the previous step's, as its own additional-damage line (the working).
-    const base = { chancePercent: multistrikeChance, incrementPercent: multistrikeIncrement, skillIncrementAdditionalPercent, initialCountBonus, ...sequenceExtra };
-    let previous = multistrike.damagePerCycle;
+    const base = { chancePercent: multistrikeChance, incrementPercent: multistrikeIncrement, skillIncrementAdditionalPercent, initialCountBonus, ...sequenceExtra, ...(castBuff ? { castBuff } : {}) };
+    const basis = buffedMultistrike ?? multistrike;
+    let previous = basis.damagePerCycle;
     for (const step of multistrikeEffects?.steps || []) {
       const damage = multistrikeStatesDamage(base, step.states);
       if (previous > 0 && Math.abs(damage / previous - 1) > 1e-12) supports.additional.push({ source: step.source, text: step.text, value: (damage / previous - 1) * 100, category: "Additional damage" });
@@ -1050,7 +1155,19 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     }
     if (multistrikeEffects?.steps?.length) {
       multistrike.heroDamagePerCycle = previous;
-      multistrike.heroFactor = previous / multistrike.damagePerCycle;
+      multistrike.heroFactor = previous / basis.damagePerCycle;
+    }
+    // The buff's Attack Speed half (field 2600252) sets the sequence's time: the last hero step's states (their initial / Max Multistrike Count
+    // bonuses change each strike's stacks), else the buffed sequence; the weights read as sequence shares. The rate readers take rateFactor.
+    if (castBuff && castBuff.speedPercent > 0 && castBuff.share > 0) {
+      const states = multistrikeEffects?.steps?.length ? multistrikeEffects.steps[multistrikeEffects.steps.length - 1].states : null;
+      const cycle = states?.length ? multistrikeStatesTiming(base, states) : buffedMultistrike.cycleIntervals;
+      const unbuffed = multistrike.cycleIntervals;
+      multistrike.unbuffedCycleIntervals = unbuffed;
+      multistrike.cycleIntervals = cycle;
+      multistrike.rateFactor = (1 + multistrike.expectedExtraAttacks) / cycle;
+      multistrike.castBuff.speedFactor = unbuffed / cycle;
+      notes.push(`${profile.name}: Multistrike buff (record ${castBuff.record}): +${castBuff.speedPercent}% additional Attack Speed per stack on each strike's own time: the sequence takes ${round(cycle)} attack intervals for ${round(unbuffed)} (×${round(unbuffed / cycle)} strikes per second; user decision 2026-11-20).`);
     }
   }
   // Thunder Slash's stored Steep Strike attempts (steepStrikeState / steepAttemptShare; user-supplied mechanism 2026-10-14,
@@ -1138,7 +1255,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // triggered cast + Max Spell Burst automatic casts, all cast by Spell Burst; the player's own casts then never find Spell Burst full
   // (provisional; the triggered cast takes no triggered-skill lines here).
   const chargeMultiplier = (1 + spellBurstCharge.increasedPercent / 100) * spellBurstCharge.additionalFactor;
-  const chargeTrigger = burstChargeTrigger && !burstActivation && skillTags.has("Spell") ? { source: burstChargeTrigger.source, text: burstChargeTrigger.text, thresholdPercent: burstChargeTrigger.thresholdPercent, chargeMultiplier: round(chargeMultiplier),
+  const chargeTrigger = burstChargeTrigger && !burstActivation && skillTags.has("Spell") ? { source: burstChargeTrigger.source, text: burstChargeTrigger.text, recipe: burstChargeTrigger.recipe ?? 493789504, thresholdPercent: burstChargeTrigger.thresholdPercent, chargeMultiplier: round(chargeMultiplier),
     active: canSpellBurst && chargeMultiplier * 100 + 1e-9 >= burstChargeTrigger.thresholdPercent, reason: !canSpellBurst ? `the Main Skill cannot activate Spell Burst (${spellBurstBlock || (spellBurstStacks < 1 ? "no Max Spell Burst" : "no use rate")})` : chargeMultiplier * 100 + 1e-9 >= burstChargeTrigger.thresholdPercent ? `Spell Burst Charge Speed ${round(chargeMultiplier * 100)}% of base ≥ ${burstChargeTrigger.thresholdPercent}%` : `Spell Burst Charge Speed ${round(chargeMultiplier * 100)}% of base < ${burstChargeTrigger.thresholdPercent}%` } : null;
   const spellBurst = canSpellBurst ? (() => {
     const solidRiver = chargeTrigger?.active ? chargeTrigger : null;
@@ -1164,8 +1281,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   }
   if (spellBurst) {
     if (spellBurst.averageDamageFactor !== 1) supports.additional.push({ source: "Spell Burst casts", text: `${round(spellBurst.share * 100)}% of casts are cast by Spell Burst (the activating cast + ${spellBurstStacks} automatic, game manual) at ×${round(spellBurst.bonusFactor)} (${spellBurst.bonusLines.map((line) => line.text).join("; ")}); average ×${round(spellBurst.averageDamageFactor)}`, value: (spellBurst.averageDamageFactor - 1) * 100, category: "Additional damage" });
-    if (spellBurst.chargeTrigger) notes.push(`${profile.name}: ${spellBurst.chargeTrigger.source}: ${spellBurst.chargeTrigger.reason}, so every full charge (${round(spellBurst.fullChargeSeconds)} s) triggers the Main Skill and activates its Spell Burst: 1 triggered + ${spellBurstStacks} automatic cast(s) per activation, all cast by Spell Burst; the player's casts never find Spell Burst full (game recipe 493789504; provisional).`);
-    else if (chargeTrigger) notes.push(`${profile.name}: ${chargeTrigger.source}'s Spell Burst trigger is off: ${chargeTrigger.reason} (game recipe 493789504).`);
+    if (spellBurst.chargeTrigger) notes.push(`${profile.name}: ${spellBurst.chargeTrigger.source}: ${spellBurst.chargeTrigger.reason}, so every full charge (${round(spellBurst.fullChargeSeconds)} s) triggers the Main Skill and activates its Spell Burst: 1 triggered + ${spellBurstStacks} automatic cast(s) per activation, all cast by Spell Burst; the player's casts never find Spell Burst full (game recipe ${spellBurst.chargeTrigger.recipe ?? 493789504}; provisional).`);
+    else if (chargeTrigger) notes.push(`${profile.name}: ${chargeTrigger.source}'s Spell Burst trigger is off: ${chargeTrigger.reason} (game recipe ${chargeTrigger.recipe ?? 493789504}).`);
     notes.push(`${profile.name}: Spell Burst ${spellBurstStacks} stack(s), fully charged in ${round(spellBurst.fullChargeSeconds)} s ${spellBurstCharge.refill ? `on average (the regular charge 2 s ÷ ${round(1 + spellBurstCharge.increasedPercent / 100)} ÷ ${round(spellBurstCharge.additionalFactor)} = ${spellBurstCharge.refill.regularSeconds} s, game manual, refilled on your uses: src/spell-burst-refill.js)` : `= 2 s ÷ ${round(1 + spellBurstCharge.increasedPercent / 100)} ÷ ${round(spellBurstCharge.additionalFactor)} (game manual)`}, activated every ${round(1 / spellBurst.activationsPerSecond)} s = max(charge time, use interval ${round(intervalSeconds)} s); each activation is the activating cast + ${spellBurstStacks} automatic cast(s), all cast by Spell Burst (game manual); +${round(spellBurst.extraUsesPerSecond)} casts per second without player time (user-confirmed 2026-10-12: automatic casts take no manual cast time; the period is not rounded; additional Charge Speed shortens the charge).`);
   }
   // Shadow of Thunderlight's Fury (census #11 leftover, 2026-10-27; game recipe 12617: on casting a skill with the Spell Burst tag, gate
@@ -1717,7 +1834,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       extraAdditional.push({ source: `${profile.name}: Fervor`, text: `+${percent}% additional damage per ${every > 1 ? `${every} ` : ""}Fervor Rating × ${round(steps)}${fervor.effectPercent ? ` × (1 + ${round(fervor.effectPercent)}% Fervor Effect)` : ""}${profile.fervorBonus.distant ? " at range (Distance condition)" : ""} (skill text; provisional)`, value: percent * steps * (1 + fervor.effectPercent / 100) });
     }
     // "+X% additional Damage for every +1 Projectile Quantity of this skill" (Hound's Fangs; reference data skill text).
-    if (profile.additionalPerProjectileQuantityPercent && projectileQuantity > 0) extraAdditional.push({ source: `${profile.name}: Projectile Quantity`, text: `+${profile.additionalPerProjectileQuantityPercent}% additional Damage for every +1 Projectile Quantity of this skill × ${projectileQuantity}`, value: profile.additionalPerProjectileQuantityPercent * projectileQuantity });
+    // A skill with its own on-hit Projectile Quantity (Frost Spike) reads the line with the Frostbite gate below.
+    if (profile.additionalPerProjectileQuantityPercent && !profile.projectileQuantityOnFrostbite && projectileQuantity > 0) extraAdditional.push({ source: `${profile.name}: Projectile Quantity`, text: `+${profile.additionalPerProjectileQuantityPercent}% additional Damage for every +1 Projectile Quantity of this skill × ${projectileQuantity}`, value: profile.additionalPerProjectileQuantityPercent * projectileQuantity });
     const bonus = component.demolisher;
     if (bonus && (bonus.additionalPercent || bonus.perStackAdditionalPercent) && demolisherShare > 0) {
       const stacks = channelState?.fullStacks ?? 5;
@@ -1801,6 +1919,25 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       for (const component of components) component.extraAdditional = [...(component.extraAdditional || []), line];
       notes.push(`${profile.name}: ${frostbiteGate.text}: the dummy holds ${round(rating)} Frostbite Rating, so it applies (game record 559611328).`);
     } else notes.push(`${profile.name}: ${frostbiteGate.text}: the dummy holds ${round(rating)} Frostbite Rating (below ${frostbiteGate.atLeast}), so it does not apply.`);
+  }
+  // Frost Spike's "+8% additional Damage for every +1 Projectile Quantity of this skill" (record 300821, node 114 from field 20061082; the row for
+  // its own on-hit +1 is missing from the recipe table): user decision 2026-11-23, every added Projectile Quantity that reaches the skill (the
+  // supports' and build-wide lines, the pool above) plus its own "+1 Projectile Quantity when this skill hits an enemy with at least 60 Frostbite
+  // Rating" while the dummy holds the rating; the 2 base projectiles are not counted. Linear, one additional factor on every hit part, a negative
+  // Projectile Quantity lowers it (floored at −100%). The projectiles fired do not change (the skill's quantity ignores bonuses).
+  const pqOnFrostbite = profile.projectileQuantityOnFrostbite;
+  let perProjectileQuantity = null;
+  if (pqOnFrostbite && profile.additionalPerProjectileQuantityPercent) {
+    const rating = Number(target?.frostbiteRating) || 0;
+    const own = rating >= pqOnFrostbite.atLeast ? pqOnFrostbite.value : 0;
+    const count = projectileQuantity + own;
+    const percent = profile.additionalPerProjectileQuantityPercent;
+    perProjectileQuantity = { percent, added: projectileQuantity, own, count, value: Math.max(-100, percent * count) };
+    if (count !== 0) {
+      const line = { source: `${profile.name}: Projectile Quantity`, text: `+${percent}% additional Damage for every +1 Projectile Quantity of this skill × ${round(count)} (${round(projectileQuantity)} added${own ? ` + ${own} from "${pqOnFrostbite.text}" at the dummy's ${round(rating)} Frostbite Rating` : ""}; user decision 2026-11-23)`, value: Math.max(-100, percent * count) };
+      for (const component of components) component.extraAdditional = [...(component.extraAdditional || []), line];
+    }
+    notes.push(`${profile.name}: +${percent}% additional Damage per +1 Projectile Quantity: ${round(projectileQuantity)} added Projectile Quantity${own ? ` + ${own} on hits against ${round(rating)} Frostbite Rating` : ` (the dummy's ${round(rating)} Frostbite Rating is below ${pqOnFrostbite.atLeast}, so the on-hit +${pqOnFrostbite.value} does not count)`}; the 2 base projectiles are not counted (user decision 2026-11-23).`);
   }
   // Recalled hits (src/youga-ultimate-one.js; provisional): the recalling hit group (its typed parts share a strike key) lands
   // again `hitsFactor` times per use on average, as its own strike, with the Recalled-only lines. Added flat damage and
@@ -1999,8 +2136,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     if (!converters.length) return null;
     const sources = [];
     for (const line of modifierTexts) {
-      const match = normalizePercentageText(String(line.text || "")).replace(/\s+/g, " ").trim().match(/^([+-]?\d+(?:\.\d+)?)% Projectile Speed$/i);
-      if (match) sources.push({ source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1) });
+      // "… for Attack Horizontal Projectiles" (Heart of the Storm's Storm, record 67567984 on [Attack, Horizontal, Projectile]; the attribute
+      // pool reads the buff's record write itself): only a skill carrying the three tags.
+      const match = normalizePercentageText(String(line.text || "")).replace(/\s+/g, " ").trim().match(/^([+-]?\d+(?:\.\d+)?)% Projectile Speed( for Attack Horizontal Projectiles)?$/i);
+      if (match && (!match[2] || ["Attack", "Horizontal", "Projectile"].every((tag) => scopeTags.has(tag)))) sources.push({ source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1) });
     }
     for (const clause of setup?.supportEffects?.clauses || []) {
       const match = normalizePercentageText(String(clause.text || "")).replace(/\s+/g, " ").trim().match(/^([+-]?\d+(?:\.\d+)?)% Projectile Speed for the supported skill$/i);
@@ -2155,9 +2294,15 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // "When the supported skill deals damage, there is a X% chance to inflict a debuff: +Y% damage taken by the enemy from the
   // supported skill for Z s" (Tendonslicer): expected uptime 1 − (1 − X%)^(hits in Z s) at the skill's hit rate (provisional).
   const hitsPerSecondForDebuff = usesPerSecond * strikeHitsPerUse(components);
+  // The debuff (record 13336589: attr 57201 on damage from "this skill", 5000002, the skill's own id at write time) also reaches the ailments
+  // this skill inflicts: an ailment's DoT record keeps the inflicting skill's id (src/ailment-record-tags.js, proven filter 0x141f54e30), so its
+  // Ignite, Trauma and Wilt take the same factor (`ownAilmentScale`, src/ailment-applications.js; path matrix v2 P4). The uptime counts the
+  // hits only, as Grudge's closed form does: the ailment's own ticks (1000030 per DoT record per frame) are not added (a lower bound).
+  const selfDebuffAilmentScale = [];
   for (const line of supports.effects.selfDebuff) {
     const uptime = 1 - Math.pow(1 - Math.min(100, line.chancePercent) / 100, hitsPerSecondForDebuff * line.durationSeconds);
     if (uptime > 0) supports.additional.push({ source: line.source, text: `${line.text} — uptime ${round(uptime * 100)}% at ${round(hitsPerSecondForDebuff)} hits/s (provisional)`, value: line.value * uptime, category: "Additional damage taken (from this skill)" });
+    if (uptime > 0 && line.value) selfDebuffAilmentScale.push({ source: line.source, text: `${line.text} — on this skill's own ailments (their DoT records keep the skill's id, record 13336589's attr 57201 on "this skill"): uptime ${round(uptime * 100)}% at ${round(hitsPerSecondForDebuff)} hits/s (provisional)`, factor: 1 + line.value * uptime / 100, selfDebuff: true });
   }
   // 2026-10-15 patch update (src/support-effects.js). Elemental Impact: active when the final hit parts (own types, conversions,
   // added flat damage) include Fire, Cold and Lightning; Elemental parts only. Hunting Tempo: the buffed share of uses
@@ -2221,9 +2366,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const componentCritFactor = handCrits ? critFactor : critFactor + typedCritExtra(critChance, critDamage);
     const componentTownCritFactor = handCrits ? townCritFactor : townCritFactor + typedCritExtra(critChance, townCritDamage);
     const componentIncreased = (component.extraIncreased || []).map((line) => ({ ...line, category: "Increased damage", origin: "skill" }));
-    const increased = [...(increasedRead ? increasedRead.entries : [...damageLines.filter((line) => line.layer === "increased" && applies(line)), ...supports.increased.filter((line) => applies(line))]), ...(channelState?.increased || []), ...weaponIncreased, ...componentIncreased, ...galeLines.filter((line) => line.layer === "increased")];
+    const increased = [...(increasedRead ? increasedRead.entries : [...damageLines.filter((line) => line.layer === "increased" && applies(line)), ...supports.increased.filter((line) => applies(line))]), ...(channelState?.increased || stackLineState?.increased || []), ...weaponIncreased, ...componentIncreased, ...galeLines.filter((line) => line.layer === "increased")];
     const componentLines = (component.extraAdditional || []).map((line) => ({ ...line, category: "Additional damage", origin: "skill" }));
-    const additional = [...(additionalRead ? additionalRead.entries : [...damageLines.filter((line) => line.layer === "additional" && appliesAdditional(line)), ...supports.additional.filter((line) => !line.scopeTypes || line.scopeTypes.some((type) => additionalTypes.includes(type)))]), ...levelLine, ...sentryNearbyLines, ...terraLine, ...grantedLines, ...speedBonusLine.filter((line) => line.value > 0), ...galeLines.filter((line) => line.layer === "additional"), ...(channelState?.additional || []), ...componentLines, ...auraLines.filter((line) => !line.types || line.types.some((type) => additionalTypes.includes(type))), ...mainStatLines, ...doubleDamageLines, ...weaponAdditional.filter((line) => !((handCrits || joinedMainHand(component)) && line.hand === "main")), ...(restrictionLine(typeRestriction, component.type, "hit damage") ? [restrictionLine(typeRestriction, component.type, "hit damage")] : []), ...(trinityLine(trinity, trinityByType, component.type) ? [trinityLine(trinity, trinityByType, component.type)] : [])];
+    const additional = [...(additionalRead ? additionalRead.entries : [...damageLines.filter((line) => line.layer === "additional" && appliesAdditional(line)), ...supports.additional.filter((line) => !line.scopeTypes || line.scopeTypes.some((type) => additionalTypes.includes(type)))]), ...levelLine, ...sentryNearbyLines, ...terraLine, ...grantedLines, ...speedBonusLine.filter((line) => line.value > 0), ...galeLines.filter((line) => line.layer === "additional"), ...(channelState?.additional || stackLineState?.additional || []), ...componentLines, ...auraLines.filter((line) => !line.types || line.types.some((type) => additionalTypes.includes(type))), ...mainStatLines, ...doubleDamageLines, ...weaponAdditional.filter((line) => !((handCrits || joinedMainHand(component)) && line.hand === "main")), ...(restrictionLine(typeRestriction, component.type, "hit damage") ? [restrictionLine(typeRestriction, component.type, "hit damage")] : []), ...(trinityLine(trinity, trinityByType, component.type) ? [trinityLine(trinity, trinityByType, component.type)] : [])];
     // The ledger branch (TLI_POOL_HIT=ledger): a rotating buff set's lines this part reads are one additional term, as the pool reads them
     // (src/rotating-buffs.js).
     if (!additionalRead) additional.splice(0, additional.length, ...mergeRotationTurns(additional));
@@ -2320,7 +2465,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     })() : null;
     const targetFactor = converted ? (1 - converted.share) * takenFactor * armourFactor * resistanceFactor + converted.share * converted.factor : takenFactor * armourFactor * resistanceFactor;
     const perHit = perHitBeforeTarget * targetFactor;
-    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, label: component.label, ...(component.recalled ? { recalled: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.rebound ? { rebound: true, landingsPerUse: component.landingsPerUse } : {}), type: component.type, originalType: component.originalType, converted: component.converted, ...(component.scopeTypes ? { scopeTypes: [...component.scopeTypes] } : {}), addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, ...(joined ? { joinedShare: { ...joined }, joinedMainHandFactor } : {}), townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
+    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, label: component.label, ...(component.recalled ? { recalled: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.rebound ? { rebound: true, landingsPerUse: component.landingsPerUse } : {}), ...(profileComponentOf(component).afterLastLanding ? { afterLastLanding: profileComponentOf(component).afterLastLanding } : {}), type: component.type, originalType: component.originalType, converted: component.converted, ...(component.scopeTypes ? { scopeTypes: [...component.scopeTypes] } : {}), addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, ...(joined ? { joinedShare: { ...joined }, joinedMainHandFactor } : {}), townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
   });
 
   if (typeRestriction) {
@@ -2340,41 +2485,82 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const critCache = critCacheFor(profile.name);
   const critChecksPerUse = critCache.cached ? cachedCritChecksPerUse(components.filter((component) => perType.some((part) => (part.strikeKey ?? part.key) === (component.strikeKey ?? component.componentKey)))) : hitsPerUse;
   const hitPerUse = perType.reduce((total, component) => total + component.perHit * component.hitsPerUse, 0);
+  // The schedule of this skill's casts on 30 Hz frames, for the chance procs that succeed once a frame on the dummy (src/once-per-frame.js; 4 T
+  // Thea audit G2, 2026-11-23): its presses, its Spell Burst activations with their automatic casts (field 2006270), its other uses; a channel's
+  // hits and an area's ticks spread evenly.
+  const onceSchedule = () => ({ clocks: useSchedule({ usesPerSecond, usesBySource, spellBurst }, { spacingSeconds: spellBurstExtraCastSpacing({ maxSpellBurst: spellBurst?.maxSpellBurst || 0 }) }), spread: Boolean(terra) || Boolean(channel && !release) });
   // Deterioration (src/combat-states.js deteriorationFrom; manual rule 1002030520): each Erosion hit has the chance to add
   // a stack (plus expected extra stacks) that deals 60% of that hit's Erosion damage dealt as True Damage when it ends.
   const erosionPerUse = perType.filter((component) => component.type === "Erosion").reduce((total, component) => total + component.perHit * component.hitsPerUse, 0);
   // Legendary audit batch 6 (src/combat-states.js deteriorationFrom): Ruinous Star's Obliterate share (only the enhanced uses of a
-  // non-channeled Main Skill inflict it: min(1, (1 ÷ interval) ÷ uses per second)), its per-tick damage, and Blight's damage taken per
-  // held stack (stacks = Erosion hit events per second × chance × (1 + extra stacks) × the share × the 1 s duration).
+  // non-channeled Main Skill inflict it: min(1, (1 ÷ interval) ÷ uses per second)), its per-tick damage, and Blight's damage taken.
   const obliterateShare = deterioration?.obliterateEverySeconds ? (mainSkill && !channel && usesPerSecond > 0 ? Math.min(1, (1 / deterioration.obliterateEverySeconds) / usesPerSecond) : 0) : 1;
   const erosionHitsPerUse = strikeHitsPerUse(perType.filter((component) => component.type === "Erosion"));
-  const deteriorationStacks = deterioration ? erosionHitsPerUse * usesPerSecond * (deterioration.chancePercent / 100) * (1 + deterioration.extraStacks) * obliterateShare * 1 : 0;
-  const deteriorationTakenFactor = (deterioration?.takenPerStack || []).reduce((factor, line) => factor + line.per / 100 * Math.min(line.cap, deteriorationStacks), 1);
   // + the skill's own additional Deterioration Damage from hero effects (Youga's Shackles of Malice Alternate Spacetime; src/youga-ultimate-one.js).
   const heroDeteriorationFactor = (heroEffects?.deteriorationAdditional || []).reduce((factor, line) => factor * (1 + (Number(line.value) || 0) / 100), 1);
   // Chunk 8 (src/support-chunk8.js): the supported skill's own Deterioration lines. A Finisher line takes the Finisher hits' share of this skill's Erosion hits (provisional averaging, as Rising's ailments).
   const deteriorationLines = (supports.effects.deterioration || []).filter((line) => line.status === "In calc" || line.status === "Provisional");
   const finisherShareOfHits = (() => { const finisher = strikeHitsPerUse(perType.filter((component) => component.type === "Erosion" && String(component.componentKey ?? component.key ?? "").split(/[+>:]/)[0] === "finisher")); return erosionHitsPerUse > 0 ? finisher / erosionHitsPerUse : 0; })();
   const supportDeteriorationFactor = deteriorationLines.reduce((factor, line) => line.kind === "additional" ? factor * (1 + line.value / 100) : line.kind === "ownBuff" ? factor * (1 + line.value * line.stacks / 100) : line.kind === "finisher" ? factor * (1 + line.value * finisherShareOfHits / 100) : factor, 1);
-  const supportDeteriorationStacks = deteriorationLines.filter((line) => line.kind === "extraStacks").reduce((total, line) => total + line.value, 0);
-  const deteriorationFactor = deterioration && erosionPerUse > 0 ? deterioration.share * (deterioration.chancePercent / 100) * (1 + deterioration.extraStacks + supportDeteriorationStacks) * (1 + deterioration.increasedPercent / 100) * deterioration.additionalPercents.reduce((factor, value) => factor * (1 + value / 100), 1) * obliterateShare * (deterioration.tickFactor?.factor || 1) * deteriorationTakenFactor * heroDeteriorationFactor * supportDeteriorationFactor : 0;
-  if (deterioration && erosionPerUse > 0 && (deterioration.obliterateEverySeconds || deterioration.tickFactor || deterioration.takenPerStack?.length)) notes.push(`${profile.name}: Deterioration${deterioration.obliterateEverySeconds ? ` from ${round(obliterateShare * 100)}% of uses (Obliterate every ${deterioration.obliterateEverySeconds} s)` : ""}${deterioration.tickFactor ? `, ${deterioration.tickFactor.count} ticks per stack ×${round(deterioration.tickFactor.factor)}` : ""}${deterioration.takenPerStack?.length ? `, ${round(deteriorationStacks)} stacks held → ×${round(deteriorationTakenFactor)} damage taken` : ""} (provisional).`);
+  // Rising Evil's extra stacks (967878336: trigger 1000030 on this skill with bTriggerOnceWithSameSourceEntity and a chance node; node 1011 adds
+  // P2 stacks per success): at most one success a frame on the dummy (4 T Thea audit G2 catalog check, 2026-11-23), so its stacks take the walk's
+  // success share over the skill's landings (src/once-per-frame.js; provisional, open question spell-ripple-frame-cap).
+  const onceStackShare = (line) => line.once && line.chance > 0 && usesPerSecond > 0 ? (() => { const { clocks, spread } = onceSchedule(); return oncePerFrameWalk({ chance: Math.min(1, line.chance), clocks, landings: landingEvents(perType, landingsPerUse), spread }).successShare; })() : 1;
+  const supportDeteriorationStacks = deteriorationLines.filter((line) => line.kind === "extraStacks").reduce((total, line) => {
+    const share = onceStackShare(line);
+    if (share < 1 - 1e-9) notes.push(`${profile.name}: ${line.source}'s extra Deterioration stacks succeed at most once a frame on the dummy (bTriggerOnceWithSameSourceEntity, record 967878336): ×${round(share)} of ${round(line.chance * 100)}% per landing (src/once-per-frame.js; provisional).`);
+    return total + line.value * share;
+  }, 0);
+  // Blight's count (6 T Corrosive Throw D2, 2026-11-20; record 450575264, client 0x141d17910 / 0x141d16f40, proven): at each instance's expiry
+  // n = the target's buff-180 instances from every caster and skill (key mode 1) + 1 (the expiring one), one factor 1 + p × min(n, cap). Held
+  // instances = every skill's applications per second (Erosion hit events × chance × (1 + extra stacks) × the Obliterate share) × the instance's
+  // whole-frame duration (1 s × its duration lines). The planner (src/planner.js) sums every skill's applications and computes each Deterioration
+  // hit again with the total (`deteriorationShared`); alone, a skill counts its own. Each extra stack is counted as an instance (the note's reading:
+  // a layer on the same instance, node 343; whether the count reads instances or layers is inferred).
+  const deteriorationApplicationsPerSecond = deterioration ? erosionHitsPerUse * usesPerSecond * (deterioration.chancePercent / 100) * (1 + deterioration.extraStacks + supportDeteriorationStacks) * obliterateShare : 0;
+  const deteriorationHeldSeconds = deterioration ? deterioration.heldSeconds ?? 1 : 0;
+  const deteriorationTargetRate = Number.isFinite(deteriorationShared?.applicationsPerSecond) ? deteriorationShared.applicationsPerSecond : deteriorationApplicationsPerSecond;
+  // The cap (D3, 2026-11-20; buff 180's header: 99 instances for every caster, stack mode 4): an application at the cap is refused, so in expectation
+  // the held instances are min(99, offered) and only that share of the applications deals its damage (99 ÷ offered at the cap).
+  const deteriorationOffered = deterioration ? deteriorationTargetRate * deteriorationHeldSeconds : 0;
+  const deteriorationMax = deterioration?.maxInstances ?? Infinity;
+  const deteriorationAccepted = deteriorationOffered > deteriorationMax ? deteriorationMax / deteriorationOffered : 1;
+  const deteriorationStacks = Math.min(deteriorationMax, deteriorationOffered);
+  const deteriorationCount = deteriorationStacks + 1;
+  const deteriorationTakenFactor = (deterioration?.takenPerStack || []).reduce((factor, line) => factor + line.per / 100 * Math.min(line.cap, deteriorationCount), 1);
+  const deteriorationFactor = deterioration && erosionPerUse > 0 ? deterioration.share * (deterioration.chancePercent / 100) * (1 + deterioration.extraStacks + supportDeteriorationStacks) * (1 + deterioration.increasedPercent / 100) * deterioration.additionalPercents.reduce((factor, value) => factor * (1 + value / 100), 1) * obliterateShare * (deterioration.tickFactor?.factor || 1) * deteriorationTakenFactor * heroDeteriorationFactor * supportDeteriorationFactor * deteriorationAccepted : 0;
+  if (deterioration && erosionPerUse > 0 && (deterioration.obliterateEverySeconds || deterioration.tickFactor || deterioration.takenPerStack?.length)) notes.push(`${profile.name}: Deterioration${deterioration.obliterateEverySeconds ? ` from ${round(obliterateShare * 100)}% of uses (Obliterate every ${deterioration.obliterateEverySeconds} s)` : ""}${deterioration.tickFactor ? `, ${deterioration.tickFactor.count} ticks per stack ×${round(deterioration.tickFactor.factor)}` : ""}${deterioration.takenPerStack?.length ? `, ${round(deteriorationStacks)} instances held on the dummy (${deteriorationShared ? `every skill's ${round(deteriorationTargetRate)} applications/s` : `${round(deteriorationTargetRate)} applications/s`} × ${round(deteriorationHeldSeconds)} s) + 1 at expiry → Blight ×${round(deteriorationTakenFactor)}` : ""}${deteriorationAccepted < 1 ? `, at the cap of ${deteriorationMax} instances: ${round(deteriorationAccepted * 100)}% of the applications land (an application at the cap is refused)` : ""} (provisional).`);
   const deteriorationPerUse = erosionPerUse * deteriorationFactor;
   // Spell Ripple (Ethereal Prism core; game affix 864131584): on a hit (trigger 1000030, tags Hit 5000003 + Spell 6001100 + Main
   // Skill 6020000) a P1% chance (node 188) to cast the Pulse (node 1035, skill stone 210150), at most once per 0.03 s (node 206).
   // The Pulse deals True Damage equal to P2% of the hit's damage. Read (user-supplied 2026-10-19, Google AI Mode answer, not tested in game): the
   // hit's damage dealt to the dummy (after resistance, with its crit expectation), not mitigated again (True Damage, as for a
-  // Reap); one Pulse per qualifying hit event; the Pulse does not crit and is not itself counted as a hit of the skill.
-  // Pulses per second = min(chance × hits/s, 1 ÷ interval).
+  // Reap); the Pulse does not crit and is not itself counted as a hit of the skill.
+  // Once per frame (4 T Thea audit G2, user decision 2026-11-23; src/once-per-frame.js): the row's trigger carries bTriggerOnceWithSameSourceEntity
+  // (proven, research/trigger-events-rea-2026-11-04.md §2), so at most one Pulse a logic frame on the dummy, the frame's first success, and a frame
+  // with k qualifying landings succeeds 1 − (1 − p)^k; the Pulse is 150% of that landing's hit (the first landing of a use its full hit, a later
+  // one its falloff share). The frames come from the planner's own schedule (the presses, each Spell Burst activation with its automatic casts
+  // 0.15 s apart, triggered uses), each cast's landings on its frame: the walk's Pulses and value per second, exact in expectation. The frame
+  // spread is inferred (open question spell-ripple-frame-cap). Was min(chance × hits/s, 1 ÷ 0.03 s) at the average hit.
   const rippleLine = skillTags.has("Spell") && mainSkill ? modifierTexts.map((line) => ({ line, match: normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(SPELL_RIPPLE_LINE) })).find((item) => item.match) : null;
   const spellRipple = rippleLine && hitPerUse > 0 && hitsPerUse > 0 && usesPerSecond > 0 ? (() => {
     const chance = Math.min(1, Number(rippleLine.match[1]) / 100), percent = Number(rippleLine.match[2]) * (rippleLine.line.multiplier ?? 1), interval = Number(rippleLine.match[3]);
     const hitsPerSecond = hitsPerUse * usesPerSecond;
-    const pulsesPerSecond = Math.min(chance * hitsPerSecond, interval > 0 ? 1 / interval : Infinity);
-    const pulsesPerUse = pulsesPerSecond / usesPerSecond;
-    const perPulse = percent / 100 * hitPerUse / hitsPerUse;
-    return { source: rippleLine.line.source, text: rippleLine.line.text, chancePercent: chance * 100, percent, intervalSeconds: interval, hitsPerSecond, pulsesPerSecond, capped: chance * hitsPerSecond > pulsesPerSecond + 1e-12, perPulse, perUse: perPulse * pulsesPerUse, dps: perPulse * pulsesPerSecond,
-      rule: `Spell Ripple: ${round(chance * 100)}% of ${round(hitsPerSecond)} hits/s${chance * hitsPerSecond > pulsesPerSecond + 1e-12 ? `, capped at 1 per ${interval} s` : ""} = ${round(pulsesPerSecond)} Pulses/s × ${percent}% of the average hit dealt (${round(hitPerUse / hitsPerUse)}) as True Damage (game affix 864131584; after resistance, not mitigated again, no crit: user-supplied 2026-10-19, not tested in game)` };
+    const { clocks, spread } = onceSchedule();
+    const landings = landingEvents(perType, landingsPerUse);
+    const walk = oncePerFrameWalk({ chance, clocks, landings, gateFrames: onceGateFrames({ gateSeconds: interval }), spread });
+    // The walk's shares on the planner's exact rates: chance × landings per second, chance × the hit damage per second.
+    const landingsPerSecond = usesPerSecond * landings.reduce((sum, event) => sum + event.presence, 0);
+    const uncapped = chance * landingsPerSecond;
+    const pulsesPerSecond = uncapped * walk.successShare;
+    const dps = percent / 100 * chance * usesPerSecond * hitPerUse * walk.valueShare;
+    const perPulse = pulsesPerSecond > 0 ? dps / pulsesPerSecond : percent / 100 * hitPerUse / hitsPerUse;
+    const spacing = spellBurstExtraCastSpacing({ maxSpellBurst: spellBurst?.maxSpellBurst || 0 });
+    const burstClock = clocks.find((clock) => clock.key === "spellBurst");
+    const scheduleText = spread ? `its ${round(landingsPerSecond)} landings/s spread evenly over the frames` : `${clocks.filter((clock) => clock.key !== "spellBurst").map((clock) => `${clock.key === "manual" ? "presses" : clock.key} every ${round(clock.periodSeconds)} s`).join(", ")}${burstClock ? `${clocks.length > 1 ? ", " : ""}Spell Burst every ${round(burstClock.periodSeconds)} s (${burstClock.casts.length} casts: ${spellBurst?.chargeTrigger ? "the triggered cast, then " : ""}automatic casts ${spacing} s apart, field 2006270)` : ""}, ${round(landings.reduce((sum, event) => sum + event.presence, 0))} landings per cast on its frame${landings.some((event) => event.delayFrames > 0) ? ` (Emission's pulse one frame after the cast's last explosion, user decision 2026-11-23)` : ""}`;
+    const frameLaw = { landingsPerSecond, successShare: walk.successShare, valueShare: walk.valueShare, framesPerSecond: walk.framesPerSecond, landingsPerBusyFrame: walk.eventsPerBusyFrame, maxLandingsPerFrame: walk.maxEventsPerFrame, uncappedPulsesPerSecond: uncapped, spacingSeconds: spellBurst ? spacing : null, spread, poissonPulsesPerSecond: 30 * (1 - Math.exp(-uncapped / 30)), averageHit: hitPerUse / hitsPerUse };
+    return { source: rippleLine.line.source, text: rippleLine.line.text, chancePercent: chance * 100, percent, intervalSeconds: interval, hitsPerSecond, pulsesPerSecond, capped: uncapped > pulsesPerSecond + 1e-9 * Math.max(1, uncapped), perPulse, perUse: dps / usesPerSecond, dps, frameLaw,
+      rule: `Spell Ripple: ${round(chance * 100)}% per landing, at most one Pulse a frame (bTriggerOnceWithSameSourceEntity, proven): ${round(landingsPerSecond)} landings/s on ${round(walk.framesPerSecond)} frames/s (${scheduleText}; inferred) = ${round(pulsesPerSecond)} Pulses/s (${round(uncapped)} without the frame cap) × ${percent}% of the landing that rolls it first (${round(perPulse * 100 / percent)} on average; the average hit is ${round(hitPerUse / hitsPerUse)}) as True Damage (game affix 864131584; after resistance, not mitigated again, no crit: user-supplied 2026-10-19, not tested in game; frame spread: open question spell-ripple-frame-cap)` };
   })() : null;
   if (spellRipple) notes.push(spellRipple.rule);
   // Sweeping Fury: on a hit of a Main Horizontal Projectile skill (not Sentry, Vertical, Channeled; not a hit of a ring copy) the
@@ -2400,11 +2586,19 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const sweepingFury = furyLine && hitPerUse > 0 && hitsPerUse > 0 && usesPerSecond > 0 ? (() => {
     const chance = Math.min(1, Number(furyLine.match[1]) / 100), additionalPercent = Number(furyLine.match[2]) * (furyLine.line.multiplier ?? 1), interval = Number(furyLine.match[3]);
     const hitsPerSecond = hitsPerUse * usesPerSecond;
-    const caps = [interval > 0 ? 1 / interval : Infinity, effectiveCooldown > 0 ? 1 / effectiveCooldown : Infinity];
-    const ringsPerSecond = Math.min(chance * hitsPerSecond, ...caps);
+    // Once per frame (4 T Thea audit G2 catalog check, 2026-11-23; src/once-per-frame.js): the 1000033 row carries
+    // bTriggerOnceWithSameSourceEntity (raw catalog: oncePerSource; proven), its 0.029 s gate (node 206) closes nothing past the frame, and the
+    // cast checks the Main Skill's cooldown (node 2320 checkCD). The record has no chance node (the prism prints 100%): the frame's first landing
+    // casts the ring. So a fan whose projectiles land on one frame casts one ring, not one per projectile. Was min(chance × hits/s, 1 ÷ 0.03 s,
+    // 1 ÷ cooldown).
+    const { clocks, spread } = onceSchedule();
+    const furyLandings = landingEvents(perType, landingsPerUse), landingsPerSecond = usesPerSecond * furyLandings.reduce((sum, event) => sum + event.presence, 0);
+    const walk = oncePerFrameWalk({ chance, clocks, landings: furyLandings, gateFrames: onceGateFrames({ gateSeconds: interval, cooldownSeconds: effectiveCooldown }), spread });
+    const uncapped = chance * landingsPerSecond, ringsPerSecond = uncapped * walk.successShare;
     const perRing = Math.max(0, 1 + additionalPercent / 100) * hitPerUse / hitsPerUse;
-    return { source: furyLine.line.source, text: furyLine.line.text, chancePercent: chance * 100, additionalPercent, intervalSeconds: interval, hitsPerSecond, ringsPerSecond, capped: chance * hitsPerSecond > ringsPerSecond + 1e-12, projectilesPerRingOnTarget: 1, perRing, perUse: perRing * ringsPerSecond / usesPerSecond, dps: perRing * ringsPerSecond,
-      rule: `Sweeping Fury: ${round(chance * 100)}% of ${round(hitsPerSecond)} hits/s${chance * hitsPerSecond > ringsPerSecond + 1e-12 ? `, capped at ${round(ringsPerSecond)} rings/s (${interval} s interval${effectiveCooldown > 0 ? `, ${round(effectiveCooldown)} s cooldown` : ""})` : ""} = ${round(ringsPerSecond)} ring casts/s × 1 ring projectile on the dummy × the average hit dealt (${round(hitPerUse / hitsPerUse)}) × ${round(1 + additionalPercent / 100)} (${additionalPercent}% additional; game affix 19348734; one ring projectile per ring on a single boss: user-supplied 2026-10-19, not tested in game)` };
+    return { source: furyLine.line.source, text: furyLine.line.text, chancePercent: chance * 100, additionalPercent, intervalSeconds: interval, hitsPerSecond, ringsPerSecond, capped: uncapped > ringsPerSecond + 1e-9 * Math.max(1, uncapped), projectilesPerRingOnTarget: 1, perRing, perUse: perRing * ringsPerSecond / usesPerSecond, dps: perRing * ringsPerSecond,
+      frameLaw: { landingsPerSecond, successShare: walk.successShare, framesPerSecond: walk.framesPerSecond, landingsPerBusyFrame: walk.eventsPerBusyFrame, uncappedRingsPerSecond: uncapped, spread },
+      rule: `Sweeping Fury: ${round(chance * 100)}% per landing, at most one ring a frame (bTriggerOnceWithSameSourceEntity, proven${effectiveCooldown > 0 ? `; the ${round(effectiveCooldown)} s cooldown its cast checks` : ""}): ${round(landingsPerSecond)} landings/s on ${round(walk.framesPerSecond)} frames/s = ${round(ringsPerSecond)} ring casts/s (${round(uncapped)} without the frame cap; frame spread inferred, open question spell-ripple-frame-cap) × 1 ring projectile on the dummy × the average hit dealt (${round(hitPerUse / hitsPerUse)}) × ${round(1 + additionalPercent / 100)} (${additionalPercent}% additional; game affix 19348734; one ring projectile per ring on a single boss: user-supplied 2026-10-19, not tested in game)` };
   })() : null;
   if (sweepingFury) notes.push(sweepingFury.rule);
   const perUse = hitPerUse + deteriorationPerUse + (spellRipple?.perUse || 0) + (sweepingFury?.perUse || 0);
@@ -2506,6 +2700,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   return {
     key, name: profile.name, setupKey: setup?.setupKey, profile, skillHit: true, damageType: profile.damageType, dealtTypes,
     ...(projectileLanding ? { projectileLanding } : {}),
+    // Frost Spike's per-Projectile-Quantity line (user decision 2026-11-23): the count it read; a build-wide Projectile Quantity line's badge reads it.
+    ...(perProjectileQuantity ? { perProjectileQuantity } : {}),
     // Extreme Coldness (src/damage-type-restriction.js): the typed parts this hit loses.
     typeRestriction: typeRestriction ? { type: typeRestriction.type, label: typeRestriction.label, removedTypes: [...new Set(perType.filter((component) => removesType(typeRestriction, component.type)).map((component) => component.type))], keptTypes: [...new Set(perType.filter((component) => !removesType(typeRestriction, component.type)).map((component) => component.type))] } : null,
     level, baseLevel: base.level, effectiveness: primary?.effectiveness ?? base.effectiveness, components: perType, primary,
@@ -2522,7 +2718,8 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     rebound: rebound ? { jumps: rebound.jumps, hits: rebound.hits, repeats: rebound.repeats, weight: rebound.weight, perJumpPercent: rebound.perJumpPercent, sources: rebound.sources } : null,
     // A Combo skill's own Mark (ownMark): on the ailments this skill inflicts, +X% damage taken × the Mark's time on the dummy
     // (src/ailment-applications.js reads `ownAilmentScale`; the Mark is a target-side term, read here as a factor on its applications).
-    ...(ownMark ? { ownMark, ownAilmentScale: [{ source: `${ownMark.name} (config_char_buff ${ownMark.buff})`, text: `${ownMark.name}: +${ownMark.percent}% additional damage taken from this skill (its DoT records keep the skill's id), on the dummy ${round(ownMark.timeShare * 100)}% of the time (from Combo Starter 1's hit to the cycle's end; provisional, open question spectral-slash-mark)`, factor: 1 + ownMark.percent / 100 * ownMark.timeShare }] } : {}),
+    ...(ownMark ? { ownMark } : {}),
+    ...(ownMark || selfDebuffAilmentScale.length ? { ownAilmentScale: [...(ownMark ? [{ source: `${ownMark.name} (config_char_buff ${ownMark.buff})`, text: `${ownMark.name}: +${ownMark.percent}% additional damage taken from this skill (its DoT records keep the skill's id), on the dummy ${round(ownMark.timeShare * 100)}% of the time (from Combo Starter 1's hit to the cycle's end; provisional, open question spectral-slash-mark)`, factor: 1 + ownMark.percent / 100 * ownMark.timeShare }] : []), ...selfDebuffAilmentScale] } : {}),
     barrage: barrage?.active ? barrage : null, comboPoints: comboPoints ? { perStarter: comboPoints.perStarter, consumed: comboPoints.consumed, sources: comboPoints.sources, critPoints: comboPoints.critPoints || null, ...(comboPoints.starterCritPoints ? { starterCritPoints: comboPoints.starterCritPoints } : {}), ...(comboPoints.perFinisher ? { perFinisher: [...comboPoints.perFinisher] } : {}) } : null,
     // Combo cycle extras (census item #9): the lines read and the Finisher hits' share of the skill's hits (Shockwave Warcry's
     // "Ailment Damage for Combo Finishers", src/ailment-applications.js).
@@ -2540,7 +2737,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
       return { finisherHitShare: total > 0 ? finisher / total : 0, finishersPerCycle: finisherRepeats, ...(finisherCharges ? { finisherPoints: [...finisherCharges] } : {}), finisherDamageLines: damageLines.map((line) => ({ source: line.source, text: line.text, value: line.value })), lines: lines.map((line) => ({ kind: line.kind, source: line.source, text: line.text })) };
     })() : null,
     spellRipple, sweepingFury, mainSpellRepeat, projectileLimit: Number.isFinite(projectileLimit) ? { limit: projectileLimit, baseProjectiles, extraBefore: uncappedExtraProjectiles, extraAfter: extraProjectiles, capped: extraProjectiles < uncappedExtraProjectiles } : null,
-    deterioration: deteriorationPerUse > 0 ? { source: deterioration.source, erosionPerUse, factor: deteriorationFactor, perUse: deteriorationPerUse, dps: deteriorationPerUse * usesPerSecond, rule: "60% of each Erosion hit dealt, as True Damage when the 1 s stack ends (manual); chance × (1 + extra stacks) × (1 + increased) × Π(1 + additional); the delay is not in the windows (provisional)" } : null,
+    deterioration: deteriorationPerUse > 0 ? { source: deterioration.source, erosionPerUse, factor: deteriorationFactor, perUse: deteriorationPerUse, dps: deteriorationPerUse * usesPerSecond, applicationsPerSecond: deteriorationApplicationsPerSecond, heldSeconds: deteriorationHeldSeconds, ...(deterioration.tickFactor ? { ticking: true } : {}), instancesHeld: deteriorationStacks, ...(deteriorationAccepted < 1 ? { acceptedShare: deteriorationAccepted, offeredInstances: deteriorationOffered } : {}), ...(deteriorationShared ? { sharedApplicationsPerSecond: deteriorationTargetRate } : {}), rule: `60% of each Erosion hit dealt, as True Damage when the stack ends (${round(deteriorationHeldSeconds)} s after the hit: the windows place it there; manual, records); chance × (1 + extra stacks) × (1 + increased) × Π(1 + additional)` } : null,
     luckyDamageRolls,
     ledger: {
       base: perType.filter((component) => !component.addedOnly).map((component) => ({ source: `${profile.name} · ${component.label} Lv.${base.level}`, text: component.weaponPercent != null ? `${component.weaponPercent}% Weapon Attack Damage × ${round(component.weaponDamage.min)}–${round(component.weaponDamage.max)} ${component.converted ? `${component.originalType} → ${component.type}` : component.type} weapon damage = ${round(component.base.min)}–${round(component.base.max)} × ${round(component.hitsPerUse)} hits per use (${profile.sources.gameData}${level > 20 ? "; base frozen past Lv.20" : ""})` : `${component.base.min}–${component.base.max} ${component.converted ? `${component.originalType} → ${component.type}` : component.type} damage × ${round(component.hitsPerUse)} hits per use (${profile.sources.gameData}${level > 20 ? "; base frozen past Lv.20" : ""})`, min: component.base.min, max: component.base.max, value: average(component.base), category: `Base ${profile.name} damage`, origin: "base" })),

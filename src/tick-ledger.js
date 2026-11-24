@@ -16,7 +16,7 @@
 // its ticks (the engine asks the bus whose it is), the engine dispatches them, and the layers yield the holds the bus owns (src/tick-layers.js
 // triggerBusLayer, placeHitGains, paralysisLayer, frostbiteLayer; the timed corrections on the DoT, beam and Minion paths).
 import { TICK_LAYERS, TICK_LAYER_KEYS, compileYougaProgram, yougaCoreHit } from "./tick-youga-layers.js";
-import { GENERAL_LAYERS, GENERAL_ORDER, addTarget, createLayerContext, finishTarget, generalHeldLayers, minionTypeModifiers } from "./tick-layers.js";
+import { GENERAL_LAYERS, GENERAL_ORDER, addTarget, createLayerContext, dotStateGates, finishTarget, generalHeldLayers, minionTypeModifiers } from "./tick-layers.js";
 import { compilePlainProgram, ownPerUse, plainUseKind, repeatEffects, timerField } from "./tick-plain-skills.js";
 import { usesPerPlacement } from "./tick-engine.js";
 import { compileAilmentProgram } from "./tick-ailments.js";
@@ -61,13 +61,26 @@ function compileParts(hit, { ownUse = false } = {}) {
       // Expected roll × crit, before the build's layers (Lucky is in the roll, crit in the expectation).
       expectedBeforeLayers: component.perHitBeforeTarget / (increased * additional),
       targetFactor: component.perHitBeforeTarget > 0 ? component.perHit / component.perHitBeforeTarget : 1,
-      base: perUse / (increased * additional), increasedPercent: (increased - 1) * 100, perHit: component.perHit, perUse
+      base: perUse / (increased * additional), increasedPercent: (increased - 1) * 100, perHit: component.perHit, perUse,
+      // Psionic Missile: Emission's pulse lands one frame after the cast's last explosion (user decision 2026-11-23; src/support-hit-count-batch5.js):
+      // the part's damage that many frames later, at the value read at the hit (the hit's trigger-bus events stay on the cast's frame).
+      ...(component.afterLastLanding > 0 ? { delayFrames: component.afterLastLanding } : {})
     });
   });
-  // Per-use damage outside the components (Deterioration, Spell Ripple, Sweeping Fury) stays one static part.
+  // Per-use damage outside the components (Spell Ripple, Sweeping Fury) stays one static part. Deterioration is its own part, dealt when its
+  // instance runs out (6 T Corrosive Throw D1, 2026-11-20; research/build-6t-corrosive-throw-deterioration-2026-11-20.md §2, proven but for two
+  // inferred links: the duration lines shorten it, and the timer's end removes with reason 0): the first frame at or after the hit + its
+  // whole-frame duration (src/combat-states.js heldSeconds), at the value read at the hit. Ruinous Star's ticking variant (no single expiry)
+  // stays at the hit.
   const inParts = parts.reduce((sum, part) => sum + part.perUse, 0);
   const perUse = ownUse ? ownPerUse(hit) : hit.combat.perUse;
-  const rest = perUse - inParts;
+  let rest = perUse - inParts;
+  const deterioration = hit.deterioration;
+  if (deterioration?.perUse > 0 && deterioration.heldSeconds > 0 && !deterioration.ticking && Math.abs(rest) > 1e-9 * perUse) {
+    const share = Math.min(deterioration.perUse, rest);
+    parts.push({ key: "deterioration", label: "Deterioration (at its expiry)", type: null, hitsPerUse: 1, base: share, increasedPercent: 0, additionalFactor: 1, perUse: share, delayFrames: Math.max(1, Math.round(deterioration.heldSeconds * 30)) });
+    rest -= share;
+  }
   if (Math.abs(rest) > 1e-9 * perUse) parts.push({ key: "extras", label: "Other per-use damage in the planner's figure", type: null, hitsPerUse: 1, base: rest, increasedPercent: 0, additionalFactor: 1, perUse: rest });
   return { parts, dropped };
 }
@@ -105,7 +118,7 @@ function hitPath(hit, { ownUse = false } = {}) {
   const rate = hit.rate;
   return {
     key: hit.key, label: `${hit.name} hits`, kind: "hit",
-    parts: parts.map(({ key, type, base, increasedPercent, additionalFactor }) => ({ key, type, base, increasedPercent, additionalFactor })),
+    parts: parts.map(({ key, type, base, increasedPercent, additionalFactor, delayFrames }) => ({ key, type, base, increasedPercent, additionalFactor, ...(delayFrames ? { delayFrames } : {}) })),
     modifiers: [],
     perUse: hit.combat.perUse,
     working: {
@@ -168,6 +181,18 @@ function averagedSources(planner, paths, onLoop) {
  *   a program runs liveLayers ([{ key, label, lines, events }]); on the Youga build heldLayers ([{ key, label, reason, lines }]); with Minions on the
  *   loop minions ([{ key, label, mode, ramp, count, block }])
  */
+// The curse buff after every hit (its on-hit events, after the damage) and every DoT application (after the record is built) of the player's.
+function withCurseOnDamage(items = [], curse) {
+  const buff = { kind: "buff", buff: curse.buff, seconds: Infinity, once: true };
+  const place = (effects) => effects?.flatMap((effect) => {
+    if (effect.kind === "hit") return [{ ...effect, onHit: [...(effect.onHit || []), buff] }];
+    if (effect.kind === "ailment" || effect.kind === "dot" || effect.kind === "area") return [effect, buff];
+    if (effect.effects) return [{ ...effect, effects: place(effect.effects) }];
+    return [effect];
+  });
+  return items.map((item) => (item.actor ?? "player") !== "player" ? item : { ...item, ...(item.effects ? { effects: place(item.effects) } : {}), ...(item.steps ? { steps: item.steps.map((step) => ({ ...step, effects: place(step.effects) })) } : {}) });
+}
+
 export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEYS, readings = {}, bus: compiledBus = null } = {}) {
   const hits = (planner?.skillHits || []).filter((hit) => hit?.modeled && !hit.inactiveReason);
   // A Combo cycle on the loop with the Seething Spirit's casts merged into its rate: its parts take the player's own per-use (the Spirit's
@@ -199,7 +224,7 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   const targetBlessings = readings.reapBlessing === "held" ? [] : layerContext?.targetBlessings ?? [];
   if (readings.reapBlessing === "held" && layerContext?.prebuilt) for (const item of layerContext.targetBlessings || []) layerContext.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: item.seconds, layered: true });
   // Aim's state on the loop (src/tick-layers.js aimLayer) enters a held Ignite or Trauma application's amount.
-  const ailmentProgram = live.length ? compileAilmentProgram(planner, { ...readings, targetBlessings }, timerField(readings), { aimBuff: layerContext?.once.has("aim") ? "aim" : null, bus, othersIgnite: layerContext?.othersIgnite ?? null }) : null;
+  const ailmentProgram = live.length ? compileAilmentProgram(planner, { ...readings, targetBlessings }, timerField(readings), { aimBuff: layerContext?.once.has("aim") ? "aim" : null, bus, othersIgnite: layerContext?.othersIgnite ?? null, penetrationStacks: layerContext?.penetrationStacks ?? [], stateGates: layerContext ? dotStateGates(layerContext) : [] }) : null;
   const plain = live.length ? compilePlainProgram(planner, plainHits, paths, readings, ailmentProgram, layered, bus) : null;
   if (plain) Object.assign(paths, plain.paths);
   // Main Skill triggers (Vendetta) as loop actions (src/tick-trigger-main.js; chunk 15 §10.4): the casts and the Main Skill's own uses on one
@@ -248,7 +273,11 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
     if (onReaps && !busReap) for (const reap of ailments.reaps) reap.onFire = [...(reap.onFire || []), { kind: "buff", buff: item.buff, seconds: item.seconds, stacks: 1, maxStacks: item.stacks, layered: true }];
     if (!onReaps && !item.hitPlaced && general) general.initialBuffs.push({ buff: item.buff, stacks: item.stacks, seconds: Infinity, layered: true });
   }
-  const { actions, periodics, triggers } = ailments ?? { actions: allActions, periodics: allPeriodics, triggers: allTriggers };
+  const placed0 = ailments ?? { actions: allActions, periodics: allPeriodics, triggers: allTriggers };
+  // A gear curse cast by your damage (src/tick-layers.js curseLayer `curseOnDamage`): after each hit and DoT application of yours, so the run's first
+  // one casts it (2026-11-22).
+  const curse = layerContext?.curseOnDamage;
+  const { actions, periodics, triggers } = curse ? Object.fromEntries(["actions", "periodics", "triggers"].map((name) => [name, withCurseOnDamage(placed0[name], curse)])) : placed0;
   const onLoop = ailments ? { ailments: ailments.ailments, reaps: ailments.reaps, derived: ailments.derived, ...(ailmentProgram.affliction ? { affliction: ailmentProgram.affliction } : {}), ...(ailments.nightfall ? { nightfall: ailments.nightfall } : {}) } : {};
   const averaged = averagedSources(planner, paths, new Set([...[...(ailments?.reaps || []), ...(ailments?.derived || []), ...(minions?.minions || [])].map((item) => item.key), ...(triggerMain?.seriesKeys || [])]));
   assumptions.push(...averaged.map((item) => ({ id: `tick:averagedSource:${item.key}`, value: item.dps, text: `${item.label}: ${item.reason}.` })), ...(ailments?.assumptions || []));

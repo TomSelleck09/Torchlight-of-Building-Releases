@@ -9,10 +9,14 @@
 // - "+X% Minion Max Life" (recipe 101010088: attr 1001 Max Life, mod 3 increased, Minion tag 5002060): one increased pool.
 // - "+X% additional Minion Max Life (Not affected by Aura Effects)" (recipe 247322000: mod 4) and "+X% additional Life for Minions
 //   summoned by the supported skill" (recipe 101010476: mod 4 with the supported skill's tag; Servant Life, Defense Form, at the
-//   support's level): each its own factor.
-// Not read: Peril of Synthetic Troops (a share of your own Max Life on Self-Destruct troops, Moto's own model), Minion Energy Shield.
+//   support's level, from its stone's level map): each its own factor. A support's "this skill" Minion Life write reaches that skill's
+//   Minions' Max Life wherever this is read (user decision 2026-11-23, 6 T Trog audit G5; Heroic Sacrifice reads it, record 996398784).
+// Not read here: Peril of Synthetic Troops (a share of your own Max Life on Self-Destruct troops, added by Moto's Heroic Sacrifice
+// reader in src/minion-damage-model.js, which also passes the Aura ally Life buffs), Minion Energy Shield. Banishment: Tangle's reader
+// (src/planner.js) runs before the Auras resolve, so it still leaves out their ally Life buffs.
 import { minionBaseDamage } from "./minion-base-damage.js";
 import { normalizePercentageText } from "./percentage-text.js";
+import { supportDataMode, supportGameLine } from "./game-skill-data.js";
 
 const TROOP_FAMILIES = new Set(["module", "synthetic-troop"]);
 const LIFE_PER_BASE_DAMAGE = { troop: 5, "spirit-magus": 15 };
@@ -39,7 +43,13 @@ export function minionMaxLife({ family, level = 20, supports = [], modifierTexts
     ...modifierTexts.flatMap((line) => { const match = clean(line.text).match(ADDITIONAL); return match ? [{ source: line.source, text: clean(line.text), value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }),
     ...supports.filter((support) => support && support.enabled !== false).flatMap((support) => {
       const match = (support.effects || []).map((effect) => String(effect).match(SUPPORT_ADDITIONAL)).find(Boolean);
-      return match ? [{ source: `Support: ${support.name} Lv.${support.effectiveLevel ?? support.level ?? 1}`, text: `${match[1].startsWith("-") ? "" : "+"}${Number(match[1])}% additional Life for Minions summoned by the supported skill`, value: Number(match[1]) }] : [];
+      if (!match) return [];
+      // The value at the support's effective level from its stone (config_skill_stone 101010476's level map: Servant Life Lv36 70%), not
+      // the setup text's reference data extrapolation past Lv21 (77.5% there); the text's number when the stone has no matching affix.
+      const level = support.effectiveLevel ?? support.level ?? 1;
+      const game = supportDataMode() === "game" ? supportGameLine(support.name, `${match[1]}% additional Life for Minions summoned by the supported skill`, { level }) : null;
+      const value = Number.isFinite(game?.values?.[0]) ? game.values[0] : Number(match[1]);
+      return [{ source: `Support: ${support.name} Lv.${level}`, text: `${value < 0 ? "" : "+"}${value}% additional Life for Minions summoned by the supported skill`, value }];
     })
   ];
   const increasedPercent = increased.reduce((sum, item) => sum + item.value, 0);

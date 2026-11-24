@@ -146,6 +146,23 @@ export function empowerEffectFactor(clauses = [], { globalIncreasedPercent = 0, 
   return { factor: (1 + increasedPercent / 100) * additionalFactor, increasedPercent: round(increasedPercent), additionalFactor: round(additionalFactor), sources };
 }
 
+/**
+ * The character's Empower Effect lines for one skill: "+X% Empower Skill Effect" (increased, every Empower skill), "+X% Empower Skill Effect
+ * for <Skill>" (that skill only) and the "+X% additional Empower … Effect" lines (src/storm-command.js), in empowerEffectFactor's options.
+ */
+export function empowerGlobalLines(modifierTexts = [], name = null) {
+  const globalSources = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived") continue;
+    const text = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim();
+    const match = text.match(GLOBAL_EMPOWER);
+    if (match) { globalSources.push({ source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1), reading: "increased" }); continue; }
+    const named = name ? text.match(NAMED_EMPOWER) : null;
+    if (named && named[2].trim() === name) globalSources.push({ source: line.source, text: line.text, value: Number(named[1]) * (line.multiplier ?? 1), reading: `increased, ${name} only` });
+  }
+  return { globalIncreasedPercent: globalSources.reduce((sum, item) => sum + item.value, 0), globalSources, globalAdditional: empowerAdditionalLines(modifierTexts) };
+}
+
 // Rising Edge's stacks (chunk 9): the casts per second of the other Summon-tagged skills on the board (active slots: an Aura-slot Magus is summoned once),
 // each cast whenever ready, 1 ÷ max(use time, cooldown).
 function summonCastRate(setups, activeNames) {
@@ -268,7 +285,7 @@ export function resolveEmpowerEffects({ setups = [], activeNames = new Set(), da
     // An Empower on a stated interval: Arcane Shield's Secret Origin Unleash (670766272: a 6 s gate, then a cast), Mind Infusion's Dark Gate and Dazzling Bloom (723410752,
     // 11486053: moving, then a cooldown gate). The same buff at the triggered skill's level, as the chance pairs above (chunk 12).
     if (trigger?.name && EMPOWER_BUFF_SPECS[trigger.name] && trigger.intervalSeconds > 0 && !noEmpowerTriggers) {
-      const event = itemTriggerEvent(trigger, { moving: buffContext.moving, mobilityUsesPerSecond: buffContext.mobilityUsesPerSecond, anyHit: buffContext.anyHit });
+      const event = itemTriggerEvent(trigger, { moving: buffContext.moving, mobilityUsesPerSecond: buffContext.mobilityUsesPerSecond, mobilityUsesNote: buffContext.mobilityUsesNote, anyHit: buffContext.anyHit });
       const levels = itemLevels(trigger.name, trigger.level, line);
       const entry = event.active ? empowerBuffEntry({ name: trigger.name, level: levels.effectiveLevel, levels, effect: itemEffectFor(trigger.name), empowerScaled: true, modifierTexts, ctx: buffContext, item: { intervalSeconds: event.intervalSeconds ?? trigger.intervalSeconds, when: event.reason, source: line.source, text: line.text }, setupKey: `item-empower:${line.source}:${trigger.name}` }) : null;
       if (entry) buffCandidates.push(entry);

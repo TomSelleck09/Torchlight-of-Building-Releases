@@ -32,8 +32,8 @@ import { NAMED_AURA_SMC_ADDITIONAL } from "./aura-effects.js";
 import { auraGainedLineStatus } from "./aura-gained-effects.js";
 import { RADICAL_EVOLUTION, radicalEvolutionAuraEffects } from "./origin-of-spirit-magus.js";
 import { classifyHitLine, splitHitLineText } from "./skill-hit-lines.js";
-import { MULTISTRIKE_SPEED_LINE, UNSTOPPABLE_FORCE_LINE, SENTRY_IDLE_LINE, SENTRY_START_LINE, FURY_LUCKY_LINE, CAST_SPEED_TO_CHARGE_LINE, SPELL_RIPPLE_LINE, SWEEPING_FURY_LINE, PROJECTILE_QUANTITY_LIMIT_LINE, MAIN_SPELL_REPEAT_LINE, SHADOW_QUANTITY_LINE, SHADOW_DAMAGE_LINE, SHADOW_CHANCE_LINE, BARRAGE_WAVE_CHANCE_LINE, BARRAGE_PER_WAVE_LINE, SPELL_BURST_USE_GAIN, DEMOLISHER_CONSUMED_LINE } from "./skill-hit-model.js";
-import { SOLID_RIVER_DAMAGE_LINE, SOLID_RIVER_TRIGGER_LINE } from "./activation-medium-events.js";
+import { INSATIABLE_GREED_LINE, MULTISTRIKE_SPEED_LINE, UNSTOPPABLE_FORCE_LINE, SENTRY_IDLE_LINE, SENTRY_START_LINE, FURY_LUCKY_LINE, CAST_SPEED_TO_CHARGE_LINE, SPELL_RIPPLE_LINE, SWEEPING_FURY_LINE, PROJECTILE_QUANTITY_LIMIT_LINE, MAIN_SPELL_REPEAT_LINE, SHADOW_QUANTITY_LINE, SHADOW_DAMAGE_LINE, SHADOW_CHANCE_LINE, BARRAGE_WAVE_CHANCE_LINE, BARRAGE_PER_WAVE_LINE, SPELL_BURST_USE_GAIN, DEMOLISHER_CONSUMED_LINE } from "./skill-hit-model.js";
+import { SOLID_RIVER_DAMAGE_LINE, SOLID_RIVER_TRIGGER_LINE, BANISHMENT_SPELL_BURST_TRIGGER_LINE } from "./activation-medium-events.js";
 import { TERRA_CHARGE_ON_USE } from "./selena-dance.js";
 import { ATTACK_AILMENT_CHANCE, CRIT_AILMENT_CHANCE } from "./ailment-applications.js";
 import { COMBO_POINTS_GAINED_LINE, COMBO_EXTRA_LINE } from "./combo-points.js";
@@ -56,6 +56,7 @@ import { isFocusRateProfile } from "./focus-speed.js";
 import { nightfallLineStatus } from "./approaching-nightfall.js";
 import { mobilityPressInterval } from "./press-schedule.js";
 import { BASE_BLESSING_SECONDS } from "./blessing-layers.js";
+import { RECENTLY_SUMMONED_LINE } from "./recently-summoned.js";
 
 // Second opinion for tooltip coverage badges. The older per-panel checks know the
 // Ignite ledger; this one knows the generic ailment, Reaping, crit, support, curse,
@@ -820,6 +821,17 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     if (note === "Curse limit reached" || note.startsWith("Inactive")) return "Inactive";
     // build-mechanics notes that say why a recognized line changes nothing (gear-pact batch G5 / G6).
     if (note.startsWith("Not modeled")) return "Not modeled";
+    // The per-additional-max-stack lines (records 328531744 / 996307264: any skill; 2026-11-20, 15 T Split Shot G4): In calc where the beam
+    // takes them, a modeled skill hit carries a non-zero copy (src/skill-hit-model.js channelState / stackLineState), or the shared DoT /
+    // ailment ledger carries one (src/build-mechanics.js, the Main Skill's count) and a DoT or ailment is modeled; else Inactive.
+    if (/^(?:Additional damage per additional max channeled stack|Increased damage × \d+ additional max stacks)/.test(note)) {
+      const clean = String(text).replace(/\s+/g, " ").trim();
+      const carries = (lines) => (lines || []).some((line) => line.value && String(line.text).startsWith(clean));
+      const engines = plannerEngines(planner);
+      const onHit = (planner.skillHits || []).some((hit) => hit.modeled && (carries(hit.ledger?.increased) || carries(hit.ledger?.additional)));
+      const onDot = Boolean(engines?.anyDot) && (carries(planner.mechanics?.ignite?.increased) || carries(planner.mechanics?.ignite?.additional));
+      return engines?.beam || onHit || onDot ? "In calc" : "Inactive";
+    }
     // An item-granted support (src/gear-unique-modules.js) reads as that support on the Main Skill (skill coverage).
     // "All Passive Skill slots are supported by …" (gear affix batch C): the support's status on the Aura-slot setups that take it.
     const passiveGranted = note.match(/^Granted support: (.+?) Lv\.\d+ on (?:every Passive Skill slot|the (?:first|last) \d+ Passive Skill slots)/);
@@ -1042,6 +1054,13 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
       return finishers.some((hit) => Math.abs(hit.rate.multistrike.unstoppableForce.factor - 1) > 1e-12) ? "In calc" : "No DPS effect";
     }
     // Play Safe's Cast Speed → Spell Burst Charge Speed: In calc where a modeled Spell hit Spell Bursts with the converted share.
+    // Insatiable Greed (game recipe 588396864): In calc where a modeled hit Spell Bursts with its Attack Speed share; No DPS effect when the
+    // increased Attack Speed it converts is 0; Inactive without a Spell-Bursting hit (its Mana seal is read by the Mana states either way).
+    if (INSATIABLE_GREED_LINE.test(text)) {
+      const shares = (planner.skillHits || []).filter((hit) => hit.modeled && hit.rate?.spellBurst?.chargeSpeed?.attackSpeedShare?.length);
+      if (!shares.length) return "Inactive";
+      return shares.some((hit) => hit.rate.spellBurst.chargeSpeed.attackSpeedShare.some((item) => Math.abs(item.value) > 1e-12)) ? "In calc" : "No DPS effect";
+    }
     if (CAST_SPEED_TO_CHARGE_LINE.test(text)) return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst?.chargeSpeed?.castSpeedShare?.length) ? "In calc" : "Inactive";
     // Spell Ripple: In calc where a modeled Main Spell hit spawns Pulses; Scorching Beam's own beam path does not read it yet.
     if (SPELL_RIPPLE_LINE.test(text)) {
@@ -1090,7 +1109,8 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
       : passive.family === "steepStrike" ? hits.some((hit) => hit.steepStrike && (hit.steepStrike.fromChance || (hit.steepStrike.perChance && hit.rate?.multistrike)))
       // Carino – Zealot of War's magazine rule ("For every +1 Projectile Quantity or +1 Split Quantity, +N Magazine Capacity", src/carino-traits.js)
       // reads every plain Projectile Quantity line too (batch 7, 2026-10-28: the trait's own "Projectile Quantity +2" read Inactive and moved).
-      : passive.family === "projectileQuantity" ? hits.some((hit) => hit.rate?.extraProjectiles) || (planner.modifierTexts || []).some((line) => /^For every \+1 Projectile Quantity or \+1 Split Quantity, \+\d+ Magazine Capacity/i.test(normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim()))
+      // Frost Spike's "+8% additional Damage for every +1 Projectile Quantity of this skill" reads it too (user decision 2026-11-23).
+      : passive.family === "projectileQuantity" ? hits.some((hit) => hit.rate?.extraProjectiles || hit.perProjectileQuantity) || (planner.modifierTexts || []).some((line) => /^For every \+1 Projectile Quantity or \+1 Split Quantity, \+\d+ Magazine Capacity/i.test(normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim()))
       : carried ? hits.some(labelled)
       : hits.some((hit) => (hit.components || []).some((component) => sourceTypes.includes(component.type)));
     return used ? "In calc" : "Inactive";
@@ -1138,7 +1158,8 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   // Solid River (census item #8; src/skill-hit-model.js): its per-Charge-Speed Spell Burst hit damage (game recipe 510361024) and its
   // full-charge Main Skill trigger (493789504): In calc where a modeled hit Spell Bursts (the trigger: where it is on), else Inactive.
   if (SOLID_RIVER_DAMAGE_LINE.test(text) && planner?.activation) return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst?.bonusLines?.some((line) => SOLID_RIVER_DAMAGE_LINE.test(String(line.text).split(":")[0]))) ? "In calc" : "Inactive";
-  if (SOLID_RIVER_TRIGGER_LINE.test(text) && planner?.activation) return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst?.chargeTrigger) ? "In calc" : "Inactive";
+  // Banishment's Spell Burst trigger (affix 378286592, 4 T Thea audit G4) is the same trigger with no threshold.
+  if ((SOLID_RIVER_TRIGGER_LINE.test(text) || BANISHMENT_SPELL_BURST_TRIGGER_LINE.test(text)) && planner?.activation) return (planner.skillHits || []).some((hit) => hit.modeled && hit.rate?.spellBurst?.chargeTrigger) ? "In calc" : "Inactive";
   // "+X% chance to immediately gain N stack(s) of Spell Burst Charge when using a skill" (record 32278; src/spell-burst-refill.js, 15 T Chain
   // Lightning audit G1, 2026-11-18): In calc where a modeled hit's Spell Burst is refilled by it (Burst Activation's activations, a Spell-Bursting
   // skill's full charge), else Inactive (no Spell-Bursting hit, or no use of yours raises 1000074 to roll it).
@@ -1181,6 +1202,14 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
   // takes it (per damage type), Inactive otherwise.
   // Chunk 6: the Minion half of "for you and your Minions against Cursed enemies" (src/talent-text-migrations.js) reads on Minion hits, ×1.12.
   if (planner?.activation && /^\+[\d.]+% additional Minion Damage against Cursed enemies$/i.test(text)) return (planner.minions || []).some((minion) => minion.modeled) ? "In calc" : "Inactive";
+  // "… for recently summoned Minions" (src/recently-summoned.js; 6 T Trog G4, 2026-11-23): In calc where a modeled Minion holds it (its
+  // summon recast on a schedule its trigger hears), No DPS effect for the damage-taken line, Inactive otherwise.
+  if (planner?.activation && RECENTLY_SUMMONED_LINE.test(normalizePercentageText(String(text)).replace(/\s+/g, " ").trim())) {
+    const cleanText = normalizePercentageText(String(text)).replace(/\s+/g, " ").trim();
+    if (/additional damage taken for recently summoned/i.test(cleanText)) return "No DPS effect";
+    const modeled = (planner.minions || []).filter((minion) => minion.modeled);
+    return modeled.some((minion) => (minion.recentlySummoned?.read || []).some((line) => line.text === cleanText)) ? "In calc" : "Inactive";
+  }
   const minionRoll = planner?.activation ? classifyMinionLine(text) : null;
   if (minionRoll && (minionRoll.kind === "maxDamage" || minionRoll.kind === "minDamage")) {
     const cleanText = (value) => normalizePercentageText(String(value)).replace(/\s+/g, " ").trim();
@@ -1731,12 +1760,13 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     const attack = weaponHitModeled(planner);
     return attack && planner.weaponAttack?.mainHand?.weapon ? "In calc" : "Inactive";
   }
-  // "+X% additional Base Damage for Two-Handed Weapons" (src/weapon-damage-model.js scales a two-handed weapon's base damage; a sum,
-  // so appliedByPlanner does not see it): In calc where a modeled attack uses a held two-handed weapon (belt blend audit 2026-10-21:
-  // the blend moved Split Shot's bow attack while its badge read Inactive).
+  // "+X% additional Base Damage for Two-Handed Weapons" (src/weapon-damage-model.js scales a held two-handed weapon's base damage, one
+  // factor per copy, 2 T Whirlwind audit F1; not a hit-ledger line, so appliedByPlanner does not see it): In calc where a modeled attack uses a held two-handed weapon (belt blend audit 2026-10-21:
+  // the blend moved Split Shot's bow attack while its badge read Inactive). Also where Isomorphic Arms' copy of the held two-hander carries
+  // the raised base onto a modeled Minion's Attack hit (src/minion-cores.js isomorphicArmsState; user decision 2026-11-23, 6 T Trog audit).
   if (weaponLine?.kind === "twoHandedBase" && planner?.activation) {
     const attack = weaponHitModeled(planner);
-    return attack && planner.weaponAttack?.twoHanded ? "In calc" : "Inactive";
+    return (attack && planner.weaponAttack?.twoHanded) || isomorphicTwoHandedRead(planner) ? "In calc" : "Inactive";
   }
   // "+X% additional Base Damage for Off-Hand Weapons" (Demons' Touch): In calc where a modeled weapon hit dual wields (legendary audit
   // 2026-10-22: it moved Erika while it read Inactive).
@@ -1882,6 +1912,11 @@ export function skillLevelLineStatus(text, planner = context) {
 const settled = ["In calc", "Not equipped", "Not allocated", "Not selected", "Not installed", "Inactive", "Replaced by corrosion", "Planner only", "Quality of life", "Missing Blur source", "Enables base slot"];
 // A modeled hit that uses the held weapon: an attack-speed attack, or a weapon-scaled hit with a fixed cadence (Erika's Precise: Thunder
 // Focus; legendary audit 2026-10-22).
+// A modeled Minion whose Attack hits deal damage and carry Isomorphic Arms' two-handed raise (src/minion-cores.js, the line's twoHandedBase).
+function isomorphicTwoHandedRead(planner) {
+  return (planner?.minions || []).some((minion) => minion.modeled && (minion.lines?.added || []).some((line) => line.twoHandedBase) && (minion.skills || []).some((skill) => (skill.tags || []).includes("Attack") && skill.steadyDps > 0));
+}
+
 function weaponHitModeled(planner) {
   return (planner?.skillHits || []).some((hit) => hit.modeled && (hit.rate?.speedType === "attack-speed" || hit.profile?.weaponScaling));
 }

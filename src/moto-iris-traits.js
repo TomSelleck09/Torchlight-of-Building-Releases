@@ -32,10 +32,11 @@
 //   "motoOverload"); its duration lines change no dummy figure. All In's first-gain bonus is held (each recast summons fresh Minions
 //   that gain Overload for the first time). Machine's Joy: 30 stacks with own buffs built (Minion hits, no Trait Skill cast).
 // - Charge Calling pressed on cooldown (6 s / 6 s: uptime 1; the Trait Skill switch); each summon cast during it creates 1 + Rally +
-//   1 Synthetic Troop Minions that self-destruct 1 s after (115% of Base Damage, Physical Attack), at most the skill's quantity + 1
-//   alive: explosions/s = min(casts/s × troops per cast, alive ÷ 1 s). Summon casts: Fuel War with War's trigger (Main Summon Skill)
+//   1 Synthetic Troop Minions that self-destruct 1 s after (115% of Base Damage, Physical Attack), at most the troop count
+//   alive (field 2006100; the +1 is per cast, G1 2026-11-23): explosions/s = min(casts/s × troops per cast, alive ÷ 1 s). Summon casts: Fuel War with War's trigger (Main Summon Skill)
 //   or the player recasting the summon (its use time; a Module's 4 s cooldown). The planner keeps whichever of the troops' own
-//   attacks and the explosion loop deals more (best case). Mechanical Parts: drop chance × explosions/s, picked up, "recently" = 4 s.
+//   attacks and the explosion loop deals more (best case). Mechanical Parts: drop chance × Self-Destruct starts/s (every summoned troop,
+//   record 41414; G11 2026-11-23), picked up, "recently" = 4 s.
 // - Q-H13 (recommended): the Vigilant state held (best-case switch "irisVigilant"), Breeze at its max (10 + Breeze's Whisper +
 //   Warmest Vigilance + Blowing Breeze when their sources fire), Growth +6 per Breeze with the moon; Reconjuring breaks ignored.
 //   The Merged Magus's Ultimate is in its cycle (8 s, the Full Bloom keyword's initial cooldown; none with Whirlwind Tango, then
@@ -54,7 +55,9 @@
 // - The buff record's scaleReduction fades Overload only with label 3050300, which no current trait writes (client, BuffAction_1034).
 // - All In: 200000101's bonus lasts 7 s from the Minion's creation (node 306), not "the first gain".
 // - Machine's Joy: 6784677: stacks from your own hits (1000033), all removed by any Trait Skill cast, so by each Overload cast.
-// - Mechanical Parts: buff 81842 has the Blessings' stack mode: each pick-up refreshes every stack's 4 s (sharedTimerStacks).
+// - Mechanical Parts: buff 81842 is subtype 2 (layers, each its own timer), mode 1, cap 99; its add (765526: node 374, 1 layer, 4 s) has no
+//   node 626 and its own affix list is empty, so a pick-up refreshes no other stack (2026-11-22, the cap census row 5; replaces the
+//   refresh-all sharedTimerStacks reading): held = E[min(cap, Poisson(pick-ups/s × 4 s))] (src/blessing-layers.js poissonLayerMean).
 // - Charge Calling's moon: 12301445's attr has no Minion tag: your own damage, not the explosions (text and row disagree).
 // - Heroic Sacrifice: node 114 divides with no whole steps.
 
@@ -72,7 +75,10 @@ export const TROOP_FAMILIES = Object.freeze(["synthetic-troop", "module"]);
 export const RECENTLY_SECONDS = 4;
 export const KEYWORDS = Object.freeze({
   overload: "Keyword Overload (hover 5f163559): Empower Skill Effect bonuses also apply to Overload Effect",
-  selfDestruct: Object.freeze({ percent: 115, lifeSeconds: 1, tags: Object.freeze(["Attack", "Melee", "Physical", "Area"]), source: "Keyword Self-Destruct Protocol (hover c92edbbf): 115% base multiplier, defeated 1 s after activation" }),
+  // chargeSeconds: the charge each troop casts at Self-Destruct's start (567614 row 7: stone 402031, its slot-0 Split 812924, read from the
+  // SkillEditor export: doSpeed 0.4 s, atkSpeedType 1 = scaled by the troop's Attack Speed, hit rule bHitDestroy: destroyed on hitting an
+  // enemy; tests/build-6t-trog.test.js re-reads it when the export is present).
+  selfDestruct: Object.freeze({ percent: 115, lifeSeconds: 1, chargeSeconds: 0.4, chargeSplit: 812924, tags: Object.freeze(["Attack", "Melee", "Physical", "Area"]), source: "Keyword Self-Destruct Protocol (hover c92edbbf): 115% base multiplier, defeated 1 s after activation" }),
   windrider: Object.freeze({ channelSeconds: 0.33, maxStacks: 5, nourishment: 3, source: "Keyword Windrider (hover 336df32a)" }),
   fullBloom: Object.freeze({ ultimateCooldownSeconds: 8, speedSharePercent: 50, source: "Keyword Full Bloom (hover 8d0198aa)" }),
   breeze: Object.freeze({ perStackPercent: 16, source: "Keyword Breeze (hover 07edbff3): +16% additional damage dealt by Merged Spirit Magi per stack" })
@@ -581,16 +587,16 @@ export function b6LineStatus(heroId, text, state) {
     const chosen = troops.filter((minion) => minion.heroTraits.selfDestruct.chosen);
     const sd = chosen[0]?.heroTraits.selfDestruct || troops[0]?.heroTraits?.selfDestruct || null;
     const none = !c.pressed ? "the Trait Skill switch is off: Charge Calling is never pressed" : !state.hasTroop ? "no modeled Synthetic Troop / Module Minion" : pending ? "settled after the Minion pass" : troops.length && sd ? `the troops' own attacks deal more (${round(sd.ownDps)} DPS) than the explosion loop (${round(sd.loopDps)} DPS), so the best case leaves Charge Calling unpressed` : "no Self-Destruct explosions";
-    const loop = sd ? `${round(sd.rate)} explosions/s (${sd.fuel ? `Fuel War with War every ${round(sd.castInterval)} s` : `the summon recast every ${round(sd.castInterval)} s`} × ${sd.perCast} troops, at most ${sd.maxAlive} alive for ${round(sd.life)} s${sd.capped ? ": the alive cap binds" : ""}) × ${round(sd.perExplosion)} per explosion` : "";
+    const loop = sd ? `${round(sd.rate)} explosions/s (${sd.fuel ? `Fuel War with War every ${round(sd.castInterval)} s` : `the summon recast every ${round(sd.castInterval)} s`} × ${sd.fillPerCast ?? sd.perCast} troops summoned of ${sd.perCast}, none at the cap of ${sd.maxAlive} alive, each exploding ${round(sd.life)} s after its summon${sd.capped ? ": the alive cap binds" : ""}) × ${round(sd.perExplosion)} per explosion` : "";
     const parts = Boolean(sd && sd.partStacks > 0);
     switch (key) {
       case "chargeCalling": case "selfDestruct": return chosen.length ? inCalc(`Charge Calling held (6 s every 6 s, pressed on cooldown); ${list(chosen)} self-destruct: ${loop} (provisional)`) : inactive(none);
       case "selfDestructDamage": return chosen.length ? inCalc(`+${c.additional.reduce((sum, item) => sum + item.value, 0)}% additional Self-Destruct Damage on ${loop}`) : inactive(none);
       case "chargeMoon": return !chosen.length ? inactive(none) : parts ? { status: "Not modeled", reason: `recipe 12301445 writes attr 57191 with no Minion tag on a buff on you: your own damage, not the explosions (the text says Minion Damage), and your own hits are not read here; the Skill Area part has no DPS effect` } : inactive("no Mechanical Part drops (Unstoppable Wave's drop chance)");
-      case "partDrop": case "partPickup": return !chosen.length ? inactive(none) : parts ? inCalc(`${c.parts.chancePercent}% × ${round(sd.rate)} explosions/s = ${round(sd.partsPerSecond)} Mechanical Parts/s, picked up at the dummy where they drop; each pick-up refreshes every stack's ${RECENTLY_SECONDS} s (buff 81842's stack mode, as the Blessings): ${round(sd.partStacks)} held on average`) : inactive("no Mechanical Part is picked up");
+      case "partDrop": case "partPickup": return !chosen.length ? inactive(none) : parts ? inCalc(`${c.parts.chancePercent}% × ${round(sd.startsPerSecond ?? sd.rate)} Self-Destruct starts/s (every summoned troop, record 41414 on gaining buff 81841; a cast at the cap summons none, so the starts are the explosions) = ${round(sd.partsPerSecond)} Mechanical Parts/s, picked up at the dummy where they drop; each pick-up its own ${RECENTLY_SECONDS} s layer (buff 81842: subtype 2, no refresh): ${round(sd.partStacks)} held on average`) : inactive("no Mechanical Part is picked up");
       case "partDamage": return !chosen.length ? inactive(none) : parts ? inCalc(`${round(sd.partStacks)} Mechanical Parts picked up recently × ${c.parts.perPartPercent}% (cap ${c.parts.partCap}) additional Minion Damage on the explosions`) : inactive("no Mechanical Part is picked up");
       case "traitSlot": return state.chargeCallingSupport ? { status: "Not modeled", reason: `the support in Charge Calling's slot (${state.chargeCallingSupport}) is not read: Charge Calling deals no damage of its own and is held at uptime 1` } : neutral("the slot is empty; Charge Calling deals no damage of its own and is held at uptime 1");
-      case "heroic": return !chosen.length ? inactive(none) : sd.heroicPercent > 0 ? inCalc(`Synthetic Troop Life ${round(sd.troopLife)} (5 × Base Damage${c.peril.lifePercent ? ` + ${c.peril.lifePercent}% of your Max Life` : ""})${sd.troopShield ? ` + Energy Shield ${round(sd.troopShield)}` : ""} ÷ ${c.heroic.per} = +${sd.heroicPercent}% additional Self-Destruct damage (Minion Max Life lines are not read; provisional)`) : inactive("the troops' Life and Energy Shield give no step");
+      case "heroic": return !chosen.length ? inactive(none) : sd.heroicPercent > 0 ? inCalc(`Synthetic Troop Life ${round(sd.troopLife)} (${sd.troopLifeText || "5 × Base Damage"}${c.peril.lifePercent ? ` + ${c.peril.lifePercent}% of your Max Life` : ""})${sd.troopShield ? ` + Energy Shield ${round(sd.troopShield)}` : ""} ÷ ${c.heroic.per} = +${sd.heroicPercent}% additional Self-Destruct damage (record 996398784: the troop's final Max Life, its Minion Max Life lines and its summon's support Life lines included)`) : inactive("the troops' Life and Energy Shield give no step");
       case "guerilla": return !chosen.length ? inactive(none) : sd.guerillaStacks > 0 ? inCalc(`${round(sd.guerillaStacks)} Mechanical Parts collected recently: +${round(c.parts.guerilla.speedPercent * sd.guerillaStacks)}% additional Charge Speed (shorter charge: ${round(sd.life)} s) and +${round(c.parts.guerilla.damagePercent * sd.guerillaStacks)}% additional Self-Destruct damage`) : inactive("no Mechanical Part is picked up (Unstoppable Wave)");
       case "fuelWar": {
         if (!chosen.length) return inactive(none);

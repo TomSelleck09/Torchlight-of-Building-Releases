@@ -318,7 +318,8 @@ export function skillUptime(planner) {
       out[key] = { sustained: null, kind: "triggered", cadence: `triggered every ${seconds(1 / uses)}`, reason: `${round(uses, 3)} uses/s; takes none of your time${burstNote}` };
       return;
     }
-    if (finite(press?.share)) {
+    // (A Mobility skill the rotation does not press, share 0 on its hits: user decision 2026-11-23, read as not pressed below.)
+    if (finite(press?.share) && !press.notPressed) {
       out[key] = { sustained: round(clamp01(press.share)), kind: "pressed", cadence: `${percentText(clamp01(press.share))} of your time`, reason: `the other pressed skills take the rest${burstNote} (rotation estimate, provisional)` };
       return;
     }

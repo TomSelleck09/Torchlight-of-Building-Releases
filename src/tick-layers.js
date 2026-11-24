@@ -113,7 +113,7 @@ export function createLayerContext(planner, options) {
       // Cooldown Recovery Speed, build-wide: (1 + Σ increased) × Π additional, split so a live layer can be taken out of either side.
       cooldown: { increasedPercent: sumValues(cooldownLines.filter((line) => line.kind !== "additional")), additionalFactor: cooldownLines.filter((line) => line.kind === "additional").reduce((factor, line) => factor * (1 + line.value / 100), 1), modifiers: [] }
     },
-    actions: [], triggers: [], periodics: [], collectors: [], initialBuffs: [], followerEvents: new Map(),
+    actions: [], triggers: [], periodics: [], collectors: [], initialBuffs: [], followerEvents: new Map(), followerCastEvents: new Map(),
     paths: {}, report: new Map(), assumptions: [], once: new Set(),
     // The trigger bus (src/trigger-bus.js, W10): null on the layers. Its listeners replace the layers' event-driven holds they own.
     bus: options.bus ?? null
@@ -353,6 +353,30 @@ function addStateEvent(ctx, type) {
 }
 const stateDealt = (type) => type === "Frostbite" || type === "Frozen" ? "Cold" : type === "Numbed" ? "Lightning" : null;
 
+// R4 of research/remediation-held-buffs-2026-11-21.md (2026-11-22): a DoT ledger's copy of a line gated on a dummy state ("+X% additional damage
+// against Frozen enemies", record 101010183, Frost Terra: Rime; "against Cursed" 648427; "against Ignited", "against Marked") is the attacker's
+// additional damage (attr 5719 with the state on the other unit), which the DoT record reads once, at its build (SS14 client 0x141d48bc0 ->
+// 0x141f89510 reads 5719 with the record's query and stores it, proven; the victim's states in that query inferred). So on the loop it is an
+// attacker modifier fixed at each application that needs the state's buff then (src/tick-ailments.js dotPath). A layer registers a state only
+// where it drives that state's buff on the loop (it placed the buff's events); a DoT copy of a state no layer drives keeps the planner's held value.
+const DOT_STATE_WORDS = Object.freeze({
+  frostbite: /\b(?:against|to) (?:Frozen|Frostbitten) enem(?:y|ies)\b/i,
+  curse: /\b(?:against|to) Cursed enem(?:y|ies)\b/i,
+  mark: /\b(?:against|to) Marked enem(?:y|ies)\b/i
+});
+const AILMENT_STATE_WORDS = Object.freeze({ Ignite: "Ignited", Trauma: "Traumatized", Wilt: "Wilted", Numbed: "Numbed", Shock: "Shocked" });
+function driveDotState(ctx, liveKey, buff, pattern) {
+  ctx.dotStateGates ??= [];
+  if (!ctx.dotStateGates.some((gate) => gate.buff === buff)) ctx.dotStateGates.push({ liveKey, buff, pattern });
+}
+/** The DoT copies' states the layers drive (src/tick-ailments.js reads them): { liveKey, buff, pattern }. Called after every layer has run. */
+export function dotStateGates(ctx) {
+  // An ailment state a layer placed events for (ailmentTypeLayer, a gated Blessing gain's state).
+  for (const type of ctx.targetStateEvents || []) if (AILMENT_STATE_WORDS[type]) driveDotState(ctx, "ailmentTypes", `ailment:${type}`, new RegExp(String.raw`\b(?:against|to) ${AILMENT_STATE_WORDS[type]} enem(?:y|ies)\b`, "i"));
+  for (const type of ctx.ailmentTypeEvents || []) if (AILMENT_STATE_WORDS[type]) driveDotState(ctx, "ailmentTypes", `ailment:${type}`, new RegExp(String.raw`\b(?:against|to) ${AILMENT_STATE_WORDS[type]} enem(?:y|ies)\b`, "i"));
+  return ctx.dotStateGates || [];
+}
+
 // A Blessing's own per-stack line (src/planner.js: "<Blessing> Blessing (blessing model)"). With Divine Grace (the base effect replaced by +4%
 // additional damage per stack, src/blessing-model.js) the line is "<Blessing> Blessing (Divine Grace) (blessing model)": it reads the loop's stacks
 // only when something on the loop keeps that Blessing up as in game (`kept`: a gain the layers place, its on-target gains building it, or the trigger
@@ -528,6 +552,12 @@ export function triggerBusLayer(ctx) {
   }
   // The Fervor Rating (section 12, census C1): built from 0 on your hits; each reader linear in the Rating at the Rating held on this tick.
   if (bus.fervor) fervorReaders(ctx, bus.fervor, read);
+  // A Fervor the follower grants (F1): each cast of its granting skill grants it with that cast's Steep Strike chance, on the cast's first strike.
+  for (const grant of bus.fervor?.granted || []) {
+    if (!ctx.followerCastEvents.has(grant.skill)) ctx.followerCastEvents.set(grant.skill, []);
+    ctx.followerCastEvents.get(grant.skill).push({ kind: "busGrant", key: bus.fervor.key, chance: grant.share });
+  }
+  if (bus.fervor?.granted?.length) read.add("the follower's Fervor grant on its Steep Strikes");
   // An Aura's own stacks (section 13: Precise: Cruelty): the Aura's lines its Aura Effect scales, at (1 + 2.5% × the stacks held) over the
   // planner's held factor (40 stacks: ×2). Its buff on your Minions keeps the planner's held value (their paths are not read here).
   for (const spec of bus.auraStacks || []) for (const target of ctx.targets) {
@@ -739,6 +769,8 @@ export function frostbiteLayer(ctx) {
   }
   if (!any) return;
   addAilmentEvent(ctx, "Frostbite", { kind: "buff", buff: "frostbite", seconds: AILMENT_SECONDS.Frostbite }, "Cold");
+  // The DoTs' copies of "against Frozen / Frostbitten enemies", fixed at each application (R4; src/tick-ailments.js).
+  driveDotState(ctx, "frostbite", "frostbite", DOT_STATE_WORDS.frostbite);
   ctx.reported("frostbite").events = "the first Cold hit inflicts the fixed rating (manual), so Frozen too at 100+; each hit renews it";
 }
 
@@ -775,16 +807,37 @@ export function numbedLayer(ctx) {
   ctx.reported("numbed").events = `${extra > 0 ? `1 + ${extra} stacks per Numbing hit of yours ("Inflicts N additional stack(s) of Numbed", record 173497728), one per the follower's` : "one stack per Numbing hit"}, each on its own ${AILMENT_SECONDS.Numbed} s (keyword 762), up to ${stacks}; the per-damage threshold is not counted (open question tick-numbed-stacks)`;
 }
 
+// A gear curse cast by your own damage ("Triggers Lv. N X Curse upon dealing damage to enemies / on hit", records on 1000030 / 1000033, node 2320;
+// src/build-mechanics.js gearCurses): the curse lands after your first damage event, not at engagement.
+const CURSE_ON_DAMAGE = /\b(?:upon dealing damage to enemies|on hit|upon inflicting damage|when you or your Minions deal damage to enemies)\b/i;
+
 export function curseLayer(ctx) {
   if (!ctx.isLive("curse")) return;
   let any = false;
   for (const target of ctx.targets) for (const line of target.claimPattern("curse", /curse \(Lv\./)) { target.addModifier(line, { buff: "curse", percent: line.value, steadyAmount: line.value }); any = true; }
-  if (!any || !ctx.first("curse")) return;
   const buffs = enemyBuffSet(ctx.planner.lineEffects?.state);
+  // A DoT ledger's "against Cursed" copy (R4, src/tick-ailments.js dotStateLines) needs the curse on the loop too, so a cursed dummy puts it there
+  // even when no hit line claims it (frost-terra-30t: its Terra's Goddess of Deception and Space Rift lines; 2026-11-22).
+  const cursed = buffs ? buffs.holds("Curse") : Boolean(ctx.planner.lineEffects?.state?.cursed);
+  if (!(any || cursed) || !ctx.first("curse")) return;
   const skill = (buffs ? buffs.seriesOf("Curse")?.skill : ctx.planner.curseLimit?.active?.[0]) || "Curse";
+  // Where the curse comes only from gear triggers on your damage (no board curse skill, every active gear curse "upon dealing damage" / "on hit"),
+  // it lands after your first damage event on the loop (src/tick-ledger.js places it after each hit and DoT application of yours: the first one
+  // of the run wins; a hit's or record's own value is read before it, as the trigger fires on the damage, 1000030 / 1000033 after the hit pass,
+  // proven, research/trigger-events-rea-2026-11-04.md; at a DoT's application, not its first tick, one frame early: inferred). Otherwise a
+  // Preparation cast, or the board's curse cast at once.
+  const boardCurse = (ctx.planner.curseLimit?.active || []).length > 0;
+  const gear = ctx.planner.mechanics?.curses?.active || [];
+  if (!boardCurse && gear.length && gear.every((curse) => CURSE_ON_DAMAGE.test(String(curse.text || "")))) {
+    ctx.curseOnDamage = { buff: "curse" };
+    driveDotState(ctx, "curse", "curse", DOT_STATE_WORDS.curse);
+    ctx.reported("curse").events = `${gear.map((curse) => curse.name).join(", ")} from ${[...new Set(gear.map((curse) => curse.source))].join(", ")}: cast by your first damage on the dummy (its trigger), held after it`;
+    return;
+  }
   const interval = prepareEvery(ctx.planner, skill) ?? FRAME_SECONDS;
   // Terrain of Malice holds the curse on enemies in the area, so one cast keeps it (src/skill-coverage.js: curse uptime is continuous).
   ctx.triggers.push({ key: "curse", actor: "player", label: `${skill} (Preparation every ${interval} s)`, intervalSeconds: interval, effects: [{ kind: "buff", buff: "curse", seconds: Infinity }] });
+  driveDotState(ctx, "curse", "curse", DOT_STATE_WORDS.curse);
   ctx.reported("curse").events = `Preparation's first check (node 206, inCdOnCreating false) casts it on tick 1; one cast holds it`;
 }
 
@@ -867,6 +920,7 @@ export function ailmentTypeLayer(ctx) {
   const eventTypes = [...new Set([...all, ...elemental])].filter((type) => !fromBus(type) && !minionOnly(type));
   // (A type a gated Blessing gain already holds, placeHitGains, keeps that one event.)
   for (const type of eventTypes) if (!ctx.targetStateEvents?.has(type)) addAilmentEvent(ctx, type, { kind: "buff", buff: `ailment:${type}`, seconds: AILMENT_SECONDS[type] ?? 4 }, stateDealt(type));
+  ctx.ailmentTypeEvents = new Set([...(ctx.ailmentTypeEvents || []), ...eventTypes]);
   const minionTypes = [...new Set([...all, ...elemental])].filter((type) => fromBus(type) || minionOnly(type));
   report.events = `${described.join("; ")}, with n the ailment types held now: ${eventTypes.join(", ")}, each on its own inflicting hit${minionTypes.length ? `; ${minionTypes.join(", ")} only your Minions keep, at ${minionTypes.some(fromBus) ? "the trigger bus's share from their landings" : "the planner's uptime"}` : ""}`;
 }
@@ -912,6 +966,7 @@ export function markLayer(ctx) {
   }
   if (!any) return;
   ctx.reported("mark").lines.push({ layer: "crit", source: line.source, text: line.text, value: line.value });
+  driveDotState(ctx, "mark", "mark", DOT_STATE_WORDS.mark);
   ctx.reported("mark").events = `${source.chancePercent}% per crit determination through the accumulator; held after that (no published duration)`;
 }
 
@@ -943,6 +998,9 @@ export function penetrationLayer(ctx) {
       any = true;
     }
     if (!any) return;
+    // The DoTs that hold the line read the same stacks, fixed at each application (R5 of research/remediation-held-buffs-2026-11-21.md,
+    // 2026-11-22; src/tick-ailments.js dotPath): the stacks build only on your Elemental hits, so a DoT applied before them reads none.
+    (ctx.penetrationStacks ??= []).push({ buff, source: source.source, text: body.derivedText, value, stacks });
     ctx.reported("penetrationStacks").lines.push({ layer: "penetration", source: source.source, text: body.derivedText, value });
     taken.push(`+${value / stacks}% up to ${stacks}`);
   });
@@ -997,7 +1055,7 @@ export function timedLayer(ctx) {
 export function followerProgram(ctx) {
   const follower = ctx.planner.follower;
   const oneActor = ctx.isLive("followerActor");
-  const needed = ctx.isLive("followerCasts") || ctx.tidewell || ctx.paralysis || ctx.followerEvents.size || oneActor;
+  const needed = ctx.isLive("followerCasts") || ctx.tidewell || ctx.paralysis || ctx.followerEvents.size || ctx.followerCastEvents.size || oneActor;
   if (!needed || !follower?.damageSources?.length || !ctx.first("follower")) return;
   const sources = new Map(follower.damageSources.map((source) => [source.skill, source]));
   const ringSkills = (follower.cadence || []).filter((entry) => entry.castsPerSecond > 0);
@@ -1041,7 +1099,10 @@ export function followerProgram(ctx) {
     const count = shockwaves ? Math.max(1, Math.round(entry.periodSeconds * source.usesPerSecond)) : strikes && oneActor && entry.periodSeconds > 0 ? Math.min(printed, Math.max(1, Math.round(entry.periodSeconds / every))) : printed;
     if (live) ctx.paths[source.key] = { label: source.name, kind: "hit", parts: [{ key: "hit", type: source.type, base: source.perUse / printed, increasedPercent: 0, additionalFactor: 1 }], modifiers: [], working: { skill: source.skill, text: source.text, perUse: source.perUse, strikes: count } };
     const strike = live ? { kind: "hit", path: source.key, onHit: onStrike } : { kind: "event", effects: onStrike };
-    const effects = [strike, ...Array.from({ length: count - 1 }, (_, index) => ({ kind: "delay", seconds: every * (index + 1), effects: [strike] }))];
+    // Once-per-cast events (the follower's Fervor grant, F1) ride the first strike only.
+    const onCast = ctx.followerCastEvents.get(source.skill) || [];
+    const firstStrike = onCast.length ? (live ? { ...strike, onHit: [...onStrike, ...onCast] } : { kind: "event", effects: [...onStrike, ...onCast] }) : strike;
+    const effects = [firstStrike, ...Array.from({ length: count - 1 }, (_, index) => ({ kind: "delay", seconds: every * (index + 1), effects: [strike] }))];
     const coercion = ctx.paralysis && source.skill === ctx.paralysis.skill;
     ctx.actions.push({
       key: source.key, actor: "follower", label: source.name, ...(oneActor ? queued(entry) : { useSeconds: 1 / source.usesPerSecond, firstUseSeconds: source.firstUseSeconds }),
@@ -1083,6 +1144,20 @@ export function trueFlameLayer(ctx) {
     if (ctx.prebuilt && buff === "tenacity" && ctx.first("tenacityStart")) ctx.initialBuffs.push({ buff, stacks: cycle.held ?? entry.stacks, seconds: Infinity, layered: true });
   }
   ctx.reported("trueFlame").events = `each cast reads Focus ${focus.consumptionCycle.held} and Tenacity ${tenacity.consumptionCycle.held} (the planner's held stacks), removes them all and grants ${focus.consumptionCycle.refill} / ${tenacity.consumptionCycle.refill} back (${Math.round(focus.consumptionCycle.cooldownRecoveryPercent * 100) / 100}% Cooldown Recovery Speed)`;
+}
+
+// Thea – Wisdom of The Gods: God's Boon consumes every Focus layer (Split 349699) on the loop when another gain source refills them at a
+// measured rate (src/thea-traits.js godsBoonCycle eventRefill: Magister's Focus per Spell Burst activation). The planner's sustained figure
+// holds the cycle's average; the loop's own Focus gains (blessingLayer's periodics) refill the layers after each God's Boon hit, so the dips
+// land where they are (4 T Thea audit G7, 2026-11-23; before, nothing on the loop consumed Focus and it sat at max). The cycle-only case keeps
+// its timed steps (src/thea-traits.js "theaFocus") and adds nothing here.
+export function theaGodsBoonLayer(ctx) {
+  const cycle = ctx.planner.lineEffects?.state?.thea?.wisdom?.cycle;
+  if (!cycle?.eventRefill || !ctx.isLive("blessings")) return;
+  const target = ctx.targets.find((item) => item.hit.name === "God's Boon" && item.hit.rate?.usesPerSecond > 0);
+  if (!target) return;
+  target.after.push({ kind: "consume", buff: "focus", stacks: 1e9 });
+  ctx.reported("blessings").godsBoon = `God's Boon's hit consumes every Focus layer (every ${cycle.periodSeconds} s); the Focus gains refill them`;
 }
 
 // Another unit's Ignite on the dummy (10 T Barrier Burst triage L1, 2026-11-18). "+X% Ignite Chance against enemies that haven't been Ignited"
@@ -1157,7 +1232,7 @@ export function afflictionFireLayer(ctx) {
 }
 
 /** The general builders in their order; the Youga program interleaves its own among them (src/tick-youga-layers.js). */
-export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, incisiveLayer, othersIgniteLayer, afflictionFireLayer, timedLayer, followerProgram]);
+export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, theaGodsBoonLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, incisiveLayer, othersIgniteLayer, afflictionFireLayer, timedLayer, followerProgram]);
 
 /** What stays held on purpose on any build, with why. */
 export function generalHeldLayers(ctx) {

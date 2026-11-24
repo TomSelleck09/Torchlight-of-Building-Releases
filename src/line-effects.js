@@ -129,7 +129,7 @@ const NEUTRAL_BODY = /^[+-]?[\d.]+ ?% (?:Life Regain(?: and Energy Shield Regain
 // Conditional bodies use "Attack Speed and Cast Speed" where the plain template says "Attack and Cast Speed".
 const normalizeBody = (body) => String(body).replace(/Attack Speed and Cast Speed/i, "Attack and Cast Speed");
 
-const scaleBody = (body, factor, power, multiplier) => {
+export const scaleBody = (body, factor, power, multiplier) => {
   body = normalizeBody(body);
   // Added flat damage scales both ends ("Adds 7 - 9 Fire Damage to Attacks and Spells" per Blessing stack; chunk 4).
   const added = body.match(/^Adds ([\d.]+) ?[-–] ?([\d.]+) (.+)$/i);
@@ -210,7 +210,7 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
   const castSpeed = { increasedPercent: 0, additionalPercents: [], sources: [] };
   // Buffs, debuffs and ailment effects first: their states (Fervor, Aggression, Hasten) are conditions of other lines.
   const combat = resolveCombatStates(modifierTexts, state || {});
-  combat.deterioration = deteriorationFrom(modifierTexts, state || {}, combat.entries);
+  combat.deterioration = deteriorationFrom(modifierTexts, state || {}, combat.entries, { hasProfane: Boolean(combat.buffs?.hasProfane) });
   // The crowd control types on the dummy (Thea – Blasphemer's Mountain of Sins reads them; hero trait audit B7).
   // The dummy's debuffs (Frail, Infiltration types) for the follower's Frail / Infiltration Effect taken (src/follower-model.js AFFIX_EFFECTS).
   if (state) { state.buffs = combat.buffs; state.regain = combat.regain; state.enemyCrowdControl = combat.crowdControl || []; state.ownCrowdControl = combat.ownCrowdControl || null; state.enemyCrowdControlShares = combat.crowdControlShares || {}; state.crowdControlReaders = combat.crowdControlReaders || 0; state.ailmentReaders = combat.ailmentReaders || null; state.deteriorationActive = Boolean(combat.deterioration); state.enemyDebuffs = combat.debuffs || null; }

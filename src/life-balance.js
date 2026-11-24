@@ -105,7 +105,8 @@ export function lifeBalanceRegainFromBuild({ modifierTexts = [], stats = {}, res
 //     frame) while you keep the ailment on the dummy yourself: that you inflict it at least that often is inferred.
 //   - "Consumes X% of current Life and Energy Shield per second while Fervor is active" (Ghost Slaughter, record 824274: gate 206 0.2 s,
 //     node 500 current Life × X / 5, node 122): its own held-dip model stays in src/planner.js lifeLostState; inside a balance it is one
-//     more loss every 0.2 s (counted as Life lost, not as Life consumed, as the consumption model has it).
+//     more loss every 0.2 s here (the level the consumes read stays the uses'), while the consumption model counts its node 122 as Life
+//     consumed for the collectors and the consumed-recently readers (src/resource-consumption.js lifeDrainConsumption, 2026-11-22).
 const AILMENT_LOSS = /^Loses (\d+(?:\.\d+)?)% current Life(?: and Energy Shield)? when inflicting (\w+) ?\. Interval: (\d+(?:\.\d+)?) ?s$/i;
 const FERVOR_DRAIN = /^Consumes (\d+(?:\.\d+)?) ?% of current Life(?: and Energy Shield)? per second while Fervor is active$/i;
 // "Regenerates X% Life per second when Life is not full" (Eternal Sun, record 1033360269: attribute 1004 behind Not gate 218 type 1 at 1, i.e.

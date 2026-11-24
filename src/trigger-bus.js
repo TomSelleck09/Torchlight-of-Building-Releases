@@ -758,10 +758,14 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   // Illusion's casts are its own unit's hits (I'm an Illusion: the hit's `illusion` with no player casts), so they build none; they read Youga's
   // Rating (§4.2). The planner's readers linear in the Rating (src/combat-states.js `fervorLive`) read the Rating held on the tick; a fixed Rating
   // stays the planner's. The steady path keeps the held Rating.
+  // A Fervor only the follower grants (6 T Corrosive Throw F1: its Focused Slash's Steep Strikes, record 1033360329; src/combat-states.js
+  // fervorLive.granted): you hold no Fervor until its first Steep Strike, so the Rating gains nothing before it. In expectation the listener carries
+  // one branch per follower cast that first grants it (the cast's chance × the mass not granted yet), each building its Rating from 0 on your hits;
+  // the Rating read is their weighted sum (exact for the readers linear in it). Once granted it is held (open question follower-granted-fervor-held).
   const fervorLive = planner?.lineEffects?.combat?.buffs?.fervorLive ?? null;
   const fervor = all && ids.has(HIT_TRIGGER) && fervorLive?.readers?.length ? {
     key: "fervorRating", trigger: HIT_TRIGGER, holder: "you", kind: "selfStacks", name: "Fervor Rating", source: "Fervor (buff 390, resource affix 411268)", text: "+1 Fervor Rating per hit of yours on a Boss", recipeId: 411268, row: 3,
-    tags: { thisSkill: false, crit: null, mine: [], notMine: [], othersFit: true, once: false }, chance: 1, cooldownSeconds: null, seconds: Infinity, cap: fervorLive.max, startStacks: 0, rating: fervorLive.rating, readers: fervorLive.readers,
+    tags: { thisSkill: false, crit: null, mine: [], notMine: [], othersFit: true, once: false }, chance: 1, cooldownSeconds: null, seconds: Infinity, cap: fervorLive.max, startStacks: 0, rating: fervorLive.rating, readers: fervorLive.readers, granted: fervorLive.granted || null,
     notSetups: new Set((planner?.skillHits || []).filter((hit) => hit?.illusion && hit.illusion.playerCasts === false).map((hit) => hit.setupKey))
   } : null;
   if (fervor) listeners.push(fervor);
@@ -1108,7 +1112,7 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
       // Section 13: an Aura's own stacks from 0 on your hits.
       auraStacks: cruelty.map((listener) => listener.aura) },
     /** The Fervor Rating listener (section 12) with its readers, or null; src/tick-layers.js puts the readers on the hits. */
-    fervor: fervor ? { key: fervor.key, rating: fervor.rating, cap: fervor.cap, readers: fervor.readers } : null,
+    fervor: fervor ? { key: fervor.key, rating: fervor.rating, cap: fervor.cap, readers: fervor.readers, ...(fervor.granted ? { granted: fervor.granted } : {}) } : null,
     /** The Aura own-stack listeners (section 13): src/tick-layers.js reads their Aura's scaled lines at the stacks held. */
     auraStacks: cruelty.map((listener) => ({ aura: listener.aura, buffKey: listener.buffKey, perStackPercent: listener.perStackPercent, heldFactor: listener.heldFactor, maxStacks: listener.maxStacks, scaled: listener.scaled })),
     /** The Fervor Rating's reader on one DoT (section 12): one modifier (the attacker's own buff, fixed at each application), or null. */
@@ -1313,7 +1317,9 @@ export function createTriggerBusRuntime(compiled, { buffExpiryFrame, fixedInterv
   // The channels whose instance was created on the loop (their creation raised once).
   const created = new Set();
   // Willpower's stacks (kind "selfStacks"): full at engagement with prebuiltSelfBuffs, else from 0; no expiry while standing still.
-  const selfStacks = new Map(compiled.listeners.filter((listener) => listener.kind === "selfStacks").map((listener) => [listener.key, { listener, stacks: Math.min(listener.cap, Math.max(0, listener.startStacks ?? 0)), gains: 0, stackTicks: 0 }]));
+  // A granted listener (section 12, the follower's Fervor) starts with nothing granted: branches added by `grant`, the stacks their weighted sum.
+  const selfStacks = new Map(compiled.listeners.filter((listener) => listener.kind === "selfStacks").map((listener) => [listener.key, listener.granted ? { listener, stacks: 0, gains: 0, stackTicks: 0, branches: [], ungranted: 1 } : { listener, stacks: Math.min(listener.cap, Math.max(0, listener.startStacks ?? 0)), gains: 0, stackTicks: 0 }]));
+  const branchStacks = (state) => state.branches.reduce((sum, branch) => sum + branch.weight * branch.stacks, 0);
   // A gate-206 cooldown on a Blessing gain (record 1073837): its recent gains, so at most one lands per window (expected values).
   const blessingGates = new Map();
   // Finding (b): a flagged row's misses on the current frame (listener key → { frame, miss }).
@@ -1408,8 +1414,14 @@ export function createTriggerBusRuntime(compiled, { buffExpiryFrame, fixedInterv
         }
         if (listener.kind === "selfStacks") {
           const state = selfStacks.get(listener.key), gain = listener.chance * event.hitsPerUnit * units * scale;
-          state.stacks = Math.min(listener.cap, state.stacks + gain);
-          state.gains += gain;
+          if (state.branches) {
+            for (const branch of state.branches) branch.stacks = Math.min(listener.cap, branch.stacks + gain);
+            state.stacks = branchStacks(state);
+            state.gains += gain * (1 - state.ungranted);
+          } else {
+            state.stacks = Math.min(listener.cap, state.stacks + gain);
+            state.gains += gain;
+          }
           stat.expected += gain;
           continue;
         }
@@ -1580,6 +1592,16 @@ export function createTriggerBusRuntime(compiled, { buffExpiryFrame, fixedInterv
     },
     /** Willpower's stacks on this tick (compiled.willpower, by listener key). */
     useStacks: (key) => selfStacks.get(key)?.stacks ?? 0,
+    /** A granted listener (section 12): a grant with this chance on the mass not granted yet (effect "busGrant", the follower's Steep Strike cast). */
+    grant(key, chance) {
+      const state = selfStacks.get(key);
+      if (!state?.branches) return;
+      const weight = state.ungranted * clamp01(chance);
+      if (!(weight > 0)) return;
+      state.ungranted -= weight;
+      state.branches.push({ weight, stacks: Math.min(state.listener.cap, Math.max(0, state.listener.startStacks ?? 0)) });
+      state.stacks = branchStacks(state);
+    },
     /** The Buff stage: an event's hold ends on the first tick at or after its duration, as the engine's buffs do. */
     expire(world) {
       expireIn(enemy, world);

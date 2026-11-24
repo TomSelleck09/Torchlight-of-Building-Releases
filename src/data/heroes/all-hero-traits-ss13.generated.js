@@ -150,7 +150,7 @@ export const allHeroTraitsSs13 = {
         "name": "Shadow Magazine",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/carino-lethal-flash-3.webp",
-        "description": "( +2 / 2.5 / +3 / 3.5 / +4 )% Reload Speed for every 1% Projectile Speed\n+1 to Reload Quantity for every 70 % Projectile Speed\n( +5 / +10 / +16 / +21 / +27 )% additional damage when consuming ammo"
+        "description": "( +2 / +2.5 / +3 / +3.5 / +4 )% Reload Speed for every 1% Projectile Speed\n+1 to Reload Quantity for every 70 % Projectile Speed\n( +5 / +10 / +16 / +21 / +27 )% additional damage when consuming ammo"
       },
       {
         "name": "Weightless Step",
@@ -178,7 +178,7 @@ export const allHeroTraitsSs13 = {
         "name": "Incinerated Glory",
         "level": 45,
         "icon": "./src/assets/tli/hero-traits/carino-zealot-of-war-1.webp",
-        "description": "Allows Blank Firing\nWhile having ammo, for every ammo consumed, gains 1 stack of Heat Up\nDuring Blank Firing , gains Overheated when casting a Projectile Skill\nHeat Up : For every stack of Heat Up, ( 1.6 / +2 / 2.3 / 2.6 / +3 )% additional Projectile Skill Damage and 0.1 Projectile Max Deviation Angle\nForced to reload once Overheated has been active for 10 s\nAfter reloading , loses all stacks of Heat Up and Overheated"
+        "description": "Allows Blank Firing\nWhile having ammo, for every ammo consumed, gains 1 stack of Heat Up\nDuring Blank Firing , gains Overheated when casting a Projectile Skill\nHeat Up : For every stack of Heat Up, ( +1.6 / +2 / +2.3 / +2.6 / +3 )% additional Projectile Skill Damage and 0.1 Projectile Max Deviation Angle\nForced to reload once Overheated has been active for 10 s\nAfter reloading , loses all stacks of Heat Up and Overheated"
       },
       {
         "name": "Ceasefire",
@@ -282,13 +282,13 @@ export const allHeroTraitsSs13 = {
         "name": "Swift as Lightning",
         "level": 75,
         "icon": "./src/assets/tli/hero-traits/erika-lightning-shadow-4.webp",
-        "description": "For every 4 stack(s) of Numbed inflicted on the enemy, +2 % Movement Speed, ( +1 / 1.5 / +2 / 2.5 / +3 )% additional damage, and ( +3 / +4 / +5 / +6 / +7 )% Feline Figure Area. Stacks up to 10 time(s). Lasts for 10 s"
+        "description": "For every 4 stack(s) of Numbed inflicted on the enemy, +2 % Movement Speed, ( +1 / +1.5 / +2 / +2.5 / +3 )% additional damage, and ( +3 / +4 / +5 / +6 / +7 )% Feline Figure Area. Stacks up to 10 time(s). Lasts for 10 s"
       },
       {
         "name": "Charging Equation",
         "level": 75,
         "icon": "./src/assets/tli/hero-traits/erika-lightning-shadow-5.webp",
-        "description": "Feline Figure is triggered when inflicting Numbed on enemies. Cooldown for each enemy: 1 s\nWhen Feline Figure inflicts Numbed , for every stack of Numbed enemies have, ( +3 / 3.5 / +4 / 4.5 / +5 )% additional Numbed Effect for Erika. Stacks up to 10 time(s). This is refreshed when Feline Figure is cast again"
+        "description": "Feline Figure is triggered when inflicting Numbed on enemies. Cooldown for each enemy: 1 s\nWhen Feline Figure inflicts Numbed , for every stack of Numbed enemies have, ( +3 / +3.5 / +4 / +4.5 / +5 )% additional Numbed Effect for Erika. Stacks up to 10 time(s). This is refreshed when Feline Figure is cast again"
       }
     ]
   },
@@ -362,7 +362,7 @@ export const allHeroTraitsSs13 = {
         "name": "Phantom Delivery",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/bing-blast-nova-4.webp",
-        "description": "Bombs do not automatically explode when the upper limit is not reached\n( +4 / 4.5 / +5 / 5.5 / +6 )% additional damage for every bomb on the battlefield when the bombs detonate, up to ( +40 / +45 / +50 / +55 / +60 )% additional damage.\nUpon starting to move or stopping moving, detonates all bombs on the ground"
+        "description": "Bombs do not automatically explode when the upper limit is not reached\n( +4 / +4.5 / +5 / +5.5 / +6 )% additional damage for every bomb on the battlefield when the bombs detonate, up to ( +40 / +45 / +50 / +55 / +60 )% additional damage.\nUpon starting to move or stopping moving, detonates all bombs on the ground"
       },
       {
         "name": "Radiation Effect",
@@ -558,7 +558,7 @@ export const allHeroTraitsSs13 = {
         "name": "Groaning Echo",
         "level": 45,
         "icon": "./src/assets/tli/hero-traits/gemma-flame-of-pleasure-1.webp",
-        "description": "+1 Max Purgatory Charges\n( +1 / 1.25 / 1.5 / 1.75 / +2 ) s Purgatory Duration\n( +40 / +55 / +70 / +85 / +100 )% Purgatory Skill Area"
+        "description": "+1 Max Purgatory Charges\n( +1 / +1.25 / +1.5 / +1.75 / +2 ) s Purgatory Duration\n( +40 / +55 / +70 / +85 / +100 )% Purgatory Skill Area"
       },
       {
         "name": "Flames of Desire",
@@ -616,19 +616,19 @@ export const allHeroTraitsSs13 = {
         "name": "Prophecy of Shelter",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/thea-wisdom-of-the-gods-4.webp",
-        "description": "( +2 / 2.6 / 3.3 / +4 / +5 )% additional Defense per stack of Tenacity Blessing when the number of Tenacity Blessing stacks equals the number of Focus Blessing stacks"
+        "description": "( +2 / +2.6 / +3.3 / +4 / +5 )% additional Defense per stack of Tenacity Blessing when the number of Tenacity Blessing stacks equals the number of Focus Blessing stacks"
       },
       {
         "name": "Prophecy of Punishment",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/thea-wisdom-of-the-gods-5.webp",
-        "description": "Deals Lucky Damage and ( +1 / 1.8 / 2.7 / 3.8 / +5 )% additional Max Damage per stack of Agility Blessing when the number of Agility Blessing stacks equals the number of Focus Blessing stacks"
+        "description": "Deals Lucky Damage and ( +1 / +1.8 / +2.7 / +3.8 / +5 )% additional Max Damage per stack of Agility Blessing when the number of Agility Blessing stacks equals the number of Focus Blessing stacks"
       },
       {
         "name": "Predicted Reincarnation",
         "level": 45,
         "icon": "./src/assets/tli/hero-traits/thea-wisdom-of-the-gods-6.webp",
-        "description": "+50 % additional Cooldown Recovery Speed for God's Boon\n( +5 / 6.5 / +8 / 9.5 / +11 )% additional damage for each stack of Focus Blessing that God's Boon consumes. Lasts for 10 s. Stacks up to 5 time(s)"
+        "description": "+50 % additional Cooldown Recovery Speed for God's Boon\n( +5 / +6.5 / +8 / +9.5 / +11 )% additional damage for each stack of Focus Blessing that God's Boon consumes. Lasts for 10 s. Stacks up to 5 time(s)"
       },
       {
         "name": "Farewell Prophecy",
@@ -728,7 +728,7 @@ export const allHeroTraitsSs13 = {
         "name": "Agile Godhood",
         "level": 45,
         "icon": "./src/assets/tli/hero-traits/thea-incarnation-of-the-gods-2.webp",
-        "description": "-16 % additional Divine Realm Skill Area for every +1 to the max stacks of any Blessing . Stacks up to 6 time(s)\nEvery 8 s, Prepares Divine Realm . Prioritizes triggering Divine Realm on the farthest enemy\nWhen Agility Blessing is at least at 6 stack(s), ( +18 / +24 / +28 / +31 / +34 )% additional Attack and Cast Speed. When Agility Blessing is at least at 10 stack(s), this effect becomes: When at Low Life , ( 1.8 / 2.3 / 2.8 / 3.4 / +4 )% additional damage for every stack of Agility Blessing . Stacks up to 17 time(s)"
+        "description": "-16 % additional Divine Realm Skill Area for every +1 to the max stacks of any Blessing . Stacks up to 6 time(s)\nEvery 8 s, Prepares Divine Realm . Prioritizes triggering Divine Realm on the farthest enemy\nWhen Agility Blessing is at least at 6 stack(s), ( +18 / +24 / +28 / +31 / +34 )% additional Attack and Cast Speed. When Agility Blessing is at least at 10 stack(s), this effect becomes: When at Low Life , ( +1.8 / +2.3 / +2.8 / +3.4 / +4 )% additional damage for every stack of Agility Blessing . Stacks up to 17 time(s)"
       },
       {
         "name": "Might Flow",
@@ -752,7 +752,7 @@ export const allHeroTraitsSs13 = {
         "name": "Divine Spirit",
         "level": 75,
         "icon": "./src/assets/tli/hero-traits/thea-incarnation-of-the-gods-6.webp",
-        "description": "( 1.8 / 1.9 / +2 / 2.15 / 2.3 )% damage for every 3 % Missing Life when outside the Divine Realm\n( +1 / 0.9 / 0.8 / 0.7 / 0.6 )% additional damage taken for every 3 % of Missing Life when outside the Divine Realm"
+        "description": "( +1.8 / +1.9 / +2 / +2.15 / +2.3 )% damage for every 3 % Missing Life when outside the Divine Realm\n( +1 / +0.9 / +0.8 / +0.7 / +0.6 )% additional damage taken for every 3 % of Missing Life when outside the Divine Realm"
       }
     ]
   },
@@ -820,7 +820,7 @@ export const allHeroTraitsSs13 = {
         "name": "Eeeendless Mana",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/youga-spacetime-illusion-3.webp",
-        "description": "Seals 25 % Max Mana. Spacetime Illusion no longer has Cast Frequency limitations\n( +1 / 1.15 / 1.3 / 1.45 / 1.6 )% additional Spacetime Illusion Damage for every +4 % Spacetime Illusion Cast Frequency"
+        "description": "Seals 25 % Max Mana. Spacetime Illusion no longer has Cast Frequency limitations\n( +1 / +1.15 / +1.3 / +1.45 / +1.6 )% additional Spacetime Illusion Damage for every +4 % Spacetime Illusion Cast Frequency"
       },
       {
         "name": "I'm an Illusion",
@@ -832,7 +832,7 @@ export const allHeroTraitsSs13 = {
         "name": "I'm Out of Mana",
         "level": 75,
         "icon": "./src/assets/tli/hero-traits/youga-spacetime-illusion-5.webp",
-        "description": "Casting of Spacetime Illusion will consume your Mana, equal to the Mana Cost of your Main Skill\n( +5 / 6.3 / 7.5 / 8.8 / +10 )% additional damage for you and Spacetime Illusion for each time Spacetime Illusion consumed Mana recently. Stacks up to 10 time(s)"
+        "description": "Casting of Spacetime Illusion will consume your Mana, equal to the Mana Cost of your Main Skill\n( +5 / +6.3 / +7.5 / +8.8 / +10 )% additional damage for you and Spacetime Illusion for each time Spacetime Illusion consumed Mana recently. Stacks up to 10 time(s)"
       }
     ]
   },
@@ -848,7 +848,7 @@ export const allHeroTraitsSs13 = {
         "name": "Spacetime Speed-up",
         "level": 45,
         "icon": "./src/assets/tli/hero-traits/youga-spacetime-elapse-1.webp",
-        "description": "Reduces the casting interval of Twisted Spacetime by 1 s on defeat\nFor every 1 s Twisted Spacetime lasts, ( +5 / 6.5 / +8 / 9.5 / +11 )% to all recorded damage for Twisted Spacetime . Stacks up to 5 time(s)"
+        "description": "Reduces the casting interval of Twisted Spacetime by 1 s on defeat\nFor every 1 s Twisted Spacetime lasts, ( +5 / +6.5 / +8 / +9.5 / +11 )% to all recorded damage for Twisted Spacetime . Stacks up to 5 time(s)"
       },
       {
         "name": "Spacetime Upheaval",
@@ -934,7 +934,7 @@ export const allHeroTraitsSs13 = {
         "name": "Unstoppable Wave",
         "level": 45,
         "icon": "./src/assets/tli/hero-traits/moto-charge-calling-1.webp",
-        "description": "+30 % chance for a Synthetic Troop Minion to drop 1 Mechanical Part When it initiates Self-Destruct Protocol . Mechanical Parts last 1 s\nPlayer will automatically pick up nearby Mechanical Parts\n( +3 / 3.5 / +4 / 4.5 / +5 )% additional Minion Damage for each Mechanical Part picked up recently. Stacks up to 10 time(s)\nGains a Skill Slot, in which a Support Skill or Activation Medium Support Skill can be installed to support Trait Skill Charge Calling"
+        "description": "+30 % chance for a Synthetic Troop Minion to drop 1 Mechanical Part When it initiates Self-Destruct Protocol . Mechanical Parts last 1 s\nPlayer will automatically pick up nearby Mechanical Parts\n( +3 / +3.5 / +4 / +4.5 / +5 )% additional Minion Damage for each Mechanical Part picked up recently. Stacks up to 10 time(s)\nGains a Skill Slot, in which a Support Skill or Activation Medium Support Skill can be installed to support Trait Skill Charge Calling"
       },
       {
         "name": "Heroic Sacrifice",
@@ -1112,7 +1112,7 @@ export const allHeroTraitsSs13 = {
         "name": "Cleanse Filth",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/rosa-unsullied-blade-2.webp",
-        "description": "While Realm of Mercury is in effect, 25 % of damage is taken from Mana before Life\nFor every 1000 Max Mana you have, ( +2 / 2.5 / +3 / 3.5 / +4 )% additional Elemental Damage, up to ( +40 / +50 / +60 / +70 / +80 )%"
+        "description": "While Realm of Mercury is in effect, 25 % of damage is taken from Mana before Life\nFor every 1000 Max Mana you have, ( +2 / +2.5 / +3 / +3.5 / +4 )% additional Elemental Damage, up to ( +40 / +50 / +60 / +70 / +80 )%"
       },
       {
         "name": "Boundless Sanctuary",
@@ -1164,7 +1164,7 @@ export const allHeroTraitsSs13 = {
         "name": "Idyll of the Tide",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/selena-sing-with-the-tide-4.webp",
-        "description": "Tide grants the following additional effects: For every 1 m moved in the Tide , ( +1 / 1.3 / 1.6 / 1.9 / 2.2 )% additional damage while in the Tide . Stacks up to 15 time(s) and lasts until Tide is completely lost\nAfter losing all Tides , automatically switch to Bard"
+        "description": "Tide grants the following additional effects: For every 1 m moved in the Tide , ( +1 / +1.3 / +1.6 / +1.9 / +2.2 )% additional damage while in the Tide . Stacks up to 15 time(s) and lasts until Tide is completely lost\nAfter losing all Tides , automatically switch to Bard"
       },
       {
         "name": "Chantey of Sinking",
@@ -1216,7 +1216,7 @@ export const allHeroTraitsSs13 = {
         "name": "Drenched Hem",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/selena-dance-of-the-deep-5.webp",
-        "description": "Activation Medium: Terra seals Life instead\n( +1 / 1.2 / 1.4 / 1.6 / 1.8 )% additional damage for every 3 % Life sealed"
+        "description": "Activation Medium: Terra seals Life instead\n( +1 / +1.2 / +1.4 / +1.6 / +1.8 )% additional damage for every 3 % Life sealed"
       },
       {
         "name": "The Paradise I Curse",
@@ -1322,7 +1322,7 @@ export const allHeroTraitsSs13 = {
         "name": "Elixir of Immortality",
         "level": 60,
         "icon": "./src/assets/tli/hero-traits/sage-licorice-note-2.webp",
-        "description": "Every 3 recent excess Life Restoration is converted to 2 Temporary Life, up to ( 20 / 25 / 30 / 40 / 50 )% of Base Max Life\nEvery 3 recent excess Mana restoration is converted to 2 Temporary Mana, up to ( 20 / 25 / 30 / 40 / 50 )% of Base Max Mana\nFor every Temporary Life equal to 5% of Base Max Life or Temporary Mana equal to Base Max Mana, ( +1 / 1.5 / +2 / 2.5 / +3 )% additional damage, up to ( +5 / +10 / +15 / +20 / +25 )%"
+        "description": "Every 3 recent excess Life Restoration is converted to 2 Temporary Life, up to ( 20 / 25 / 30 / 40 / 50 )% of Base Max Life\nEvery 3 recent excess Mana restoration is converted to 2 Temporary Mana, up to ( 20 / 25 / 30 / 40 / 50 )% of Base Max Mana\nFor every Temporary Life equal to 5% of Base Max Life or Temporary Mana equal to Base Max Mana, ( +1 / +1.5 / +2 / +2.5 / +3 )% additional damage, up to ( +5 / +10 / +15 / +20 / +25 )%"
       },
       {
         "name": "Scent of Ambition",
@@ -1340,7 +1340,7 @@ export const allHeroTraitsSs13 = {
         "name": "Licorice Tincture Blend",
         "level": 75,
         "icon": "./src/assets/tli/hero-traits/sage-licorice-note-5.webp",
-        "description": "Obtain a Special Scent Bottle, which can be used to concoct Elixir Skills. The third Active Skill slot is treated as the Special Scent Bottle\nElixir Skills from Special Scent Bottle can be equipped with 1 Ingredient to gain its corresponding additional Base Effects\nSpecial Ingredient Pixie Tear: This skill gains an additional base effect: ( 80 / 90 / 100 / 110 / 120 )% of excess Life restoration is also applied to Energy Shield restoration, but is unable to Charge or Regain Energy Shield. For every 400 Max Energy Shield, ( +1 / 1.2 / 1.4 / 1.6 / 1.8 )% additional damage for you and your Minions, up to ( +40 / +48 / +56 / +62 / +70 )% (not affected by the effects of Elixir Skills)\nThunder Dragon Scale: This skill gains an additional base effect: When defeated by your or your Minions' Attacks or Spells, enemies have a 30 % chance to explode, dealing True Damage equal to 6 of their Max Life to enemies within a 250 % m radius. + 20 % additional damage for you and your Minions (not affected by the effects of Elixir Skills)\nGargoyle Horn: This skill gains an additional base effect: Additionally increases Block Chance by ( 70 / 90 / 110 / 130 / 150 )% , but you take True Damage equal to ( 6 / 4.5 / 3 / 1.5 / 0 )% of the mitigated damage every second after each successful block. Lasts for 4s (not affected by the effects of Elixir Skills)"
+        "description": "Obtain a Special Scent Bottle, which can be used to concoct Elixir Skills. The third Active Skill slot is treated as the Special Scent Bottle\nElixir Skills from Special Scent Bottle can be equipped with 1 Ingredient to gain its corresponding additional Base Effects\nSpecial Ingredient Pixie Tear: This skill gains an additional base effect: ( 80 / 90 / 100 / 110 / 120 )% of excess Life restoration is also applied to Energy Shield restoration, but is unable to Charge or Regain Energy Shield. For every 400 Max Energy Shield, ( +1 / +1.2 / +1.4 / +1.6 / +1.8 )% additional damage for you and your Minions, up to ( +40 / +48 / +56 / +62 / +70 )% (not affected by the effects of Elixir Skills)\nThunder Dragon Scale: This skill gains an additional base effect: When defeated by your or your Minions' Attacks or Spells, enemies have a 30 % chance to explode, dealing True Damage equal to 6 of their Max Life to enemies within a 250 % m radius. + 20 % additional damage for you and your Minions (not affected by the effects of Elixir Skills)\nGargoyle Horn: This skill gains an additional base effect: Additionally increases Block Chance by ( 70 / 90 / 110 / 130 / 150 )% , but you take True Damage equal to ( 6 / 4.5 / 3 / 1.5 / 0 )% of the mitigated damage every second after each successful block. Lasts for 4s (not affected by the effects of Elixir Skills)"
       }
     ]
   },

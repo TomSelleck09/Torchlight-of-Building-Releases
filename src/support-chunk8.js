@@ -46,7 +46,7 @@ export const CHUNK8_SUPPORT_RULES = [
   own("chunk8Max", new RegExp(`^${N}% additional Max Damage for the supported skill$`, "i"), (m) => ({ value: num(m[1]), recipe: 234465248 })),
   // Rising Evil (recipes 195337536, 967878336: attr 6302 additional on this skill; node 1011 on dealing damage, while Profane 3492, chance P1, P2 stacks).
   own("chunk8Deterioration", new RegExp(`^${N}% additional Deterioration Damage for the supported skill$`, "i"), (m) => ({ value: num(m[1]), kind: "additional", recipe: 195337536 })),
-  own("chunk8Deterioration", new RegExp(`^There is a ${N}% chance for the supported skill to inflict (\\d+) additional stack\\(s\\) of Deterioration while having Profane$`, "i"), (m) => ({ value: num(m[1]) / 100 * num(m[2]), kind: "extraStacks", profane: true, recipe: 967878336 })),
+  own("chunk8Deterioration", new RegExp(`^There is a ${N}% chance for the supported skill to inflict (\\d+) additional stack\\(s\\) of Deterioration while having Profane$`, "i"), (m) => ({ value: num(m[1]) / 100 * num(m[2]), chance: num(m[1]) / 100, once: true, kind: "extraStacks", profane: true, recipe: 967878336 })),
   // Crescent Slash: Rising (recipe 801416064: attr 6302 additional on {this skill, 6000412 the Combo Finisher}).
   own("chunk8Deterioration", new RegExp(`^${N}% additional Deterioration Damage for the Combo Finisher of the supported skill$`, "i"), (m) => ({ value: num(m[1]), kind: "finisher", recipe: 801416064 })),
   // Wilt Spike: Languish (recipe 859431744: label 3100445 changes the buff; attr 6302 additional × GetBuffStack(10422)): the skill's 5 held stacks.

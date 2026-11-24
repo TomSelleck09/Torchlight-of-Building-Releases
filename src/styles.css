@@ -312,6 +312,10 @@ body.revival-alt-held .keyword-roll-effect{display:inline}
 .planner-tooltip .keyword-roll-name{color:#75d8f6}
 .planner-tooltip .keyword-roll-effect{display:none;margin:0;color:inherit;font-size:inherit;line-height:inherit}
 body.revival-alt-held .planner-tooltip .keyword-roll-effect{display:inline;margin:0;max-height:none;overflow:visible}
+/* An inline keyword mid-line (Eternity's stacks, Insatiable Greed; src/inline-keywords.js): the revived-memory Alt hint after the line, gone while Alt is held. */
+.keyword-roll-hint{margin-left:6px;color:#a8bac7;font-size:.64rem;font-weight:400;white-space:nowrap}
+.planner-tooltip .keyword-roll-hint{display:inline;margin:0 0 0 6px;padding:0;border:0;color:#a8bac7;font-size:.64rem;text-transform:none;letter-spacing:normal}
+body.revival-alt-held .keyword-roll-hint,body.revival-alt-held .planner-tooltip .keyword-roll-hint{display:none}
 /* Gear tooltip keyword rows (Dirges, named affixes such as Wield My Sword): Alt lists the effect lines, each with its own badge. */
 body.revival-alt-held .planner-tooltip .keyword-roll-effect.keyword-roll-lines{display:grid;gap:3px;margin:4px 0 0;padding-left:7px;border-left:2px solid #75d8f6}
 .planner-tooltip .keyword-roll-line{display:flex;align-items:start;justify-content:space-between;gap:8px}
@@ -4387,6 +4391,7 @@ body.layout-tabs .sidebar-skill-text strong{overflow:hidden;color:#f1e3c4;font-f
 body.layout-tabs .sidebar-skill-text small{color:#aeb8c5;font-size:.68rem}
 body.layout-tabs .sidebar-skill-caret{flex:none;color:#ff9a39;font-size:.85rem}
 body.layout-tabs .sidebar-skill-add .sidebar-skill-empty{color:#f9ca65;font-size:1.35rem;font-weight:400;line-height:1}
+body.layout-tabs .sidebar-skill-all{color:#f9ca65;font-family:Georgia,"Times New Roman",serif;font-size:1.25rem;font-weight:700;line-height:1;border-color:#8a6a3e}
 body.layout-tabs .sidebar-skill-list{position:absolute;left:12px;right:12px;top:calc(100% - 6px);z-index:45;display:grid;gap:2px;max-height:320px;margin:0;padding:6px;overflow-y:auto;list-style:none;border:1px solid #806037;border-radius:5px;background:linear-gradient(180deg,#1d242b,#11171e);box-shadow:0 14px 38px #000b}
 body.layout-tabs .sidebar-skill-list:focus{outline:none}
 body.layout-tabs .sidebar-skill-option{display:flex;align-items:center;gap:10px;padding:5px 8px;border:1px solid transparent;border-radius:4px;cursor:pointer}
@@ -5000,3 +5005,12 @@ body.layout-tabs .toggle-row input[type="checkbox"]:disabled{opacity:.45;cursor:
 .craft-affix-control>.craft-affix-config:empty{display:none}
 .craft-affix-control.legendary-affix-active{border-color:rgba(224,138,51,.55);box-shadow:inset 3px 0 0 #e08a33,0 6px 16px rgba(0,0,0,.18)}
 .craft-affix-control.legendary-affix-active>span{border-bottom-color:rgba(224,138,51,.35);background:linear-gradient(90deg,rgba(219,152,80,.30),#303c49 70%)}
+/* Weapon 2 blocked by a two-handed Weapon 1 (user request 2026-11-22): the empty tile's frame and caption, the main weapon greyed under a muted "no" circle. */
+.equipment-item.two-handed-blocked{cursor:not-allowed}
+.equipment-item.two-handed-blocked b{position:relative;display:grid;place-items:center;overflow:hidden;color:#7b8997}
+.equipment-item.two-handed-blocked b img{width:100%;height:100%;object-fit:contain;filter:grayscale(1);opacity:.6}
+.equipment-item.two-handed-blocked .two-handed-blocked-glyph{position:absolute;top:14%;left:14%;width:72%;height:72%;color:#8593a2;opacity:.9}
+body.unified-planner #equipment-view .gear-workbench .equipment-item.two-handed-blocked b{width:64px;height:64px;margin:5px auto}
+body.unified-planner #equipment-view .gear-workbench .equipment-item.two-handed-stored{border-color:#6a5a3c}
+body.unified-planner.layout-tabs #overview-gear .equipment-item.two-handed-blocked{border-color:#3a4655;background:#0c1118}
+body.unified-planner.layout-tabs #overview-gear .equipment-item.two-handed-blocked b{width:100%;height:100%;border:0;background:transparent}

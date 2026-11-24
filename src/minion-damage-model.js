@@ -11,7 +11,13 @@ import { skillTimingSs13 } from "./data/skills/skill-timing-ss13.generated.js";
 import { BOND } from "./minion-cores.js";
 import { minionLineReading, minionPathMode, minionRecipeSummary, recipeLineValue, resolvedIntoSet } from "./recipe-minion-layers.js";
 import { hitLineFromFacts, hitRecipeReader } from "./recipe-hit-layers.js";
-import { KEYWORDS, RECENTLY_SECONDS as RECENT_SECONDS, TROOP_FAMILIES, sharedTimerStacks, vigilantBreezeMax, vigilantBreezeAt } from "./moto-iris-traits.js";
+import { KEYWORDS, RECENTLY_SECONDS as RECENT_SECONDS, TROOP_FAMILIES, vigilantBreezeMax, vigilantBreezeAt } from "./moto-iris-traits.js";
+import { fixedIntervalSeconds } from "./frame-snapping.js";
+import { poissonLayerMean } from "./blessing-layers.js";
+import { minionMaxLife } from "./minion-life.js";
+import { recentlySummonedLines, recentlySummonedState } from "./recently-summoned.js";
+// Buff 81842 (Mechanical Parts): config_char_buff cap 99 (the buff-header census).
+const MECHANICAL_PARTS_MAX_STACKS = 99;
 // Census batch 6 (src/minion-sentry-batch6.js): Minion, Spirit Magus and module support clauses and the Minion skills' own text.
 import { minionBatch6Early, minionBatch6Plan, applyBatch6SkillMechanics, dedupeBatch6Clauses } from "./minion-sentry-batch6.js";
 import { moduleMinionEntries } from "./module-protocols.js";
@@ -62,6 +68,9 @@ const PATTERNS = [
   [new RegExp(`^${NUM}% Minion Damage$`, "i"), (m) => ({ kind: "increased", value: number(m[1]) })],
   [new RegExp(`^${NUM}% (?:damage and|Damage and) Minion Damage$`, "i"), (m) => ({ kind: "increased", value: number(m[1]) })],
   [new RegExp(`^${NUM}% additional Minion Damage$`, "i"), (m) => ({ kind: "additional", value: number(m[1]) })],
+  // An ally buff's Cooldown Recovery Speed on your Minions (2026-11-22: Overclock Composition's buff, Tartarus: Blink; their records write on the
+  // holder's allies): the Minion skills' cooldowns, as the recipe reading of "Spirit Magi +X% Cooldown Recovery Speed".
+  [new RegExp(`^${NUM}% (additional )?Cooldown Recovery Speed for Minions$`, "i"), (m) => ({ kind: "cooldownRecovery", value: number(m[1]), additional: Boolean(m[2]) })],
   // Core audit B7 (2026-10-18): typed Minion copies of player lines (Frozen Lotus "+25% additional Minion Cold Damage", game affix
   // 634876544 attr 5109; Brutality "+30% additional Minion Physical Damage", 174535344 attr 5002; both additional, Minion tag).
   [new RegExp(`^${NUM}% additional Minion ${TYPE} Damage$`, "i"), (m) => ({ kind: "additional", value: number(m[1]), type: m[2] })],
@@ -439,7 +448,7 @@ function combineBuffs(active, skillType, skill = null) {
  * @param {{ ownerField: number }|null} p.frostbite the summoner's Frostbite Rating field (10 + its Max Frostbite Rating lines), which the
  *   Frost Magus's summon shares (src/minion-frostbite.js); default 10. Read only by a Minion whose skills inflict Frostbite.
  */
-export function calculateMinion({ profile, level = 20, modifierTexts = [], traitLines = [], target = {}, timelineSeconds = 60, setups = [], windows = [5, 20], extraTaken = [], traitSkill = "cooldown", extraCritOnly = [], handledTexts = null, extraLines = [], bond = null, summonCastSpeed = null, heroTraits = null, prebuilt = true, troopMaxMinions = true, moduleMaxMinions = true, targetLife = true, batch6 = null, extraMinions = null, frostbite = null } = {}) {
+export function calculateMinion({ profile, level = 20, modifierTexts = [], traitLines = [], target = {}, timelineSeconds = 60, setups = [], windows = [5, 20], extraTaken = [], traitSkill = "cooldown", extraCritOnly = [], handledTexts = null, extraLines = [], bond = null, summonCastSpeed = null, heroTraits = null, prebuilt = true, troopMaxMinions = true, moduleMaxMinions = true, targetLife = true, batch6 = null, extraMinions = null, frostbite = null, lifeLines = [] } = {}) {
   const resolved = typeof profile === "string" ? MINION_PROFILES[profile] : profile;
   if (!resolved) return null;
   const capped = Math.max(1, Math.min(MINION_BASE_DAMAGE_FROZEN_LEVEL, Math.floor(level || 20)));
@@ -715,37 +724,73 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
   };
 
   // Charge Calling (Moto – Charge Calling, hero trait audit B6; src/moto-iris-traits.js, provisional): with Charge Calling held
-  // (6 s / 6 s, pressed on cooldown) every summon cast creates 1 (+ Rally) + 1 Synthetic Troop Minions that self-destruct 1 s
-  // after (row 90030: 115% of Base Damage, Physical Attack, Melee, Area), at most the skill's quantity + 1 alive, so explosions/s =
-  // min(summon casts/s × troops per cast, alive ÷ 1 s) × Charge Calling's uptime. Summon casts: Fuel War with War's trigger of the Main
+  // (6 s / 6 s, pressed on cooldown) every summon cast creates up to 1 (+ Rally) + 1 Synthetic Troop Minions that charge the enemy and
+  // self-destruct on colliding with it (row 90030: 115% of Base Damage, Physical Attack, Melee, Area), at most the troop count alive.
+  // G3 (user decision 2026-11-23, agreed after a Google AI Mode answer; 6 T Trog audit): a summon cast at the cap summons nothing ("No more
+  // Minions will be summoned by this skill after reaching its Max Minion Quantity"), so a cast fills only the free slots, min(troops per cast,
+  // the cap) when every earlier troop has exploded; best case the troops appear at the dummy (Fuel War casts on the closest enemy) and
+  // collide at once, so each explodes when its charge lands: the charge (stone 402031, Split 812924) takes 0.4 s ÷ the troop's Attack Speed
+  // (÷ Guerilla Tactics' Charge Speed), at most the keyword's 1 s ("Charge at the enemy in the next 1 s"). Explosions/s = min(summon casts/s ×
+  // min(troops per cast, cap), cap ÷ the time to detonate) × Charge Calling's uptime, and every summoned troop explodes. Inferred: the
+  // collision at the end of the charge (the hit at the end of a use, the Minion cycle's convention), the troop's own birth skill not before
+  // it. The alive cap is field 2006100 alone (Max Summonable
+  // Minions: the client's per-skill and group caps, 0x142046cb0 / 0x142046830, read it with the skill's tags, halved by label 3016001), which
+  // `count` already carries (the map caps, Machine Lord's 515091, Mechanical Modification's halving); Charge Calling's "+1 … summoned at a
+  // time" is field 2501032 (567614 row 4, as Rally's 333506), a number per cast, never the cap (G1, 2026-11-23, proven: client + record +
+  // the panel's Max Summonable Minions 1.0; research/build-6t-trog-audit-2026-11-23.md). A troop culled at the cap is removed without
+  // trigger 1000020, so it never explodes (G2, proven). Summon casts: Fuel War with War's trigger of the Main
   // Summon Skill, or the summon recast at its own pace (use time; a Module's 4 s cooldown). Mechanical Parts (Unstoppable Wave) drop at
-  // the chance per explosion and are picked up; each pick-up refreshes every stack's 4 s (src/moto-iris-traits.js sharedTimerStacks). The
+  // the chance per explosion and are picked up; each pick-up adds one 4 s layer of buff 81842 on its own timer (subtype 2, no node 626: proven;
+  // src/blessing-layers.js poissonLayerMean), read by Guerilla Tactics and Unstoppable Wave through GetMaxMin(0, GetBuffStack(81842), P). The
   // explosion loop replaces the troops' own attacks where it deals more.
   const sdInput = heroTraits?.selfDestruct?.pressed && TROOP_FAMILY.has(resolved.family) ? heroTraits.selfDestruct : null;
   let sdPlan = null;
   if (sdInput) {
     const perCast = 1 + rallyExtra + sdInput.extraPerCast;
-    const maxAlive = count + sdInput.extraPerCast;
+    const maxAlive = count;
     const summonScaled = skillTimingSs13[resolved.summon]?.speedType === "cast-speed" || resolved.family === "synthetic-troop";
     const summonSeconds = (resolved.summonCastSeconds ?? 1) / (summonScaled && summonCastSpeed?.factor ? summonCastSpeed.factor : 1);
     const ownCooldown = resolved.family === "module" ? resolved.summonCooldownSeconds || 0 : skillTimingSs13[resolved.summon]?.cooldown || 0;
     const fuel = sdInput.fuelWar && sdInput.mainSummon ? sdInput.fuelWar : null;
     const ignoresCooldown = Boolean(fuel) && (resolved.family !== "module" || fuel.ignoresModuleCooldown);
-    const castInterval = fuel ? Math.max(fuel.intervalSeconds, ignoresCooldown ? 0 : ownCooldown) : Math.max(summonSeconds, ownCooldown);
+    // Fuel War with War's trigger is a node 206 gate (record 491897344, cooldown p0): the client rounds its interval × 30 to the nearest
+    // whole frame, ties away from zero (D2, proven; src/frame-snapping.js fixedIntervalSeconds, the rule every node-206 Main Skill
+    // trigger reads in src/main-skill-retriggers.js): LV3's 0.15 s is 4.5 → 5 frames, 0.1667 s (6 casts/s); 0.1 s is 3 frames exactly.
+    const fuelInterval = fuel ? fixedIntervalSeconds(fuel.intervalSeconds) : null;
+    const castInterval = fuel ? Math.max(fuelInterval, ignoresCooldown ? 0 : ownCooldown) : Math.max(summonSeconds, ownCooldown);
     const castsPerSecond = 1 / Math.max(0.01, castInterval);
     const ownCastsPerSecond = 1 / Math.max(0.01, Math.max(summonSeconds, ownCooldown));
     const parts = sdInput.parts?.pickup ? sdInput.parts : null;
     const uptime = sdInput.uptime ?? 1;
-    let partsPerSecond = 0, rate = 0, life = sdInput.chargeSeconds, guerillaStacks = 0;
+    // A cast fills the free slots only (G3): min(troops per cast, the cap) when the earlier troops have exploded.
+    const fillPerCast = Math.min(perCast, maxAlive);
+    // The time to detonate (G3): the charge, 0.4 s at the troop's Attack Speed (Split 812924), ÷ Guerilla Tactics' Charge Speed, at most the
+    // keyword's window (the trait's "in the next N s").
+    const chargeUseSeconds = KEYWORDS.selfDestruct.chargeSeconds / Math.max(0.0001, attackSpeedFactor);
+    // Mechanical Parts drop when a troop starts Self-Destruct, not when it explodes (G11, 2026-11-23: record 41414 on trigger 1000111,
+    // gaining buff 81841, which 567614 row 7 adds at Self-Destruct's start; proven). Every summoned troop starts it and explodes; a cast at
+    // the cap summons nothing (G3, user decision 2026-11-23), so no troop is culled and the starts are the explosions: parts/s =
+    // explosions/s × chance × per drop. (Before G3 every troop of every cast started it, the culled ones included: inferred then.)
+    let partsPerSecond = 0, rate = 0, life = sdInput.chargeSeconds, guerillaStacks = 0, startsPerSecond = 0;
     for (let pass = 0; pass < 6; pass++) {
-      life = sdInput.chargeSeconds / (1 + (parts?.guerilla ? parts.guerilla.speedPercent * guerillaStacks / 100 : 0));
-      rate = Math.min(castsPerSecond * perCast, maxAlive / life) * uptime;
-      partsPerSecond = parts ? rate * parts.chancePercent / 100 * parts.perDrop : 0;
-      guerillaStacks = parts?.guerilla ? sharedTimerStacks(partsPerSecond, parts.guerilla.cap, RECENT_SECONDS) : 0;
+      const chargeSpeed = 1 + (parts?.guerilla ? parts.guerilla.speedPercent * guerillaStacks / 100 : 0);
+      life = Math.min(sdInput.chargeSeconds, chargeUseSeconds / chargeSpeed);
+      rate = Math.min(castsPerSecond * fillPerCast, maxAlive / life) * uptime;
+      startsPerSecond = rate;
+      partsPerSecond = parts ? startsPerSecond * parts.chancePercent / 100 * parts.perDrop : 0;
+      guerillaStacks = parts?.guerilla ? poissonLayerMean(partsPerSecond, RECENT_SECONDS, Math.min(MECHANICAL_PARTS_MAX_STACKS, parts.guerilla.cap)) : 0;
     }
-    const partStacks = parts ? sharedTimerStacks(partsPerSecond, parts.partCap, RECENT_SECONDS) : 0;
-    const ownRate = Math.min(ownCastsPerSecond * perCast, maxAlive / life) * uptime;
-    const troopLife = 5 * baseDamage + sdInput.peril.lifePercent / 100 * sdInput.peril.playerLife;
+    const partStacks = parts ? poissonLayerMean(partsPerSecond, RECENT_SECONDS, Math.min(MECHANICAL_PARTS_MAX_STACKS, parts.partCap)) : 0;
+    const ownRate = Math.min(ownCastsPerSecond * fillPerCast, maxAlive / life) * uptime;
+    // Heroic Sacrifice (record 996398784: node 114 on the troop from attribute 10011 with fromMod 5, the troop's final Max Life, and
+    // 16011, its Energy Shield, ÷ P1, no whole steps; G5 2026-11-23, research/build-6t-trog-audit-2026-11-23.md): the troop's Max Life
+    // as src/minion-life.js reads it (5 × Base Damage × (1 + Σ "+X% Minion Max Life") × each "additional Minion Max Life" factor, the
+    // Aura ally buffs' (Precise: Radical Order) included), × the summon's supports' "+X% additional Life for Minions summoned by the
+    // supported skill" (Servant Life, record 101010476 on [this skill, Minion]: user decision 2026-11-23, a support's "this skill" Minion
+    // Life write reaches that skill's Minions' Max Life), + Peril of Synthetic Troops' share of your Max Life.
+    const troopLifeRead = minionMaxLife({ family: resolved.family, level, supports: setups.flatMap((setup) => setup.supports || []), modifierTexts: [...modifierTexts, ...lifeLines] });
+    const troopLifeBase = troopLifeRead?.value ?? 5 * baseDamage;
+    const troopLife = troopLifeBase + sdInput.peril.lifePercent / 100 * sdInput.peril.playerLife;
     const troopShield = sdInput.peril.shieldPercent / 100 * sdInput.peril.playerShield;
     // Recipe 996398784: node 114 divides with no whole steps.
     const heroicPercent = sdInput.heroic ? round(sdInput.heroic.percent * (troopLife + troopShield) / sdInput.heroic.per) : 0;
@@ -755,13 +800,18 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
       ...sdInput.additional.map((line) => ({ source: line.source, text: line.text, value: line.value })),
       // Summon Machine Guard: Dead Silence (game recipe 368114272, attr 5901 on Self-Destruct Protocol): the dummy at the centre (best case).
       ...censusSupport.selfDestruct.map((line) => ({ source: line.source, text: `${line.text} (the dummy at the centre: best case; condition-unread batch 3)`, value: line.value })),
-      ...(heroicPercent ? [{ source: "Heroic Sacrifice", text: `+${heroicPercent}% additional Self-Destruct damage (Synthetic Troop Life ${round(troopLife)}${troopShield ? ` + Energy Shield ${round(troopShield)}` : ""} ÷ ${sdInput.heroic.per}; Life = 5 × Base Damage${sdInput.peril.lifePercent || sdInput.peril.shieldPercent ? " + Peril of Synthetic Troops" : ""}, provisional)`, value: heroicPercent }] : []),
+      ...(heroicPercent ? [{ source: "Heroic Sacrifice", text: `+${heroicPercent}% additional Self-Destruct damage (Synthetic Troop Life ${round(troopLife)}${troopShield ? ` + Energy Shield ${round(troopShield)}` : ""} ÷ ${sdInput.heroic.per}; Life ${troopLifeRead?.text || "5 × Base Damage"}${sdInput.peril.lifePercent || sdInput.peril.shieldPercent ? " + Peril of Synthetic Troops" : ""})`, value: heroicPercent }] : []),
       ...(parts?.guerilla && guerillaStacks ? [{ source: "Guerilla Tactics", text: `+${round(parts.guerilla.damagePercent * guerillaStacks)}% additional Self-Destruct damage (${round(guerillaStacks)} Mechanical Parts collected recently)`, value: parts.guerilla.damagePercent * guerillaStacks }] : []),
       ...(parts && partStacks && parts.perPartPercent ? [{ source: "Unstoppable Wave", text: `+${round(parts.perPartPercent * partStacks)}% additional Minion Damage (${round(partStacks)} Mechanical Parts picked up recently)`, value: parts.perPartPercent * partStacks }] : []),
       ...(share ? attackSpeedLines.filter((line) => line.additional).map((line) => ({ source: `Essential Speed (${line.source})`, text: `+${round(share * line.value)}% additional Self-Destruct damage (${sdInput.essentialSharePercent}% of "${line.text}")`, value: share * line.value })) : [])
     ];
     const essentialIncreased = share ? attackSpeedLines.filter((line) => !line.additional).reduce((total, line) => total + line.value, 0) * share : 0;
-    sdPlan = { perCast, maxAlive, castsPerSecond, castInterval, ownRate, fuel: Boolean(fuel), ignoresCooldown, life, rate, partsPerSecond, partStacks, guerillaStacks, heroicPercent, troopLife, troopShield, essentialIncreased, capped: castsPerSecond * perCast > maxAlive / life + 1e-9,
+    if (sdInput.heroic && troopLifeRead?.additional.some((item) => /^Support: /.test(item.source))) {
+      const unsigned = (text) => String(text).replace(/^\+/, "");
+      const read = new Set(troopLifeRead.additional.filter((item) => /^Support: /.test(item.source)).map((item) => unsigned(item.text)));
+      for (let index = lines.unread.length - 1; index >= 0; index--) if (lines.unread[index].origin === "support" && read.has(unsigned(lines.unread[index].text))) lines.unread.splice(index, 1);
+    }
+    sdPlan = { perCast, fillPerCast, maxAlive, startsPerSecond, chargeUseSeconds, troopLifeText: troopLifeRead?.text || null, castsPerSecond, castInterval, ownRate, fuel: Boolean(fuel), ignoresCooldown, life, rate, partsPerSecond, partStacks, guerillaStacks, heroicPercent, troopLife, troopShield, essentialIncreased, capped: castsPerSecond * fillPerCast > maxAlive / life + 1e-9,
       raw: { name: "Self-Destruct Protocol", role: "selfDestruct", kind: "hit", type: "Physical", baseType: "Physical", tags: [...KEYWORDS.selfDestruct.tags], noMultistrike: true,
         percentByLevel: Array(20).fill(KEYWORDS.selfDestruct.percent), addedEffectivenessByLevel: Array(20).fill(KEYWORDS.selfDestruct.percent), timing: { useTime: life, speedType: "fixed", cooldown: 0 },
         basis: "provisional", note: `${KEYWORDS.selfDestruct.source}; Charge Calling held (Q-H8 note: Trait Skill pressed on cooldown), ${round(rate)} explosions/s`, extraAdditional,
@@ -783,9 +833,12 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     const percent = entry.percentByLevel?.[capped - 1] ?? 0;
     const addedEffectiveness = entry.kind === "hit" ? (entry.addedEffectivenessByLevel?.[capped - 1] ?? percent) : 0;
     const types = entry.conversion ? [entry.baseType, entry.type] : [entry.type];
-    const added = lines.added.filter((line) => line.type === entry.baseType || line.type === entry.type).map((line) => ({ ...line, effectiveness: addedEffectiveness, value: (line.min + line.max) / 2 * addedEffectiveness / 100 }));
-    const addedAverage = sum(added);
     const skillTags = new Set(entry.tags || []);
+    // A skill-tag scope on an added line (Isomorphic Arms' two-handed raise: Attack rows only, src/minion-cores.js) narrows it as it does
+    // the increased and additional lines.
+    const addedFits = (line) => !line.skillTag || skillTags.has(line.skillTag);
+    const added = lines.added.filter((line) => (line.type === entry.baseType || line.type === entry.type) && addedFits(line)).map((line) => ({ ...line, effectiveness: addedEffectiveness, value: (line.min + line.max) / 2 * addedEffectiveness / 100 }));
+    const addedAverage = sum(added);
     // A skill-type or skill-role scope (the recipe reading of "+X% Spirit Magus Ultimate Damage …", research §16) narrows increased lines
     // as it does additional ones; the text reader made no scoped increased line.
     const increased = [...lines.increased.filter((line) => typeApplies(line.type, types) && (!line.skillTag || skillTags.has(line.skillTag)) && (!line.skillRole || line.skillRole === entry.role) && (!line.rowKind || line.rowKind === entry.kind)), ...(entry.extraIncreased || [])];
@@ -850,7 +903,7 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
       return { share: (shares.get(entry.type) || 0) * (total > 100 ? 100 / total : 1) / 100, sources: [...(resolved.conversion || []).filter((rule) => rule.from === from && rule.to === entry.type && (!rule.skills || rule.skills.includes(entry.name))).map((rule) => rule.source), ...lines.conversion.filter((line) => line.from === from && line.to === entry.type).map((line) => line.source)] };
     };
     const groupByType = (list) => [...list.reduce((map, line) => map.set(line.type, [...(map.get(line.type) || []), line]), new Map())];
-    const otherAdded = entry.kind === "hit" && !entry.buffOnly ? lines.added.filter((line) => line.type !== entry.baseType && line.type !== entry.type) : [];
+    const otherAdded = entry.kind === "hit" && !entry.buffOnly ? lines.added.filter((line) => line.type !== entry.baseType && line.type !== entry.type && addedFits(line)) : [];
     const addedPart = (type, group, { scopeTypes = [type], share = 1, convertedFrom = null, conversionSources = null } = {}) => {
       const scoped = (line) => typeApplies(line.type, scopeTypes) && (!line.skillTag || skillTags.has(line.skillTag)) && (!line.skillRole || line.skillRole === entry.role) && (!line.skillName || line.skillName === entry.name) && (!line.rowKind || line.rowKind === entry.kind);
       const partIncreased = [...lines.increased.filter(scoped), ...(entry.extraIncreased || [])];
@@ -1263,17 +1316,31 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
       partySettled = { magus: "Erosion", deteriorationShare: 0.6, nourishedHitsPerSecond: round(nourishedHits) };
     }
   }
+  // "… for recently summoned Minions" (src/recently-summoned.js; G4 2026-11-23): held on the Self-Destruct troops when their summon is
+  // recast on a schedule whose uses the record's trigger hears, the troop alive when the buff lands; otherwise Inactive with the reason.
+  const recentLines = recentlySummonedLines(modifierTexts);
+  const recentSummon = recentLines.length ? recentlySummonedState(recentLines, sdPlan ? { castInterval: sdPlan.castInterval, triggered: sdPlan.fuel, lifeSeconds: sdPlan.life } : {}) : null;
+  if (recentLines.length) {
+    const texts = new Set(recentLines.map((line) => line.text));
+    for (let index = lines.unread.length - 1; index >= 0; index--) if (texts.has(clean(lines.unread[index].text))) lines.unread.splice(index, 1);
+  }
   // Charge Calling (B6): the explosion loop replaces the troops' own attacks where it deals more (best case).
   if (sdPlan) {
     const sd = skills.find((item) => item.role === "selfDestruct");
-    const perExplosion = sd.perHit(null);
+    const perExplosion = sd.perHit(recentSummon?.held ? { additionalFactor: recentSummon.additionalFactor, critRating: recentSummon.critRating } : null);
     const loopDps = sdPlan.rate * perExplosion;
     const ownSteady = events.filter((event) => event.time >= 20 && event.time < horizon).reduce((total, event) => total + event.damage, 0) / (horizon - 20);
     sdPlan.perExplosion = perExplosion; sdPlan.loopDps = loopDps; sdPlan.ownDps = ownSteady; sdPlan.chosen = loopDps > ownSteady;
     if (sdPlan.chosen) {
       events.length = 0;
       const step = 1 / sdPlan.rate;
-      for (let at = summonCast + sdPlan.life; at < horizon; at += step) events.push({ time: at, skill: sd.name, type: "Physical", damage: perExplosion, weight: 1, buffed: false });
+      // The first summon (G10, 2026-11-23): Fuel War with War's trigger (record 491897344: node 2320 behind gate 206 with `inCdOnCreating`
+      // and `noCdOnPlayerInit` true, the raw catalog row, and an enemy within 20 m) is ready at engagement, as Activation Medium: Wind
+      // Rhythm and Ice Lances: Permafrost (the same flag pair; the flags' meaning inferred), so the first triggered summon is at 0 s and
+      // needs no player cast (the skills-start-ready rule, user 2026-10-22); its node-2320 cast is read as having no use time (inferred).
+      // Without Fuel War the player's summon cast comes first.
+      sdPlan.firstSummonSeconds = sdPlan.fuel ? 0 : summonCast;
+      for (let at = sdPlan.firstSummonSeconds + sdPlan.life; at < horizon; at += step) events.push({ time: at, skill: sd.name, type: "Physical", damage: perExplosion, weight: 1, buffed: false });
       for (const item of skills) item.usesInCycle = 0;
     }
   }
@@ -1341,7 +1408,7 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
   const cycle = {
     summonCastSeconds: summonCast, spawnSeconds, summonCastSource: resolved.summonCastSource || null, summonCastBaseSeconds: summonCastBase, summonSpeedType, summonCastFactor,
     bond: bondActive ? { maxStacks: bond.maxStacks, intervalSeconds: bond.intervalSeconds, prebuilt: bond.prebuilt, fullAt: bond.prebuilt ? summonCast : summonCast + bond.maxStacks * bond.intervalSeconds } : null,
-    rule: sdPlan?.chosen ? `Charge Calling held: ${round(sdPlan.rate)} Self-Destruct Protocol explosions/s (${sdPlan.fuel ? `Fuel War with War triggers the summon every ${round(sdPlan.castInterval)} s` : `the summon recast every ${round(sdPlan.castInterval)} s`}, ${sdPlan.perCast} troops per cast, at most ${sdPlan.maxAlive} alive for ${round(sdPlan.life)} s each${sdPlan.capped ? ": the alive cap binds" : ""}); the first explosion ${round(sdPlan.life)} s after the ${summonCast} s summon cast` : `${specials.length ? `${specials.map((item) => `${item.name} (${round(item.effectiveUseTimeSeconds)} s use, ${item.cooldownSeconds} s cooldown)`).join(", ")} whenever ready, otherwise ` : ""}${slotLabel}; hits land at the end of each use; the first use starts after the ${summonCast} s summon cast`,
+    rule: sdPlan?.chosen ? `Charge Calling held: ${round(sdPlan.rate)} Self-Destruct Protocol explosions/s (${sdPlan.fuel ? `Fuel War with War triggers the summon every ${round(sdPlan.castInterval)} s` : `the summon recast every ${round(sdPlan.castInterval)} s`}, ${sdPlan.perCast} troops per cast, at most ${sdPlan.maxAlive} alive, so a cast summons ${sdPlan.fillPerCast} when the earlier ones have exploded and nothing at the cap; each collides with the dummy and explodes ${round(sdPlan.life)} s after its summon (its charge, 0.4 s at the troop's Attack Speed, at most the keyword's 1 s; summoned at the dummy: best case)${sdPlan.capped ? ": the alive cap binds" : ""}); the first explosion ${round(sdPlan.life)} s after ${sdPlan.fuel ? "Fuel War's first trigger at 0 s" : `the ${summonCast} s summon cast`}` : `${specials.length ? `${specials.map((item) => `${item.name} (${round(item.effectiveUseTimeSeconds)} s use, ${item.cooldownSeconds} s cooldown)`).join(", ")} whenever ready, otherwise ` : ""}${slotLabel}; hits land at the end of each use; the first use starts after the ${summonCast} s summon cast`,
     firstHitSeconds: events[0]?.time ?? null, enhancedShare,
     // The tick engine's actors (src/tick-minions.js); null where the events are not uses (Charge Calling's explosion rate).
     uses: sdPlan?.chosen ? null : useLog.filter((use) => use.start < timelineSeconds)
@@ -1386,6 +1453,7 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     recipe: minionRecipeSummary(modifierTexts, classifyMinionLine),
     lines: { conversion: lines.conversion, increased: lines.increased, additional: lines.additional, speed: lines.speed, critRating: lines.critRating, critDamage: lines.critDamage, penetration: lines.penetration, armourPenetration: lines.armourPenetration, added: lines.added, doubleDamage: lines.doubleDamage, lucky: lines.lucky, damageToLife: lines.damageToLife, cooldownRecovery: lines.cooldownRecovery, unread: lines.unread, inactive: lines.inactive, trait: traitLinesUsed, support: lines.support, ...(multistrikes ? { multistrikeChance: lines.multistrikeChance, multistrikeIncrement: lines.multistrikeIncrement, multistrikeIncrementAdditional: lines.multistrikeIncrementAdditional } : {}), ...(lines.maxDamage.length ? { maxDamage: lines.maxDamage } : {}), ...(lines.minDamage.length ? { minDamage: lines.minDamage } : {}), ...(lines.critOnly.length ? { critOnly: lines.critOnly } : {}) },
     speeds: { attackSpeedFactor, castSpeedFactor },
+    ...(recentSummon ? { recentlySummoned: { held: recentSummon.held, additionalFactor: recentSummon.additionalFactor, critRating: recentSummon.critRating, read: recentSummon.read.map((line) => ({ source: line.source, text: line.text, value: line.value })), inactive: recentSummon.inactive.map((line) => ({ source: line.source, text: line.text, reason: line.reason })), neutral: recentSummon.neutral.map((line) => ({ source: line.source, text: line.text, reason: line.reason })) } } : {}),
     crit: { rating: critRating(null), chancePercent: critChance(null) * 100, damagePercent: critDamage(null) * 100, factor: critFactor(null), baseRating: baseCritRating, baseDamagePercent: baseCritDamage, ...(extraCritOnly.length ? { critOnlyFactor, critOnlySources: extraCritOnly } : {}) },
     skills: perSkill, cycle, events: events.filter((event) => event.time < timelineSeconds),
     combat: { dps: steadyDps, perMinionDps: steadyDps / Math.max(1, count), fiveSecondAverageDps: windowAverage(windows[0] ?? 5), twentySecondAverageDps: windowAverage(windows[1] ?? 20) },
@@ -1398,7 +1466,7 @@ export function calculateMinion({ profile, level = 20, modifierTexts = [], trait
     // Hero trait audit B6 (src/moto-iris-traits.js): what the Moto / Iris inputs did on this Minion (the module badges read it).
     heroTraits: heroTraits ? {
       ...heroTraitState, overload: Boolean(heroTraits.overload), ultimate: ultimatePlan ? { ...ultimatePlan, name: ultimate.name, casts: round(ultimateCasts) } : null,
-      selfDestruct: sdPlan ? { chosen: sdPlan.chosen, rate: sdPlan.rate, perExplosion: sdPlan.perExplosion, loopDps: sdPlan.loopDps, ownDps: sdPlan.ownDps, perCast: sdPlan.perCast, maxAlive: sdPlan.maxAlive, castsPerSecond: sdPlan.castsPerSecond, castInterval: sdPlan.castInterval, ownRate: sdPlan.ownRate, fuel: sdPlan.fuel, ignoresCooldown: sdPlan.ignoresCooldown, capped: sdPlan.capped, life: sdPlan.life, partStacks: sdPlan.partStacks, guerillaStacks: sdPlan.guerillaStacks, partsPerSecond: sdPlan.partsPerSecond, heroicPercent: sdPlan.heroicPercent, troopLife: sdPlan.troopLife, troopShield: sdPlan.troopShield, essentialIncreased: sdPlan.essentialIncreased, essentialAdditional: (sdPlan.raw.extraAdditional || []).filter((line) => /^Essential Speed/.test(line.source)).length } : null,
+      selfDestruct: sdPlan ? { chosen: sdPlan.chosen, rate: sdPlan.rate, perExplosion: sdPlan.perExplosion, loopDps: sdPlan.loopDps, ownDps: sdPlan.ownDps, perCast: sdPlan.perCast, fillPerCast: sdPlan.fillPerCast, chargeUseSeconds: sdPlan.chargeUseSeconds, maxAlive: sdPlan.maxAlive, castsPerSecond: sdPlan.castsPerSecond, castInterval: sdPlan.castInterval, ownRate: sdPlan.ownRate, fuel: sdPlan.fuel, ignoresCooldown: sdPlan.ignoresCooldown, capped: sdPlan.capped, life: sdPlan.life, partStacks: sdPlan.partStacks, guerillaStacks: sdPlan.guerillaStacks, partsPerSecond: sdPlan.partsPerSecond, startsPerSecond: sdPlan.startsPerSecond, heroicPercent: sdPlan.heroicPercent, troopLife: sdPlan.troopLife, troopLifeText: sdPlan.troopLifeText, troopShield: sdPlan.troopShield, essentialIncreased: sdPlan.essentialIncreased, essentialAdditional: (sdPlan.raw.extraAdditional || []).filter((line) => /^Essential Speed/.test(line.source)).length } : null,
       party: partySettled, partyFire: Boolean(partyFire), partyRock: Boolean(partyRock), fullBloom: fullBloomOn ? { entries: fullBloomEntries.length, shareActive: fullBloomShare(basic || ultimate) !== 1 } : null, windrider: Boolean(windrider),
       nourishEffectFactor, troopNourish: Boolean(troopNourish && nourish), lossReduction, overloadCycle, breezeRamp: Boolean(breezeRamp)
     } : null,

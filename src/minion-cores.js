@@ -176,12 +176,16 @@ export function summonCastSpeed(modifierTexts = []) {
 // ---- Command (Mighty Guard) --------------------------------------------------------------------------------------------------
 // Keyword Command (reference data; game record): +3% additional damage per point for Synthetic Troop Minions, range −100…100. Chunk 4 (2026-11-01):
 // Command is a balance, not a fill. Attr 3620 "Command Increase per Second" adds, attr 3621 "Command Return per Second" (default 13, mod 3
-// by "Command Return Speed") takes back, and manual 1001011927 raises the return with the Command held. Circle of Life's record gives the
-// same return as "1.3 + 7% per 0.09 s gate", "equal to Command", so +0.7 per second per point (inferred: the record is Growth's). Held:
-// C = (gain − 13 × Return Speed) ÷ 0.7, capped, 0 when the gain is below the return. Mighty Guard's +4 alone holds 0. This overrides the
-// 2026-10-19 Google AI Mode answer ("builds 4 per second to its cap of 100"). Switch `fullCommand` on: the Command the gain holds (best
-// case: no other drain). Off: no Command. Module summons included. Command-gated lines (Spider Tank's projectiles, Grim Phantom's
-// damage per 20 Command) stay unread.
+// by "Command Return Speed", records 645344 / Iron Nest's copy) takes back, and manual 1001011927 / hyperlinks 749 / 750 raise the return
+// with the Command held: config_hyperlink 750's values are 13, 10, 7 ("13 points will be returned per second. For every 10 Command
+// increased, +7 additional points returned"), so +0.7 per second per point (the magnitudes are the game's; the linear form is kept, whole
+// 10-Command steps not proven: no recipe writes the return, the client's Command update not traced). User decision 2026-11-23 (agreed after
+// a Google AI Mode answer; 6 T Trog audit): "Command Return Speed" scales the whole drain, the base and the per-point part, so the drain is
+// (13 + 0.7 × C) × (1 + Σ Return Speed) and the held Command C = (gain ÷ (1 + Σ Return Speed) − 13) ÷ 0.7, capped at Max Command, 0 when the
+// gain is below the return; a Return Speed of −100% or less returns nothing (the gain fills to the cap). Mighty Guard's +4 alone holds 0.
+// This overrides the 2026-10-19 Google AI Mode answer ("builds 4 per second to its cap of 100"). Switch `fullCommand` on: the Command the
+// gain holds (best case: no other drain). Off: no Command. Module summons included. Command-gated lines (Spider Tank's projectiles, Grim
+// Phantom's damage per 20 Command) stay unread.
 const COMMAND_GAIN = /^\+ ?(\d+(?:\.\d+)?) Command per second$/i;
 const COMMAND_RETURN_SPEED = /^([+-]\d+(?:\.\d+)?)% Command Return Speed per second$/i;
 export const COMMAND_SPEED = /^\+?(\d+(?:\.\d+)?)% Minion Attack and Cast Speed for every (\d+) Command owned$/i;
@@ -209,21 +213,23 @@ export function commandState(modifierTexts = [], { full = true, minionsCrit = fa
   if (!sources.length) return null;
   const perSecond = sources.reduce((total, item) => total + item.value, 0);
   // Iron Nest (legendary audit batch 8): "-20 Max Command" lowers the cap (base 100; provisional). "Command Return Speed" scales the
-  // base return (attr 3621 mod 3; whether it also scales the per-point part is not read in the files).
+  // whole return (attr 3621 mod 3), the per-point part too (user decision 2026-11-23).
   const capDelta = modifierTexts.reduce((total, line) => { const match = norm(line.text).match(MAX_COMMAND); return total + (match ? valueOf(line, norm(line.text), Number(match[1]), { concept: "field:tongyuzhi_shangxian" }).value * (line.multiplier ?? 1) : 0); }, 0);
   const returnSpeed = modifierTexts.reduce((total, line) => { const match = norm(line.text).match(COMMAND_RETURN_SPEED); return total + (match ? Number(match[1]) * (line.multiplier ?? 1) : 0); }, 0);
-  const returnPerSecond = COMMAND_RETURN_PER_SECOND * Math.max(0, 1 + returnSpeed / 100);
+  const returnScale = Math.max(0, 1 + returnSpeed / 100);
+  const returnPerSecond = COMMAND_RETURN_PER_SECOND * returnScale, returnPerPoint = COMMAND_RETURN_PER_POINT * returnScale;
   const cap = Math.max(0, COMMAND_CAP + capDelta);
-  const points = full && perSecond > 0 ? round(Math.min(cap, Math.max(0, (perSecond - returnPerSecond) / COMMAND_RETURN_PER_POINT))) : 0;
+  const balance = returnPerPoint > 0 ? (perSecond - returnPerSecond) / returnPerPoint : perSecond > 0 ? Infinity : 0;
+  const points = full && perSecond > 0 ? round(Math.min(cap, Math.max(0, balance))) : 0;
   const value = round(points * COMMAND_DAMAGE_PER_POINT);
-  const text = `+${value}% additional Minion Damage (Command ${points} × +${COMMAND_DAMAGE_PER_POINT}% per point for Synthetic Troop Minions; ${perSecond} Command per second against a return of ${round(returnPerSecond)} + ${COMMAND_RETURN_PER_POINT} per point: game attrs 3620, 3621, manual 1001011927)`;
+  const text = `+${value}% additional Minion Damage (Command ${points} × +${COMMAND_DAMAGE_PER_POINT}% per point for Synthetic Troop Minions; ${perSecond} Command per second against a return of ${round(returnPerSecond)} + ${round(returnPerPoint)} per point (13 + 0.7 per point × Return Speed ${round(returnScale)}): game attrs 3620, 3621, hyperlink 750, manual 1001011927; the Return Speed on the per-point part a user decision, 2026-11-23)`;
   // "+X% additional damage for Synthetic Troop Minions when having at least N Command" (Tin Staff craft prefix; gear affix batch A,
   // 2026-10-22): one more additional layer on the Command Minions while the Command held reaches N.
   const gated = modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_GATED); return match ? [{ source: line.source, text: norm(line.text), value: valueOf(line, norm(line.text), Number(match[1]), { concept: "damage", bucket: "additional", target: "minion" }).value * (line.multiplier ?? 1), min: Number(match[2]) }] : []; });
   const gatedLines = gated.filter((item) => points >= item.min).map((item) => ({ kind: "additional", value: item.value, source: item.source, text: `${item.text} (Command ${points} ≥ ${item.min})` }));
   // Machinist 6,1 (game record 78981904: 6001 and 6002 mod 3, routed to the Minions; chunk 3, 2026-11-01): the value per N Command held, no whole steps.
   const speedLines = points > 0 ? modifierTexts.flatMap((line) => { const match = norm(line.text).match(COMMAND_SPEED); return match ? [{ kind: "speed", value: round(Number(match[1]) * (line.multiplier ?? 1) * points / Number(match[2])), additional: false, attack: true, cast: true, source: line.source, text: `${norm(line.text)} (Command ${points})` }] : []; }) : [];
-  return { sources, perSecond, returnPerSecond: round(returnPerSecond), full, points, capped: full && (perSecond - returnPerSecond) / COMMAND_RETURN_PER_POINT >= cap, value, gated: gated.map((item) => ({ ...item, active: points >= item.min })), lines: [...(value ? [{ kind: "additional", value, source: `Command (${sources.map((item) => item.source).join(", ")})`, text }] : []), ...gatedLines, ...speedLines] };
+  return { sources, perSecond, returnPerSecond: round(returnPerSecond), returnPerPoint: round(returnPerPoint), returnScale: round(returnScale), full, points, capped: full && balance >= cap, value, gated: gated.map((item) => ({ ...item, active: points >= item.min })), lines: [...(value ? [{ kind: "additional", value, source: `Command (${sources.map((item) => item.source).join(", ")})`, text }] : []), ...gatedLines, ...speedLines] };
 }
 // Iron Nest's "+35% additional damage for Minions when having at least 80 Command" (legendary audit batch 8) is the same gate.
 export const COMMAND_GATED = /^\+?(\d+(?:\.\d+)?)% additional damage for (?:Synthetic Troop )?Minions when having at least (\d+) Command$/i;
@@ -258,12 +264,23 @@ export function isomorphicArmsState(modifierTexts = [], { weaponAttack = null, i
   if (!main) return { source: line.source, weapon: null, lines: [], unread: [], reason: "no main-hand weapon is equipped" };
   const label = `Isomorphic Arms: the main-hand ${main.name} (user-supplied 2026-10-19, provisional)`;
   const lines = [];
+  // The two-handed base (user decision 2026-11-23, agreed after a Google AI Mode answer; 6 T Trog audit §4.1): "+X% additional Base Damage
+  // for Two-Handed Weapons" (record 101010697 and its copies: Death's Touch, the Haze base affix, Fallen Starlight, Space Rift) raises the
+  // held two-hander's base damage (src/weapon-damage-model.js weaponDamage, one factor per copy: the 2 T Whirlwind panel, F1), and the
+  // Minions' copy of the weapon carries that raised base on their Attack hits only (the record writes on the Attack tag), not on Spell
+  // Minion hits: the raise is its own added line scoped to Attack-tagged Minion rows, the unraised copy reaching every Minion hit. The
+  // factor is read on the weapon's whole own damage (base and local affixes), as the player's own attack path reads it (inferred for the
+  // local affixes: the 2 T Whirlwind Cudgel had none).
+  const twoHanded = weaponAttack?.twoHanded && main.hands === "two" ? weaponAttack.twoHandedBase || null : null;
+  const raise = twoHanded && twoHanded.factor > 1 ? twoHanded.factor - 1 : 0;
+  const twoHandedSources = twoHanded ? twoHanded.sources.map((item) => item.source).join(", ") : "";
   for (const [type, range] of Object.entries(main.damage || {})) {
     if (!(range.max > 0)) continue;
     lines.push({ kind: "added", type, min: range.min, max: range.max, source: label, text: `Adds ${round(range.min)} - ${round(range.max)} ${type} Damage to Minions (the main-hand weapon's own ${type} damage: base and local affixes)` });
+    if (raise) lines.push({ kind: "added", type, min: range.min * raise, max: range.max * raise, skillTag: "Attack", twoHandedBase: true, source: label, text: `Adds ${round(range.min * raise)} - ${round(range.max * raise)} ${type} Damage to Minion Attacks (the two-handed base: the weapon's own ${type} damage × ${round(twoHanded.factor)} − 1, ${twoHandedSources}; Attack hits only, user decision 2026-11-23)` });
   }
   const affixes = itemAffixesOnMinions(itemTexts, { classify, localKind, label, item: "weapon" });
-  return { source: line.source, weapon: { name: main.name, type: main.type, damage: main.damage }, lines: [...lines, ...affixes.lines], read: affixes.read, unread: affixes.unread, recipe: affixes.recipe, reason: null };
+  return { source: line.source, weapon: { name: main.name, type: main.type, damage: main.damage }, ...(raise ? { twoHandedBase: { factor: twoHanded.factor, sources: twoHanded.sources.map((item) => ({ source: item.source, text: item.text, value: item.value })) } } : {}), lines: [...lines, ...affixes.lines], read: affixes.read, unread: affixes.unread, recipe: affixes.recipe, reason: null };
 }
 
 // An item's affixes as Minion lines (Isomorphic Arms' main-hand weapon, Comradeship's belt): each line in its Minion wording where the

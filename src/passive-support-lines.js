@@ -25,10 +25,13 @@ const RULES = [
   { family: "addedAs", pattern: new RegExp(`^Adds ${N}% (?:of )?Elemental Damage (?:as|to) ${TYPE} Damage$`, "i"), build: (m) => ({ percent: Number(m[1]), fromList: ["Fire", "Cold", "Lightning"].filter((type) => type.toLowerCase() !== m[2].toLowerCase()), to: m[2] }) },
   { family: "multistrike", pattern: new RegExp(`^\\+${N}% (?:chance to (?:perform a )?Multistrike|Multistrike [Cc]hance)$`, "i"), build: (m) => ({ value: Number(m[1]), kind: "chance" }) },
   { family: "multistrike", pattern: new RegExp(`^Multistrikes deal ${N}% increasing damage$`, "i"), build: (m) => ({ value: Number(m[1]), kind: "increment" }) },
-  // "+N initial Multistrike Count" (Preemptive Strike; game affix 713584, field 2006252): shifts every count of the sequence
-  // (src/skill-hit-model.js multistrikeSequence initialCountBonus; user-accepted reading, CLAUDE.md Erika batch).
+  // "+N initial Multistrike Count" (Preemptive Strike; game affix 713584, field 2006252): raises the first count; the count stops rising at the
+  // sequence's Max Multistrike Count (src/skill-hit-model.js multistrikeSequence initialCountBonus; SS14 client, user decision 2026-11-20).
   { family: "multistrike", pattern: /^\+(\d+) (?:to the )?initial Multistrike Count$/i, build: (m) => ({ value: Number(m[1]), kind: "initial" }) },
   { family: "projectileQuantity", pattern: /^(?:Projectile Quantity \+(\d+)|\+(\d+) (?:to )?Projectile Quantity)$/i, build: (m) => ({ value: Number(m[1] ?? m[2]), kind: "projectiles" }) },
+  // A negative build-wide Projectile Quantity (no catalog line carries one yet): a negative pool, which adds no projectile (every projectile
+  // reader floors the extra count at 0) and lowers Frost Spike's per-Projectile-Quantity line (user decision 2026-11-23).
+  { family: "projectileQuantity", pattern: /^(?:Projectile Quantity [-−](\d+)|[-−](\d+) (?:to )?Projectile Quantity)$/i, build: (m) => ({ value: -Number(m[1] ?? m[2]), kind: "projectiles" }) },
   // Steep Strike chance (2026-10-14; src/skill-hit-model.js steepStrikeState): a plain build-wide line reaches every Slash-Strike
   // skill (only Slash-Strike skills have a Steep Strike form; reference data keyword text on Raging Slash).
   { family: "steepStrike", pattern: new RegExp(`^\\+${N}% Steep Strike chance\\.?$`, "i"), build: (m) => ({ value: Number(m[1]), kind: "chance" }) }

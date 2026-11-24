@@ -28,6 +28,7 @@
 // setMinionPathMode("text") in a script or test.
 import { affixRecipesLoaded, interpretLine, lineGameIds, loadAffixRecipes, settleRowScaled } from "./recipe-interpreter.js";
 import { normalizePercentageText } from "./percentage-text.js";
+import { isNamedGearAffixHeader } from "./named-gear-affixes.js";
 
 try { await loadAffixRecipes(); } catch { /* the text paths stay */ }
 
@@ -69,6 +70,7 @@ const AILMENT_ONLY = new Set(["ailmentChance", "afflictionEffect", "afflictionPe
 // quantities; Bond: its stacks), which takes the recipe's number (recipeLineValue): not a Minion hit layer.
 const OTHER_READER = new Set(["growthGain", "field:moling_qianghuajineng_shiyongjilv", "statusEffect", "maxMinions", "maxBuffStacks", "field:summon_zhixie_extra_num_per_skill"]);
 const NO_READER = new Set(["addedAs", "initialMultistrikeCount", "projectileQuantity", "castMode"]);
+const LUCKY_CRIT_LABEL = 3000101;
 
 /** One interpreter effect -> { facts, relevant, none?, unplaceable?, noReader? }. */
 function classifyMinionEffect(effect) {
@@ -85,6 +87,14 @@ function classifyMinionEffect(effect) {
   if (["convert", "perStat", "perTargetStat", "share", "perEntity", "perAilmentType", "byDistance", "nextAction", "perCount"].includes(effect.kind)) return unplaceable(`${effect.kind}: scaled by a runtime value`);
   if (OTHER_READER.has(concept)) return none(`${concept}: read by its own Minion reader (Spirit Magus state, troop count, Bond), which takes the recipe's number`);
   if (effect.kind === "label" && /mian_yi/.test(String(concept))) return none(`${concept}: a Minion immunity (defence)`);
+  // Label 3000101 (config_char_label bao_ji_xing_yun, "Lucky Critical Strike"; affix 311045's label) routed to the Minions: "Minions gain
+  // Lucky upon a Critical Strike" (101070019: node 107 on targets [3], no trigger, no tag). The Minion model reads it as its "lucky" line,
+  // the crit check rolled twice (src/minion-damage-model.js luckyCrit; chunk 11, 2026-11-01), as the text reader does. A tagged or gated
+  // copy is not read here (no such record in the table).
+  if (effect.kind === "label" && effect.label === LUCKY_CRIT_LABEL) {
+    if (tagList(tags, "mine").some((tag) => tag !== TAG.minion) || tagList(tags, "others").length || (effect.conditions || []).length) return unplaceable("a tagged or conditional Lucky Critical Strike label");
+    return { facts: [{ value: 1, conditions: [], conditional: false, affixId: effect.viaAffix ?? effect.id, kind: "lucky" }], relevant: true };
+  }
   if (NO_READER.has(concept) || String(concept || "").startsWith("field:") || String(concept || "").startsWith("buff:") || effect.kind === "label" || effect.kind === "rule") return noReader(`${concept}: no reader in the Minion hit model`);
   if (effect.understood === false) return unplaceable(effect.reason || "not understood");
   if (effect.value === null || effect.value === undefined || effect.dynamic?.some((d) => d !== "scale")) return unplaceable(`runtime value (${(effect.dynamic || ["unevaluated"]).join(", ")})`);
@@ -343,6 +353,9 @@ export function recipeMinionFactsAsBearer(text) {
   if (cache.has(key)) return cache.get(key);
   const result = (() => {
     const fallback = (reason) => ({ status: "fallback", reason, facts: [], noReader: [] });
+    // A named gear affix header ("Law of Trinity") is a name on the item as on you (src/named-gear-affixes.js; the rule interpretLine
+    // applies to planner lines, research/affix-recipe-rebuild-2026-11-20.md): its record is not read here either.
+    if (isNamedGearAffixHeader(squash(text))) return fallback("a named gear affix header: its effect lines carry its record");
     const resolved = interpretLine(squash(text), { multiplier: 1, origin: "gear" });
     if (!resolved) return fallback("no game template with this shape");
     if (resolved.ambiguous) return fallback("same-text templates write differently");

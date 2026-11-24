@@ -22,6 +22,18 @@ export const KEYWORD_RADII_METERS = Object.freeze({ nearby: 6, proximity: 4, dis
 // boundary is read as exclusive: provisional) and an explicit radius holds only from 6 m up. Either way the player is
 // within 10 m, so "within 10 m" rules (Torturer's Touch's Reap, Elite within 10 m) hold in both.
 export const DISTANT_STANDING_METERS = KEYWORD_RADII_METERS.distant;
+// The Distance group's second Distant alternative (2026-11-20, 15 T Split Shot audit G2 / R1): 10 m away, still within 10 m (the dummy
+// profile's radius, so every "within 10 m" rule holds), for the readers that read the standing distance itself (Heart of the Storm's
+// distance damage, src/heart-of-the-storm.js; Evil Ouroboros's return path, src/carino-traits.js). Compared only when such a reader is on
+// the build (src/planner.js exclusiveConditionGroups); condition `distantTenMeters` with nearTarget false. Close to the dummy reads 0 m.
+export const DISTANT_TEN_METERS = 10;
+/** The metres the player stands from the dummy in a line-condition / combat state: 0 close to it, else the Distant alternative's. */
+export function standingMetersOf(state = {}) {
+  if (state?.nearTarget !== false) return 0;
+  return Number.isFinite(state?.distantMeters) ? state.distantMeters : DISTANT_STANDING_METERS;
+}
+/** The Distant alternative's metres in a state (6 m, or 10 m on the second alternative), for reasons. */
+export const distantMetersOf = (state = {}) => (Number.isFinite(state?.distantMeters) ? state.distantMeters : DISTANT_STANDING_METERS);
 
 // The player's walking speed while the Movement group is Moving (user decision 2026-11-10; research/ring-barrier-movement-2026-11-10.md),
 // for every per-metre reader (the ring's movement Barrier, Hunting Tempo, Thunder Focus, Carino's movement Deflection, Sage's Tumbleweed
@@ -53,10 +65,11 @@ export function playerMoveSpeed({ increasedPercent = 0, additionalFactor = 1 } =
 /** The base speed (no Movement Speed lines), for a reader called without the planner's state. */
 export const BASE_PLAYER_MOVE_SPEED = Object.freeze(playerMoveSpeed());
 
-/** Does a line with an explicit radius ("within N m") hold at the chosen distance (near: point blank; else 6 m)? */
-export function explicitRadiusHolds(meters, nearTarget = true) {
+/** Does a line with an explicit radius ("within N m") hold at the chosen distance (near: point blank; else the Distant alternative's 6 m or
+ * 10 m, `distantMeters`)? */
+export function explicitRadiusHolds(meters, nearTarget = true, distantMeters = DISTANT_STANDING_METERS) {
   if (!Number.isFinite(Number(meters))) return nearTarget !== false;
-  return nearTarget !== false ? true : Number(meters) >= DISTANT_STANDING_METERS;
+  return nearTarget !== false ? true : Number(meters) >= (Number.isFinite(distantMeters) ? distantMeters : DISTANT_STANDING_METERS);
 }
 
 // "against <word>" target words, mapped to the dummyTarget flag they need.

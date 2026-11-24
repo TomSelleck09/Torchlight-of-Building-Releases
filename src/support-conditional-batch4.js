@@ -274,6 +274,9 @@ function skillAreaState(full, state, hitsRate = null) {
   const combat = [...(state.combatSkillArea || []).filter((item) => item.value), ...(own?.value ? [own] : [])];
   const combatIncreased = combat.reduce((sum, item) => sum + item.value, 0);
   const additional = texts.flatMap((text) => { const match = String(text).match(SUPPORT_AREA_ADDITIONAL); return match ? [num(match[1])] : []; });
+  // The build's additional Skill Area (the stat sheet's combined additional factor, src/planner.js skillAreaAdditionalFactor; F4, 2026-11-22).
+  const buildAdditional = Number(state.skillAreaAdditionalFactor) || 1;
+  if (buildAdditional !== 1) additional.push((buildAdditional - 1) * 100);
   const increased = sheet + supportIncreased + combatIncreased;
   const additionalProduct = additional.reduce((product, value) => product * (1 + value / 100), 1);
   const total = ((1 + increased / 100) * additionalProduct - 1) * 100;
@@ -442,11 +445,17 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
     }
     case "manaSealed": {
       const maxMana = Math.max(0, Number(state.maxMana) || 0);
-      const sealedPercent = Math.min(100, Math.max(0, 100 - (Number(state.manaRemainingPercent ?? 100))) + clause.ownSeal);
+      // Its own seal takes the global Sealed Mana Compensation like every other Mana seal (user rule 2026-11-23, the two buckets).
+      const compensation = Number(state.sealedManaCompensationPercent) || 0;
+      const ownSeal = 1 + compensation / 100 > 0 ? clause.ownSeal / (1 + compensation / 100) : clause.ownSeal;
+      // The planner puts this seal in the sealed Mana bucket (src/planner.js aura.lunarEclipseSeal), so the Mana left already holds it;
+      // a direct caller without that bucket gets it added here.
+      const inBucket = state.lunarEclipseSealInBucket === true;
+      const sealedPercent = Math.min(100, Math.max(0, 100 - (Number(state.manaRemainingPercent ?? 100))) + (inBucket ? 0 : ownSeal));
       const amount = maxMana * sealedPercent / 100;
       const steps = Math.floor(amount / clause.every + 1e-9);
       const applied = Math.min(clause.cap, clause.value * steps);
-      return applied > 0 ? apply(applied, `${round(sealedPercent)}% of ${round(maxMana)} Max Mana sealed (the Aura seals + this support's own ${clause.ownSeal}%) = ${round(amount)} Mana ÷ ${clause.every} = ${steps} × ${clause.value}% = +${round(applied)}% (up to +${clause.cap}%; ${recipe}; provisional: whole steps)`, { provisional: true }) : off(`${round(amount)} Mana sealed, under ${clause.every}`);
+      return applied > 0 ? apply(applied, `${round(sealedPercent)}% of ${round(maxMana)} Max Mana sealed (the Aura seals + this support's own ${clause.ownSeal}%${compensation ? ` ÷ (1 + ${round(compensation)}% Sealed Mana Compensation) = ${round(ownSeal)}%` : ""}${inBucket ? ", in the sealed Mana bucket" : ""}) = ${round(amount)} Mana ÷ ${clause.every} = ${steps} × ${clause.value}% = +${round(applied)}% (up to +${clause.cap}%; ${recipe}; provisional: whole steps)`, { provisional: true }) : off(`${round(amount)} Mana sealed, under ${clause.every}`);
     }
     case "lifeLostPer": {
       const lost = state.life === "low" || state.lifeBalance?.settled ? Math.max(0, Number(state.lifeLostPercent) || 0) : 0;

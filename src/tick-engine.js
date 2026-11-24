@@ -316,6 +316,24 @@ function currentPathValue(world, path) {
   return value;
 }
 
+// A part with `delayFrames` (Deterioration, 6 T Corrosive Throw D1: its damage lands when its instance runs out, src/tick-ledger.js compileParts):
+// its value is read at the hit, with the modifiers held then (the base is 60% of that hit's damage as dealt, fixed at application), and dealt
+// delayFrames later. { now, delayed: [{ frames, value }] }; a path with no such part is the plain value.
+function splitPathValue(world, path) {
+  if (!path.parts.some((part) => part.delayFrames > 0)) return { now: currentPathValue(world, path), delayed: null };
+  const modifiers = path.modifiers || [];
+  const amounts = modifiers.map((modifier) => modifierAmount(world, modifier));
+  const signature = amounts.join(",");
+  const cacheKey = `${path.key}\u0000split`;
+  const cached = world.pathCache.get(cacheKey);
+  if (cached && cached.signature === signature) return cached.value;
+  const groups = new Map();
+  for (const part of path.parts) { const frames = part.delayFrames > 0 ? part.delayFrames : 0; if (!groups.has(frames)) groups.set(frames, []); groups.get(frames).push(part); }
+  const value = { now: groups.has(0) ? pathValueAt({ ...path, parts: groups.get(0) }, amounts) : 0, delayed: [...groups].filter(([frames]) => frames > 0).map(([frames, parts]) => ({ frames, value: pathValueAt({ ...path, parts }, amounts) })) };
+  world.pathCache.set(cacheKey, { signature, value });
+  return value;
+}
+
 // ---------------------------------------------------------------------------------------------
 // World
 
@@ -462,7 +480,7 @@ function createWorld(spec, frames, trace) {
     paths, bySource, labels, stats, firstDamageFrame: null, trace: trace ? [] : null,
     pathCache: new Map(), snapIndexes: new Map(),
     speeds: new Map(Object.entries(spec.speeds || {}).map(([key, speed]) => [key, { ...speed, key: `speed:${key}`, parts: speed.parts ?? [{ base: 1, increasedPercent: speed.increasedPercent ?? 0, additionalFactor: speed.additionalFactor ?? 1 }] }])),
-    delayed: new Map(), dots: new Map(), areas: new Map(), streams: new Map(),
+    delayed: new Map(), delayedDamage: new Map(), dots: new Map(), areas: new Map(), streams: new Map(),
     ailmentSpecs: new Map((spec.ailments || []).map((item) => [item.key, item])),
     ailmentRuns: new Map((spec.ailments || []).map((item) => [item.key, newAilmentRun(item)])),
     ailmentTicks: new Map((spec.ailments || []).map((item) => [item.key, { activeTicks: 0, baseTicks: 0 }])),
@@ -1044,6 +1062,8 @@ function fireEffects(world, effects = [], origin) {
         break;
       case "buff": {
         const buff = world.buffs.get(effect.buff);
+        // A buff held for the run once gained (`once`: the curse a gear trigger casts on your first damage, src/tick-ledger.js withCurseOnDamage).
+        if (effect.once && buff) break;
         if (effect.layered) {
           const entry = addBuffLayers(buff, { amount: effect.stacks ?? 1, expiryFrame: buffExpiryFrame(world.frame, effect.seconds), maxStacks: effect.maxStacks ?? 1, frame: world.frame });
           if (entry) world.buffs.set(effect.buff, entry);
@@ -1099,6 +1119,10 @@ function fireEffects(world, effects = [], origin) {
         // A skill use of yours for the trigger bus (W10 step 3b, src/trigger-bus.js emitUse): its listeners' effects land here, at the use. Nothing
         // on the layers (no bus, no use effect is compiled).
         if (world.bus) world.bus.emitUse(world, effect, (effects) => fireEffects(world, effects, origin));
+        break;
+      case "busGrant":
+        // A grant of a bus listener's own buff (src/trigger-bus.js section 12, the follower's Fervor): nothing without a bus.
+        if (world.bus) world.bus.grant(effect.key, effect.chance);
         break;
       case "reduceCooldowns":
         // All of the player's skills: the follower is another unit.
@@ -1351,11 +1375,22 @@ const STAGES = {
     for (const { effect, origin } of world.attacks) {
       if (effect.kind === "event") { world.hits.push({ source: null, by: origin, onHit: effect.effects }); continue; }
       const path = world.paths.get(effect.path);
-      const hit = { source: seriesKey(path), amount: currentPathValue(world, path) * (effect.count ?? 1), path: path.key, units: effect.count ?? 1, by: origin, onHit: effect.onHit };
+      const split = splitPathValue(world, path), units = effect.count ?? 1;
+      const hit = { source: seriesKey(path), amount: split.now * units, path: path.key, units, by: origin, onHit: effect.onHit };
+      // A delayed part (D1): dealt on its own later frame on the hit's series, no hit or on-hit event of its own (the hit raised them).
+      if (split.delayed) {
+        hit.delayedAmount = 0;
+        for (const { frames, value } of split.delayed) {
+          const due = world.frame + frames, amount = value * units;
+          hit.delayedAmount += amount;
+          if (!world.delayedDamage.has(due)) world.delayedDamage.set(due, []);
+          world.delayedDamage.get(due).push({ source: hit.source, amount, path: path.key, by: origin });
+        }
+      }
       // A Minion hit's landings for the trigger bus (W10 step 3c, src/tick-minions.js; set only with a bus).
       if (effect.landings !== undefined) hit.landings = effect.landings;
       // With a trace each hit keeps the amounts it read, so a run can be taken apart layer by layer (src/tick-parity.js).
-      if (world.trace) { hit.amounts = (path.modifiers || []).map((modifier) => modifierAmount(world, modifier)); hit.count = effect.count ?? 1; hit.weight = effect.weight ?? 1; }
+      if (world.trace) { hit.amounts = (path.modifiers || []).map((modifier) => modifierAmount(world, modifier)); hit.count = effect.count ?? 1; hit.weight = effect.weight ?? 1; if (hit.delayedAmount !== undefined) hit.traceDelayed = hit.delayedAmount; }
       world.hits.push(hit);
     }
     world.attacks.length = 0;
@@ -1370,8 +1405,19 @@ const STAGES = {
       if (world.bus && record.presence > 0) world.bus.emitDot(world, record, (effects) => fireEffects(world, effects, record.by));
     }
     world.dotRecords.length = 0;
+    // Damage a hit put off to this frame (D1, Deterioration at its instance's expiry): on the hit's series, no damage event counted.
+    const due = world.delayedDamage.get(world.frame);
+    if (due) {
+      world.delayedDamage.delete(world.frame);
+      for (const item of due) {
+        world.bySource[item.source][world.frame - 1] += item.amount;
+        world.stats[item.source].damage += item.amount;
+        if (item.amount > 0 && world.firstDamageFrame === null) world.firstDamageFrame = world.frame;
+        note(world, "damage", { source: item.source, amount: item.amount, kind: "delayed", path: item.path, by: item.by });
+      }
+    }
     for (const hit of world.hits) {
-      if (hit.source !== null) deal(world, hit.source, hit.amount, { kind: "hit", path: hit.path, by: hit.by, ...(hit.amounts ? { amounts: hit.amounts, count: hit.count, weight: hit.weight } : {}) });
+      if (hit.source !== null) deal(world, hit.source, hit.amount, { kind: "hit", path: hit.path, by: hit.by, ...(hit.amounts ? { amounts: hit.amounts, count: hit.count, weight: hit.weight } : {}), ...(hit.traceDelayed !== undefined ? { delayedAmount: hit.traceDelayed } : {}) });
       fireEffects(world, hit.onHit, hit.by);
       // The trigger bus: the hit's event (its path carries it) to the listeners of its trigger, after the hit's own on-hit effects.
       if (world.bus && hit.path) world.bus.emit(world, hit, (effects) => fireEffects(world, effects, hit.by));

@@ -221,7 +221,10 @@ export function moduleAffixReading(record, context = {}) {
       break;
     case 2047: {
       minion("", { cooldownAdditional: v1 });
-      for (const [affix, list] of record.buffs.find((buff) => buff.to.includes("allies"))?.affixes || []) if (affix === 101010070) player(`+${list[0]}% Cooldown Recovery Speed`, record.buffs[0].buff);
+      // A1 (2026-11-22, research/remediation-plumbing-2026-11-21.md): the buff's "+X% Cooldown Recovery Speed" goes to you and allies (the record's
+      // `to`), so every Minion takes it, this module's own included (beside its attr 6007 additional above); "allies" as the holder's friendly
+      // units is inferred (open question filter-target-allies).
+      for (const [affix, list] of record.buffs.find((buff) => buff.to.includes("allies"))?.affixes || []) if (affix === 101010070) { player(`+${list[0]}% Cooldown Recovery Speed`, record.buffs[0].buff); reading.allMinions.push({ text: `+${list[0]}% Cooldown Recovery Speed for Minions`, buff: record.buffs[0].buff }); }
       reading.parts.push(part(record.text[0], "In calc", `game affix ${record.affix}: attr 6007 additional on this module's Minions`), part(record.text[1], "In calc", "your Cooldown Recovery Speed (Injury Buffer: no DPS effect)"));
       break;
     }

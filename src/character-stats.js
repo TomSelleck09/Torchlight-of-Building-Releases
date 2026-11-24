@@ -440,7 +440,7 @@ export function conditionalMovementSpeed(lineEffects) {
  * src/effective-hp.js pool's `extra` (10 T claim audit G3d, 2026-11-09: the boots' "+16% additional Max Energy Shield while moving").
  * @returns {{ flat: object[], increased: object[], additional: object[] }}
  */
-export function heldConditionalPoolExtra(lineEffects, statKey, { skipTownHeld = false, modifierTexts = [] } = {}) {
+export function heldConditionalPoolExtra(lineEffects, statKey, { skipTownHeld = false, modifierTexts = [], skipKeys = null } = {}) {
   const out = { flat: [], increased: [], additional: [] };
   // A pool built on characterStatTotals(planner) already holds the town-held entries (heldConditionalStatLines): skip them there.
   const townHeld = (entry) => { const town = TOWN_HELD_CONDITIONS[entry?.condition]; return Boolean(town && entry.active && town(entry, modifierTexts)); };
@@ -451,7 +451,8 @@ export function heldConditionalPoolExtra(lineEffects, statKey, { skipTownHeld = 
       if (bucket) out[bucket].push({ source, text, value: item.value });
     }
   };
-  for (const entry of lineEffects?.lines || []) { if (skipTownHeld && townHeld(entry)) continue; for (const { item, contributions } of heldEntryBodies(entry)) if (!item.readers?.length) add(entry.source, `${item.derivedText} (${entry.text})`, contributions); }
+  // `skipKeys`: conditions whose bodies a pool already holds (src/static-held-stats.js STATIC_HELD_KEYS, folded before the resolver; F1).
+  for (const entry of lineEffects?.lines || []) { if ((skipTownHeld && townHeld(entry)) || skipKeys?.has(entry?.condition)) continue; for (const { item, contributions } of heldEntryBodies(entry)) if (!item.readers?.length) add(entry.source, `${item.derivedText} (${entry.text})`, contributions); }
   for (const line of lineEffects?.derived || []) if (line?.lineEffect?.conditional) add(line.source, line.text, parseCharacterStatClause(line.text));
   return out;
 }

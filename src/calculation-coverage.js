@@ -5,6 +5,7 @@ import { namedGearAffixLines } from "./named-gear-affixes.js";
 import { collectNormalizedGearModifiers, splitStatSentences } from "./engine.js";
 import { corrosionRemovesBaseAffixes } from "./gear-base-stats.js";
 import { splitJoinedLegendaryLines } from "./legendary-joined-lines.js";
+import { legendaryLineReason } from "./legendary-line-status.js";
 import { parseReapingSource } from "./reaping-sources.js";
 import { normalizePercentageText } from "./percentage-text.js";
 import { auraGainedLineStatus } from "./aura-gained-effects.js";
@@ -605,8 +606,8 @@ function duplicateSlateCoreCopy(text, slateId = null) {
 const duplicateCoreReason = (copy) => copy ? `core already active from ${copy.activeFrom}` : "";
 // A "+N additional Curses" line (No DPS effect since 2026-10-21: the curse limit no longer gates the calculation).
 const curseLimitLineReason = (text) => String(text || "").split(/\r?\n|\s+\|\s+|\s+·\s+/).some((part) => CURSE_LIMIT_LINE.test(part.trim().replace(/^[^:|·]+:\s*[^:|·]*Talent[^:|·]*:\s*/i, ""))) ? CURSE_LIMIT_LINE_REASON : "";
-/** The badge title for a gear row that is an inactive duplicate core copy or a curse-limit line, else "". */
-export const gearLineCoverageReason = (item, text) => duplicateCoreReason(duplicateGearCoreCopy(item, text)) || curseLimitLineReason(text);
+/** The badge title for a gear row that is an inactive duplicate core copy, a curse-limit line or an Inactive legendary-audit line, else "". */
+export const gearLineCoverageReason = (item, text) => duplicateCoreReason(duplicateGearCoreCopy(item, text)) || curseLimitLineReason(text) || (coverageContext() ? legendaryLineReason(text, coverageContext()) : "");
 // A Nether King Authority-conditioned line ("When Judgment is active, for every 1 Divinity Slate along the connecting line, gain: …",
 // the Banishment counts, the Effect Increase Multiplier and Projection Effect lines; slates audit 2026-10-22): its reading in this
 // build (src/nether-king-authority.js authorityLineReading), or null for any other line.
@@ -617,6 +618,32 @@ function authorityLine(text) {
 }
 /** The badge title for a slate affix that is an inactive duplicate core copy, a curse-limit line or an Authority-conditioned line, else "". */
 export const slateLineCoverageReason = (text, slateId = null) => duplicateCoreReason(duplicateSlateCoreCopy(text, slateId)) || curseLimitLineReason(text) || (coverageContext() ? authorityLine(text)?.reason || "" : "");
+
+// A joined legendary line's one badge (src/legendary-joined-lines.js; 2026-11-20): its parts are separate game rows, so a part that is
+// Inactive in this build (Stray Bird's return with no returning skill) is a row not in force, not a gap: In calc when a part is In calc
+// and every part is In calc, Inactive or neutral (as Haze's base affix rows in prismAffixCoverage); otherwise the usual combine (an
+// In calc part beside a Not modeled one stays Partly modeled).
+function joinedLineStatus(statuses) {
+  return statuses.includes("In calc") && statuses.every((status) => status === "In calc" || status === "Inactive" || neutralStatuses.has(status)) ? "In calc" : combineStatuses(statuses);
+}
+
+/**
+ * A joined legendary line's parts for the gear tooltip, each with its own badge ({ text, status, reason }), or null when the line is not
+ * split or is judged whole before the split (a duplicate core copy, a curse-limit line, a two-sentence stat line, a named affix): the
+ * tooltip then keeps its one row badge. The parts are the ones gearLineCoverage combines.
+ */
+export function gearJoinedLineParts(item, text, active, block, lowResources, blurEffects) {
+  const raw = String(text || "");
+  const split = splitJoinedLegendaryLines(raw);
+  if (!raw || split === raw || /\n/.test(raw)) return null;
+  if (active && duplicateGearCoreCopy(item, raw)) return null;
+  if (curseLimitLineReason(raw) || splitStatSentences(raw.trim()).length > 1 || namedGearAffixLines(raw).length) return null;
+  return split.split("\n").map((part) => {
+    const status = gearLineCoverage(item, part, active, block, lowResources, blurEffects);
+    const reason = active && (status === "Inactive" || status === "No DPS effect") ? gearLineCoverageReason(item, part) : "";
+    return { text: part, status, reason };
+  });
+}
 
 export function gearLineCoverage(item, text, active, block, lowResources, blurEffects) {
   if (active && duplicateGearCoreCopy(item, text)) return "Inactive";
@@ -633,7 +660,7 @@ export function gearLineCoverage(item, text, active, block, lowResources, blurEf
   if (named.length) return gearLineCoverage(item, named.join("\n"), active, block, lowResources, blurEffects);
   // A legendary affix reference data prints joined (src/legendary-joined-lines.js): judged per line, as the engine reads it.
   const split = splitJoinedLegendaryLines(String(text || ""));
-  if (split !== String(text || "")) return combineStatuses(split.split("\n").map((part) => gearLineCoverage(item, part, active, block, lowResources, blurEffects)));
+  if (split !== String(text || "")) return joinedLineStatus(split.split("\n").map((part) => gearLineCoverage(item, part, active, block, lowResources, blurEffects)));
   return refineCoverage(baseGearLineCoverage(item, text, active, block, lowResources, blurEffects), text, undefined, (clause) => baseGearLineCoverage(item, clause, active, block, lowResources, blurEffects));
 }
 

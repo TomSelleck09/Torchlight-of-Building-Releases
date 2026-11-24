@@ -92,6 +92,20 @@ export function weaponTypeOf(item) {
 }
 
 export const weaponHands = (type) => ONE_HANDED_WEAPON_TYPES.includes(type) ? "one" : TWO_HANDED_WEAPON_TYPES.includes(type) ? "two" : SHIELD_TYPES.includes(type) ? "shield" : null;
+/** True for an item on a two-handed weapon base (Two-Handed Sword / Hammer / Axe, Tin Staff, Cudgel, Bow, Crossbow, Musket, Fire Cannon). */
+export const isTwoHandedItem = (item) => Boolean(item) && weaponHands(weaponTypeOf(item)) === "two";
+/**
+ * A two-handed weapon in Weapon 1 blocks Weapon 2 (in game the slot is unusable; user request 2026-11-22). Given the equipped items
+ * (slot ids mainHand / secondaryHand) and the disabled slots, returns { mainHand, stored } when the enabled Weapon 1 item is two-handed
+ * (`stored`: the Weapon 2 item still saved and enabled, which then counts for nothing), else null.
+ */
+export function twoHandedOffHandBlock(items = [], disabledSlots = []) {
+  const disabled = disabledSlots instanceof Set ? disabledSlots : new Set(disabledSlots || []);
+  const mainHand = disabled.has("mainHand") ? null : (items || []).find((item) => item?.slot === "mainHand") || null;
+  if (!isTwoHandedItem(mainHand)) return null;
+  const stored = disabled.has("secondaryHand") ? null : (items || []).find((item) => item?.slot === "secondaryHand") || null;
+  return { mainHand, stored };
+}
 
 const BASE_DAMAGE = new RegExp(`^${NUM}\\s*[-–]\\s*${NUM} (Physical|Fire|Cold|Lightning|Erosion) Damage$`, "i");
 const BASE_CRIT = /^(\d+(?:\.\d+)?) Critical Strike Rating$/i;
@@ -289,6 +303,7 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
 
   // Build-wide lines.
   const lines = { attackSpeed: [], crit: [], added: [], additional: [], increased: [] };
+  const twoHandedBaseLines = [];
   let twoHandedBasePercent = 0, offHandBasePercent = 0, offHandSharePercent = 0, mainHandSpeedPercent = 0, mainHandCritPercent = 0;
   const offHandNoAttackSources = [];
   const addedMainHand = {}, addedOffHand = {}, doubleBladeSources = [];
@@ -314,10 +329,14 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
       case "addedAttacks": lines.added.push({ ...entry, type: parsed.type, min: parsed.min * (line.multiplier ?? 1), max: parsed.max * (line.multiplier ?? 1) }); break;
       case "addedMainHand": addRange(addedMainHand, parsed.type, { min: parsed.min * (line.multiplier ?? 1), max: parsed.max * (line.multiplier ?? 1) }); break;
       case "doubleBlade": if (dualWielding) { mainHandCritPercent += value; addRange(addedOffHand, parsed.type, { min: parsed.min * (line.multiplier ?? 1), max: parsed.max * (line.multiplier ?? 1) }); doubleBladeSources.push(entry); } break;
-      // Record 101010697: attr 5719 mod 4 on the Attack tag, gated by node 21 on a two-handed weapon held (tag 5000792), no node 321 /
-      // 363 / 364, so not local to the weapon: each copy is its own additional factor on every Attack hit (added flat parts included)
-      // while a two-hander is held (research/compare-recipes-disagreements-2026-11-14.md A1). `twoHandedBasePercent` keeps the sum shown.
-      case "twoHandedBase": twoHandedBasePercent += value; if (twoHanded && mainHand?.weapon) lines.additional.push({ ...entry, category: "Additional damage", condition: "holding a Two-Handed Weapon" }); break;
+      // Record 101010697: attr 5719 mod 4 on the Attack tag behind node 21's two-handed gate (tag 5000792); the node sits behind filter 103,
+      // read as the equipped items (inferred: its other node-101 writes are weapon stats, e.g. 841487, 101010652). The 2 T Whirlwind town
+      // panel proves it is the held two-hander's own stat (user decision 2026-11-22, superseding the 2026-11-14 A1 reading of one additional
+      // factor on the whole Attack hit): Off-Hand max ÷ min fits the added part alone, the Main-Hand ratio needs the base × 1.4907 = 1.12 ×
+      // 1.1³ (each copy its own factor; the sum 1.42 is outside), and the Additional Damage Bonus hover holds none of the copies. So each copy
+      // multiplies the two-handed weapon's base damage (weaponDamage below); added flat damage to Attacks is not scaled. `twoHandedBasePercent`
+      // keeps the sum shown.
+      case "twoHandedBase": twoHandedBasePercent += value; if (twoHanded && mainHand?.weapon) twoHandedBaseLines.push({ ...entry, condition: "holding a Two-Handed Weapon" }); break;
       case "offHandBase": offHandBasePercent += value; break;
       // `hand: "main"`: in alternate dual wielding only the main-hand swings take it (src/skill-hit-model.js per-hand rolls).
       case "mainHandDamage": lines.additional.push({ ...entry, category: "Additional damage", condition: "Main-Hand Weapon attacks", hand: "main" }); break;
@@ -331,14 +350,17 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
   }
 
   // Per-weapon damage with handedness layers: Off-Hand base bonus on the off-hand weapon, "Adds … to the Main-Hand Weapon" on the
-  // main hand only (the Two-Handed base bonus is an additional damage line above, not a weapon base factor).
+  // main hand only, and the Two-Handed base bonus on a held two-hander, one factor per copy (record 101010697; 2 T Whirlwind audit F1).
+  // Whether "Adds … to the Main-Hand Weapon" is under the two-handed factor is not settled by the panel (no fixture has both): read as part
+  // of the weapon's own damage, as the Off-Hand factor reads Double Blade's added part (inferred).
+  const twoHandedBaseFactor = twoHandedBaseLines.reduce((product, line) => product * Math.max(0, 1 + line.value / 100), 1);
   const weaponDamage = (weapon, role) => {
     if (!weapon?.weapon) return {};
     const out = {};
     for (const [type, range] of Object.entries(weapon.damage)) out[type] = { ...range };
     if (role === "main") for (const [type, range] of Object.entries(addedMainHand)) addRange(out, type, range);
     if (role === "off") for (const [type, range] of Object.entries(addedOffHand)) addRange(out, type, range);
-    const factor = role === "off" ? 1 + offHandBasePercent / 100 : 1;
+    const factor = (role === "off" ? 1 + offHandBasePercent / 100 : 1) * (role === "main" && weapon.hands === "two" ? twoHandedBaseFactor : 1);
     for (const type of Object.keys(out)) out[type] = scale(out[type], factor);
     return out;
   };
@@ -437,6 +459,7 @@ export function calculateWeaponAttack({ equipment, disabledSlots = [], modifierT
     dualWieldStatus: dualWielding ? DUAL_WIELD_STATUS : null,
     damageByType, damageTypes: Object.keys(damageByType), hands,
     twoHandedBasePercent, offHandBasePercent, offHandSharePercent,
+    ...(twoHandedBaseLines.length ? { twoHandedBase: { factor: twoHandedBaseFactor, sources: twoHandedBaseLines } } : {}),
     joinedForce: joinedForce ? { sources: offHandNoAttackSources, offHandSharePercent, mainHandAttacksPerSecond: mainSpeed, shareByType, reading: "off-hand share = % of the off-hand's local damage, added to the main hand's damage before the build's multipliers, but not under the main-hand weapon's own lines (the panel, 2026-11-13); main-hand speed and crit only; Dual Wielding status kept", source: "user-supplied (Google AI Mode answer, 2026-10-14; not an in-game test); the main-hand-only exclusion from the Hero Ranking panel rows (9 T Double Thrusts audit G3)" } : null,
     joinedShareByType: joinedForce && Object.keys(shareByType).length ? shareByType : null,
     addedToAttacks: lines.added, additional: lines.additional, increased: lines.increased,

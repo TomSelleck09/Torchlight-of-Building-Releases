@@ -484,7 +484,10 @@ export function applyBatch5ProfileEdits(profile, effects, { weapon = null } = {}
   if (first("pulse")) {
     const clause = first("pulse"), hit = find("hit");
     next.projectileComponent = "hit";
-    components.push({ ...hit, key: "pulse", label: `Pulse (${clause.value}% of the explosion)`, perUse: 1, basis: "provisional", note: "Psionic Missile: Emission: one pulse after the projectiles land, dealing this share of the Explosion's damage once", extraAdditional: [...hit.extraAdditional, { source: clause.source, text: `Pulse Damage is ${clause.value}% of Explosion Damage (game recipe 12079597)`, value: clause.value - 100 }] });
+    // The pulse lands one frame after the cast's last explosion (user decision 2026-11-23: the support text "generates a pulse after all
+    // projectiles fired by the supported skill land"; Split 380408 spawns it on a reaction after the explosion): `afterLastLanding` frames,
+    // read by the once-a-frame walk (src/once-per-frame.js landingEvents) and the tick engine's part delay (src/tick-ledger.js compileParts).
+    components.push({ ...hit, key: "pulse", label: `Pulse (${clause.value}% of the explosion)`, perUse: 1, afterLastLanding: 1, basis: "provisional", note: "Psionic Missile: Emission: one pulse after the projectiles land (one frame after the cast's last explosion), dealing this share of the Explosion's damage once", extraAdditional: [...hit.extraAdditional, { source: clause.source, text: `Pulse Damage is ${clause.value}% of Explosion Damage (game recipe 12079597)`, value: clause.value - 100 }] });
     note(clause, `one pulse per cast at ${clause.value}% of the explosion (its own hit; no Shotgun falloff applied to it)`);
   }
   if (first("secondaryExplosion")) {

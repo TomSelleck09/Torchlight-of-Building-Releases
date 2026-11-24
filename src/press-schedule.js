@@ -13,7 +13,11 @@
 //     renewing (mobilityWindows: "for N s after using Mobility Skills", Periodic Burst's period, a Blessing or Pure Heart gained on its
 //     use, an item's Mobility trigger interval, an Empower's own buff), as rarely as keeps every one of them renewed (mobilityPressInterval);
 //     a Mobility skill that feeds no window keeps the other rules; a recast DoT area (a non-Main Terra) at its recast; any other skill
-//     with a cooldown on it;
+//     with a cooldown on it. With the switch on (`damageWindows`, user decision 2026-11-23: "only use mobility skills in the damage numbers
+//     enough to keep up damage mobility buffs and mobility related damage affixes") a Mobility skill counts only the windows whose buff or
+//     line moves a dummy damage figure (`moves`, judged by src/planner.js from the planner's own readers; mobilityWindowMovesDamage), is
+//     pressed as rarely as keeps those (a Demolisher proc and a cooldown-bound Mobility attack too), and with none is not pressed at all:
+//     no press time, its own hits and damage over time deal nothing (`notPressed`; pressRotation gives its hits a share of 0);
 //   - split: a skill whose only role is damage, with no cooldown, keeps the planner's own rate beside the Main Skill and takes none of
 //     its time (unchanged; it would otherwise eat all of it);
 //   - its own model: a skill whose model already takes the Main Skill time it costs (Vendetta, Endless Vendetta);
@@ -80,17 +84,93 @@ export function setupTrigger(setup, tangleKeys = new Set()) { return triggerOf(s
  *     max with each layer on its own timer (user decision 2026-11-04);
  *   - "periodic": Periodic Burst on this skill (src/periodic-burst.js): a stack every max(6 s, cooldown), its period;
  *   - "pureHeart": Pure Heart on an Attack Mobility skill (src/pure-heart.js holdIntervalSeconds): duration × stacks per use ÷ max stacks;
- *   - "itemTrigger": an item's active "Triggers … when using a Mobility Skill. Interval: N s": N s.
+ *   - "itemTrigger": an item's active "Triggers … when using a Mobility Skill. Interval: N s": N s;
+ *   - "blessing" from `setupNeeds` (the damage-window rule): a Blessing held at max by an event gain, every gain a skill use this skill's
+ *     press raises (by the gain line's trigger row: Kismet: Pale Fox's Focus "when using a Non-Main Skill"), as above less the other uses;
+ *   - "counter": a line counting Mobility uses ("for every Mobility Skill cast recently … Stacks up to N", mobilityNeeds with `counters`):
+ *     each use a stack on its own "recently" 4 s, so a use every 4 s ÷ N holds the max.
  * collectPressInputs adds an Empower's own buff (kind "buff").
  */
-export function mobilityWindows(setup, { periodicBurst = [], needs = [], pureHeart = null, itemTriggers = [] } = {}) {
-  if (!hasTag(setup, "Mobility")) return [];
-  const windows = needs.map((need) => ({ kind: need.kind || "line", source: need.source, seconds: need.seconds, label: need.label || `${need.source}: ${round(need.seconds)} s` }));
+export function mobilityWindows(setup, inputs = {}) { return mobilityWindowSplit(setup, inputs).windows; }
+
+/**
+ * mobilityWindows with each window judged by `moves(window, setup)` (user decision 2026-11-23: a window counts only if what it keeps up moves
+ * a dummy damage figure): null keeps it, a reason string drops it. Without `moves` every window counts (the 2026-11-08 rule).
+ * @returns {{ windows: object[], dropped: object[] }} dropped windows carry `reason`
+ */
+export function mobilityWindowSplit(setup, { periodicBurst = [], needs = [], pureHeart = null, itemTriggers = [], moves = null, setupNeeds = null } = {}) {
+  if (!hasTag(setup, "Mobility")) return { windows: [], dropped: [] };
+  // `setupNeeds(setup)`: windows only some skills' presses feed (src/planner.js: a Blessing gained on a skill use whose trigger row this
+  // skill's use fits, Kismet: Pale Fox's "when using a Non-Main Skill"; user decision 2026-11-23).
+  const windows = [...needs, ...(typeof setupNeeds === "function" ? setupNeeds(setup) || [] : [])].map((need) => ({ kind: need.kind || "line", source: need.source, seconds: need.seconds, label: need.label || `${need.source}: ${round(need.seconds)} s`, ...(need.bodies ? { bodies: need.bodies } : {}), ...(need.blessing ? { blessing: need.blessing, gainText: need.gainText } : {}) }));
   const periodic = periodicBurst.find((entry) => entry.setupKey === setup.setupKey && entry.active);
   if (periodic?.periodSeconds > 0) windows.push({ kind: "periodic", source: "Periodic Burst", seconds: periodic.periodSeconds, label: `Periodic Burst's stack every ${round(periodic.periodSeconds)} s` });
   if (pureHeart?.active && hasTag(setup, "Attack") && pureHeart.holdIntervalSeconds > 0) windows.push({ kind: "pureHeart", source: "Pure Heart (Azure Gunslinger)", seconds: pureHeart.holdIntervalSeconds, label: `Pure Heart held at ${pureHeart.maxStacks} stacks (${round(pureHeart.durationSeconds)} s each, ${round(pureHeart.stacksPerUse)} per use): ${round(pureHeart.holdIntervalSeconds)} s` });
-  for (const trigger of itemTriggers) if (trigger.intervalSeconds > 0) windows.push({ kind: "itemTrigger", source: trigger.source, seconds: trigger.intervalSeconds, label: `${trigger.name} triggered on a Mobility use (${trigger.source}): ${round(trigger.intervalSeconds)} s` });
-  return windows.filter((window) => window.seconds > 0);
+  for (const trigger of itemTriggers) if (trigger.intervalSeconds > 0) windows.push({ kind: "itemTrigger", source: trigger.source, seconds: trigger.intervalSeconds, label: `${trigger.name} triggered on a Mobility use (${trigger.source}): ${round(trigger.intervalSeconds)} s`, ...(trigger.damage !== undefined ? { damage: trigger.damage, damageReason: trigger.damageReason } : {}) });
+  const valid = windows.filter((window) => window.seconds > 0);
+  if (typeof moves !== "function") return { windows: valid, dropped: [] };
+  const kept = [], dropped = [];
+  for (const window of valid) { const reason = moves(window, setup); if (reason) dropped.push({ ...window, reason }); else kept.push(window); }
+  return { windows: kept, dropped };
+}
+
+const MOVEMENT_SPEED_BODY = /^[+-][\d.]+% (?:additional )?Movement Speed(?: for Nearby allies and you)?$/i;
+const BLESSING_CAP_BODY = /^\+[\d.]+ to Max (Focus|Agility|Tenacity) Blessing Stacks$/i;
+const cleanBody = (body) => String(body?.body ?? body ?? "").replace(/Attack Speed and Cast Speed/i, "Attack and Cast Speed").replace(/\s+%/g, "%").replace(/\s+/g, " ").trim();
+const named = (list) => (list || []).filter(Boolean);
+
+// Whether one body of a Mobility line or counter moves a dummy damage figure on this build with `setup`'s own damage left out (a window
+// whose only reader is the Mobility skill itself is no reason to press it): null, or the reason it does not. It reuses the line resolver's
+// readers (src/line-effects.js bodyReaders: the body of an "In calc" line has one; a Movement Speed body has none, its "No DPS effect" rule) and
+// the planner's reader lists in `ctx`.
+function bodyMovesDamage(body, setup, ctx) {
+  const text = cleanBody(body);
+  const self = setup?.setupKey;
+  if (MOVEMENT_SPEED_BODY.test(text)) {
+    const readers = named(ctx.movementReaders?.(self));
+    return readers.length || !ctx.movementReaders ? null : "a Movement Speed body, and nothing on the build turns Movement Speed into damage";
+  }
+  const readers = body?.readers || [];
+  if (!readers.length) return "its body has no damage reader";
+  const cap = text.match(BLESSING_CAP_BODY);
+  if (cap) return ctx.blessingMoves ? ctx.blessingMoves(cap[1], self) : null;
+  const tags = [...(classifyHitLine(text)?.scope?.skillTags || [])];
+  if (tags.length && Array.isArray(ctx.setups) && !ctx.setups.some((item) => item && item.setupKey !== self && item.enabled !== false && (!ctx.activeNames || ctx.activeNames.has(item.name)) && tags.every((tag) => skillTagsWithSupportChanges(item.tags || [], item).has(tag)))) return `no skill but ${setup.name} carries every tag it names (${tags.join(", ")})`;
+  if (readers.every((reader) => reader === "minion")) return !ctx.minionReaders || named(ctx.minionReaders()).length ? null : "a Minion body, and no Minion is modeled";
+  if (readers.every((reader) => reader === "speed")) return !ctx.speedReaders || named(ctx.speedReaders(self)).length ? null : `a speed body, and no damage but ${setup.name}'s own reads speed`;
+  return !ctx.damageReaders || named(ctx.damageReaders(self)).length ? null : `no damage but ${setup.name}'s own reads it`;
+}
+
+/**
+ * Whether a Mobility window keeps up something that moves a dummy damage figure (sustained, 5 s, 20 s or 60 s), with the Mobility skill's own
+ * damage left out (user decision 2026-11-23): null when it does, else the reason it does not. `ctx` holds the planner's readers, each a
+ * function of the Mobility skill's setup key returning the names of what reads that kind of effect on this build:
+ *   damageReaders (its other player damage: the beam, the other skills' hits, skill damage over time, item- and trait-cast hits),
+ *   speedReaders (Attack / Cast Speed: the same, Minions left out), attackReaders (Attack hits: Pure Heart's +5% additional Attack Damage),
+ *   movementReaders (Movement Speed: the Mobility attacks' 75% share, Focus points per metre, Hunting Tempo, the ring's Barrier on Barrier
+ *   Burst, Wind Stalker, Feline Figure and Wild Lightning, the per-Movement-Speed lines), minionReaders (modeled Minions),
+ *   blessingMoves(name, key) (null or the reason that Blessing's held stacks move nothing: src/blessing-model.js lineStatus), and
+ *   pureHeartDamage (Pure Heart's hit line reaches the dummy: Nearby). A missing reader counts (lean to "moves": a wrongly dropped window
+ * would leave its buff held by the board for free).
+ */
+export function mobilityWindowMovesDamage(window, setup, ctx = {}) {
+  const self = setup?.setupKey;
+  switch (window.kind) {
+    case "line":
+    case "counter": {
+      const bodies = window.bodies || [];
+      if (!bodies.length) return null;
+      const reasons = bodies.map((body) => bodyMovesDamage(body, setup, ctx));
+      return reasons.some((reason) => !reason) ? null : `nothing on the dummy's damage reads it (${[...new Set(reasons)].join("; ")})`;
+    }
+    case "blessing": return ctx.blessingMoves ? ctx.blessingMoves(window.blessing, self, window.gainText) : null;
+    case "periodic": return !ctx.speedReaders || named(ctx.speedReaders(self)).length ? null : `its +Attack and Cast Speed reaches no damage but ${setup.name}'s own`;
+    case "pureHeart":
+      if (ctx.pureHeartDamage === false) return "its Attack Damage does not reach the dummy (not Nearby)";
+      return !ctx.attackReaders || named(ctx.attackReaders(self)).length ? null : `no Attack hit but ${setup.name}'s own takes its Attack Damage`;
+    case "itemTrigger": return window.damage === false ? (window.damageReason || "the triggered skill deals and boosts no damage") : null;
+    default: return null;
+  }
 }
 
 /**
@@ -133,11 +213,13 @@ function headerUseTime(name, castSpeedFactor) {
 
 /**
  * Classify the other active skills (end of the first pass; the second pass reads the result through hitRateFacts.pressInputs).
+ * `damageWindows` (the planner sets it with the switch on): the 2026-11-23 Mobility rule above, with `moves(window, setup)` judging each
+ * window (mobilityWindowMovesDamage); off, the 2026-11-08 rules unchanged.
  * @returns {{ skills: object[] }} each { key, name, kind: "pressed" | "triggered" | "held" | "split" | "notNeeded", intervalSeconds,
- *   pressSeconds, reason, demolisher }
+ *   pressSeconds, reason, demolisher, cadence, notPressed, windows, droppedWindows }
  */
 export function collectPressInputs(inputs = {}) {
-  const { setups = [], activeNames = new Set(), mainKey = null, skillHits = [], empowerEntries = [], aim = null, elixirSetups = [], periodicBurst = [], mobilityNeeds = [], pureHeart = null, mobilityItemTriggers = [], tangleKeys = new Set(), ownTimeKeys = new Set(), skillDots = [], inactiveReasons = new Map(), idleBuff = () => null, modifierTexts = [], castSpeedFactor = 1 } = inputs;
+  const { setups = [], activeNames = new Set(), mainKey = null, skillHits = [], empowerEntries = [], aim = null, elixirSetups = [], periodicBurst = [], mobilityNeeds = [], pureHeart = null, mobilityItemTriggers = [], tangleKeys = new Set(), ownTimeKeys = new Set(), skillDots = [], inactiveReasons = new Map(), idleBuff = () => null, modifierTexts = [], castSpeedFactor = 1, damageWindows = false, moves = null, mobilitySetupNeeds = null } = inputs;
   const skills = [];
   for (const setup of setups) {
     if (!setup || setup.enabled === false || !activeNames.has(setup.name) || setup.setupKey === mainKey || setup.role === "support" || setupBoardTab(setup) !== "skills") continue;
@@ -173,6 +255,48 @@ export function collectPressInputs(inputs = {}) {
     // A skill that cannot act on the dummy (its damage source inactive: a non-Main Terra under Dance of the Deep, …) is not pressed.
     if (inactiveReasons.has(key) && !hit) { other("notNeeded", `inactive (${inactiveReasons.get(key)})`); continue; }
     const hitCooldown = Number(hit?.rate?.effectiveCooldownSeconds) || 0;
+    // A Mobility skill under the damage-window rule (switch on; user decision 2026-11-23): pressed only as often as keeps the windows that move
+    // a dummy damage figure, whatever else it is (a Demolisher proc, a Mobility attack with or without a cooldown, a Mobility Empower); with
+    // none it is not pressed and its own hits and damage over time deal nothing.
+    // A hero-trait-granted Trait Skill (Youga's Supreme Descent, key "trait:…") keeps its own press rule (traitSkillOnCooldown: pressed whenever
+    // off cooldown, the hero model's), not this one.
+    if (damageWindows && hasTag(setup, "Mobility") && !String(key).startsWith("trait:")) {
+      const split = mobilityWindowSplit(setup, { periodicBurst, needs: mobilityNeeds, pureHeart, itemTriggers: mobilityItemTriggers, moves, setupNeeds: mobilitySetupNeeds });
+      const damage = split.windows;
+      const droppedText = split.dropped.length ? `; not counted (nothing on the dummy's damage needs them): ${split.dropped.map((window) => `${window.label}: ${window.reason}`).join("; ")}` : "";
+      const windowList = (list) => list.map((window) => ({ kind: window.kind, source: window.source, seconds: round(window.seconds) }));
+      const notPressed = (why) => skills.push({ key, name, kind: "notNeeded", notPressed: true, reason: `a Mobility skill not pressed: ${why} (user decision 2026-11-23: Mobility skills are used only as often as keeps the damage buffs and lines they feed), so it takes none of your time and its own hits and damage over time deal nothing${droppedText}`, ...(split.dropped.length ? { droppedWindows: windowList(split.dropped) } : {}) });
+      const empower = empowerEntries.find((entry) => entry.setupKey === key && !entry.item && entry.euphoria);
+      if (empower) {
+        // A Mobility Empower (Speed Phantom): its own buff is one more window when it moves damage (idleBuff: the skill badge's rule).
+        const idle = empower.active === false ? (empower.reason || empower.text || empower.status || "inactive") : idleBuff(name);
+        const timing = empower.euphoria;
+        const idleText = idle ? `its buff does nothing here (${String(idle).replace(/^[^:]*: /, "").replace(/\.$/, "")})` : null;
+        const own = !idle && timing.durationSeconds > 0 && timing.durationSeconds < 3600 ? { kind: "buff", source: name, seconds: timing.durationSeconds, label: `its buff (${round(timing.durationSeconds)} s)` } : null;
+        if (!damage.length) {
+          if (idle) { notPressed(`${idleText}, and it feeds no damage window`); continue; }
+          if ((timing.durationSeconds || 0) >= 3600) { other("held", "its buff has no timer: one press holds it"); continue; }
+          pressed(Math.max(timing.cooldownSeconds || 0, timing.durationSeconds || 0), `when its buff lapses (${round(timing.durationSeconds || 0)} s, cooldown ${round(timing.cooldownSeconds || 0)} s)${droppedText}`);
+          continue;
+        }
+        const cadence = mobilityPressInterval(own ? [own, ...damage] : damage, timing.cooldownSeconds || 0);
+        if (own && !(cadence.intervalSeconds + 1e-9 < Math.max(timing.cooldownSeconds || 0, timing.durationSeconds || 0))) { pressed(Math.max(timing.cooldownSeconds || 0, timing.durationSeconds || 0), `when its buff lapses (${round(timing.durationSeconds || 0)} s, cooldown ${round(timing.cooldownSeconds || 0)} s)${droppedText}`); continue; }
+        pressed(cadence.intervalSeconds, `for its buffs${idleText ? ` (${idleText})` : ""}, ${cadence.text}${droppedText}`);
+        continue;
+      }
+      if (!damage.length) { notPressed(split.dropped.length ? "nothing it keeps up moves the dummy's damage" : "no line or buff on the dummy needs a Mobility Skill used"); continue; }
+      const manualRate = Number(hit?.rate?.fullManualUsesPerSecond) || 0;
+      if (hit && manualRate > 0) {
+        // Its hits follow the press interval (`cadence`: pressRotation hands it to the hit model as pressEverySeconds).
+        const cadence = mobilityPressInterval(damage, hitCooldown);
+        const intervalSeconds = Math.max(cadence.intervalSeconds, 1 / manualRate);
+        skills.push({ key, name, kind: "pressed", cadence: true, intervalSeconds, pressSeconds, useNote, reason: `a Mobility skill pressed for its buffs, not nonstop (user decision 2026-11-08), and only for the damage windows it keeps, not for its own hits (user decision 2026-11-23): ${cadence.text}${droppedText}`, windows: windowList(damage), ...(split.dropped.length ? { droppedWindows: windowList(split.dropped) } : {}) });
+        continue;
+      }
+      const cadence = mobilityPressInterval(damage, cooldownOnly());
+      skills.push({ key, name, kind: "pressed", intervalSeconds: cadence.intervalSeconds, pressSeconds, useNote, reason: `for its buffs, ${cadence.text}${droppedText}`, ...(split.dropped.length ? { droppedWindows: windowList(split.dropped) } : {}) });
+      continue;
+    }
     if (hit && hit.rate?.demolisherEverySeconds > 0 && hitCooldown <= (hit.rate.effectiveUseTimeSeconds || 0) + 1e-9) {
       skills.push({ key, name, kind: "pressed", demolisher: true, intervalSeconds: hit.rate.demolisherEverySeconds, pressSeconds, useNote, reason: "once per Demolisher Charge" });
       continue;
@@ -254,9 +378,12 @@ export function collectPressInputs(inputs = {}) {
  * have used a Mobility Skill in the last 8s" with no Agility held, and Dual Kismet: Sky Piercer's Attack Horizontal Projectile Damage with no such
  * skill, had Shadow Dash pressed every 8 s / 5 s for nothing): a "+N to Max <Blessing> Blessing Stacks" body needs that Blessing held, a
  * skill-tag-scoped damage body (src/skill-hit-lines.js classifyHitLine) an active setup with every tag. `setups` / `activeNames` omitted: the
- * tag check is skipped (as before).
+ * tag check is skipped (as before). Each need carries what the damage-window rule judges it by (mobilityWindowMovesDamage): a line its
+ * `bodies` (the resolver's, with their readers), a Blessing its name and gain line. `counters` (the damage-window rule, user decision
+ * 2026-11-23): a line counting Mobility uses (condition mobilityCastsRecently, "for every Mobility Skill cast recently … Stacks up to N")
+ * is a window of "recently" ÷ N (kind "counter"), whatever its current stacks (they come from the presses this window sets).
  */
-export function mobilityNeeds(lines = [], blessings = [], { setups = null, activeNames = null } = {}) {
+export function mobilityNeeds(lines = [], blessings = [], { setups = null, activeNames = null, counters = false } = {}) {
   const window = (text) => { const match = String(text || "").match(/(\d+(?:\.\d+)?)\s*s\b/); return match ? Number(match[1]) : RECENTLY_SECONDS; };
   const bodyFeeds = (body) => {
     const text = String(body?.derivedText || body?.body || "").trim();
@@ -267,7 +394,14 @@ export function mobilityNeeds(lines = [], blessings = [], { setups = null, activ
     return true;
   };
   const feeds = (line) => !(line.bodies || []).length || line.bodies.some(bodyFeeds);
-  const needs = lines.filter((line) => line.condition === "mobility" && line.active !== false && feeds(line)).map((line) => ({ kind: "line", source: line.source, seconds: window(line.text), label: `"${line.text}" (${line.source}): ${window(line.text)} s` }));
+  const needs = lines.filter((line) => line.condition === "mobility" && line.active !== false && feeds(line)).map((line) => ({ kind: "line", source: line.source, seconds: window(line.text), label: `"${line.text}" (${line.source}): ${window(line.text)} s`, ...(line.bodies?.length ? { bodies: line.bodies } : {}) }));
+  if (counters) {
+    for (const line of lines.filter((item) => item.condition === "mobilityCastsRecently" && feeds(item))) {
+      const stacks = Number(line.params?.stacks) || 0, seconds = Number(line.params?.seconds) || RECENTLY_SECONDS;
+      if (!(stacks > 0)) continue;
+      needs.push({ kind: "counter", source: line.source, seconds: seconds / stacks, label: `"${line.text}" (${line.source}): ${stacks} stacks of ${round(seconds)} s each, ${round(seconds / stacks)} s`, ...(line.bodies?.length ? { bodies: line.bodies } : {}) });
+    }
+  }
   for (const blessing of blessings) {
     if (!(blessing.stacks > 0)) continue;
     const durationSeconds = Number(blessing.layers?.durationSeconds) > 0 ? Number(blessing.layers.durationSeconds) : BASE_BLESSING_SECONDS;
@@ -279,7 +413,7 @@ export function mobilityNeeds(lines = [], blessings = [], { setups = null, activ
       const stacks = (Number((text.match(/\b(\d+) stacks?\b/i) || [])[1]) || 1) * (chance ? Number(chance[1]) / 100 : 1);
       if (!(stacks > 0)) continue;
       const seconds = durationSeconds * stacks / maxStacks;
-      needs.push({ kind: "blessing", source: source.source, seconds, label: `${blessing.name} Blessing held at ${maxStacks} stacks (${round(durationSeconds)} s each, ${round(stacks)} per use; ${source.source}): ${round(seconds)} s` });
+      needs.push({ kind: "blessing", source: source.source, seconds, label: `${blessing.name} Blessing held at ${maxStacks} stacks (${round(durationSeconds)} s each, ${round(stacks)} per use; ${source.source}): ${round(seconds)} s`, blessing: blessing.name, gainText: text });
     }
   }
   return needs;
@@ -324,6 +458,9 @@ export function pressRotation({ setups = [], mainKey = null, bySetup = null, inp
     parts.push(`${skill.name} every ${round(skill.intervalSeconds)} s (${round(share * 100)}%)`);
     assumptions.push({ id: `pressRotation:${skill.key}`, value: round(share), text: `${skill.name}: pressed every ${round(skill.intervalSeconds)} s, ${round(share * 100)}% of your time (${skill.reason}; ${skill.useNote}; rotation estimate, provisional).` });
   }
+  // A Mobility skill not pressed under the damage-window rule (user decision 2026-11-23): its hits get a share of 0 of their manual rate (the
+  // skill-hit model's rotation share), so they deal nothing; src/planner.js leaves its damage over time out the same way.
+  for (const skill of skills.filter((item) => item.notPressed)) rotation.set(skill.key, { share: 0, notPressed: true, text: `not pressed: ${skill.reason}` });
   const share = Math.max(0, 1 - busy);
   if (busy > 0 && main?.kind === "free") {
     assumptions.unshift({ id: "pressRotation", value: 1, text: `Other active skills pressed on the dummy: ${parts.join("; ")}; ${mainName} is not cast by you (${main.reason || "triggered"}), so it loses no time (rotation estimate, provisional).` });

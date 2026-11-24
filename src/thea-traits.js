@@ -66,7 +66,8 @@
 // - God's Boon: Split 349699, cooldown 15 s ÷ the skill's Cooldown Recovery Speed (general lines too, the routine reads attr 6007 with the
 //   skill's tags). Its own hit: row 90020, Spell Physical (src/thea-gods-boon.js). Buffs 82113, 82114, 82115 carry tag 5100310: Skill
 //   Effect Duration reaches their 10 s. 82113 and 82114 pile up to 30 stacks; their lines read p2, or p2 × 2 with Prophecy of Purity's
-//   label 3050347. So overlapping God's Boons reach the read cap; the +52% (82115) has no stack reference, so its extra stack changes nothing.
+//   label 3050347. Both are subtype 2 (each layer its own timer): the held stacks are the time average of the layers alive (ownTimerLayerMean;
+//   4 T Thea audit G5, 2026-11-23), not the read cap; the +52% (82115) has no stack reference, so its extra stack changes nothing.
 // - Desecration: buffs 82142 / 82143 on you, trigger 1000031, attr 5402 "additional Erosion Damage": your own damage, not the enemy's
 //   Damage taken, so Minions and the follower take none. Split 246040: cooldown 2 s (the text prints 5 s). Split 944929: Divine Realm
 //   cooldown 4 s (the text prints 8 s), its 8 s area on tag 5100310.
@@ -288,15 +289,23 @@ export const cycleFocusPeak = (durationSeconds = BASE_BLESSING_SECONDS, perStack
 // its cooldown. Own buffs built: the steady layers at t = 0 (gains at −6 s, −12 s, … still live). The long-run figures read the second half of a
 // 600 s run.
 const SIM_FPS = 30, SIM_SECONDS = 600;
-function layeredBoonCycle({ F, cooldownSeconds, prebuilt, buffSeconds, perStackSeconds, durationSeconds }) {
+function layeredBoonCycle({ F, cooldownSeconds, prebuilt, buffSeconds, perStackSeconds, durationSeconds, cycleGains = true, extraEverySeconds = null }) {
   const total = SIM_SECONDS * SIM_FPS, every = Math.max(1, Math.round(perStackSeconds * SIM_FPS)), life = Math.max(1, Math.ceil(durationSeconds * SIM_FPS - EPS)), cooldown = Math.max(1, Math.round(cooldownSeconds * SIM_FPS));
+  // A second gain stream (another source at a measured rate): a gain on the first frame at or after each k × its interval, from 0.
+  const extra = Number(extraEverySeconds) > 0 ? Number(extraEverySeconds) * SIM_FPS : null;
+  const gainsOn = (frame) => (cycleGains && frame % every === 0 ? 1 : 0) + (extra ? Math.floor(frame / extra + EPS) - Math.floor((frame - 1) / extra + EPS) : 0);
   let layers = [];
-  if (prebuilt) for (let k = 1; k * every < life && layers.length < F; k++) layers.unshift(-k * every + life);
+  if (prebuilt) {
+    // Own buffs built: the layers of the gains before engagement that are still alive (the latest F).
+    const before = [];
+    for (let frame = -1; frame > -life; frame--) for (let n = gainsOn(frame); n > 0; n--) before.push(frame + life);
+    layers = before.slice(0, F).sort((a, b) => a - b);
+  }
   const focus = new Uint8Array(total), boons = [];
   let ready = 0;
   for (let frame = 0; frame < total; frame++) {
     layers = layers.filter((end) => frame < end);
-    if (frame % every === 0) { if (layers.length >= F) layers.shift(); layers.push(frame + life); }
+    for (let n = gainsOn(frame); n > 0; n--) { if (layers.length >= F) layers.shift(); layers.push(frame + life); }
     if (layers.length >= F && frame >= ready) { boons.push(frame); layers = []; ready = frame + cooldown; }
     focus[frame] = layers.length;
   }
@@ -336,9 +345,17 @@ function layeredBoonCycle({ F, cooldownSeconds, prebuilt, buffSeconds, perStackS
  *   refresh-all reading (every gain refreshes every stack), kept for comparison
  * @returns {object|null} null when God's Boon never fires: no max Focus, or the cycle's layers never reach it (layered)
  */
-export function godsBoonCycle({ maxFocus, cooldownSeconds, instantRefill = false, prebuilt = true, buffSeconds = KEYWORDS.godsBoon.buffSeconds, perStackSeconds = 6, durationSeconds = BASE_BLESSING_SECONDS, layered = true } = {}) {
+export function godsBoonCycle({ maxFocus, cooldownSeconds, instantRefill = false, otherGainPerSecond = null, cycleGains = true, prebuilt = true, buffSeconds = KEYWORDS.godsBoon.buffSeconds, perStackSeconds = 6, durationSeconds = BASE_BLESSING_SECONDS, layered = true } = {}) {
   const F = Math.max(0, Math.floor(maxFocus || 0));
   if (!F) return null;
+  // Another gain source at a measured rate (Magister's Focus on each Spell Burst activation): God's Boon consumes every layer and that
+  // stream refills them one gain at a time, beside the cycle's 6 s gains, each its own D s (4 T Thea audit G7, 2026-11-23; was an instant
+  // refill, Focus held at max). The same frame walk as the cycle alone, with the stream's gains added.
+  if (layered && instantRefill && Number(otherGainPerSecond) > 0) {
+    const walked = layeredBoonCycle({ F, cooldownSeconds, prebuilt, buffSeconds, perStackSeconds, durationSeconds, cycleGains, extraEverySeconds: 1 / Number(otherGainPerSecond) });
+    // The refill time: F gains at the two streams' combined rate (what the cooldown is compared with).
+    if (walked) return { ...walked, eventRefill: Number(otherGainPerSecond), refillSeconds: round(F / (Number(otherGainPerSecond) + (cycleGains ? 1 / perStackSeconds : 0))) };
+  }
   if (layered && !instantRefill) return cycleFocusPeak(durationSeconds, perStackSeconds) >= F ? layeredBoonCycle({ F, cooldownSeconds, prebuilt, buffSeconds, perStackSeconds, durationSeconds }) : null;
   const refillSeconds = instantRefill ? 0 : perStackSeconds * F;
   const periodSeconds = Math.max(cooldownSeconds, refillSeconds, EPS);
@@ -352,6 +369,26 @@ export function godsBoonCycle({ maxFocus, cooldownSeconds, instantRefill = false
   for (let b = firstBoonSeconds; b < HORIZON_SECONDS; b += periodSeconds) { edges.add(round(b)); for (let k = 1; k <= F; k++) edges.add(round(b + k * perStackSeconds)); edges.add(round(b + buffSeconds)); }
   const times = [...edges].filter((time) => time >= 0 && time < HORIZON_SECONDS).sort((a, b) => a - b);
   return { maxFocus: F, cooldownSeconds: round(cooldownSeconds), refillSeconds, periodSeconds: round(periodSeconds), averageFocus, firstBoonSeconds, uptime, buffSeconds, instantRefill, prebuilt, focusAt, times };
+}
+
+// Buffs 82113 (Predicted Reincarnation) and 82114 (Farewell Prophecy): config_char_buff subtype 2, cap 30, mode 1.
+export const GODS_BOON_BUFF_CAP = 30;
+
+/**
+ * The stacks a buff of own-timer layers holds when a cast adds `perCast` layers every `periodSeconds`, each lasting `durationSeconds`
+ * (subtype 2: a layer keeps its own timer, the oldest goes at the header cap), read through min(stacks, readCap). τ after a cast, the
+ * casts still alive are n(τ) = #{k ≥ 1: τ < D − (k − 1) P}; L_k = clamp(D − (k − 1) P, 0, P) is the share of the period with at least k.
+ * @returns {{ meanWhileUp: number, mean: number, upShare: number, peak: number, peakRead: number }} the read stacks averaged over the time
+ *   the buff is up (× the uptime gives the period average), the period average, the up share, the most layers alive and their read value
+ */
+export function ownTimerLayerMean({ perCast, periodSeconds, durationSeconds, readCap = Infinity, headerCap = Infinity }) {
+  const P = Math.max(EPS, Number(periodSeconds) || 0), D = Math.max(0, Number(durationSeconds) || 0), n = Math.max(0, Number(perCast) || 0);
+  const L = (k) => Math.max(0, Math.min(P, D - (k - 1) * P));
+  const read = (alive) => Math.min(readCap, Math.min(headerCap, n * alive));
+  let total = 0, k = 1;
+  while (L(k) > EPS) { total += (L(k) - L(k + 1)) * read(k); k++; }
+  const peakAlive = k - 1, up = L(1);
+  return { meanWhileUp: up > EPS ? total / up : 0, mean: total / P, upShare: up / P, peak: Math.min(headerCap, n * peakAlive), peakRead: read(peakAlive) };
 }
 
 /** A piecewise-constant schedule ("steps", src/timed-effects.js) of `levelAt` over the given edge times. */
@@ -398,6 +435,15 @@ function desecrationSteadyMean(spec, f, durationSeconds = KEYWORDS.desecration.d
   return total / steps;
 }
 
+// The stacks per second the Blessing's gain sources other than the Divine Blessing cycle give, when every available one carries a measured
+// rate (src/blessing-model.js ratePerSecond: "Gains N stack(s) … when consuming Spell Burst" at the hit pass's activations); null when one has
+// none (an event the planner does not time: Focus is held at max between God's Boons, as before).
+function otherGainRate(entry) {
+  const others = (entry?.gainSources || []).filter((source) => source.available && source.source !== CYCLE_SOURCE);
+  if (!others.length || others.some((source) => !(Number(source.ratePerSecond) > 0))) return null;
+  return others.reduce((total, source) => total + Number(source.ratePerSecond) * (Number(String(source.text).match(/Gains? (d+) stacks? of/i)?.[1]) || 1), 0);
+}
+
 /**
  * Thea's state for the selected loadout, or null for any other hero.
  * @param {object} p
@@ -420,7 +466,7 @@ export function theaState({ heroId = "", modifierTexts = [], requestedConditions
   const anyDamage = facts.anyDamage !== false;
   const dealsErosion = facts.dealsErosion !== false;
   const state = { heroId, cycle: Boolean(cycleLine), cycleSource: cycleLine?.line.source || null, prebuilt, traitPressed, anyDamage, dealsErosion,
-    blessings: Object.fromEntries(CYCLE.order.map((name) => [name, { stacks: round(held(name)), maxStacks: maxOf(name), baseMax: entries[name]?.baseMax ?? 4, effect: entries[name]?.effectMultiplier ?? 1, perStackDamage: entries[name]?.baseEffect?.additionalDamagePerStack ?? 0, capSources: (entries[name]?.capSources || []).map((line) => ({ source: line.source, text: line.text, value: line.value })), otherGain: (entries[name]?.gainSources || []).some((source) => source.available && source.source !== CYCLE_SOURCE), ...layerFields(entries[name]) }])),
+    blessings: Object.fromEntries(CYCLE.order.map((name) => [name, { stacks: round(held(name)), maxStacks: maxOf(name), baseMax: entries[name]?.baseMax ?? 4, effect: entries[name]?.effectMultiplier ?? 1, perStackDamage: entries[name]?.baseEffect?.additionalDamagePerStack ?? 0, capSources: (entries[name]?.capSources || []).map((line) => ({ source: line.source, text: line.text, value: line.value })), otherGain: (entries[name]?.gainSources || []).some((source) => source.available && source.source !== CYCLE_SOURCE), otherGainPerSecond: otherGainRate(entries[name]), ...layerFields(entries[name]) }])),
     thea: blessings?.thea || null };
   if (heroId === WISDOM) state.wisdom = wisdomState(lines, state, { ...facts, modifierTexts });
   if (heroId === INCARNATION) state.incarnation = incarnationState(lines, state, requestedConditions, { ...facts, enemyLowLifeLines: modifierTexts.filter((line) => line && line.origin !== "derived" && !line.lineEffect && /against Low Life enemies$/i.test(cleanThea(line.text))).length });  if (heroId === BLASPHEMER) state.blasphemer = blasphemerState(lines, state, facts);
@@ -482,19 +528,23 @@ function wisdomState(lines, state, facts) {
   const peak = cycleFocusPeak(focus.durationSeconds);
   const unreachable = cast && !focus.otherGain && peak < focus.maxStacks ? `Focus Blessing never reaches its max (${focus.maxStacks}) from the Divine Blessing cycle: each stack keeps its own ${round(focus.durationSeconds)} s from its own gain, so at most ⌈${round(focus.durationSeconds)} s ÷ 6 s⌉ = ${peak} are held (layers on their own timers, SS14 client; open question blessing-layer-timers)` : null;
   // Buffs 82113, 82114 and 82115 carry tag 5100310: Skill Effect Duration reaches their 10 s.
-  const cycle = cast ? godsBoonCycle({ maxFocus: focus.maxStacks, cooldownSeconds, instantRefill: focus.otherGain, prebuilt: state.prebuilt, buffSeconds: (maxLine ? Number(maxLine.match[2]) : KEYWORDS.godsBoon.buffSeconds) * skillDurationOf(facts), durationSeconds: focus.durationSeconds }) : null;
+  const cycle = cast ? godsBoonCycle({ maxFocus: focus.maxStacks, cooldownSeconds, instantRefill: focus.otherGain, otherGainPerSecond: focus.otherGainPerSecond, cycleGains: state.cycle, prebuilt: state.prebuilt, buffSeconds: (maxLine ? Number(maxLine.match[2]) : KEYWORDS.godsBoon.buffSeconds) * skillDurationOf(facts), durationSeconds: focus.durationSeconds }) : null;
   const purity = firstOf(lines, P.purity);
   const consumed = cycle ? cycle.maxFocus : 0;
-  // Each God's Boon adds min(Focus consumed, p2) stacks to a buff of up to 30, whose stacks share one timer (mode 1, as the Blessings), and
-  // the line reads min(stacks, p2); Prophecy of Purity (label 3050347) reads p2 × 2. So when a God's Boon lands inside the last one's
-  // buffs the stacks pile up to the read cap; with no overlap one God's Boon's stacks are all there are.
-  const overlaps = Boolean(cycle) && cycle.periodSeconds <= cycle.buffSeconds + EPS;
+  // Each God's Boon adds min(Focus consumed, p2) layers to buff 82113 / 82114 (headers: subtype 2, cap 30, mode 1: each layer its own
+  // timer, the oldest out at the cap; SS14 client 0x141d01450 / 0x141d02810, research/oq-blessing-refresh-2026-11-04.md), and the line
+  // reads min(stacks, p2); Prophecy of Purity (label 3050347) reads p2 × 2. So the held stacks are the time average of the layers alive
+  // (ownTimerLayerMean): a God's Boon whose buff ends as the next lands holds one cast's layers, not the read cap (4 T Thea audit G5,
+  // 2026-11-23: Farewell Prophecy 7 for 8); only casts that overlap for part of the period pile above one cast's layers.
+  const overlaps = Boolean(cycle) && cycle.periodSeconds < cycle.buffSeconds - EPS;
   const stackBuff = (pattern) => {
     const found = firstOf(lines, pattern);
     if (!found) return null;
     const per = Number(found.match[1]), seconds = Number(found.match[2]), cap = Number(found.match[3]);
-    const perCast = Math.min(cap, consumed), readCap = purity ? cap * 2 : cap, stacks = overlaps && perCast > 0 ? readCap : perCast;
-    return { per, seconds, cap, capWithPurity: readCap, perCast, stacks, percent: round(per * stacks), purityRaises: Boolean(purity) && overlaps && perCast > 0, source: found.line.source };
+    const perCast = Math.min(cap, consumed), readCap = purity ? cap * 2 : cap;
+    const layers = cycle && perCast > 0 ? ownTimerLayerMean({ perCast, periodSeconds: cycle.periodSeconds, durationSeconds: cycle.buffSeconds, readCap, headerCap: GODS_BOON_BUFF_CAP }) : null;
+    const stacks = layers ? round(layers.meanWhileUp) : perCast;
+    return { per, seconds, cap, capWithPurity: readCap, perCast, stacks, peak: layers?.peak ?? perCast, percent: round(per * stacks), purityRaises: Boolean(purity) && Boolean(layers) && layers.peakRead > cap, source: found.line.source };
   };
   const reincarnation = stackBuff(P.reincarnation), farewell = stackBuff(P.farewell);
   const area = (() => { const found = firstOf(lines, P.boonArea); return found ? { per: Number(found.match[1]), cap: Number(found.match[3]), stacks: Math.min(Number(found.match[3]), consumed) } : null; })();
@@ -674,7 +724,7 @@ function cycleRead(state) {
 function wisdomRead(key, text, state) {
   const w = state.wisdom, c = w?.cycle;
   const noBoon = !w?.base ? "God's Boon's line is not in the build" : !c ? (state.blessings.Focus.maxStacks <= 0 ? "Focus Blessing has no max stacks" : w.unreachable ? w.unreachable : "God's Boon is never cast (no auto-cast line and the Trait Skill switch is off)") : "";
-  const cadence = c ? `God's Boon every ${c.periodSeconds} s (${c.instantRefill ? `its ${w.cooldownSeconds} s cooldown; Focus held at max by another gain source` : `the first frame Focus is at max (${c.maxFocus}, one Focus layer per 6 s, each its own ${round(c.durationSeconds ?? BASE_BLESSING_SECONDS)} s) with the ${w.cooldownSeconds} s cooldown ready`}; Q-H3, provisional)` : "";
+  const cadence = c ? `God's Boon every ${c.periodSeconds} s (${c.instantRefill ? `its ${w.cooldownSeconds} s cooldown; Focus held at max by another gain source` : c.eventRefill ? `its ${w.cooldownSeconds} s cooldown; Focus refilled one layer at a time by another gain source at ${round(c.eventRefill)}/s beside the cycle's 6 s gains (${c.refillSeconds} s to max), each layer its own ${round(c.durationSeconds ?? BASE_BLESSING_SECONDS)} s` : `the first frame Focus is at max (${c.maxFocus}, one Focus layer per 6 s, each its own ${round(c.durationSeconds ?? BASE_BLESSING_SECONDS)} s) with the ${w.cooldownSeconds} s cooldown ready`}; Q-H3, provisional)` : "";
   const boonPeriodic = c ? { kind: "periodic", durationSeconds: c.buffSeconds, periodSeconds: c.periodSeconds, startSeconds: c.firstBoonSeconds } : null;
   const boonTimed = (id, label, percent, reach = "all") => c && percent ? [{ id, label, target: "self", toggle: false, enabled: true, active: true, parts: [{ type: null, reach, percent, schedule: boonPeriodic }] }] : [];
   const uptimeText = c ? `up ${pct(c.uptime)}% of the time (${c.buffSeconds} s every ${c.periodSeconds} s)` : "";
@@ -684,7 +734,8 @@ function wisdomRead(key, text, state) {
       if (!c || base.status !== "In calc") return base;
       const F = state.blessings.Focus;
       const percent = round(F.perStackDamage * F.effect);
-      const timed = percent && !c.instantRefill ? [{ id: "theaFocus", label: "Focus Blessing (God's Boon consumes it)", target: "self", toggle: false, enabled: true, active: true, parts: [{ type: null, reach: "all", percent, schedule: { kind: "steps", points: stepsFrom(c.focusAt, c.times), sustained: c.averageFocus } }] }] : [];
+      // (A refill by a measured gain stream: the loop's own Blessing layers place those dips; no timed part, or the windows count them twice.)
+      const timed = percent && !c.instantRefill && !c.eventRefill ? [{ id: "theaFocus", label: "Focus Blessing (God's Boon consumes it)", target: "self", toggle: false, enabled: true, active: true, parts: [{ type: null, reach: "all", percent, schedule: { kind: "steps", points: stepsFrom(c.focusAt, c.times), sustained: c.averageFocus } }] }] : [];
       return inCalc(`${base.reason}; God's Boon consumes Focus: ${c.averageFocus} Focus stacks on average (one layer per 6 s after each God's Boon)`, { timed });
     }
     case "boonClick": return neutral(w?.auto ? "the auto-cast at max Focus (\"Automatically try to use God's Boon\") already casts it; a press before max Focus would consume fewer stacks" : "God's Boon is pressed at max Focus (Trait Skill best case)");
@@ -710,7 +761,7 @@ function wisdomRead(key, text, state) {
     }
     case "boonCdr": {
       if (!c) return inactive(noBoon);
-      return w.cooldownBinds || c.instantRefill ? inCalc(`God's Boon's cooldown ${w.baseCooldown} s → ${w.cooldownSeconds} s sets its cadence: ${cadence}`) : neutral(`the Focus refill (${c.refillSeconds} s) is longer than the cooldown (${w.cooldownSeconds} s), so God's Boon's cadence does not change`);
+      return w.cooldownBinds || c.instantRefill || c.eventRefill ? inCalc(`God's Boon's cooldown ${w.baseCooldown} s → ${w.cooldownSeconds} s sets its cadence: ${cadence}`) : neutral(`the Focus refill (${c.refillSeconds} s) is longer than the cooldown (${w.cooldownSeconds} s), so God's Boon's cadence does not change`);
     }
     case "punishment": {
       const p = w?.punishment;

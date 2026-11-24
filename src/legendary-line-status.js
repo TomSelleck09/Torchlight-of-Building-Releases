@@ -14,6 +14,7 @@ const INITIAL_AFFLICTION_BADGE_LINE = /^Changes the initially inflicted Afflicti
 const FIREBIRD_TRIGGER_LINE = /^When you have a Barrier ?, triggers the Main Skill upon taking damage, then removes Barrier\.?$/i;
 import { TRINITY_MULTIPLE_LINE, TRINITY_RANDOM_LINE, TRINITY_ONLY_ELEMENTAL_LINE, TRINITY_NO_CONVERSION_LINE } from "./trinity.js";
 import { TROOP_FAMILIES } from "./moto-iris-traits.js";
+import { STORM_PATTERNS } from "./heart-of-the-storm.js";
 
 const active = (yes) => (yes ? "In calc" : "Inactive");
 
@@ -109,6 +110,18 @@ const NOT_ON_DUMMY = [
 ];
 const FIXED_SUPPORT_MULTIPLIER = /^Support Skill's Mana Multiplier is fixed at (\d+(?:\.\d+)?) ?%\.?$/i;
 
+// Stray Bird's Return's return line (src/planner.js strayBirdReturn): why it reads Inactive in this build, for its badge title.
+const STRAY_RETURN_LINE = /^Normal Projectiles will return after reaching their max range and will hit enemies on their path again$/i;
+/** The badge title for a legendary-audit line that reads Inactive in this build, else "". */
+export function legendaryLineReason(text, planner) {
+  const line = String(text || "").replace(/\s+/g, " ").trim();
+  if (STRAY_RETURN_LINE.test(line) && planner?.activation && !(planner.skillHits || []).some((hit) => hit.strayBirdReturn?.active)) {
+    if (planner.lineEffects?.state?.carino?.returning) return "Carino's Evil Ouroboros return is modeled instead";
+    return "No modeled Projectile hit passes through the dummy and returns: it needs Projectile Penetration, or an Attack Horizontal Projectile with Stray Bird's always Penetrate";
+  }
+  return "";
+}
+
 /** The status of one legendary-audit line, or null when it is not one of them. */
 // The enemy-ailment model's ailment names, from the dummy's unit buff set (W8 step 2) or the model's list (TLI_BUFF_SET=off).
 const modelAilmentNames = (planner) => enemyBuffSet(planner?.mechanics?.enemyAilments)?.types() ?? (planner?.mechanics?.enemyAilments?.types || []).map((type) => type.name);
@@ -143,11 +156,35 @@ export function legendaryLineStatus(text, planner, engines) {
       { afflictionOn: planner.conditions?.affliction !== false, simulated: Boolean(planner.afflictionRating), perSecond: planner.afflictionRating?.afflictionPerSecond || 0 });
     return resolved?.status ?? "Inactive";
   }
-  // Stray Bird's Return (src/planner.js strayBirdReturn; 2026-10-28, provisional): the return and the Returning Projectile Damage lines
-  // are In calc where a modeled projectile passes through the dummy and returns through it, Inactive otherwise.
-  if (/^Normal Projectiles will return after reaching their max range and will hit enemies on their path again$/i.test(line) || /^\+[\d.]+ ?% additional Returning Projectile Damage(?: for Attack Horizontal Projectiles)?$/i.test(line)) {
+  // Stray Bird's Return (src/planner.js strayBirdReturn; 2026-10-28, provisional): the return line is In calc where a modeled projectile
+  // passes through the dummy and returns through it, Inactive otherwise. The Returning Projectile Damage lines (records 775506 / 956328064,
+  // on any returning Projectile) where a return of Stray Bird's or Carino's Evil Ouroboros takes them; Youga's Recall is not a return of
+  // that tag, so a Recalled hit alone does not count. "Attack Horizontal Projectiles always Penetrate" (label 3001036) where it is what
+  // lets an Attack Horizontal Projectile pass through the dummy to return (on one dummy a pierce adds nothing else).
+  const strayReturns = () => (planner.skillHits || []).filter((hit) => hit.strayBirdReturn?.active);
+  const carinoReturns = () => (planner.lineEffects?.state?.carino?.returning?.setups || []).filter((setup) => setup.active);
+  if (/^Normal Projectiles will return after reaching their max range and will hit enemies on their path again$/i.test(line)) {
     if (!planner?.activation) return "In calc";
-    return (planner.skillHits || []).some((hit) => hit.strayBirdReturn?.active || (hit.components || []).some((component) => component.recalled)) ? "In calc" : "Inactive";
+    return strayReturns().length ? "In calc" : "Inactive";
+  }
+  if (/^\+[\d.]+ ?% additional Returning Projectile Damage(?: for Attack Horizontal Projectiles)?$/i.test(line)) {
+    if (!planner?.activation) return "In calc";
+    return strayReturns().length || carinoReturns().length ? "In calc" : "Inactive";
+  }
+  if (/^Attack Horizontal Projectiles always Penetrate$/i.test(line)) {
+    if (!planner?.activation) return "In calc";
+    return strayReturns().some((hit) => hit.strayBirdReturn.alwaysPenetrate) || carinoReturns().some((setup) => setup.alwaysPenetrate) ? "In calc" : "Inactive";
+  }
+  // Heart of the Storm (src/heart-of-the-storm.js; 15 T Split Shot audit G2, 2026-11-20): the windfield and Storm lines are In calc where
+  // Storm reaches a modeled Attack Horizontal Projectile hit (gate 251's Cooldown Recovery and the windfield following you are inferred: the
+  // open questions heart-of-the-storm-*; a gear line's badge combines In calc / Inactive, so the provisional part is in the reason), the Storm
+  // Effect line where it holds layers; Inactive otherwise. A line the build does not carry (a preview) is judged equipped.
+  if (STORM_PATTERNS.windfield.test(line) || STORM_PATTERNS.gain.test(line) || STORM_PATTERNS.effect.test(line)) {
+    if (!planner?.activation) return "In calc";
+    const storm = planner.heartOfTheStorm;
+    if (!storm?.active || !storm.boardHasStormSkill) return "Inactive";
+    if (STORM_PATTERNS.effect.test(line)) return storm.layers > 0 ? "In calc" : "Inactive";
+    return "In calc";
   }
   // "Unable to use / trigger Empower Skills" (src/planner.js noManualEmpower, noTriggeredEmpower): In calc where the board carries an Empower Skill.
   if (/^Unable to (?:use|trigger) Empower Skills$/i.test(line)) return planner?.activation ? ((planner.activation.setups || []).some((setup) => setup.enabled !== false && (setup.tags || []).includes("Empower") && setup.role !== "support") ? "In calc" : "No DPS effect") : "In calc";

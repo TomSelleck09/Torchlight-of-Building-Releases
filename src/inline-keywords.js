@@ -14,7 +14,14 @@ export const inlineKeywordsSs13 = {
   "Eternal Nightmare": { ...ON_DEFEAT, source: `${GAME_TEXT}: hyperlink 10124, char_buff 35046_0`, effect: ["+2% Critical Strike Rating, +1% Critical Strike Damage, and +0.5% Reaping Recovery Speed per stack"] },
   "Eternal Shadow": { ...ON_DEFEAT, source: `${GAME_TEXT}: hyperlink 10125, char_buff 35047_0`, effect: ["+1% Skill Area, +0.25% Movement Speed, and +1% Projectile Speed per stack"] },
   "Eternal Guard": { ...ON_DEFEAT, source: `${GAME_TEXT}: hyperlink 10126, char_buff 35048_0`, effect: ["+0.4% Defense, +0.4% Max Life, and +0.4% Max Mana per stack"] },
-  "Eternal Reign": { ...ON_DEFEAT, reason: "Stacks are gained on defeating an Elite; the training dummy is never defeated.", source: `${GAME_TEXT}: hyperlink 10128, char_buff 35050_0`, effect: ["+10% additional damage (multiplies) and +10% Physique for every stack. Upper limit: 10 stacks"] }
+  "Eternal Reign": { ...ON_DEFEAT, reason: "Stacks are gained on defeating an Elite; the training dummy is never defeated.", source: `${GAME_TEXT}: hyperlink 10128, char_buff 35050_0`, effect: ["+10% additional damage (multiplies) and +10% Physique for every stack. Upper limit: 10 stacks"] },
+  // Law of Greed's "Seals X% Max Mana. Gains Insatiable Greed" (and the Vorax Limb: Neck graft of it): the definition is the keyword's
+  // hover text (hyperlink 10165; the reference site's hover card, fetched 2026-10-22 and saved in
+  // research/refdata-ss14-2026-10-22/legendary-keyword-hovers/10165.html), and game recipe 588396864 row 2 agrees (node 114 from
+  // increased Attack Speed, attr 60011 mod 3, into increased Spell Burst Charge Speed, attr 63601 mod 3, at 1.5 per 1). The game's
+  // text table is not in the local data. `description`: the line is the keyword's definition, not its own clause, so it takes no
+  // badge of its own; the item line's badge stands.
+  "Insatiable Greed": { description: true, source: "Keyword tooltip (hover text fetched 2026-10-22), hyperlink 10165; game recipe 588396864 row 2", effect: ["150% of the bonuses to Attack Speed is also applied to Spell Burst Charge Speed"] }
 };
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -23,7 +30,8 @@ const names = Object.keys(inlineKeywordsSs13).sort((a, b) => b.length - a.length
 const pattern = names.length ? new RegExp(`(?<![\\w-])(${names.map(escapeRegExp).join("|")})(?![\\w-])`) : null;
 
 /**
- * The first inline keyword in a one-line `text`: { keyword, before, after, effect: [{ text, status, reason }] }, or null.
+ * The first inline keyword in a one-line `text`: { keyword, before, after, effect: [{ text, status, reason }], description? }, or
+ * null (`description`: the effect lines define the keyword and take no badge of their own).
  */
 export function inlineKeywordParts(text) {
   const line = String(text || "");
@@ -35,7 +43,8 @@ export function inlineKeywordParts(text) {
     keyword: match[1],
     before: line.slice(0, match.index),
     after: line.slice(match.index + match[1].length),
-    effect: entry.effect.map((effect) => typeof effect === "string" ? { text: effect, status: entry.status, reason: entry.reason } : { status: entry.status, reason: entry.reason, ...effect })
+    effect: entry.effect.map((effect) => typeof effect === "string" ? { text: effect, status: entry.status, reason: entry.reason } : { status: entry.status, reason: entry.reason, ...effect }),
+    ...(entry.description ? { description: true } : {})
   };
 }
 

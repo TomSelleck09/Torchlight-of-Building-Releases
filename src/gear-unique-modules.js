@@ -280,7 +280,9 @@ export function grantedPreciseAuras(modifierTexts = []) {
 // TOWER Sequence lines (one sequence modifier can join several lines with a newline). A support a TOWER Sequence grants keeps its
 // printed level (user decision 2026-10-27, for now: "lets not have those special skills on gear or tower sequences scale"; game data
 // suggests they would scale like gear grants, research/granted-support-level-2026-10-27.md §7; open question tower-granted-support-level):
-// `fixedLevel`. A hero trait's grant (Erika's Have Fun: "The Main Skill is supported by Lv. 10 Multistrike") keeps its printed level too.
+// `fixedLevel`. A hero trait's support grant (Erika's Have Fun: "The Main Skill is supported by Lv. 10 Multistrike") takes the build's support
+// level lines like a gear grant (user decision 2026-11-20, replacing the 2026-10-27 fixed-level rule for these: the 6 T Corrosive Throw
+// panel's Multistrike Chance 399% needs Have Fun's Multistrike at Lv26, research/build-6t-corrosive-throw-audit-2026-11-20.md G4).
 const TOWER_LINES = new Set(towerSequencesSs13.flatMap((entry) => String(entry.modifier || "").split(/\n/)).map((line) => normalizePercentageText(line).replace(/\s+/g, " ").trim()));
 export const isTowerSequenceLine = (text) => TOWER_LINES.has(normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim());
 
@@ -302,11 +304,11 @@ export function grantedMainSkillSupports(modifierTexts = [], equipment = null, d
     let match = text.match(SINGLE_RING_GRANT);
     if (match) { out.push({ name: match[2].trim(), level: Number(match[1]), source: line.source, text, active: rings === 1, reason: rings === 1 ? "only 1 Ring equipped" : `${rings} Rings equipped` }); continue; }
     match = text.match(GRANT);
-    if (match) { out.push({ name: match[2].trim(), level: Number(match[1]), source: line.source, text, active: true, reason: "item grant", ...(isTowerSequenceLine(text) || line.origin === "trait" ? { fixedLevel: true } : {}) }); continue; }
+    if (match) { out.push({ name: match[2].trim(), level: Number(match[1]), source: line.source, text, active: true, reason: "item grant", ...(isTowerSequenceLine(text) ? { fixedLevel: true } : {}) }); continue; }
     // "All Passive Skill slots are supported by Lv. 30 Precise: Restrain" (TOWER sequence; gear affix batch C, 2026-10-22): the
     // support joins every Passive (Aura-slot) skill at its fixed level. "Precise: Restrain" is the catalog's "Precise Restrain".
     match = text.match(PASSIVE_GRANT);
-    if (match) { out.push({ name: match[2].trim().replace(/^Precise: (?=Restrain$)/, "Precise "), level: Number(match[1]), source: line.source, text, active: true, reason: "item grant", target: "passive", ...(isTowerSequenceLine(text) || line.origin === "trait" ? { fixedLevel: true } : {}) }); continue; }
+    if (match) { out.push({ name: match[2].trim().replace(/^Precise: (?=Restrain$)/, "Precise "), level: Number(match[1]), source: line.source, text, active: true, reason: "item grant", target: "passive", ...(isTowerSequenceLine(text) ? { fixedLevel: true } : {}) }); continue; }
     // Headless Crown (legendary audit batch 2, 2026-10-22): "The first 2 Passive Skill slots are supported by Lv. 30 Precise: Restrain",
     // "The last 2 Passive Skill slots are supported by Lv. 30 Precise: Concentrated": the Aura-slot rows 1–N or the last N of the 4.
     // Skills of a tag (legendary audit batch 2): "Demolisher Skills are supported by Lv. 25 Quick Return." (Furious Man's Body), "Warcry

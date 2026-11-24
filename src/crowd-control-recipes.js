@@ -28,6 +28,32 @@ try { RECIPES = (await loadAffixRecipes())?.AFFIX_RECIPES || null; } catch { REC
 
 export const CROWD_CONTROL_BUFF_TYPES = Object.freeze({ 230: "Paralysis", 260: "Slow", 270: "Weaken", 280: "Taunt", 20060: "Blinding" });
 export const CROWD_CONTROL_DEFAULT_SECONDS = 4;
+// The five records' stack headers (config_char_buff, proven; scripts/buff-header-census.mjs, tests/fixtures/buff-header-census-snapshot.json):
+// all subtype 1 (separate instances, each its own timer) with key mode 1 (one key for every caster). At the cap (SS14 client,
+// research/remediation-cap-census-2026-11-21.md, REA 2026-11-22): mode 1 replaces the oldest; mode 3 (0x141d2cae0) picks only a held
+// instance of strictly lower level, so an equal re-application finds no pick and 0x141d07bb0 returns 0, and the subtype-1 add (0x141d010c0)
+// then adds nothing: refused, no refresh; mode 5 (0x141d2cd90) at an equal level from the same caster picks the held instance of the lowest
+// id below the new one (the buff add 0x141d436d0 hands the new instance's id, a per-unit counter, as the pick's start, 0x141d01020 passing it
+// on in RDX), so it replaces the oldest: a renewal. Slow holds up to 5 separate instances (cap 5).
+export const CROWD_CONTROL_STACK_RULES = Object.freeze({
+  230: Object.freeze({ cap: 1, mode: 5 }), 260: Object.freeze({ cap: 5, mode: 5 }), 270: Object.freeze({ cap: 1, mode: 5 }),
+  280: Object.freeze({ cap: 1, mode: 3 }), 20060: Object.freeze({ cap: 1, mode: 1 })
+});
+/** Whether a re-application while the record's cap is full and held at the same level is refused (mode 3, or mode 4 refusing any). */
+export const refusesEqualReapplication = (buff) => { const rule = CROWD_CONTROL_STACK_RULES[buff]; return Boolean(rule) && rule.cap === 1 && (rule.mode === 3 || rule.mode === 4); };
+/**
+ * The held share of a one-instance debuff whose re-application while held is refused (mode 3 at an equal level): each application holds
+ * `durationSeconds`, the events in it are refused, and the next one after its end applies again. With the planner's periodic events at
+ * `eventsPerSecond` (the cc holders' reading, duration × events/s) the wait from the end to the next event is half an event interval on
+ * average (the precedent of Thundercloud: Alarmed Awakening's "gate + half a hit interval", src/support-conditional-batch4.js): share
+ * D ÷ (D + 1 ÷ (2r)). Below one event per two durations every event lands on a lapsed debuff and the share is D × r, where the two meet
+ * (inferred: the phase of the events at each end is not traced; open question cc-refused-reapplication-gap).
+ */
+export function refusedRenewalShare(eventsPerSecond, durationSeconds) {
+  const rate = Number(eventsPerSecond) || 0, duration = Number(durationSeconds) || 0;
+  if (!(rate > 0) || !(duration > 0)) return 0;
+  return rate * duration <= 0.5 ? rate * duration : duration / (duration + 1 / (2 * rate));
+}
 const BUFF_NODES = new Set([301, 374, 342]);
 // Trigger → the event whose rate the hold reads (names: src/recipe-interpreter.js TRIGGERS).
 export const CROWD_CONTROL_EVENTS = Object.freeze({ 1000033: "hit", 1000030: "damage", 1000047: "minionDamage", 1000060: "triggered", 1001200: "regain", 1001210: "regain", 1000069: "cast" });

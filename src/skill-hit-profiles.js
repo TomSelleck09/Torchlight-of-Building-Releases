@@ -298,6 +298,9 @@ function buildProfile(definition) {
     weaponScaling, attack: Boolean(weaponScaling), attackSpeed: definition.attackSpeed || null, demolisher: definition.demolisher || null,
     // "25% of bonuses to Projectile Speed for this skill (up to 200%) also apply to this skill's additional damage" (src/skill-hit-model.js projectileSpeedState).
     projectileSpeedShare: definition.projectileSpeedShare || null,
+    // The skill's own "+X% Multistrike Chance for this skill" (field 2006240 on this skill; src/skill-hit-model.js adds it to the chance).
+    ...(definition.ownMultistrikeChancePercent ? { ownMultistrikeChancePercent: definition.ownMultistrikeChancePercent } : {}),
+    ...(definition.multistrikeBuff ? { multistrikeBuff: { ...definition.multistrikeBuff } } : {}),
     // Tags whose scoped lines the skill text borrows (Moon Strike: Spell Damage lines also apply to its Attack Damage).
     lineScopeTags: definition.lineScopeTags || [],
     // "X% additional damage for this skill for every +1% Attack Speed" (Gale Slash); profile-level warnings the planner shows.
@@ -323,6 +326,9 @@ function buildProfile(definition) {
     // The Config tab's "Projectiles hitting the dummy" control skips this skill (Icebound Beam; 2026-11-12).
     ...(definition.noProjectileControl ? { noProjectileControl: true } : {}),
     additionalPerProjectileQuantityPercent: definition.additionalPerProjectileQuantityPercent || 0,
+    // The skill's own "+N Projectile Quantity when this skill hits an enemy with at least M Frostbite Rating" (Frost Spike): counted by its
+    // per-Projectile-Quantity line on those hits only (src/skill-hit-model.js; user decision 2026-11-23).
+    ...(definition.projectileQuantityOnFrostbite ? { projectileQuantityOnFrostbite: { ...definition.projectileQuantityOnFrostbite } } : {}),
     // "+X% additional damage when this skill hits an enemy with at least N Frostbite Rating" (Frost Spike, record 559611328): read against
     // the dummy's Frostbite Rating (src/skill-hit-model.js).
     frostbiteRatingAdditional: definition.frostbiteRatingAdditional || null,

@@ -19,15 +19,16 @@ import { automaticCombatConditionIds, bestCaseCombat } from "./combat-condition-
 import { classifySkillCoverage, supportClauseCoverage, supportLineCoverage } from "./skill-coverage.js";
 import { curseSlotSummary } from "./curse-limit.js";
 import { configurationPanelMarkup, clampCombatValue } from "./configuration-panel.js";
-import { coverageBadge, gearLineCoverage, gearLineCoverageReason, talentEffectCoverage, talentLineCoverage, slateLineCoverage, slateLineCoverageReason, prismAffixCoverage, prismAffixCoverageReason, heroTraitCoverage, heroTraitCoverageReason } from "./calculation-coverage.js";
+import { coverageBadge, gearJoinedLineParts, gearLineCoverage, gearLineCoverageReason, talentEffectCoverage, talentLineCoverage, slateLineCoverage, slateLineCoverageReason, prismAffixCoverage, prismAffixCoverageReason, heroTraitCoverage, heroTraitCoverageReason } from "./calculation-coverage.js";
 import { scorchingBeamBaseHits, strippedBeamHitCoefficient } from "./scorching-beam-base-hit.js";
 import { damagePathControlsMarkup, renderStatSheet } from "./stat-sheet.js";
 import { selectStatTab } from "./stat-sheet-tabs.js";
-import { fitSidebarSpacing, statsSidebarMarkup, statsSidebarModel } from "./stats-sidebar.js";
+import { ALL_SKILLS, fitSidebarSpacing, statsSidebarMarkup, statsSidebarModel } from "./stats-sidebar.js";
 import { skillUptimeHtml } from "./skill-uptime.js";
 import { minionSkillRatesHtml, summonMinionSkillRates } from "./minion-skill-rates.js";
 import { fireHitMitigation, mitigateScorchingBeamCycle } from "./target-hit-mitigation.js";
 import { canDropGearInSlot } from "./gear-drag.js";
+import { TWO_HANDED_WEAPON_TYPES, isTwoHandedItem, twoHandedOffHandBlock } from "./weapon-damage-model.js";
 import { folkloreRingModifier, folkloreRingOptionFromModifiers } from "./legendary-ring-options.js";
 import { escapeHtml } from "./html.js"; import { normalizePercentageText } from "./percentage-text.js"; import { traitKeywordTextHtml, traitKeywordDetailsHtml, traitGrantNoteHtml } from "./trait-keyword-markup.js";
 import { isRenameKey, resolveBuildRename } from "./build-tab-rename.js";
@@ -178,7 +179,9 @@ let activeTalentSlot = 0;
 let activeWorkspaceView = "talents";
 let activeStatsPanel = "sheet";
 let selectedDamagePath = "hit";
-let selectedStatSheetSkill = "Scorching Beam";
+// The stats sidebar's picker and the Calculations tab share this choice; ALL_SKILLS (the default, user request 2026-11-22) shows the
+// build's totals in the sidebar and the Main Skill on the stat sheet, a skill its own damage (src/sidebar-skill-damage.js).
+let selectedStatSheetSkill = ALL_SKILLS;
 const workspaceLocationKey = "tli-builder:workspace-location:v1";
 function readWorkspaceLocation(){
   try{return JSON.parse(sessionStorage.getItem(workspaceLocationKey)||"null");}catch{return null;}
@@ -208,7 +211,7 @@ let suppressSelenaDanceClick = false;
 let bestCaseAssumptionsOpen = false;
 let configSectionOpen = { scenario: true, choices: true, manual: false, advanced: false };
 // Condition ids an exclusive choice can pin (src/planner.js exclusiveConditionGroups).
-const exclusiveChoiceConditionIds = ["blur", "blurRecentlyEnded", "moving", "nearTarget", "lowLifeAssumed", "lowManaAssumed"];
+const exclusiveChoiceConditionIds = ["blur", "blurRecentlyEnded", "moving", "nearTarget", "distantTenMeters", "lowLifeAssumed", "lowManaAssumed"];
 let activeCoreThreshold = 12;
 let selectedTalentCoordinate = "4,0";
 let selectedEquipmentSlot = "helmet";
@@ -845,8 +848,10 @@ function overviewBlock(title, tab, label, body, extraClass = "") {
 }
 function overviewGearMarkup() {
   const items = currentEquipmentImpact().allItems;
+  const blocked = twoHandedOffHandBlock(items, disabledEquipmentSlots);
   return `<div id="overview-gear" class="overview-gear-grid">${equipmentSlots.map(([slot, fallback]) => {
     const label = OVERVIEW_SLOT_NAMES[slot] || fallback;
+    if (slot === "secondaryHand" && blocked) { const title = blockedOffHandTitle(blocked).replace(" (right-click to unequip it)", ""); return `<div class="overview-gear-cell" data-overview-slot="${slot}"><span class="equipment-item ov-item two-handed-blocked" aria-disabled="true" aria-label="${escapeHtml(`${label}: ${title}`)}" title="${escapeHtml(title)}"><b>${blockedOffHandIcon(blocked)}</b></span></div>`; }
     const item = items.find((entry) => entry.slot === slot), empty = !item || disabledEquipmentSlots.has(slot);
     const tile = empty
       ? `<span class="overview-gear-empty" aria-label="${escapeHtml(label)}: empty"></span>`
@@ -2228,12 +2233,26 @@ function effectSummary(node, rank, multiplier=1) {
 
 const titleCase = (value) => value.replace(/([A-Z])/g, " $1").replace(/^./, (character) => character.toUpperCase());
 
+// A two-handed weapon in Weapon 1 blocks Weapon 2 (user request 2026-11-22; in game the slot shows the main weapon greyed under a
+// "no" circle). The blocked tile carries no data-equipment-slot, so no click, picker, drag or drop handler reaches it; a Weapon 2 item a
+// saved build still holds stays stored (the calculation leaves it out, src/planner.js) and a right-click on the tile unequips it.
+function offHandBlock(){ return twoHandedOffHandBlock(currentEquipmentImpact().allItems, disabledEquipmentSlots); }
+function activeMainHandItem(){ return disabledEquipmentSlots.has("mainHand")?null:currentEquipmentImpact().allItems.find((entry)=>entry.slot==="mainHand")||null; }
+function blockedOffHandTitle(block){ return `Blocked: ${block.mainHand.name} is two-handed${block.stored?`\n${block.stored.name} kept in Weapon 2 but not counted: Weapon 1 is two-handed (right-click to unequip it)`:""}`; }
+const BLOCKED_SLOT_GLYPH = '<svg class="two-handed-blocked-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><line x1="5.6" y1="18.4" x2="18.4" y2="5.6" stroke="currentColor" stroke-width="2"/></svg>';
+function blockedOffHandIcon(block){ return `<img src="${gearIcon(block.mainHand)}" alt="">${BLOCKED_SLOT_GLYPH}`; }
+function blockedOffHandTile(label, block){
+  const title=blockedOffHandTitle(block);
+  return `<button type="button" class="equipment-item disabled two-handed-blocked${block.stored?" two-handed-stored":""}" data-blocked-equipment-slot="secondaryHand" aria-disabled="true" aria-label="${escapeHtml(`${label}: ${title}`)}" title="${escapeHtml(title)}"><span>${label}</span><b>${blockedOffHandIcon(block)}</b><strong>Two-handed</strong><small>${block.stored?"Not counted":"Blocked"}</small></button>`;
+}
 function renderEquipment() {
   const equipmentImpact = currentEquipmentImpact();
   const items = equipmentImpact.allItems;
+  const blocked = twoHandedOffHandBlock(items, disabledEquipmentSlots);
+  if(blocked&&selectedEquipmentSlot==="secondaryHand")selectedEquipmentSlot="mainHand";
   const activeItems = items.filter((item) => !disabledEquipmentSlots.has(item.slot));
   const equipmentCount = document.querySelector("#equipment-count"); if (equipmentCount) equipmentCount.textContent = `${activeItems.length}/10`; /* not shown since 2026-10-29 */
-  $("#equipment-grid").innerHTML = equipmentSlots.map(([slot,label]) => { const item=items.find((entry)=>entry.slot===slot); const empty=!item||disabledEquipmentSlots.has(slot); return `<button type="button" class="equipment-item ${slot===selectedEquipmentSlot?"selected":""}${!empty&&curseItemOffReason(item)?" curse-limit-item":""} ${empty?"disabled":`rarity-${itemCardRarity(itemDisplayRarity(item),item)}${sixAffixClass(item)}${pricelessClass(item)}${itemLevel100Class(item)}${/scepter/i.test(item.base||"")?" scepter-icon":""}${/\bwand\b/i.test(item.base||"")?" wand-icon":""}`}" data-equipment-slot="${slot}" title="${empty?"Select this slot, then choose an Inventory item":"Right-click to unequip"}">${!empty&&curseItemOffReason(item)?curseOffBadge(curseItemOffReason(item)):""}<span>${label}</span><b>${empty?"+":`<img src="${gearIcon(item)}" alt="">`}</b><strong>${empty?"Empty":escapeHtml(item.name)}</strong><small>${empty?"Select slot":`Lv.${item.level||100}`}</small></button>`; }).join("");
+  $("#equipment-grid").innerHTML = equipmentSlots.map(([slot,label]) => { if(slot==="secondaryHand"&&blocked)return blockedOffHandTile(label,blocked); const item=items.find((entry)=>entry.slot===slot); const empty=!item||disabledEquipmentSlots.has(slot); return `<button type="button" class="equipment-item ${slot===selectedEquipmentSlot?"selected":""}${!empty&&curseItemOffReason(item)?" curse-limit-item":""} ${empty?"disabled":`rarity-${itemCardRarity(itemDisplayRarity(item),item)}${sixAffixClass(item)}${pricelessClass(item)}${itemLevel100Class(item)}${/scepter/i.test(item.base||"")?" scepter-icon":""}${/\bwand\b/i.test(item.base||"")?" wand-icon":""}`}" data-equipment-slot="${slot}" title="${empty?"Select this slot, then choose an Inventory item":"Right-click to unequip"}">${!empty&&curseItemOffReason(item)?curseOffBadge(curseItemOffReason(item)):""}<span>${label}</span><b>${empty?"+":`<img src="${gearIcon(item)}" alt="">`}</b><strong>${empty?"Empty":escapeHtml(item.name)}</strong><small>${empty?"Select slot":`Lv.${item.level||100}`}</small></button>`; }).join("");
   const inventory=inventoryItems();
   const inventoryCount=document.querySelector("#inventory-count"); if(inventoryCount)inventoryCount.textContent=`(${inventory.length})`; /* not shown since 2026-10-29 */
   $("#equipment-inventory").innerHTML=inventory.length ? `<div class="gear-inventory-grid">${inventory.map((item)=>`<article class="inventory-item rarity-${itemCardRarity(itemDisplayRarity(item),item)}${sixAffixClass(item)}${pricelessClass(item)}${itemLevel100Class(item)}" data-equip-inventory="${escapeHtml(item.id)}"><button type="button" class="inventory-item-main" data-equip-inventory="${escapeHtml(item.id)}"><span class="inventory-item-icon"><img src="${gearIcon(item)}" alt=""></span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.base||titleCase(item.slot))} · Lv.${item.level||100}</small></button>${isItemEquipped(item)?'<em class="equipment-status">Equipped</em>':""}<span class="inventory-item-tools"><button type="button" data-quick-edit-item="${escapeHtml(item.id)}" title="Edit item">✎</button><button type="button" data-duplicate-item="${escapeHtml(item.id)}" title="Duplicate item">◉</button></span></article>`).join("")}</div>`:`<div class="gear-empty"><strong>No items crafted yet</strong><span>Use a crafting button above to add an item.</span></div>`;
@@ -2254,6 +2273,8 @@ function compatibleEquipmentSlot(item){
     return selectedEquipmentSlot==="rightRing"?"rightRing":"leftRing";
   }
   if(item.slot==="mainHand"){
+    // A two-hander only goes in Weapon 1, and Weapon 2 takes nothing while Weapon 1 holds one (user request 2026-11-22).
+    if(isTwoHandedItem(item)||isTwoHandedItem(activeMainHandItem()))return "mainHand";
     if(selectedEquipmentSlot==="secondaryHand")return "secondaryHand";
     if(!disabledEquipmentSlots.has("mainHand")&&disabledEquipmentSlots.has("secondaryHand"))return "secondaryHand";
     return "mainHand";
@@ -2266,7 +2287,7 @@ function maxEquipmentEnergy(itemLevel,slot,base=""){
   const level=Number(itemLevel);
   const singleHandCaps=[0,9,12,15,18,21,34,48,61];
   const band=Number.isFinite(level)&&level>=45?Math.min(8,Math.floor((level-45)/5)+1):0;
-  const twoHanded=slot==="chest"||["Two-Handed Sword","Two-Handed Hammer","Two-Handed Axe","Tin Staff","Cudgel","Bow","Crossbow","Musket","Fire Cannon"].includes(base);
+  const twoHanded=slot==="chest"||TWO_HANDED_WEAPON_TYPES.includes(base);
   return singleHandCaps[band]*(twoHanded?2:1);
 }
 function selectedBeltBlend(root,selector="[data-craft-belt-blend]"){ return beltBlendById(root?.querySelector(selector)?.value); }
@@ -2310,9 +2331,12 @@ function pricelessClass(){ return ""; }
 function itemLevel100Class(item){ return !["vorax","legendary"].includes(itemDisplayRarity(item))&&(Number(item?.itemLevel??equippedInventorySource(item)?.itemLevel)===100||isPricelessItem(item))?" item-level-100":""; }
 function inventoryItems(){ const removed=new Set(plannerState.removedInventoryItemIds||[]); return [...selenaScorchingBeamGearSs13.items.map((item)=>({...item,id:`captured-${item.slot}`,rarity:"captured"})),...(plannerState.equipmentInventory||[])].filter((item)=>!removed.has(item.id)); }
 function equipInventoryItem(item,targetSlot=null){
-  if(!item) return; const slot=targetSlot||compatibleEquipmentSlot(item); if(!canDropGearInSlot(item,slot))return;
+  if(!item) return; const slot=targetSlot||compatibleEquipmentSlot(item);
+  if(!canDropGearInSlot(item,slot,{mainHandItem:activeMainHandItem()})){ if(slot==="secondaryHand")showToast(isTwoHandedItem(item)?`${toastText(item.name)} is two-handed: it goes in Weapon 1`:`Weapon 2 is blocked: ${toastText(activeMainHandItem()?.name||"Weapon 1")} is two-handed`); return; }
   const previousSlot=equippedSlotForInventoryItem(item);
   if(previousSlot&&previousSlot!==slot)disabledEquipmentSlots.add(previousSlot);
+  // Equipping a two-hander into Weapon 1 unequips Weapon 2 (game behaviour); its item stays in the Inventory.
+  if(slot==="mainHand"&&isTwoHandedItem(item))disabledEquipmentSlots.add("secondaryHand");
   const {id,source:sourceUrl,slot:sourceSlot,remoteIcon,...override}=item;
   for(const [equippedSlot,equipped] of Object.entries(plannerState.equipmentOverrides||{}))if(equippedSlot!==slot&&equipped.sourceInventoryId===id)delete plannerState.equipmentOverrides[equippedSlot];
   plannerState.equipmentOverrides[slot]={...structuredClone(override),sourceInventoryId:id}; disabledEquipmentSlots.delete(slot); selectedEquipmentSlot=slot; persistPlannerState(); renderCandidateViews(); showToast(`${toastText(item.name)} equipped`);
@@ -2385,11 +2409,13 @@ function configuredLegendaryModifiers(){ const selected=legendaryGearSs13[select
 function configuredLegendaryModifiersWithSpecials(){ const blend=beltBlendById(selectedLegendaryBeltBlendId), sequence=towerSequenceById(selectedLegendaryTowerSequenceId); return [...configuredLegendaryModifiers(),...(blend?[blend.modifier]:[]),...(sequence?[sequence.modifier]:[])]; }
 function maxRolledLegendaryModifiers(item){ return item.modifiers.map((_,index)=>{ const template=legendaryModifierTemplate(item,index), ranges=modifierRollRanges(template); return ranges.length?resolveModifierRolls(template,ranges.map(preferredModifierRoll)):template; }); }
 function affixRollInputs(range,attributes,current){ const value=Number.isFinite(current)?current:preferredModifierRoll(range), negativeOnly=range.max<=0, fill=negativeRollFill(range,value); return `<span class="affix-roll-inputs${negativeOnly?" negative-roll":""}"><input type="range" class="${negativeOnly?"negative-roll-range":""}" min="${range.min}" max="${range.max}" step="${modifierRollStep(range)}" value="${value}" style="${negativeOnly?`--roll-fill:${fill}%`:""}" ${attributes}><input class="affix-roll-number" type="number" min="${range.min}" max="${range.max}" step="${modifierRollStep(range)}" value="${value}" data-affix-roll-number></span><em>${value}</em>`; }
+// A joined legendary line's parts (src/calculation-coverage.js gearJoinedLineParts: Magmaskull, Iron Nest, Stray Bird's return line, …), one row each with its own badge (and its reason as the title), in the keyword lines' row markup, instead of one combined row badge.
+function gearJoinedPartsMarkup(parts){ return parts.map((part)=>`<span class="keyword-roll-line"><span>${escapeHtml(String(part.text??"").replace(/(\d)\s+%/g,"$1%"))}</span><b class="${part.status==="In calc"?"calculated":neutralStatuses.has(part.status)?"neutral":"pending"}"${part.reason?` title="${escapeHtml(`${part.status}: ${part.reason}`)}"`:""}>${escapeHtml(part.status)}</b></span>`).join(""); }
 // A modifier line as HTML (the one helper for every tooltip line: gear, belt blends, slates, memories, kismets, pact nodes, prisms,
 // talents). A keyword roll (Pantheon's Elegy's Dirges), a named gear affix (Wield My Sword, src/named-gear-affixes.js), a belt
 // blend's bracketed name or a core talent named on its own (src/core-talent-keywords.js; Alt lists its description, unbadged)
-// shows its keyword in the revived-memory keyword style; holding Alt (body.revival-alt-held, setRevivalAltDetails) expands it into its effect lines, each with its own badge when `lineStatus` (line -> status) is given, else inline "Keyword: effect". Other lines are plain text.
-function modifierTextMarkup(text,lineStatus=null){ const clean=String(text??"").replace(/(\d)\s+%/g,"$1%"), parts=keywordRollParts(clean); if(!parts)return escapeHtml(clean); const effect=lineStatus?`<span class="keyword-roll-effect keyword-roll-lines">${parts.effect.map((line,lineIndex)=>{ if(parts.description)return `<span class="keyword-roll-line"><span>${escapeHtml(line)}</span></span>`; const fixed=parts.statuses?.[lineIndex], status=fixed?.status||lineStatus(line); return `<span class="keyword-roll-line"><span>${escapeHtml(line)}</span><b class="${status==="In calc"?"calculated":neutralStatuses.has(status)?"neutral":"pending"}"${fullTextTitle(fixed?.reason)}>${escapeHtml(status)}</b></span>`; }).join("")}</span>`:`<span class="keyword-roll-effect">${parts.inline?` · ${escapeHtml(parts.keyword)}`:""}: ${escapeHtml(parts.effect.join("\n"))}</span>`; if(parts.inline)return `<span class="keyword-roll">${escapeHtml(parts.inline.before)}<span class="keyword-roll-name">${escapeHtml(parts.keyword)}</span>${escapeHtml(parts.inline.after)}${effect}</span>`; return `<span class="keyword-roll"><span class="keyword-roll-name">${escapeHtml(parts.keyword)}</span>${effect}</span>${parts.rest.map((line)=>`\n${escapeHtml(line)}`).join("")}`; }
+// shows its keyword in the revived-memory keyword style; holding Alt (body.revival-alt-held, setRevivalAltDetails) expands it into its effect lines, each with its own badge when `lineStatus` (line -> status) is given, else inline "Keyword: effect"; the lines after the keyword (a joined "Stray Bird +50% …", split by src/legendary-joined-lines.js, a donor's "+13% Block Ratio") stay shown, each with its own badge when `lineStatus` is given. Other lines are plain text.
+function modifierTextMarkup(text,lineStatus=null){ const clean=String(text??"").replace(/(\d)\s+%/g,"$1%"), parts=keywordRollParts(clean); if(!parts)return escapeHtml(clean); const effect=lineStatus?`<span class="keyword-roll-effect keyword-roll-lines">${parts.effect.map((line,lineIndex)=>{ if(parts.description)return `<span class="keyword-roll-line"><span>${escapeHtml(line)}</span></span>`; const fixed=parts.statuses?.[lineIndex], status=fixed?.status||lineStatus(line); return `<span class="keyword-roll-line"><span>${escapeHtml(line)}</span><b class="${status==="In calc"?"calculated":neutralStatuses.has(status)?"neutral":"pending"}"${fullTextTitle(fixed?.reason)}>${escapeHtml(status)}</b></span>`; }).join("")}</span>`:`<span class="keyword-roll-effect">${parts.inline?` · ${escapeHtml(parts.keyword)}`:""}: ${escapeHtml(parts.effect.join("\n"))}</span>`; if(parts.inline)return `<span class="keyword-roll">${escapeHtml(parts.inline.before)}<span class="keyword-roll-name">${escapeHtml(parts.keyword)}</span>${escapeHtml(parts.inline.after)}<small class="keyword-roll-hint">Hold Alt for details</small>${effect}</span>`; return `<span class="keyword-roll"><span class="keyword-roll-name">${escapeHtml(parts.keyword)}</span>${effect}</span>${parts.rest.map((line)=>{ if(!lineStatus)return `\n${escapeHtml(line)}`; const status=lineStatus(line); return `<span class="keyword-roll-line"><span>${escapeHtml(line)}</span><b class="${status==="In calc"?"calculated":neutralStatuses.has(status)?"neutral":"pending"}">${escapeHtml(status)}</b></span>`; }).join("")}`; }
 // A dropdown of the rolls a "<Random …>" placeholder line can take; empty when the line is not a resolved placeholder.
 // A tier dropdown for a tiered legendary line (src/legendary-affix-tiers.js, e.g. Ice Pulse's Spell Damage); it sets the line's
 // roll range. Empty for every other line, and while the line is corroded (the corroded form has its own range).
@@ -3602,8 +3628,8 @@ function gearTooltipContent(element) {
   const active=inventoryId?isItemEquipped(item):!disabledEquipmentSlots.has(item.slot);
   const impact=currentEquipmentImpact();
   const corrodedIndices=new Set(item.corrodedModifierIndices||[]), kindCodes={Implicit:"I","Implicit · Corroded":"I","Base Affix":"BA","Belt Blend":"BL","TOWER Sequence":"TS",Prefix:"P",Suffix:"S","Legendary Mod":"L","Corrosion Implicit":"C",Affix:"A"};
-  const sections=itemModifierSections(item).map((section)=>({...section,entries:section.entries.map((entry)=>{ const corroded=entry.tone==="corrosion"||corrodedIndices.has(entry.index), legendary=entry.tone==="legendary"||entry.badge==="L"; const status=gearLineCoverage(item,entry.text,active,currentPlanner().block,currentPlanner().lowResources,currentPlanner().blurEffects), curseReason=active?curseLineLeftOutReason(entry.text,item):"", coreReason=active&&(status==="Inactive"||status==="No DPS effect")?gearLineCoverageReason(item,entry.text):"";return {...entry,legendary,status,curseReason,coreReason,tone:corroded?"corrosion":status==="In calc"?"calculated":"pending",kind:corroded?"C":kindCodes[section.label]||"A"}; })}));
-  return {title:item.name,rarity:rarity.toLowerCase(),sixAffix:hasSixCraftAffixes(item),priceless:Boolean(pricelessClass(item)),itemLevel100:Boolean(itemLevel100Class(item)),html:`${aemberOriginBadge(item)}<div class="gear-tooltip-head"><img src="${gearIcon(item)}" alt=""><strong>${escapeHtml(item.name)}</strong><div><span>${escapeHtml(item.base||titleCase(item.slot))}</span><em class="${rarity.toLowerCase()}">${rarity}</em></div></div><div class="gear-tooltip-body">${curseLimitNoteHtml(sections.flatMap((section)=>section.entries).find((row)=>row.curseReason)?.curseReason)}<span class="gear-level">Require Lv ${item.level||1}</span>${item.energy&&equipmentEnergyAllowed(item.slot)?`<span class="gear-energy">${item.energy} Equipment Energy</span>`:""}<div class="tooltip-mod-sections">${sections.map((section)=>`<section><h4>${escapeHtml(section.label)}${section.detail?`<small>${escapeHtml(section.detail)}</small>`:""}</h4>${section.entries.length?`<ul>${section.entries.map((row)=>`<li class="${row.legendary?"legendary-affix ":""}${row.tone==="corrosion"?"corrosion-affix":""}">${row.badge?affixTierBadge(row.badge):`<i>${row.kind}</i>`}<span>${modifierTextMarkup(row.text,(line)=>gearLineCoverage(item,line,active,currentPlanner().block,currentPlanner().lowResources,currentPlanner().blurEffects))}</span><b class="${row.status==="In calc"?"calculated":neutralStatuses.has(row.status)?"neutral":"pending"}"${row.curseReason||row.coreReason?` title="${escapeHtml(`${row.status}: ${row.curseReason||row.coreReason}`)}"`:""}>${row.status}</b></li>`).join("")}</ul>`:""}</section>`).join("")||"<p>No modifiers configured</p>"}</div></div><small>${inventoryId?"Click to manage · Right-click to equip":"Click to inspect · Right-click to unequip"}</small>`};
+  const sections=itemModifierSections(item).map((section)=>({...section,entries:section.entries.map((entry)=>{ const corroded=entry.tone==="corrosion"||corrodedIndices.has(entry.index), legendary=entry.tone==="legendary"||entry.badge==="L"; const status=gearLineCoverage(item,entry.text,active,currentPlanner().block,currentPlanner().lowResources,currentPlanner().blurEffects), curseReason=active?curseLineLeftOutReason(entry.text,item):"", coreReason=active&&(status==="Inactive"||status==="No DPS effect")?gearLineCoverageReason(item,entry.text):"";const parts=keywordRollParts(String(entry.text??"").replace(/(\d)\s+%/g,"$1%"))?null:gearJoinedLineParts(item,entry.text,active,currentPlanner().block,currentPlanner().lowResources,currentPlanner().blurEffects);return {...entry,legendary,status,parts,curseReason,coreReason,tone:corroded?"corrosion":status==="In calc"?"calculated":"pending",kind:corroded?"C":kindCodes[section.label]||"A"}; })}));
+  return {title:item.name,rarity:rarity.toLowerCase(),sixAffix:hasSixCraftAffixes(item),priceless:Boolean(pricelessClass(item)),itemLevel100:Boolean(itemLevel100Class(item)),html:`${aemberOriginBadge(item)}<div class="gear-tooltip-head"><img src="${gearIcon(item)}" alt=""><strong>${escapeHtml(item.name)}</strong><div><span>${escapeHtml(item.base||titleCase(item.slot))}</span><em class="${rarity.toLowerCase()}">${rarity}</em></div></div><div class="gear-tooltip-body">${curseLimitNoteHtml(sections.flatMap((section)=>section.entries).find((row)=>row.curseReason)?.curseReason)}<span class="gear-level">Require Lv ${item.level||1}</span>${item.energy&&equipmentEnergyAllowed(item.slot)?`<span class="gear-energy">${item.energy} Equipment Energy</span>`:""}<div class="tooltip-mod-sections">${sections.map((section)=>`<section><h4>${escapeHtml(section.label)}${section.detail?`<small>${escapeHtml(section.detail)}</small>`:""}</h4>${section.entries.length?`<ul>${section.entries.map((row)=>`<li class="${row.legendary?"legendary-affix ":""}${row.tone==="corrosion"?"corrosion-affix":""}">${row.badge?affixTierBadge(row.badge):`<i>${row.kind}</i>`}${row.parts?`<span>${gearJoinedPartsMarkup(row.parts)}</span>`:`<span>${modifierTextMarkup(row.text,(line)=>gearLineCoverage(item,line,active,currentPlanner().block,currentPlanner().lowResources,currentPlanner().blurEffects))}</span><b class="${row.status==="In calc"?"calculated":neutralStatuses.has(row.status)?"neutral":"pending"}"${row.curseReason||row.coreReason?` title="${escapeHtml(`${row.status}: ${row.curseReason||row.coreReason}`)}"`:""}>${row.status}</b>`}</li>`).join("")}</ul>`:""}</section>`).join("")||"<p>No modifiers configured</p>"}</div></div><small>${inventoryId?"Click to manage · Right-click to equip":"Click to inspect · Right-click to unequip"}</small>`};
 }
 function sageScentTooltipContent(element){
   const kind=element.dataset.sageScentTooltip, isElixir=kind==="elixir"||kind==="specialElixir";
@@ -3963,7 +3989,7 @@ document.addEventListener("pointermove", (event) => {
       gearDrag.ghost.className="gear-drag-ghost";
       gearDrag.ghost.innerHTML=`<img src="${gearIcon(gearDrag.item)}" alt=""><span>${escapeHtml(gearDrag.item.name)}</span>`;
       document.body.append(gearDrag.ghost);
-      document.querySelectorAll("#equipment-grid [data-equipment-slot]").forEach((slot)=>slot.classList.toggle("gear-drop-eligible",canDropGearInSlot(gearDrag.item,slot.dataset.equipmentSlot)));
+      document.querySelectorAll("#equipment-grid [data-equipment-slot]").forEach((slot)=>slot.classList.toggle("gear-drop-eligible",canDropGearInSlot(gearDrag.item,slot.dataset.equipmentSlot,{mainHandItem:activeMainHandItem()})));
       if(gearDrag.fromSlot)$("#equipment-inventory").classList.add("gear-drop-eligible");
       hidePlannerTooltip();
     }
@@ -3973,7 +3999,7 @@ document.addEventListener("pointermove", (event) => {
       gearDrag.ghost.style.top=`${toPagePx(event.clientY)+14}px`;
       const pointed=document.elementFromPoint(event.clientX,event.clientY);
       const slot=pointed?.closest("#equipment-grid [data-equipment-slot]");
-      const target=slot&&canDropGearInSlot(gearDrag.item,slot.dataset.equipmentSlot)?slot:gearDrag.fromSlot?pointed?.closest("#equipment-inventory"):null;
+      const target=slot&&canDropGearInSlot(gearDrag.item,slot.dataset.equipmentSlot,{mainHandItem:activeMainHandItem()})?slot:gearDrag.fromSlot?pointed?.closest("#equipment-inventory"):null;
       gearDrag.target?.classList.remove("gear-drop-target");
       gearDrag.target=target||null;
       gearDrag.target?.classList.add("gear-drop-target");
@@ -4364,6 +4390,12 @@ document.addEventListener("contextmenu", (event) => {
     if(plannerState.talents.installedPrismNodes?.[panelName]===nodeButton.dataset.coordinate&&plannerState.talents.installedPrisms?.[panelName]){const item=plannerState.talents.prismInventory.find((entry)=>entry.id===plannerState.talents.installedPrisms[panelName]);clearInverseReflectedRanks(panelName,item,nodeButton.dataset.coordinate);delete plannerState.talents.installedPrisms[panelName];delete plannerState.talents.installedPrismNodes[panelName];if(item?.type==="inverse")reconcileTalentRanksAfterPrismChange(panelName);persistPlannerState();renderCandidateViews();showToast("Prism removed from talent node");return;}
     const coordinate=nodeButton.dataset.coordinate,empty=!(talentRanks.get(`${currentTalentPanel().name}:${coordinate}`)||0);
     changeTalentRank(coordinate,empty?1:-1,empty);
+    return;
+  }
+  const blockedEquipment = event.target.closest("#equipment-grid [data-blocked-equipment-slot]");
+  if (blockedEquipment) {
+    event.preventDefault(); const stored = offHandBlock()?.stored;
+    if (stored) { disabledEquipmentSlots.add("secondaryHand"); persistPlannerState(); renderCandidateViews(); showToast(`${toastText(stored.name)} unequipped`); }
     return;
   }
   const equipment = event.target.closest("[data-equipment-slot]");
@@ -5202,7 +5234,7 @@ function finishGearDrag(event,cancelled=false){
   setTimeout(()=>{suppressGearClick=false;},0);
   const pointed=cancelled?null:document.elementFromPoint(event.clientX,event.clientY);
   const targetSlot=pointed?.closest("#equipment-grid [data-equipment-slot]")?.dataset.equipmentSlot;
-  if(targetSlot&&canDropGearInSlot(drag.item,targetSlot)){
+  if(targetSlot&&canDropGearInSlot(drag.item,targetSlot,{mainHandItem:activeMainHandItem()})){
     if(targetSlot!==drag.fromSlot)equipInventoryItem(drag.item,targetSlot);
     return;
   }
@@ -5357,7 +5389,8 @@ document.addEventListener("click", (event) => {
   const option = group?.compared?.[Number(button.dataset.choiceIndex)];
   if (!option || option.label === group.chosen) return;
   const overrides = { ...(plannerState.combat.bestCaseOverrides || {}) };
-  for (const key of Object.keys(option.overrides || {})) { delete overrides[key]; delete plannerState.combat.conditions[key]; }
+  // Every key of the group's options (the Distance group's 10 m option carries a second key), so a pin never keeps another option's key.
+  for (const key of new Set((group.compared || []).flatMap((item) => Object.keys(item.overrides || {})))) { delete overrides[key]; delete plannerState.combat.conditions[key]; }
   if (option.label !== (group.best ?? group.chosen)) Object.assign(overrides, option.overrides);
   plannerState.combat.bestCaseOverrides = overrides;
   persistPlannerState(); renderConfiguration();
@@ -5486,12 +5519,14 @@ document.addEventListener("change", (event) => {
       // Keep the Life / Mana group choices automatic mode made (src/planner.js exclusiveConditionGroups).
       for (const id of ["lowLifeAssumed", "lowManaAssumed"]) plannerState.combat.conditions[id] = active[id] === true;
       plannerState.combat.conditions.nearTarget = active.nearTarget !== false;
+      // The Distance group's 10 m alternative (no manual switch of its own: kept as the automatic choice left it).
+      if (active.distantTenMeters === true) plannerState.combat.conditions.distantTenMeters = true; else delete plannerState.combat.conditions.distantTenMeters;
       // The Config tab's pinned choices (combat.bestCaseOverrides) become the manual switches they selected.
       plannerState.combat.conditions.blurRecentlyEnded = active.blurRecentlyEnded === true;
       plannerState.combat.bestCaseOverrides = Object.fromEntries(Object.entries(plannerState.combat.bestCaseOverrides || {}).filter(([id]) => !exclusiveChoiceConditionIds.includes(id)));
     }
     // Back to automatic: drop the manual Distance choice so the Distance group compares again (a saved nearTarget applies in both modes).
-    if (event.target.checked) delete plannerState.combat.conditions.nearTarget;
+    if (event.target.checked) { delete plannerState.combat.conditions.nearTarget; delete plannerState.combat.conditions.distantTenMeters; }
     plannerState.combat.conditionMode = event.target.checked ? "auto" : "manual";
     persistPlannerState(); renderConfiguration();
   }

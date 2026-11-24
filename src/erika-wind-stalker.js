@@ -25,10 +25,11 @@
 //   dummy counts as a Boss, so an Elite (src/dummy-target.js).
 //
 // Provisional readings (listed in the recount assumptions; questions to the user):
-// - Sequence: see multistrikeSequence. User-accepted 2026-10-14 (research/google-ai-mode-answers-2026-10-13.md §10): the
-//   initial count shifts every count and the attack count follows the chance; "during Multistrike" = the repeated attacks
-//   only, not the triggering first hit. Still provisional: the max-count attack = the last of a sequence; one Max Multistrike Count event per
-//   sequence that multistrikes). Hunting Instinct's "+1 Max Multistrike Count" is the same shift under that reading.
+// - Sequence: see multistrikeSequence. SS14 client (user decision 2026-11-20, replacing the 2026-10-14 reading that the initial count shifts
+//   every count): the initial count raises the first count and the count stops rising at the sequence's Max Multistrike Count, its attacks +
+//   field 2006253 (Hunting Instinct's "+1 Max Multistrike Count", record 7905245); every strike at the max takes Hunting Instinct's +15%
+//   (tag 6010061). User-accepted 2026-10-14 (research/google-ai-mode-answers-2026-10-13.md §10), still provisional: "during Multistrike" =
+//   the repeated attacks only, not the triggering first hit; one Max Multistrike Count event per sequence that multistrikes.
 // - Stalker stacks held = min(max stacks, gains per second × duration) (each stack on its own timer; a refresh-all reading
 //   gives the same count whenever gains × duration ≥ max). The duration is 4 s × (1 + Skill Effect Duration): buff 82151 carries
 //   tag 5100310 as Electrify's does (2026-10-31). Max stacks 3 + Cat's Vision's +3 once Max Multistrike Count events
@@ -208,6 +209,8 @@ export function resolveWindStalker({ state, hits = [] } = {}) {
   const diveChance = state.catDive?.chancePercent || 0;
   const stateAt = ({ stacks, hiOn, scratchOn, dive = true }) => ({
     initialCountBonus: initialBonus(stacks) + (hiOn ? HUNTING_INSTINCT.initialCountBonus : 0),
+    // Hunting Instinct's buff 82194 (record 7905245) writes field 2006253 too: +1 to the sequence's Max Multistrike Count.
+    maxCountBonus: hiOn ? HUNTING_INSTINCT.maxCountBonus : 0,
     repeatAdditionalPercent: stacks * STALKER.perStackAdditionalPercent,
     maxCountAdditionalPercent: hiOn ? HUNTING_INSTINCT.maxCountAttackAdditionalPercent : 0,
     incrementAdditionalPercent: scratchOn ? scratchLine.percent : 0,
@@ -218,14 +221,14 @@ export function resolveWindStalker({ state, hits = [] } = {}) {
   // Ledger steps (the working): Cat's Punches' initial count, Stalker's damage, Cat's Scratch, Cat Dive, then Hunting Instinct.
   const steps = [];
   const at = (stacks, scratchOn) => stateAt({ stacks, hiOn: false, scratchOn, dive: false });
-  if (initialBonus(held) > 0) steps.push({ source: "Hero trait: Cat's Punches (Stalker stacks)", text: `+${initialBonus(held)} initial Multistrike Count (${held} Stalker stacks ÷ ${base.initial.per} × ${base.initial.count}): every count of the sequence shifts by ${initialBonus(held)} (user-accepted 2026-10-14: herowik / reference data Multistrike)`, states: [{ weight: 1, ...at(held, false), repeatAdditionalPercent: 0 }] });
+  if (initialBonus(held) > 0) steps.push({ source: "Hero trait: Cat's Punches (Stalker stacks)", text: `+${initialBonus(held)} initial Multistrike Count (${held} Stalker stacks ÷ ${base.initial.per} × ${base.initial.count}): the count starts ${initialBonus(held)} higher and stops rising at the sequence's Max Multistrike Count, its attacks (SS14 client 0x141e1e770, user decision 2026-11-20, replacing the 2026-10-14 shift of every count; provisional, open question multistrike-count-cap-links)`, states: [{ weight: 1, ...at(held, false), repeatAdditionalPercent: 0 }] });
   if (held > 0) steps.push({ source: "Erika: Stalker (Wind Stalker)", text: `${held} Stalker stack${held === 1 ? "" : "s"} × +${STALKER.perStackAdditionalPercent}% additional damage on the repeated attacks of each Multistrike (${fromMovement ? "held by movement" : `held: min(${maxStacks} max, ${round(gainPerSecond)} gains/s × ${base.durationSeconds} s)`}; provisional)`, states: [{ weight: 1, ...at(held, false) }] });
   if (scratchHeld) steps.push({ source: "Hero trait: Cat's Scratch", text: `+${scratchLine.percent}% additional Multistrike damage increment (Max Multistrike Count every ${round(1 / eventsPerSecond)} s ≤ ${scratchLine.seconds} s; its own factor on the increment: game affix 889828224, attr 63501 mod 4)`, states: [{ weight: 1, ...at(held, true) }] });
   if (diveChance > 0) {
     const dive = state.catDive;
     steps.push({ source: "Hero trait: Cat Dive", text: `${dive.perPercent}% per +1% Movement Speed × ${round(dive.movementSpeedPercent)}% = ${round(dive.chancePercent)}%${dive.rawChancePercent > 100 ? " (capped at 100%)" : ""} chance per repeated attack to deal the Max Multistrike Count attack's damage increment instead of its own (Movement Speed held in full: user rule 2026-10-14; reading user-confirmed 2026-10-14, provisional; a dive is not a Max Multistrike Count event)`, states: [{ weight: 1, ...stateAt({ stacks: held, hiOn: false, scratchOn: scratchHeld }) }] });
   }
-  if (hi) steps.push({ source: `Hunting Instinct (${HUNTING_INSTINCT.revivedAffix}, ${hi.memory})`, text: `+${HUNTING_INSTINCT.initialCountBonus} initial and Max Multistrike Count, +${HUNTING_INSTINCT.maxCountAttackAdditionalPercent}% additional Attack Damage on the attack at the Max Multistrike Count; up 100% of the time (${HUNTING_INSTINCT.interestStacks} Interest locked, not used up, so it restarts as soon as its ${HUNTING_INSTINCT.durationSeconds} s end; user-confirmed 2026-10-14)`, states: sustainedStates });
+  if (hi) steps.push({ source: `Hunting Instinct (${HUNTING_INSTINCT.revivedAffix}, ${hi.memory})`, text: `+${HUNTING_INSTINCT.initialCountBonus} initial and Max Multistrike Count, +${HUNTING_INSTINCT.maxCountAttackAdditionalPercent}% additional Attack Damage on every strike at the Max Multistrike Count (record 7905245, tag 6010061); up 100% of the time (${HUNTING_INSTINCT.interestStacks} Interest locked, not used up, so it restarts as soon as its ${HUNTING_INSTINCT.durationSeconds} s end; user-confirmed 2026-10-14)`, states: sustainedStates });
   const effectsFor = (hit) => hit?.rate?.multistrike && steps.length ? { steps } : null;
 
   // Windows: the stack count and Hunting Instinct over time (own buffs built before engaging start full).

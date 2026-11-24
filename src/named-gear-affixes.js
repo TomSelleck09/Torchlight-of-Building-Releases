@@ -49,3 +49,13 @@ export const NAMED_GEAR_AFFIX_LINES = Object.freeze({
 export function namedGearAffixLines(text) {
   return NAMED_GEAR_AFFIX_LINES[String(text ?? "").trim()] || [];
 }
+
+/**
+ * Is `text` a named gear affix header whose effect lines src/modifier-texts.js adds after it? Such a header is the item's game affix
+ * (Law of Trinity is record 474135584: labels 3001218 / 3001219 / 3001150 / 3001190 and attr 5727 +400 on Attack Hit), and its expanded
+ * lines are read by their own models (src/trinity.js, src/damage-type-restriction.js …). So the header itself is a name: the recipe
+ * readers do not read its record again (src/recipe-interpreter.js interpretLine; research/affix-recipe-rebuild-2026-11-20.md).
+ */
+export function isNamedGearAffixHeader(text) {
+  return Object.prototype.hasOwnProperty.call(NAMED_GEAR_AFFIX_LINES, String(text ?? "").trim());
+}

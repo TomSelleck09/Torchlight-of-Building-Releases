@@ -105,9 +105,10 @@ export function itemTriggerEvent(trigger, state = {}) {
     }
     case "mobility": {
       const uses = Number(state.mobilityUsesPerSecond) || 0;
-      if (!(uses > 0)) return { active: false, reason: "no enabled Mobility skill with a cooldown is used" };
+      if (!(uses > 0)) return { active: false, reason: state.mobilityUsesNote ? "no Mobility skill is pressed (nothing it keeps up moves damage; user decision 2026-11-23)" : "no enabled Mobility skill with a cooldown is used" };
       const intervalSeconds = Math.max(trigger.intervalSeconds, 1 / uses);
-      return { active: true, reason: `${Math.round(uses * 1000) / 1000} Mobility uses/s (best case, each on cooldown)`, intervalSeconds };
+      // `mobilityUsesNote` (src/planner.js): the uses are the presses the rotation sets (user decision 2026-11-23), not each skill at its cooldown.
+      return { active: true, reason: `${Math.round(uses * 1000) / 1000} Mobility uses/s (${state.mobilityUsesNote || "best case, each on cooldown"})`, intervalSeconds };
     }
     default: return { active: false, reason: "unknown event" };
   }

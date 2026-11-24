@@ -1,9 +1,40 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { dummyTarget, explicitRadiusHolds } from "./dummy-target.js";
 import { supportProgressionSs13 } from "./data/skills/support-progression-ss13.generated.js";
-import { parseProgressionCell, supportColumnValues } from "./support-effects.js";
+import { parseProgressionCell, supportColumnValues, settleEliteEffect } from "./support-effects.js";
 import { buffDataMode, skillBuffValue } from "./game-skill-data.js";
 import { empowerAdditionalLines } from "./storm-command.js";
+import { clauseThisSkillWrites } from "./skill-hit-debuffs.js";
+import { OWN_BUFF_RECORD_TABLE } from "./data/game/own-buff-records.generated.js";
+import { AFFIX_RECIPES } from "./data/game/affix-recipes.generated.js";
+
+// Aim's buff (config_char_buff 10320) carries tags [5100310, 5100311 Empower, 5100319]; its value is p0 × GetEffectScale, which sums the
+// caster's attr 3401 with the buff's tags and Aim's own id (the query src/skill-hit-debuffs.js documents). So every "this skill" 3401 write on
+// Aim's supports whose tags sit inside those tags is part of its Effect (6 T Corrosive Throw G5, user decision 2026-11-20: the game records
+// over the skill text's "not affected by the effects of Empower Skills", which concerns its −16% speed). Mass Effect and Well-Fought Battle
+// keep their readings below (by name, Aim's charges and the held stacks); every other such clause is read here by its record.
+const AIM_BUFF_TAGS = OWN_BUFF_RECORD_TABLE[10320]?.[2] || [5100310, 5100311, 5100319];
+const AIM_EFFECT_BY_NAME = new Set(["Mass Effect", "Well-Fought Battle"]);
+/** The Aim setup's other "this skill" Effect clauses (a 3401 write inside buff 10320's tags), each { clause, write, value } with its gate settled. */
+// `conditions` ({ nearTarget, distantMeters }): settles a Thrive-style Elite gate the setup's first resolve left open (active null).
+export function aimRecordEffectClauses(setup, conditions = null) {
+  const enabled = new Set((setup?.supports || []).filter((support) => support.enabled !== false).map((support) => support.name));
+  const out = [];
+  for (const clause of setup?.supportEffects?.clauses || []) {
+    const name = String(clause.source || "").replace(/^Support: /, "");
+    if (AIM_EFFECT_BY_NAME.has(name) || !enabled.has(name)) continue;
+    const found = clauseThisSkillWrites(clause);
+    const write = found?.writes.find((item) => item.attr === 3401 && item.tags.every((tag) => AIM_BUFF_TAGS.includes(tag)));
+    if (!write) continue;
+    // A gated row (Thrive in Adversity's Elite within 20 m, condition node 189) counts only when its clause settled the gate as held.
+    const gated = (AFFIX_RECIPES[found.id]?.r || []).some((row) => (row.g || []).length && (row.e || []).some((effect) => effect.n === 101 && effect.a === 3401));
+    const settled = clause.active == null && clause.kind === "conditionalEffect" && conditions ? settleEliteEffect(clause, conditions) : clause;
+    if ((gated || settled.active != null) && settled.active !== true) { out.push({ clause, write, value: 0, held: false }); continue; }
+    const value = Number(settled.appliedValue ?? clause.value) || 0;
+    out.push({ clause, write, value, held: value !== 0 });
+  }
+  return out;
+}
 
 // A linked support's per-level value from its reference data progression column (the first number of the cell at the support's
 // level, 1–40); the linear fallback only when the table has no cell. Mass Effect's step above Lv20 is lower since the
@@ -36,7 +67,7 @@ const supportText = (support) => {
   return normalizePercentageText(configured && /^Activation Medium:/.test(support.name) ? configured : effects.join(" | "));
 };
 
-export function calculateAim(setup, { enabled = true, uptimePercent, charges, battleStacks = 3, modifierTexts = [], itemTrigger = null } = {}) {
+export function calculateAim(setup, { enabled = true, uptimePercent, charges, battleStacks = 3, modifierTexts = [], itemTrigger = null, conditions = null } = {}) {
   if (!setup || setup.enabled === false || !enabled) return inactive();
   const level = Number(setup.effectiveLevel || setup.baseLevel || 20);
   // Aim's buff (config_char_buff 10320, game mode; research §17): "+X% additional damage for Projectile and Beam Skills" (200000303) and
@@ -132,12 +163,20 @@ export function calculateAim(setup, { enabled = true, uptimePercent, charges, ba
     if (recovery) { const value = Number(recovery[1]) * multiplier; cooldownRecoveryPercent += value; cooldownSources.push({ source: line.source, value, kind: "increased" }); }
   }
 
-  const effectPercent = sources.reduce((sum, entry) => sum + entry.value, 0);
+  // The other "this skill" Effect clauses by their records (G5): mod 3 joins the increased sum, mod 4 is its own factor.
+  let ownAdditionalFactor = 1;
+  for (const item of aimRecordEffectClauses(setup, conditions)) {
+    if (!item.held) continue;
+    const source = item.clause.source || "Support";
+    if (item.write.mod === 4) { ownAdditionalFactor *= Math.max(0, 1 + item.value / 100); sources.push({ source, value: item.value, category: "Aim effect (additional)", additional: true, record: Number(item.clause.game?.id) || null }); }
+    else sources.push({ source, value: item.value, category: "Aim effect", record: Number(item.clause.game?.id) || null });
+  }
+  const effectPercent = sources.filter((entry) => !entry.additional).reduce((sum, entry) => sum + entry.value, 0);
   // "+X% additional Empower Skill (and Defensive Skill) Effect" (Storm's Command's -99%, game affix 12665181 attr 3401 additional on
   // Empower-tagged effects; core audit B8): Aim is an Empower Skill, so its damage bonus takes it; its -16% Attack and Cast Speed
   // "is not affected by the effects of Empower Skills" (skill text) and stays.
   const empowerAdditional = empowerAdditionalLines(modifierTexts);
-  const damagePercent = base * (1 + effectPercent / 100) * empowerAdditional.factor;
+  const damagePercent = base * (1 + effectPercent / 100) * ownAdditionalFactor * empowerAdditional.factor;
   const durationSeconds = baseDurationSeconds * Math.max(0, 1 + durationPercent / 100) * additionalDurationFactor;
   const cooldownSeconds = baseCooldownSeconds / Math.max(1e-9, (1 + cooldownRecoveryPercent / 100) * additionalCooldownRecoveryFactor);
   // A trigger fires at most once per cooldown; one slower than the cooldown sets the cadence.

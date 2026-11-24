@@ -5,6 +5,7 @@
 import { legendaryPlaceholderPoolsSs13 } from "./data/gear/legendary-placeholder-pools-ss13.generated.js";
 import { legendaryRolledSlotsSs14 } from "./data/gear/legendary-rolled-slots-ss14.generated.js";
 import { namedGearAffixLines } from "./named-gear-affixes.js";
+import { splitJoinedLegendaryLines } from "./legendary-joined-lines.js";
 import { beltBlendsSs13 } from "./data/gear/belt-blends-ss13.generated.js";
 import { inlineKeywordParts } from "./inline-keywords.js";
 import { coreTalentDescriptionLines, coreTalentMentionParts } from "./core-talent-keywords.js";
@@ -89,6 +90,14 @@ export function keywordRollParts(text) {
   // name, so its effect lines come from the table; any following lines (a corroded donor's "+(12–15)% Block Ratio") stay as rest.
   const named = namedGearAffixLines(keyword);
   if (named.length) return { keyword, effect: [...named], rest: lines.slice(1), named: true };
+  // A named gear affix the catalog prints joined to the line after it ("Stray Bird +50% additional Returning Projectile Damage",
+  // src/legendary-joined-lines.js): split as the readers split it, then read as the newline form above.
+  const joined = splitJoinedLegendaryLines(text);
+  if (joined !== text) {
+    const joinedLines = joined.split("\n");
+    const joinedNamed = namedGearAffixLines(joinedLines[0].trim());
+    if (joinedNamed.length) return { keyword: joinedLines[0].trim(), effect: [...joinedNamed], rest: joinedLines.slice(1), named: true };
+  }
   // A belt blend with a bracketed name ("[Reflection] +6% additional damage …\nMinions …", src/data/gear/belt-blends-ss13.generated.js):
   // the name is the keyword and every line, the first without its bracket, is an effect line. Only a blend's own text matches.
   const blendName = beltBlendKeywords.get(normalizeLines(text));
@@ -101,6 +110,7 @@ export function keywordRollParts(text) {
   // An inline keyword (src/inline-keywords.js: Eternity's "… stack(s) of Eternal Morale on defeat …"): the keyword sits mid-line,
   // so the line keeps its text around it (`inline`), and each effect line carries the keyword's own badge (`statuses`).
   const inline = inlineKeywordParts(text);
+  if (inline?.description) return { keyword: inline.keyword, effect: inline.effect.map((line) => line.text), rest: [], named: false, description: true, inline: { before: inline.before, after: inline.after } };
   if (inline) return { keyword: inline.keyword, effect: inline.effect.map((line) => line.text), rest: [], named: false, inline: { before: inline.before, after: inline.after }, statuses: inline.effect.map(({ status, reason }) => ({ status, reason })) };
   // A core talent named inside a Core Talent line (an Ethereal Prism's "Replaces the Core Talent … with Fiery Fantasy.", its
   // mutated-core "[Fiery Fantasy]"; src/core-talent-keywords.js): an inline keyword whose Alt effect is the core's description.

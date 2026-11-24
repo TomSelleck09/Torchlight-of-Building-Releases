@@ -139,8 +139,20 @@ export const SOLID_RIVER_DAMAGE_LINE = /^For every \+?([\d.]+)% Spell Burst Char
 // skill (checkCD, checkState; not Barrier Burst, not an Attack unless Terra) with the Spell Burst tag 6010100; row 1 empties Spell Burst
 // on that cast. So it activates the Main Skill's Spell Burst every full charge without a player cast (src/skill-hit-model.js).
 export const SOLID_RIVER_TRIGGER_LINE = /^When Burst Charge Recovery Speed is at least ([\d.]+)% of the base value, reaching the Max Spell Burst Charge triggers the Main Skill on the nearest enemy within [\d.]+ ?m and attempts to activate the Main Spell Skill's Spell Burst(?: -?[\d.]+% Movement Speed)?$/i;
+// Nether King's Divinity: Banishment's Bonus Effect Spell Burst (config_modifier 151200401, affix 378286592; not in the generated recipe
+// table, read from the raw affix catalog: 4 T Thea audit G4, 2026-11-23): row 1 has the two resource-11 gates (Spell Burst full), the
+// 25 m enemy count and node 2320 casting the Main Skill (filterTag 6020000 / 6000200, tag 6010100) with the same parameters as Solid
+// River's 493789504, and row 2 acts on that cast (1000069 [6010100, 6020000]) on resource 11 as Solid River's does. It has no Charge
+// Speed gate, so it is read as Solid River's trigger at threshold 0 (user decision 2026-11-23: "like Solid River"; provisional, it rests
+// on the Solid River reading: open question banishment-spell-burst-trigger).
+export const BANISHMENT_SPELL_BURST_TRIGGER_LINE = /^When Spell Burst is fully charged, triggers the Main Spell Skill on the nearest enemy within [\d.]+ ?m and attempts to activate the Main Spell Skill's Spell Burst$/i;
 const clean = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim();
-/** Solid River's trigger lines in the modifier list: [{ source, text, thresholdPercent }]. */
+/** The full-charge Main Skill trigger lines in the modifier list (Solid River's, Banishment's), lowest threshold first: [{ source, text, thresholdPercent, recipe }]. */
 export function solidRiverTriggers(modifierTexts = []) {
-  return modifierTexts.flatMap((line) => { const match = clean(line.text).match(SOLID_RIVER_TRIGGER_LINE); return match && line.origin !== "derived" ? [{ source: line.source, text: clean(line.text), thresholdPercent: Number(match[1]) }] : []; });
+  return modifierTexts.flatMap((line) => {
+    if (line.origin === "derived") return [];
+    const text = clean(line.text), solid = text.match(SOLID_RIVER_TRIGGER_LINE);
+    if (solid) return [{ source: line.source, text, thresholdPercent: Number(solid[1]), recipe: 493789504 }];
+    return BANISHMENT_SPELL_BURST_TRIGGER_LINE.test(text) ? [{ source: line.source, text, thresholdPercent: 0, recipe: 378286592 }] : [];
+  }).sort((a, b) => a.thresholdPercent - b.thresholdPercent);
 }

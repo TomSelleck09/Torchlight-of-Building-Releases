@@ -17,6 +17,7 @@
 // setAffixRecipeData().
 import { lineNumbers, placeholderOrder, shape } from "./affix-shape.js";
 import { normalizePercentageText } from "./percentage-text.js";
+import { isNamedGearAffixHeader } from "./named-gear-affixes.js";
 
 let DATA = null;
 let lineIndex = null;
@@ -226,6 +227,9 @@ export const NODE_TYPES = Object.freeze({
   232: N("castMode", "change the supported skill's cast mode (instant cast …)"),
   107: N("label", "set state label `label` (a mode / flag read elsewhere)"),
   627: N("resource", "change fight resource `resourceType` (1 Fervor, 2 Blur Rating, 6 Affliction, 11 Spell Burst Charge …)"),
+  // 2026-11-20 (research/affix-recipe-rebuild-2026-11-20.md): Necklace of Firebird's 322245 row 4 declares resource 23 (the Barrier
+  // store its Barrier Burst casts read, init 0); 683950 / 949461 declare Order's resources 7 / 8, 2705693 resource 24. No reader.
+  634: N("resourceDefine", "declare fight resource `resource` on the holder: initial value `initValue`, limits `minLimit`–`maxLimit`"),
   2100: N("resource", "generate Rage"),
   434: N("resource", "add charging progress"),
   631: N("reap", "Reap `reapTime` s of DoT", "sourced"),
@@ -1148,6 +1152,11 @@ function bindById(text, ids, multiplier) {
 export function interpretLine(text, { multiplier = 1, origin = null, ids = null, line = null } = {}) {
   lineIndex ??= buildLineIndex();
   const raw = normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim();
+  // A named gear affix header ("Law of Trinity") whose effect lines src/modifier-texts.js adds after it: those lines carry the record's
+  // effects to their own readers, so the header line is only a name and resolves to no recipe (one owner per effect; reading record
+  // 474135584 here too counted Trinity's ×5 twice: research/affix-recipe-rebuild-2026-11-20.md). Decided by the text, so every reader's
+  // cache keyed on origin and text stays consistent. A bare text (no `line`: scripts, the census) still resolves.
+  if (line?.origin === "gear" && isNamedGearAffixHeader(raw)) return null;
   const game = !ids && line ? lineGameIds(line) : null;
   // A line the planner settled from another one (src/line-effects.js: a condition held, a per-stat value; a trait keyword's own
   // lines) is not the game line itself: its record id belongs to `derivedFrom`, which is reported, and the text reading stays.

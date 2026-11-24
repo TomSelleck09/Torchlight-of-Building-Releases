@@ -2,7 +2,7 @@
 // read-only, no script decryption): the records of the buffs the planner holds on you (src/unit-buff-set.js, W9 step 2).
 // OWN_BUFF_RECORD_TABLE[buff id] = [planner name, game internal name, status tags (51xxxxx), unit states (40xxxxx), rows?]; rows (the keyword
 // buffs only: the skill buffs keep theirs in SKILL_BUFFS) = { level row: [[affix, args]] }, a level map written as [[level, value], …].
-// 169 records.
+// 170 records.
 export const OWN_BUFF_RECORD_TABLE = Object.freeze({
   112: ["Frostbite","bingjie",[5100001,5100002,5100008,5100101,5100112],[4000112,4000580,4000570,4000860]],
   170: ["Numbed","mabi",[5100001,5100002,5100009],[4000121,4000580,4000570]],
@@ -172,5 +172,6 @@ export const OWN_BUFF_RECORD_TABLE = Object.freeze({
   16240: ["Willpower","s_jingzhunsheji_buff",[5100310],[]],
   16290: ["Blink Arrow","shunshangong",[5100310],[]],
   20060: ["Blind","t_zhimang",[5100101,5100108,5100112],[4000140,4000860]],
+  35095: ["Storm","fengbao",[5100310,5200064],[],{"0":[[67567984,[30]],[39674064,[10,125]]]}],
   50071: ["Blur","mizongMon",[],[4000061]]
 });

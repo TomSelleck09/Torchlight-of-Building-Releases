@@ -50,7 +50,8 @@ const product = (values) => values.reduce((total, value) => total * (1 + value /
 
 // Target-dependent and combat-only lines (scripts/compare-game-log.js conventions; the panel is a town sheet).
 const TARGET_DEPENDENT = /\bagainst\b.*\benemies\b|\b(?:against|to) (?:Elites|Bosses)\b|enemies affected by|damage taken|cursed target|target (?:ignited|cursed|frostbitten|numbed|shocked)/i;
-const COMBAT_ONLY = /Tide Contact|On the Tide|Wave Aria|Idyll of the Tide|Focus Blessing|Fire Infiltration|Feud|Scorch\b|Curse|Vulnerability|Stealth Stab|Supercharge \(full channel\)|Entangled Pain/i;
+// Heart of the Storm's Storm distance damage (record 39674064: trigger 1000031 at the hit, the target's distance; src/heart-of-the-storm.js).
+const COMBAT_ONLY = /Tide Contact|On the Tide|Wave Aria|Idyll of the Tide|Focus Blessing|Fire Infiltration|Feud|Scorch\b|Curse|Vulnerability|Stealth Stab|Supercharge \(full channel\)|Entangled Pain|^Storm \(Heart of the Storm/i;
 
 // The game attribute a damage line writes, from its text (else its source label): Elemental 5727, a damage type, or All
 // Damage 5719 (generic, Spell, Attack, Area, Damage Over Time, supports, main stat, skill level …). null with a reason for

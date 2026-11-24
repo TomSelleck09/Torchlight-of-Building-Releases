@@ -44,7 +44,9 @@ function overlayPathWindow(window, totals) {
   const read = (key, fallback) => totals.bySource[key] ? totals.bySource[key].dps : fallback;
   const hits = (window.hits || []).map((hit) => ({ ...hit, dps: read(hit.key, hit.dps) }));
   const dots = (window.dots || []).map((dot) => ({ ...dot, dps: read(dot.key, dot.dps) }));
-  const reaping = window.reaping ? { ...window.reaping, sources: (window.reaping.sources || []).map((source, index) => totals.bySource[`reap:${index}`] ? { ...source, reapingDps: totals.bySource[`reap:${index}`].dps } : source), reapingDps: reapKeys(totals).length ? sum(totals, reapKeys(totals)) : window.reaping.reapingDps } : window.reaping;
+  // Approaching Nightfall's settlement is its own engine series ("reap:nightfall", inside reapingDps), so its row reads it too (P2, 2026-11-22).
+  const nightfall = window.reaping?.nightfall && totals.bySource["reap:nightfall"] ? { ...window.reaping.nightfall, dps: totals.bySource["reap:nightfall"].dps } : window.reaping?.nightfall;
+  const reaping = window.reaping ? { ...window.reaping, sources: (window.reaping.sources || []).map((source, index) => totals.bySource[`reap:${index}`] ? { ...source, reapingDps: totals.bySource[`reap:${index}`].dps } : source), ...(nightfall ? { nightfall } : {}), reapingDps: reapKeys(totals).length ? sum(totals, reapKeys(totals)) : window.reaping.reapingDps } : window.reaping;
   // Ill Omen and Turbulence are built from the DoT and Reap series, so their basis is the overlaid sum (the series keeps the factor exact).
   const basisDps = dots.reduce((sum, dot) => sum + dot.dps, 0) + (reaping?.reapingDps || 0);
   const illOmen = window.illOmen ? { ...window.illOmen, basisDps, dps: read("illOmen", window.illOmen.dps) } : window.illOmen;

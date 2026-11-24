@@ -1,9 +1,10 @@
 import { maxSpellBurstTotal } from "./max-spell-burst.js";
 import { wholePercentRoll } from "./whole-percent-roll.js";
 import { normalizePercentageText } from "./percentage-text.js";
-import { recipeCrowdControl, crowdControlEventRate, crowdControlLocalChance } from "./crowd-control-recipes.js";
-import { explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS } from "./dummy-target.js";
+import { recipeCrowdControl, crowdControlEventRate, crowdControlLocalChance, refusesEqualReapplication, refusedRenewalShare } from "./crowd-control-recipes.js";
+import { explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS, distantMetersOf } from "./dummy-target.js";
 import { sustainedLevel } from "./timed-effects.js";
+import { iceCageSchedule, ICE_CAGE_PULSES, ICE_CAGE_STACK_INTERVAL_SECONDS, ICE_CAGE_COOLDOWN_SECONDS } from "./ice-cage-ramp.js";
 import { resolveRegain } from "./regain-model.js";
 import { level85DummyDefenses } from "./target-hit-mitigation.js";
 import { AFFLICTION_DAMAGE_PER_POINT } from "./game-attribute-defaults.js";
@@ -562,7 +563,8 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     ? `Fervor Rating fixed at ${heldFervorRating} (the fixed-Rating line's value, not capped at ${BUFF_VALUES.fervorMax}: user-confirmed 2026-10-14${fixedFervor.length > 1 ? "; the largest fixed value holds (game code)" : ""})`
     : `Fervor held at ${BUFF_VALUES.fervorMax} Rating (it builds on hitting Elite enemies; the dummy is an Elite; own buffs pre-built: provisional)`)
     + (centralizeConsumed ? `; ${centralizeHitText}` : "");
-  for (const line of fervorSources) entry(line, true, fervorText, { provisional: !fixedFervor.length });
+  // A follower-granted Fervor (F1): held from the follower's first Steep Strike on the loop, at the held Rating on the steady path.
+  for (const line of fervorSources) entry(line, true, line.fervorGrant && !fixedFervor.length ? `granted by ${line.fervorGrant.skill}'s Steep Strikes (${round(line.fervorGrant.share * 100)}% of its casts), held at ${BUFF_VALUES.fervorMax} Rating once granted while you hit the dummy (open question follower-granted-fervor-held); on the loop the Rating builds from 0 from its first Steep Strike${centralizeConsumed ? `; ${centralizeHitText}` : ""}` : fervorText, { provisional: !fixedFervor.length });
   for (const line of find(PATTERNS.fervorFixed)) entry(line, true, fervorText);
   // "+1% additional damage per 3 Fervor Rating": linear, node 119 from resource 45 (458113, 20638; chunk 12).
   for (const line of find(PATTERNS.damagePerFervor)) {
@@ -641,7 +643,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   }
   // Built from 0 on the loop only for a Rating gained in combat: a fixed Rating locks the resource (game code 0x14207caf0), and the Centralize
   // hit reading (switch off) halves a Rating the loop does not run.
-  const fervorLive = hasFervor && !fixedFervor.length && !centralizeHitApplies && fervorRating > 0 && fervorReaders.length ? { rating: fervorRating, max: BUFF_VALUES.fervorMax, readers: fervorReaders } : null;
+  // A Fervor the follower grants (6 T Corrosive Throw F1: its Focused Slash's Steep Strikes, src/follower-model.js FOLLOWER_MARKERS): when it is every
+  // Fervor source, the loop holds none until the follower's first Steep Strike, then builds the Rating from 0 on your hits (src/trigger-bus.js
+  // section 12 `granted`); the steady path holds it.
+  const fervorGrants = fervorSources.length && fervorSources.every((line) => line.fervorGrant) ? fervorSources.map((line) => line.fervorGrant) : null;
+  const fervorLive = hasFervor && !fixedFervor.length && !centralizeHitApplies && fervorRating > 0 && fervorReaders.length ? { rating: fervorRating, max: BUFF_VALUES.fervorMax, readers: fervorReaders, ...(fervorGrants ? { granted: fervorGrants } : {}) } : null;
   for (const line of find(PATTERNS.fervorRatingOnHit)) entry(line, hasFervor, hasFervor ? (fixedFervor.length ? `Fervor Rating is fixed at ${heldFervorRating}` : "Fervor Rating is already held at its max (100)") : "no Fervor source", { status: "No DPS effect" });
   // Centralize part 1 (the user has not answered whether it can raise a fixed Rating): the current reading is kept.
   const fixedFervorSource = (() => { const fixedLine = find(PATTERNS.fervorFixed).find((line) => num(line.clean.match(PATTERNS.fervorFixed)[1]) === heldFervorRating); if (!fixedLine) return ""; const prefix = fixedLine.clean.match(/^\[([^\]]+)\]/); const core = String(fixedLine.source || "").match(/core: ([^(]+?)(?: \(|$)/i); return (prefix?.[1] || core?.[1] || fixedLine.source || "").trim(); })();
@@ -944,7 +950,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.frail)) { const active = Boolean(state.dealsSpellDamage); debuffs.frail ||= active; debuffs.frailOwn ||= active; entry(line, active, active ? "the build deals Spell Damage: Frail held on the dummy (duration not sourced; uptime 1, provisional)" : "the build deals no Spell Damage", { provisional: true, bodies: [`+${BUFF_VALUES.frail}% additional Spell Damage taken`] }); }
   // "Nearby enemies within N m have Frail": an explicit radius holds at the chosen distance (src/dummy-target.js: close to the
   // dummy, or 6 m away in the Distant alternative). Before 2026-10-12 it needed N ≥ 10 (the 10 m stand-in).
-  for (const line of find(PATTERNS.frailNearby)) { const radius = num(line.clean.match(PATTERNS.frailNearby)[1]); const active = explicitRadiusHolds(radius, state.nearTarget); debuffs.frail ||= active; debuffs.frailOwn ||= active; entry(line, active, active ? `the player stands ${state.nearTarget === false ? `${DISTANT_STANDING_METERS} m away (Distant alternative)` : "close to the dummy (best case)"}, inside ${radius} m: Frail held` : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away, outside ${radius} m`, { bodies: [`+${BUFF_VALUES.frail}% additional Spell Damage taken`] }); }
+  for (const line of find(PATTERNS.frailNearby)) { const radius = num(line.clean.match(PATTERNS.frailNearby)[1]); const active = explicitRadiusHolds(radius, state.nearTarget, state.distantMeters); debuffs.frail ||= active; debuffs.frailOwn ||= active; entry(line, active, active ? `the player stands ${state.nearTarget === false ? `${distantMetersOf(state)} m away (Distant alternative)` : "close to the dummy (best case)"}, inside ${radius} m: Frail held` : `the Distant alternative stands ${distantMetersOf(state)} m away, outside ${radius} m`, { bodies: [`+${BUFF_VALUES.frail}% additional Spell Damage taken`] }); }
   // The follower's support affixes (src/follower-model.js AFFIX_MARKERS, 2026-10-19): Frail or an Infiltration the follower
   // keeps on the dummy while its skill hits it (uptime 1 at its cadence, provisional); one debuff of a kind whoever inflicts it.
   for (const line of find(PATTERNS.followerDebuff)) {
@@ -974,9 +980,9 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const value = round(num(m[1] ?? m[4]) * (line.multiplier ?? 1));
     const type = m[2] ? `${m[2][0].toUpperCase()}${m[2].slice(1).toLowerCase()} ` : "";
     const meters = m[3] ?? m[5];
-    const active = meters !== undefined ? explicitRadiusHolds(num(meters), state.nearTarget) : state.nearTarget !== false;
+    const active = meters !== undefined ? explicitRadiusHolds(num(meters), state.nearTarget, state.distantMeters) : state.nearTarget !== false;
     const body = `+${value}% additional ${type ? `${type}Damage` : "damage"} taken`;
-    entry(line, active, active ? `the player stands ${state.nearTarget === false ? `${DISTANT_STANDING_METERS} m away (Distant alternative)` : "close to the dummy (best case)"}${meters !== undefined ? `, inside ${meters} m` : ", inside Nearby / Proximity (reference data radii)"}` : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away${meters !== undefined ? `, outside ${meters} m` : ""}`, { bodies: [body] });
+    entry(line, active, active ? `the player stands ${state.nearTarget === false ? `${distantMetersOf(state)} m away (Distant alternative)` : "close to the dummy (best case)"}${meters !== undefined ? `, inside ${meters} m` : ", inside Nearby / Proximity (reference data radii)"}` : `the Distant alternative stands ${distantMetersOf(state)} m away${meters !== undefined ? `, outside ${meters} m` : ""}`, { bodies: [body] });
     if (active) derive(body, line.source, "enemy within the line's radius");
   }
   // Stacking enemy debuff: held at its stack cap. The dummy starts clean and the stacks build over stacks × interval seconds
@@ -984,7 +990,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const line of find(PATTERNS.takenStacking)) {
     const m = line.clean.match(PATTERNS.takenStacking);
     const stacks = num(m[4]), value = round(num(m[2]) * stacks * (line.multiplier ?? 1));
-    const active = state.ownDamage !== false && explicitRadiusHolds(num(m[3]), state.nearTarget);
+    const active = state.ownDamage !== false && explicitRadiusHolds(num(m[3]), state.nearTarget, state.distantMeters);
     // Audit of held debuffs (pact scripted-effects batch 2026-10-13): the stacks build on the clean dummy, 1 at t = 0 and 1 more
     // every interval (src/timed-effects.js ramp; whether the first lands at t = 0 or after one interval is not sourced: provisional).
     const interval = num(m[1]), perStack = num(m[2]) * (line.multiplier ?? 1);
@@ -1007,10 +1013,10 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const match = line.clean.match(PATTERNS.enemyResistanceWithin);
     const value = round(num(match[1]) * (line.multiplier ?? 1));
     const radius = num(match[3]);
-    const active = explicitRadiusHolds(radius, state.nearTarget) && value !== 0;
+    const active = explicitRadiusHolds(radius, state.nearTarget, state.distantMeters) && value !== 0;
     const types = /and Erosion/i.test(match[2]) ? ["Elemental", "Erosion"] : [match[2][0].toUpperCase() + match[2].slice(1).toLowerCase()];
     const bodies = types.map((type) => `${-value >= 0 ? "+" : ""}${round(-value)}% ${type} Resistance Penetration`);
-    entry(line, active, active ? `the dummy stands within ${radius} m (${state.nearTarget === false ? `Distant alternative, ${DISTANT_STANDING_METERS} m` : "near case: within 10 m"}): ${value > 0 ? "+" : ""}${value}% ${match[2]} Resistance held on it, applied as ${bodies.join(" and ")} (provisional)` : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away, outside ${radius} m`, { provisional: true, bodies });
+    entry(line, active, active ? `the dummy stands within ${radius} m (${state.nearTarget === false ? `Distant alternative, ${distantMetersOf(state)} m` : "near case: within 10 m"}): ${value > 0 ? "+" : ""}${value}% ${match[2]} Resistance held on it, applied as ${bodies.join(" and ")} (provisional)` : `the Distant alternative stands ${distantMetersOf(state)} m away, outside ${radius} m`, { provisional: true, bodies });
     if (active) for (const body of bodies) derive(body, line.source, `enemies within ${radius} m: ${value > 0 ? "+" : ""}${value}% ${match[2]} Resistance (provisional)`, true);
   }
   for (const line of find(PATTERNS.spellHitShred)) {
@@ -1181,6 +1187,18 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const value = round(8 * stacks * (1 + effect / 100));
     entry(line, value > 0, !inflicted ? "the build inflicts no Trauma" : `${round(stacks)} Laceration stacks (Trauma inflicted ${Number.isFinite(rate) && rate > 0 ? `${round(rate)}/s × 5 s` : "often enough to hold the cap"}, max 30) × 8% additional Physical Damage${effect ? ` × (1 + ${round(effect)}% Laceration Effect from ${round(traumaStacks)} Trauma stacks)` : ""} (summed; provisional)`, { provisional: true, bodies: value > 0 ? [`+${value}% additional Physical Damage`] : [] });
     if (value > 0) derive(`+${value}% additional Physical Damage`, line.source, `${round(stacks)} Laceration stacks`, true);
+    // R2 of research/remediation-held-buffs-2026-11-21.md (2026-11-22): Laceration is gained only by landing Trauma on the dummy (record 11240125
+    // row 1: trigger 1000150 with Trauma, node 301 buff 35116, 1 layer of 5 s, mode 1: each layer its own timer), so in the windows and the 60 s
+    // recount it builds from each applier's first use: L(t) = min(30, Σ share × rate × min(5 s, t − first)), the steady min(30, rate × 5 s) over
+    // time (each layer its own 5 s; provisional, open question laceration-build-up). One part, the summed +8% × (1 + Effect) per stack.
+    const sources = state.trauma?.landingSources;
+    if (value > 0 && sources?.length && Number.isFinite(rate) && rate > 0) {
+      const perStack = 8 * (1 + effect / 100), at = (time) => Math.min(30, sources.reduce((total, item) => total + item.share * rate * Math.max(0, Math.min(5, time - item.firstSeconds)), 0));
+      const end = Math.max(...sources.map((item) => item.firstSeconds)) + 5, points = [];
+      for (let frame = 0; frame / 30 <= end + 1e-9; frame++) points.push([frame / 30, at(frame / 30)]);
+      timedEffects.push({ id: `laceration:${line.source}`, label: "Laceration stacks (from the first Trauma)", source: line.source, text: line.clean, target: "self", toggle: false, provisional: true, enabled: true, active: true,
+        parts: [{ type: "Physical", reach: "all", percent: perStack, schedule: { kind: "steps", points, sustained: stacks } }] });
+    }
   }
   for (const line of find(PATTERNS.lacerationEffectPerTrauma)) entry(line, find(PATTERNS.lacerationOnTrauma).length > 0 && traumaInflicted, "scales Laceration (read with its gain line)", { provisional: true });
   for (const line of find(PATTERNS.sentryProximityTaken)) {
@@ -1274,7 +1292,10 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // A record on trigger 1000030 (882870: "… on hit" in its text, "dealing damage" 5001160 on the row) also fires on your DoT's damage (wiring
   // audit W2 gap 4, 2026-11-03); one on 1000033 needs your hits.
   for (const line of find(PATTERNS.paralysisOnHit)) { const viaDot = !state.anyHit && Boolean(state.dealsDamageOverTime) && (lineTriggerRows(line)?.rows || []).some((row) => row.trigger === 1000030); const active = Boolean(state.anyHit) || viaDot; if (active) debuffs.paralysis = 1; entry(line, active, active ? (viaDot ? "your damage over time deals damage to the dummy (game trigger 1000030): Paralysis held (duration not sourced; uptime 1, provisional)" : "the build hits the dummy: Paralysis held (duration not sourced; uptime 1, provisional: talent Q18)") : "no modeled hit", { provisional: true }); }
-  for (const line of find(PATTERNS.paralysisCursed)) { const active = Boolean(targetCursed && state.anyHit); if (active) debuffs.paralysis = 1; entry(line, active, active ? "the dummy is Cursed and hit: Paralysis held (uptime 1, provisional)" : "the dummy is not Cursed or not hit", { provisional: true }); }
+  // Warlock (4,0) (record 2331: trigger 1000030 "on dealing damage", gate target Cursed 4000560, 25% chance, buff 230): 1000030 also fires on
+  // each of your DoT records per frame (research/trigger-events-rea-2026-11-04.md), so a build whose damage is only over time holds it too
+  // (path matrix v2 P2; the paralysisOnHit rule above).
+  for (const line of find(PATTERNS.paralysisCursed)) { const viaDot = !state.anyHit && Boolean(state.dealsDamageOverTime) && (lineTriggerRows(line)?.rows || []).some((row) => row.trigger === 1000030); const active = Boolean(targetCursed) && (Boolean(state.anyHit) || viaDot); if (active) debuffs.paralysis = 1; entry(line, active, active ? (viaDot ? "the dummy is Cursed and your damage over time deals damage to it (game trigger 1000030 of record 2331): Paralysis held (uptime 1, provisional)" : "the dummy is Cursed and hit: Paralysis held (uptime 1, provisional)") : !targetCursed ? "the dummy is not Cursed" : "no modeled damage on the dummy", { provisional: true }); }
   // Paralysis sources without a chance on the dummy (2026-10-14): each holds Paralysis (4 s base duration, manual rule
   // 1002020420, refreshed long before it lapses) while its condition holds; best case, provisional.
   const tenacity = Number(ownBlessingStacks(state)?.Tenacity) || 0, tenacityMax = Number(ownBlessingMaxStacks(state)?.Tenacity) || 0;
@@ -1288,14 +1309,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Bing – Blast Nova's moon (hero trait audit B12; src/bing-traits.js): the bombs land at the dummy, so it stays within their 10 m while
   // the bombs replace the Main Skill's casts (provisional); Slow lowers only the enemy's speed.
   for (const line of find(PATTERNS.paralysisBombs)) { const active = Boolean(state.bing?.blastNova?.bombsActive); if (active) debuffs.paralysis = 1; entry(line, active, active ? `the bombs are thrown at the dummy, so it stays within ${num(line.clean.match(PATTERNS.paralysisBombs)[1])} m of them: Paralysis held (refreshed continuously; provisional); Slow only slows it` : `no bombs: ${state.bing?.blastNova?.why || "Blast Nova's bombs are not in this build"}`, { provisional: true, enemyDebuff: true }); }
-  for (const line of find(PATTERNS.paralysisNearby)) { const active = state.nearTarget !== false; if (active) debuffs.paralysis = 1; entry(line, active, active ? `the player stands close to the dummy (best case): inside Nearby (${KEYWORD_RADII_METERS.nearby} m, keyword radius), so it is Paralyzed` : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: not Nearby`, { provisional: true, enemyDebuff: true }); }
+  for (const line of find(PATTERNS.paralysisNearby)) { const active = state.nearTarget !== false; if (active) debuffs.paralysis = 1; entry(line, active, active ? `the player stands close to the dummy (best case): inside Nearby (${KEYWORD_RADII_METERS.nearby} m, keyword radius), so it is Paralyzed` : `the Distant alternative stands ${distantMetersOf(state)} m away: not Nearby`, { provisional: true, enemyDebuff: true }); }
   // Blocking: the "Hit or blocked recently" best case (condition blockedRecently, state.hitRecently), which needs Block chance.
   const canBlock = (Number(state.blockChance?.attack) || 0) > 0 || (Number(state.blockChance?.spell) || 0) > 0;
-  for (const line of find(PATTERNS.paralysisBlocking)) { const active = state.hitRecently !== false && canBlock && state.nearTarget !== false; if (active) debuffs.paralysis = 1; entry(line, active, active ? "blocked recently (best-case assumption, user decision 2026-10-12; condition 'Hit or blocked recently') with the dummy Nearby: Paralysis held (provisional)" : state.hitRecently === false ? "Blocked recently is off (condition 'Hit or blocked recently')" : !canBlock ? "no Block chance, so the build never Blocks" : `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: not Nearby`, { provisional: true }); }
+  for (const line of find(PATTERNS.paralysisBlocking)) { const active = state.hitRecently !== false && canBlock && state.nearTarget !== false; if (active) debuffs.paralysis = 1; entry(line, active, active ? "blocked recently (best-case assumption, user decision 2026-10-12; condition 'Hit or blocked recently') with the dummy Nearby: Paralysis held (provisional)" : state.hitRecently === false ? "Blocked recently is off (condition 'Hit or blocked recently')" : !canBlock ? "no Block chance, so the build never Blocks" : `the Distant alternative stands ${distantMetersOf(state)} m away: not Nearby`, { provisional: true }); }
   // Dual Kismet: Bounded Holy Maiden (game affix 908139264: on hit, Paralysis buff 230, Blind 20060, Weaken 270, Slow 260,
   // Taunt 280 and Frostbite): Paralysis held while the build hits (pact scripted-effects batch 2026-10-13; the -60% Crowd
   // Control Effect next to it is not applied to the Paralysis it inflicts: provisional).
-  for (const line of find(PATTERNS.holyMaiden)) { const active = Boolean(state.anyHit); if (active) debuffs.paralysis = 1; entry(line, active, active ? "the build hits the dummy: Paralysis held (4 s base duration, refreshed by hits; manual rule 1002020420), Frostbite inflicted on hit (src/enemy-ailments.js), and Blind, Weaken, Slow and Taunt count as crowd control types" : "no modeled hit", { provisional: true, enemyDebuff: true, bodies: [`+${round(BUFF_VALUES.paralysis)}% damage taken`] }); }
+  for (const line of find(PATTERNS.holyMaiden)) { const active = Boolean(state.anyHit); if (active) debuffs.paralysis = 1; entry(line, active, active ? "the build hits the dummy: Paralysis held (4 s base duration, refreshed by hits; manual rule 1002020420), Frostbite inflicted on hit (src/enemy-ailments.js), and Blind, Weaken, Slow and Taunt count as crowd control types (Taunt's stack mode 3 refuses its re-application while held, so it lapses after each 4 s until the next hit)" : "no modeled hit", { provisional: true, enemyDebuff: true, bodies: [`+${round(BUFF_VALUES.paralysis)}% damage taken`] }); }
   // Regain events (src/regain-model.js, 2026-10-14): the build Regains on hit while it has missing Life / Energy Shield (a
   // self-drain line, or the "Hit or blocked recently" best case); switched by the regainEvents condition. Read again by
   // src/line-conditions.js ("if you have Regained in the last N s") through state.regain (src/line-effects.js).
@@ -1305,7 +1326,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // line whose record does not read stays a held line, as before.
   const regainParalysis = [];
   for (const line of find(PATTERNS.paralysisRegain)) {
-    const meters = Number(line.clean.match(/within (\d+) ?m/i)?.[1] ?? 10); const inside = explicitRadiusHolds(meters, state.nearTarget); const active = regain.active && inside;
+    const meters = Number(line.clean.match(/within (\d+) ?m/i)?.[1] ?? 10); const inside = explicitRadiusHolds(meters, state.nearTarget, state.distantMeters); const active = regain.active && inside;
     const rows = active ? (recipeCrowdControl(line)?.rows || []).filter((row) => row.event === "regain" && !row.unknown.length && row.types.some((type) => type.type === "Paralysis") && regain.pools?.[row.trigger === 1001210 ? "energyShield" : "life"]?.active) : [];
     if (active && rows.length) regainParalysis.push({ line, rows, id: recipeCrowdControl(line).id });
     else if (active) debuffs.paralysis = 1;
@@ -1353,7 +1374,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
       const spend = row.event === "regain" && row.requiresBuffs.includes(320) && state.consumption?.regainSpend?.active ? state.consumption.regainSpend : null;
       const missingBuff = row.requiresBuffs.map((buff) => ({ buff, name: CC_BLESSING_BUFFS[buff] || null })).find((item) => !item.name || !(Number(ownBlessingStacks(state)?.[item.name]) > 0 || (spend && item.name === "Agility" && spend.findShare > 0)));
       const missingState = (row.requiresTargetStates || []).find((name) => name === "frostTerra" && !state.frostTerraOnBoard);
-      const inside = row.radiusMeters === null || explicitRadiusHolds(row.radiusMeters, state.nearTarget);
+      const inside = row.radiusMeters === null || explicitRadiusHolds(row.radiusMeters, state.nearTarget, state.distantMeters);
       const casters = row.event === "cast" ? (state.ccSkillCasts || []).filter((skill) => row.triggerTags.length && row.triggerTags.every((tag) => (skill.tagIds || []).includes(tag))) : [];
       const eventRate = crowdControlEventRate(row, { rates, regainPerSecond: regain.active ? regain.ratePerSecond : 0, skillCasts: state.ccSkillCasts || [] });
       const rate = spend && eventRate !== null && spend.findShare < 1 ? eventRate * spend.findShare : eventRate;
@@ -1450,7 +1471,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // not scale it.
   for (const line of find(PATTERNS.followerParalysis)) {
     const match = line.clean.match(PATTERNS.followerParalysis), period = num(match[1]), meters = match[2] !== undefined ? num(match[2]) : null;
-    const inside = meters === null || explicitRadiusHolds(meters, state.nearTarget), active = inside && period > 0;
+    const inside = meters === null || explicitRadiusHolds(meters, state.nearTarget, state.distantMeters), active = inside && period > 0;
     const schedule = active ? { kind: "periodic", durationSeconds: BUFF_VALUES.paralysisDurationSeconds, periodSeconds: period, startSeconds: 0 } : null;
     const uptime = schedule ? sustainedLevel(schedule) : 0;
     const reason = !inside ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: outside ${meters} m` : `the follower inflicts Paralysis every ${round(period)} s${meters !== null ? ` (the dummy within ${meters} m of the follower, which stays by you: best case)` : ""}: ${BUFF_VALUES.paralysisDurationSeconds} s each = ${round(uptime * 100)}% uptime (provisional)`;
@@ -1572,29 +1593,35 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Cold Damage, up to 4 stacks, for 6s. Cooldown: 10s". Sourced: the value per stack (Lv1–5 10%, Lv6 13%), 4 stacks, 6 s per
   // debuff, the 10 s cooldown, Frostbitten enemies only; the in-game tooltip at Ice Puppet Lv2 (user, 2026-10-13) confirms them.
   // The affix is a text row; the skill is stone 80030 (server affix 19058 on the spirit's outer position, config_gen_contract_servant; chunk 13), Split 552980: cooldown 10 s, a
-  // prison that stands 6 s and pulses 6 times 1 s apart, each pulse +1 stack of buff 100020 (7 + 3 × level, 6 s, cap 4, mode 1 as Focus Blessing: a new stack refreshes the others),
-  // so the last stack outlasts the next cast and 4 stacks hold. When the spirit casts it stays a best case (open question pact-spirit-skill-timing).
-  // Best case (condition icePrison): cast next to the player, who stands close to the dummy; the
-  // stacks add into one multiplier (4 × X% additional Cold Damage taken, as stacked buffs write p0 × stacks) and are held in
-  // sustained figures; the windows and the recount build them at 1 stack per second from t = 0 (src/ice-cage-ramp.js).
+  // prison that stands 6 s and pulses 6 times 1 s apart, each pulse +1 layer of buff 100020 (7 + 3 × level, 6 s). Buff 100020 is subtype 2, cap 4,
+  // stack mode 1, with no self-refresh: each stack is its own 6 s layer, the oldest replaced at the cap (proven: the record and the SS14 client's
+  // layer add, src/ice-cage-ramp.js; research/remediation-cap-census-2026-11-21.md row 1, 2026-11-22). A new stack refreshes nothing, so a cast
+  // holds 1, 2, 3, 4, 4, 4, 4, 4, 3, 2 stacks over its 10 s and every later cast 2, 2, 3, 4, 4, 4, 4, 4, 3, 2: 3.2 on average (the earlier
+  // reading, a new stack refreshing the others as Focus Blessing once was, held 4). When the spirit casts stays a best case (open question
+  // pact-spirit-skill-timing). Best case (condition icePrison): cast next to the player, who stands close to the dummy; the stacks add into one
+  // multiplier (X% × stacks additional Cold Damage taken, as stacked buffs write p0 × stacks), the sustained figure at the long-run 3.2 stacks;
+  // the windows and the recount walk the same layers from t = 0 (src/ice-cage-ramp.js iceCageSchedule).
   // `iceCage` keeps the per-prison summary the Ice Cage tests and the assumption text read.
   const iceCage = [];
   for (const line of find(PATTERNS.icePrison)) {
     const match = line.clean.match(PATTERNS.icePrison);
     const perStack = num(match[1]) * (line.multiplier ?? 1), stacks = num(match[2]);
-    const value = round(perStack * stacks);
+    const cooldownLine = sameSource(PATTERNS.spiritCooldown, line);
+    const timing = { stacks, layerSeconds: num(match[3]), pulses: ICE_CAGE_PULSES, pulseIntervalSeconds: ICE_CAGE_STACK_INTERVAL_SECONDS, cooldownSeconds: cooldownLine ? num(cooldownLine.clean.match(PATTERNS.spiritCooldown)[1]) : ICE_CAGE_COOLDOWN_SECONDS };
+    const schedule = iceCageSchedule(timing), heldStacks = round(sustainedLevel(schedule));
+    const value = round(perStack * heldStacks);
     const near = state.nearTarget !== false;
     const allowed = state.icePrison !== false && conditionOn("icePrison");
     const active = frostbitten && near && allowed;
     const reason = !frostbitten ? "the build inflicts no Frostbite (the prison debuffs Frostbitten enemies only)"
       : !allowed ? "the icePrison condition is off: the prison is left out"
       : !near ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away: the dummy is not inside the prison Near you`
-      : `best case: cast on its 10 s cooldown next to you, the Frostbitten dummy inside; ${stacks} stacks of +${perStack}% held in sustained figures; the 5 s / 20 s windows build them at one stack per second on the clean dummy (${match[3]} s each; prison duration ≥ ${stacks} s assumed, not in the tooltip: provisional)`;
-    iceCage.push({ source: line.source, perStackPercent: perStack, stacks, valuePercent: value, enabled: allowed, active, reason });
-    addTimed({ id: "icePrison", label: "Ice Cage", target: "enemy", enabled: allowed, active, reason, summary: `${stacks} × +${perStack}% additional Cold Damage taken on a Frostbitten dummy, 1 stack per second from t = 0`,
-      parts: active ? [{ type: "Cold", reach: "all", percent: perStack, schedule: { kind: "ramp", maxStacks: stacks, intervalSeconds: 1, startStacks: 1 } }] : [],
-      bodies: [`+${value}% additional Cold Damage taken`], derived: [[`+${value}% additional Cold Damage taken`, `${stacks} prison stacks on the Frostbitten dummy (best case, provisional)`]],
-      derivedSource: `${line.source}: Ice Cage (${stacks} × +${perStack}% additional Cold Damage taken)` }, line, [sameSource(PATTERNS.spiritCooldown, line)]);
+      : `best case: cast on its ${timing.cooldownSeconds} s cooldown next to you, the Frostbitten dummy inside; each of its ${timing.pulses} pulses adds a stack of its own ${timing.layerSeconds} s (buff 100020: subtype 2, cap ${stacks}, the oldest replaced, no refresh), ${heldStacks} of +${perStack}% on average in sustained figures; the 5 s / 20 s windows walk the same layers on the clean dummy from a cast at t = 0 (cast timing provisional)`;
+    iceCage.push({ source: line.source, perStackPercent: perStack, stacks, heldStacks, layerSeconds: timing.layerSeconds, pulses: timing.pulses, pulseIntervalSeconds: timing.pulseIntervalSeconds, cooldownSeconds: timing.cooldownSeconds, valuePercent: value, enabled: allowed, active, reason });
+    addTimed({ id: "icePrison", label: "Ice Cage", target: "enemy", enabled: allowed, active, reason, summary: `up to ${stacks} × +${perStack}% additional Cold Damage taken on a Frostbitten dummy, each stack its own ${timing.layerSeconds} s (${heldStacks} on average)`,
+      parts: active ? [{ type: "Cold", reach: "all", percent: perStack, schedule }] : [],
+      bodies: [`+${value}% additional Cold Damage taken`], derived: [[`+${value}% additional Cold Damage taken`, `${heldStacks} prison stacks on average on the Frostbitten dummy (each its own ${timing.layerSeconds} s; best case, provisional)`]],
+      derivedSource: `${line.source}: Ice Cage (${heldStacks} × +${perStack}% additional Cold Damage taken)` }, line, [cooldownLine]);
   }
 
   // Melting Flames: Burning Heart (game affix 257943, a text row; the skill is stone 80020, Split 370958, cooldown 5 s, buff 100010: 17 + 9 × level; chunk 13): "Covers targets within a 5m radius with
@@ -1607,7 +1634,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const area = sameSource(PATTERNS.meltingFlamesArea, line);
     const radius = area ? num(area.clean.match(PATTERNS.meltingFlamesArea)[1]) : 5;
     const cooldown = cooldownOf(line, 5), uptime = Math.min(1, duration / cooldown), sustained = round(percent * uptime);
-    const allowed = conditionOn("meltingFlames"), inside = explicitRadiusHolds(radius, state.nearTarget);
+    const allowed = conditionOn("meltingFlames"), inside = explicitRadiusHolds(radius, state.nearTarget, state.distantMeters);
     const active = allowed && inside;
     const reason = !allowed ? offReason("meltingFlames") : !inside ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away, outside the ${radius} m flames centred on you`
       : `best case: the flames are centred on you and the dummy is within ${radius} m; +${percent}% additional Fire Damage taken, ${castText(duration, cooldown)}: +${sustained}% (the cast timing is provisional)`;
@@ -1656,7 +1683,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const radius = num(match[1]), cooldown = num(match[2]);
     const paralysisValue = round(BUFF_VALUES.paralysis * (1 + paralysisEffect / 100));
     const ownParalysisSchedule = cast(Math.min(BUFF_VALUES.paralysisDurationSeconds, 2 * cooldown), 2 * cooldown);
-    const allowed = conditionOn("witchAntelope"), inside = explicitRadiusHolds(radius, state.nearTarget);
+    const allowed = conditionOn("witchAntelope"), inside = explicitRadiusHolds(radius, state.nearTarget, state.distantMeters);
     const active = allowed && inside, held = paralysisHeld;
     // Grudge's chance Paralysis (above) is the same debuff (1 stack): one union schedule, 1 − Π(1 − level), carried here.
     const merged = active && !held && chanceParalysisActive.length > 0 && !paralysisMergedInto;
@@ -1718,7 +1745,23 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (debuffs.frozen) holdCc("Freeze", { kind: "full" }, { foreign: Boolean(ownAilmentList) && !ownAilmentList.includes("Frostbite"), by: foreignAilmentBy("Frostbite") });
   }
   if (paralysisHeld) holdCc("Paralysis", { kind: "full" });
-  if (find(PATTERNS.holyMaiden).length && state.anyHit) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, { kind: "full" });
+  // Dual Kismet: Bounded Holy Maiden (record 908139264: 1000033 once a frame, node 301 on buffs 230 / 20060 / 270 / 260 / 280 at level 1 for each
+  // record's 4 s). Bounded Holy Maiden's Weaken, Slow and Blind renew on re-application (stack modes 5, 5 and 1: the same caster's equal-level
+  // application replaces the held one; Slow also holds up to 5 separate instances; CROWD_CONTROL_STACK_RULES, proven): held while the build hits.
+  // Taunt (280: cap 1, mode 3) refuses one caster's equal re-application while held (proven: REA 2026-11-22, src/crowd-control-recipes.js), so it
+  // lapses for the wait to the next hit after each 4 s: refusedRenewalShare at the row's own event rate (your hits, the planner's periodic
+  // reading). The gaps' phase against the other events is not known, so the share is a constant level from engagement, like its siblings'
+  // hold (a periodic on / off schedule would alias with the readers that sample it, Ill Will on each chain hit); held full until the hit
+  // pass has measured the rate.
+  if (find(PATTERNS.holyMaiden).length && state.anyHit) {
+    const maidenRow = (recipeCrowdControl(find(PATTERNS.holyMaiden)[0])?.rows || [])[0] || null;
+    for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) {
+      const held = maidenRow?.types.find((item) => item.type === type);
+      const rate = held && refusesEqualReapplication(held.buff) && ccRecipeRates ? crowdControlEventRate(maidenRow, { rates: ccRecipeRates }) : null;
+      const share = rate === null ? 1 : refusedRenewalShare(rate, held.durationSeconds);
+      holdCc(type, share >= 1 - 1e-12 ? { kind: "full" } : { kind: "steps", points: [[0, share]], sustained: share });
+    }
+  }
   if (yourDamage) for (const line of find(PATTERNS.discordCrowdControl)) for (const type of ["Weaken", "Slow", "Taunt", "Blinding"]) holdCc(type, discordSchedule(discordInterval(line), DISCORD_CROWD_CONTROL.indexOf(type)));
   if (find(PATTERNS.paralysisDealDamage).length && dealsDamage) holdCc("Weaken", { kind: "full" });
   // The follower's Weaken, Slow, Taunt and Blind (src/follower-model.js, 2026-10-27): held while it casts (durations not
@@ -1729,7 +1772,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   if (state.thea?.blasphemer?.pawn) holdCc("Sacrificial Pawn", { kind: "full" });
   for (const line of find(PATTERNS.channelWeaken)) {
     const radius = num(line.clean.match(PATTERNS.channelWeaken)[2]);
-    const active = Boolean(state.channeledMain) && explicitRadiusHolds(radius, state.nearTarget);
+    const active = Boolean(state.channeledMain) && explicitRadiusHolds(radius, state.nearTarget, state.distantMeters);
     if (active) holdCc("Weaken", { kind: "full" });
     // In calc with any crowd control counter (crowdControlReaders), as the recipe holders below (2026-11-12: it read only 75106's wording).
     entry(line, active && crowdControlReaders > 0, active ? `the channeled Main Skill keeps Weaken on the dummy: Weaken lowers only the enemy's damage and counts as a crowd control type${crowdControlReaders > 0 ? " (the crowd control counters read it)" : " (no line counts crowd control types)"}` : "no channeled Main Skill", { status: active ? (crowdControlReaders > 0 ? "In calc" : "No DPS effect") : "Inactive" });
@@ -1845,7 +1888,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const sources = [
       ...find(PATTERNS.intimidateOnHit).map((line) => ({ line, active: Boolean(state.anyHit) && num(line.clean.match(PATTERNS.intimidateOnHit)[1]) > 0, how: "on hit (game recipe 563280: 4 s, renewed by every hit)", off: "no modeled hit" })),
       ...find(PATTERNS.intimidateDealDamage).map((line) => ({ line, active: dealsDamage, how: "when you or your Minions deal damage", off: "the build deals no damage" })),
-      ...find(PATTERNS.intimidateNearby).map((line) => { const radius = num(line.clean.match(PATTERNS.intimidateNearby)[1]); return { line, active: explicitRadiusHolds(radius, state.nearTarget), how: `within ${radius} m (game recipe 20976)`, off: `outside ${radius} m` }; })
+      ...find(PATTERNS.intimidateNearby).map((line) => { const radius = num(line.clean.match(PATTERNS.intimidateNearby)[1]); return { line, active: explicitRadiusHolds(radius, state.nearTarget, state.distantMeters), how: `within ${radius} m (game recipe 20976)`, off: `outside ${radius} m` }; })
     ];
     const via = sources.filter((source) => source.active).map((source) => `${source.line.source} ${source.how}`).join("; ");
     if (sources.some((source) => source.active)) passSet.add({ name: "Intimidated", source: via, reason: "Intimidated (game buff 35063) held while its source acts", stage: "debuff" });
@@ -2355,10 +2398,23 @@ export { luckyRollAverage, luckyCritChance };
 // up to 99 times. Each stack is calculated independently." Two game buff variants (char_buff 180_4 / 180_6) instead say
 // "for every 0.3 [s] it lasts"; the manual and keyword wording is used (open question Q8). Applied by the hit engine
 // (src/skill-hit-model.js) to each Erosion hit: chance (capped at 100%) × (1 + expected extra stacks) × 60% of the
-// Erosion damage dealt × (1 + increased) × Π(1 + additional). True Damage: no further resistance. The 1 s delay is not
-// in the windows (provisional). Duration lines only move the delay: No DPS effect.
+// Erosion damage dealt × (1 + increased) × Π(1 + additional). True Damage: no further resistance. The damage lands when the instance runs out
+// (D1, 2026-11-20: the tick engine places it there in the 5 s / 20 s / 60 s windows; the sustained figure is unchanged).
+// Duration (6 T Corrosive Throw D2, 2026-11-20; research/build-6t-corrosive-throw-deterioration-2026-11-20.md §1, §3): node 1011's 1 s × the
+// buff's duration lines (attr 3402 on buff 180's tag 5200065: "+X% Deterioration Duration" increased, "+X% additional Deterioration Duration"
+// each its own factor, Profane's +7% additional, record 491988896, while Profane is held), ending on the first tick at or after it (a buff's
+// timer, 0x141d14210): `heldSeconds` is that whole-frame duration. The duration takes 3402 like other buffs: inferred. It sets how many
+// instances Blight counts (src/skill-hit-model.js), so a duration line moves the damage where Blight's count is under its cap.
 export const DETERIORATION_SHARE = 0.6;
-export function deteriorationFrom(modifierTexts = [], state = {}, entries = []) {
+export const DETERIORATION_BASE_SECONDS = 1;
+// The server frame (30 Hz) and a buff timer's end on the first tick at or after it, as the tick engine's framesAtOrAfter (src/tick-engine.js; the
+// engine reaches the planner through one seam, so the rule is restated here): the smallest n with n ÷ 30 ≥ seconds, compared as doubles.
+const TICKS_PER_SECOND = 30;
+const framesAtOrAfter = (seconds) => { let frames = Math.ceil(seconds * TICKS_PER_SECOND); while (frames > 0 && (frames - 1) / TICKS_PER_SECOND >= seconds) frames -= 1; while (frames / TICKS_PER_SECOND < seconds) frames += 1; return frames; };
+// Buff 180's header (config_char_buff; D3, 2026-11-20, proven): cap 99 instances for every caster (key mode 1), stack mode 4: an application at
+// the cap is refused, so its damage is lost (the manual's "Stacks up to 99 times").
+export const DETERIORATION_MAX_INSTANCES = 99;
+export function deteriorationFrom(modifierTexts = [], state = {}, entries = [], { hasProfane = false } = {}) {
   const lines = modifierTexts.filter((line) => line.origin !== "derived" && !line.lineEffect).map((line) => ({ ...line, clean: normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim() }));
   const pick = (pattern) => lines.filter((line) => pattern.test(line.clean)).map((line) => ({ line, match: line.clean.match(pattern), scale: line.multiplier ?? 1 }));
   const chance = pick(PATTERNS.deteriorationChance), extra = pick(PATTERNS.deteriorationExtra), increased = pick(PATTERNS.deteriorationIncreased), additional = pick(PATTERNS.deteriorationAdditional), duration = pick(PATTERNS.deteriorationDuration);
@@ -2374,12 +2430,20 @@ export function deteriorationFrom(modifierTexts = [], state = {}, entries = []) 
   const fromErosion = fromErosionLines.reduce((total, { match, scale }) => total + Math.min(num(match[2]) * scale, num(match[1]) * scale / 100 * erosionBonus), 0);
   const increasedPercent = sum(increased.map(({ match, scale }) => num(match[1]) * scale)) + fromErosion;
   const additionalPercents = additional.map(({ match, scale }) => num(match[1]) * scale);
+  // The instance's duration on whole frames (D2): 1 s × (1 + Σ increased) × Π(1 + additional), Profane's +7% additional while held.
+  const durationValue = ({ line, scale }) => num(line.clean.match(/^([+-]?\d+(?:\.\d+)?)%/)[1]) * scale;
+  const durationIncreased = sum(duration.filter(({ line }) => !/additional/i.test(line.clean)).map(durationValue));
+  const durationAdditional = [...duration.filter(({ line }) => /additional/i.test(line.clean)).map(durationValue), ...(hasProfane ? [BUFF_VALUES.profane.percent] : [])];
+  const durationSeconds = Math.max(0, DETERIORATION_BASE_SECONDS * Math.max(0, 1 + durationIncreased / 100) * durationAdditional.reduce((factor, value) => factor * Math.max(0, 1 + value / 100), 1));
+  const heldSeconds = durationSeconds > 0 ? framesAtOrAfter(durationSeconds) / TICKS_PER_SECOND : 0;
   // Legendary audit batch 6 (provisional; open question legendary-deterioration-items):
   // - Hand of Malice "+35% additional Deterioration Damage if you have dealt a Critical Strike recently": while the build crits.
   const critRecently = pick(PATTERNS.deteriorationCritRecently);
   if (state.canCrit) for (const { match, scale } of critRecently) additionalPercents.push(num(match[1]) * scale);
-  // - Blight "+10% additional Deterioration Damage taken per stack of Deterioration the enemy has, up to 8": summed per held stack;
-  //   the hit engine counts the stacks (applications per second × the 1 s duration).
+  // - Blight "+10% additional Deterioration Damage taken per stack of Deterioration the enemy has, up to 8" (record 450575264: label 3000122,
+  //   fields 2006885 per stack and 2006886 the cap): one factor 1 + p × min(n, cap) at each instance's expiry, n the target's buff-180 instances
+  //   from every caster and skill + 1 (0x141d17910 / 0x141d16f40, proven; D2 2026-11-20): the hit engine counts them from every skill's
+  //   applications per second × the whole-frame duration.
   const takenPerStack = pick(PATTERNS.deteriorationTakenPerStack).map(({ match, scale }) => ({ per: num(match[1]) * scale, cap: num(match[2]) }));
   // - Ruinous Star: each stack deals its True Damage every 0.33 s while it lasts (1 s: 3 ticks), +30% additional per tick after the
   //   first, at most 5 increments; each tick read as the expiry damage (60% of the Erosion hit) with its increment.
@@ -2397,18 +2461,20 @@ export function deteriorationFrom(modifierTexts = [], state = {}, entries = []) 
   const obliterate = pick(PATTERNS.obliterateEvery)[0];
   const obliterateOnly = Boolean(obliterate && (/cannot inflict Deterioration$/i.test(obliterate.line.clean) || pick(PATTERNS.obliterateOnly).length));
   const active = chancePercent > 0 && Boolean(state.hitErosion);
-  const reason = !state.hitErosion ? "no modeled hit deals Erosion Damage (Deterioration needs Hit Erosion Damage)" : chancePercent > 0 ? `${Math.min(100, chancePercent)}% chance per Erosion hit, 60% of the Erosion damage dealt as True Damage when each 1 s stack ends (manual; the delay is not in the windows: provisional)` : "no Deterioration chance";
+  const reason = !state.hitErosion ? "no modeled hit deals Erosion Damage (Deterioration needs Hit Erosion Damage)" : chancePercent > 0 ? `${Math.min(100, chancePercent)}% chance per Erosion hit, 60% of the Erosion damage dealt as True Damage when each stack ends (${round(durationSeconds)} s, ${Math.round(heldSeconds * TICKS_PER_SECOND)} frames after the hit; the windows place it there${ticks ? ", except a ticking stack (Ruinous Star), kept at the hit" : ""})` : "no Deterioration chance";
   const add = (items, status) => { for (const { line } of items) entries.push({ source: line.source, origin: line.origin, text: line.clean, active: status === "In calc", conditionText: reason, status, provisional: true, bodies: [], condition: "combatState", group: null }); };
   add(chance, active ? "In calc" : "Inactive");
   add([...extra, ...increased, ...additional], active ? "In calc" : "Inactive");
   for (const { line } of fromErosionLines) entries.push({ source: line.source, origin: line.origin, text: line.clean, active: active && fromErosion > 0, conditionText: !active ? reason : fromErosion > 0 ? `${round(erosionBonus)}% Erosion Damage bonus → +${round(fromErosion)}% Deterioration Damage (provisional)` : "no \"+X% Erosion Damage\" bonus to carry over", status: active && fromErosion > 0 ? "In calc" : "Inactive", provisional: true, bodies: [], condition: "combatState", group: null });
-  for (const { line } of duration) entries.push({ source: line.source, origin: line.origin, text: line.clean, active: false, conditionText: "duration only delays the damage (dealt when each stack ends)", status: "No DPS effect", provisional: true, bodies: [], condition: "combatState", group: null });
+  // A duration line sets when each instance deals its damage (D1: the windows) and how many instances Blight counts (D2).
+  const takenLines = pick(PATTERNS.deteriorationTakenPerStack);
+  for (const { line } of duration) entries.push({ source: line.source, origin: line.origin, text: line.clean, active, conditionText: active ? `the instance lasts ${round(durationSeconds)} s (${Math.round(heldSeconds * TICKS_PER_SECOND)} frames): its damage lands then in the 5 s / 20 s / 60 s windows${takenLines.length ? `, and Blight counts the instances held, every skill's applications per second × ${round(heldSeconds)} s + 1, up to its cap` : ""} (provisional)` : reason, status: active ? "In calc" : "Inactive", provisional: true, bodies: [], condition: "combatState", group: null });
   add(critRecently, active && state.canCrit ? "In calc" : "Inactive");
-  add(pick(PATTERNS.deteriorationTakenPerStack), active ? "In calc" : "Inactive");
+  add(takenLines, active ? "In calc" : "Inactive");
   add(ticks ? [ticks] : [], active ? "In calc" : "Inactive");
   add(obliterate ? [obliterate] : [], active ? "Partly modeled" : "Inactive");
   add(pick(PATTERNS.obliterateOnly), active ? "In calc" : "Inactive");
-  return active ? { chancePercent: Math.min(100, chancePercent), extraStacks, increasedPercent, additionalPercents, takenPerStack, tickFactor, obliterateEverySeconds: obliterateOnly ? num(obliterate.match[1]) : null, share: DETERIORATION_SHARE, source: "Deterioration (manual rule 1002030520)" } : null;
+  return active ? { chancePercent: Math.min(100, chancePercent), extraStacks, increasedPercent, additionalPercents, takenPerStack, tickFactor, obliterateEverySeconds: obliterateOnly ? num(obliterate.match[1]) : null, share: DETERIORATION_SHARE, durationSeconds, heldSeconds, maxInstances: DETERIORATION_MAX_INSTANCES, source: "Deterioration (manual rule 1002030520)" } : null;
 }
 
 /**

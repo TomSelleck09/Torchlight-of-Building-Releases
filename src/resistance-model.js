@@ -1,7 +1,7 @@
 import { normalizePercentageText } from "./percentage-text.js";
 import { effectiveGearModifierTexts } from "./engine.js";
 import { activeKismetEffects } from "./kismet-effects.js";
-import { orderedPactspiritNodes, pactspiritEffectsAtLevel, pactspiritLevel } from "./pactspirit-levels.js";
+import { orderedPactspiritNodes, pactspiritEffectsAtLevel, pactspiritLevel, nativePactspiritNodeEffect } from "./pactspirit-levels.js";
 import { pactspiritTreesSs13 } from "./data/pacts/pactspirit-trees-ss13.js";
 import { prismAreaBounds, prismMutationDownside, prismNodeAffixes } from "./prism-crafting.js";
 import { talentNodeClauses } from "./inverse-image-values.js";
@@ -89,7 +89,12 @@ export function calculateResistances({ equipment, talents = [], slates = [], mem
       const key = `${spirit}:${index}`;
       if (pactState.nativeNodeQuantities?.[key] !== 1 || pactState.kismetSlots?.[key]) return;
       const texts = node.ring === "outer" ? pactspiritEffectsAtLevel(spirit, pactspiritLevel(spirit, pactState.spiritLevels)) : [node.effect];
-      for (const text of texts) add(text, spirit, 1, true);
+      // The pact totals (src/engine.js calculatePactCandidate) hold a node's resistance only through the hand table's "Elemental
+      // Resistance" (nativePactspiritNodeEffect) and no outer-ring level effect's; the rest ("+6% Erosion Resistance" nodes, a main effect
+      // "+14% Elemental Resistance") joins here as written, the same plain clause gear and talents give (indirect-stat remediation F7,
+      // 2026-11-22). Max Resistance lines stay caps-only, as before.
+      const inTotals = !pactState.kismetSlotMode || (node.ring !== "outer" && nativePactspiritNodeEffect(node)?.stat === "elementalResistancePercent");
+      for (const text of texts) add(text, spirit, 1, inTotals);
     });
   }
   for (const entry of aura?.entries || []) for (const element of [...elements, "Elemental"]) {

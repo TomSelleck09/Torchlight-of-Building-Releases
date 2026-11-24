@@ -1,4 +1,4 @@
-import { dummyTarget, dummyTargetWord, explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS } from "./dummy-target.js";
+import { dummyTarget, dummyTargetWord, explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS, distantMetersOf } from "./dummy-target.js";
 import { BOSS_ENEMY_COUNT, bossCountedRecordFor } from "./boss-enemy-count.js";
 import { ailmentStateNames } from "./enemy-ailments.js";
 import { BY_YOU, atLeastShare, auraTagCount, empowerTagShares, enemyBuffSet, playerBuffSet, ownCombatHeld } from "./unit-buff-set.js";
@@ -509,7 +509,9 @@ const LINE_RULES = [
   // for every P1 Intelligence. Up to +P3%"): the same per-stat reading with its cap (the T1 text prints no "+").
   // Ralph's Journey "+1% Movement Speed for every 20 Dexterity, up to +300%" (game record 101140049: node 114 from Dexterity, attr 21, into
   // Movement Speed, attr 41 mod 3, 1 per 20, upper 300, no GetFloorInt: linear; 15 T Chain Lightning audit G2, 2026-11-18): the same reading.
-  [new RegExp(`^\\+?${N}% (.+?) for every (\\d+) (${STAT_WORDS})(?:\\. Up to|, up to) \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[1])}% ${m[2]}`, key: "perStat", params: { per: num(m[1]), every: num(m[3]), stat: m[4].toLowerCase(), template: m[2], cap: num(m[5]) } })],
+  // "+4% Skill Area per 10 Strength, up to +120%" (record 6355405: node 114 from Strength, linear, maxValueLimit p2): the "per" wording too
+  // (indirect-stat remediation F1, 2026-11-22).
+  [new RegExp(`^\\+?${N}% (.+?) (?:for every|per) (\\d+) (${STAT_WORDS})(?:\\. Up to|, up to) \\+?${N}%$`, "i"), (m) => ({ body: `+${num(m[1])}% ${m[2]}`, key: "perStat", params: { per: num(m[1]), every: num(m[3]), stat: m[4].toLowerCase(), template: m[2], cap: num(m[5]) } })],
   // Affliction Effect revived memory family (reference data Memory Revival; game affix 1393437): "For every enemy within 20 m nearby, +X%
   // Affliction Effect, up to +Y%". The training dummy is the one enemy, within 10 m (src/dummy-target.js); its node 700 carries
   // calcCountByRarity, so the Boss dummy counts as 5 enemies (src/boss-enemy-count.js; 2026-11-13).
@@ -873,22 +875,22 @@ function resolveKey(condition, state) {
       // Explicit radius (support clauses: "within 3 m"): holds by its number at the chosen distance (src/dummy-target.js).
       if (value !== undefined) {
         const meters = condition.meters ?? 3;
-        return explicitRadiusHolds(meters, state.nearTarget) ? on(`within ${meters} m of the dummy (${state.nearTarget === false ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away` : "distance group: close to the dummy, best case"})`, { appliedValue: value }) : off(`${DISTANT_STANDING_METERS} m from the dummy (distance group: the Distant alternative), outside ${meters} m`, { appliedValue: 0 });
+        return explicitRadiusHolds(meters, state.nearTarget, state.distantMeters) ? on(`within ${meters} m of the dummy (${state.nearTarget === false ? `the Distant alternative stands ${distantMetersOf(state)} m away` : "distance group: close to the dummy, best case"})`, { appliedValue: value }) : off(`${distantMetersOf(state)} m from the dummy (distance group: the Distant alternative), outside ${meters} m`, { appliedValue: 0 });
       }
       // A projectile-travel line on a Clockwork Core build: the Core's distance (coreProjectileTravel; provisional).
       const coreTravel = params.travel ? coreProjectileTravel(state) : null;
       if (coreTravel) return !coreTravel.distant ? on(`the Clockwork Core fires ${coreTravel.skill}'s projectiles, so their travel is measured from the Core (game recipe node 136 on the damage entity): the Core next to the dummy (Clockwork Core distance group); the full 'up to' value at point blank (provisional)`, { provisional: true, group: "coreDistance" }) : off(`the Clockwork Core fires ${coreTravel.skill}'s projectiles from ${DISTANT_STANDING_METERS} m (Clockwork Core distance group: the Core 6 m from the dummy); the Core next to the dummy is compared automatically`, { provisional: true, group: "coreDistance" });
       // Nearby (within 6 m) / Proximity (within 4 m), reference data keyword tooltips: the player stands close (best case).
-      return state.nearTarget !== false ? on(`close to the dummy (distance group, best case): inside Proximity (${KEYWORD_RADII_METERS.proximity} m) and Nearby (${KEYWORD_RADII_METERS.nearby} m), keyword radii${params.upTo ? "; the full 'up to' value at point blank (provisional)" : ""}`, { provisional: Boolean(params.upTo) }) : off(`${DISTANT_STANDING_METERS} m from the dummy (distance group: the Distant alternative): outside Proximity / Nearby (the ${KEYWORD_RADII_METERS.nearby} m boundary read as exclusive: provisional)`);
+      return state.nearTarget !== false ? on(`close to the dummy (distance group, best case): inside Proximity (${KEYWORD_RADII_METERS.proximity} m) and Nearby (${KEYWORD_RADII_METERS.nearby} m), keyword radii${params.upTo ? "; the full 'up to' value at point blank (provisional)" : ""}`, { provisional: Boolean(params.upTo) }) : off(`${distantMetersOf(state)} m from the dummy (distance group: the Distant alternative): outside Proximity / Nearby (the ${KEYWORD_RADII_METERS.nearby} m boundary read as exclusive: provisional)`);
     }
     // ---- passive-line keys ----
-    case "noneNear": return state.nearTarget === false ? on(`${DISTANT_STANDING_METERS} m from the dummy (distance group: the Distant alternative): no enemy Nearby (${KEYWORD_RADII_METERS.nearby} m) or in Proximity (${KEYWORD_RADII_METERS.proximity} m); the dummy is the only enemy`) : off("the dummy is Nearby (the player stands close); the Distant alternative is compared automatically");
+    case "noneNear": return state.nearTarget === false ? on(`${distantMetersOf(state)} m from the dummy (distance group: the Distant alternative): no enemy Nearby (${KEYWORD_RADII_METERS.nearby} m) or in Proximity (${KEYWORD_RADII_METERS.proximity} m); the dummy is the only enemy`) : off("the dummy is Nearby (the player stands close); the Distant alternative is compared automatically");
     // Distant ("6m away", reference data keyword tooltip): the other alternative of the Distance group. A projectile-travel line on a Clockwork
     // Core build reads the Core's distance instead (coreProjectileTravel; provisional), so it holds while the player stands close.
     case "distant": {
       const coreTravel = params.travel ? coreProjectileTravel(state) : null;
       if (coreTravel) return coreTravel.distant ? on(`the Clockwork Core fires ${coreTravel.skill}'s projectiles, so their travel is measured from the Core (game recipe node 136 on the damage entity), not from you: the Core placed ${DISTANT_STANDING_METERS} m from the dummy while you stand close (best case, Clockwork Core distance group); the full 'up to' value assumed (provisional)`, { provisional: true, group: "coreDistance" }) : off(`the Clockwork Core next to the dummy (Clockwork Core distance group): its projectiles travel less than ${DISTANT_STANDING_METERS} m`, { provisional: true, group: "coreDistance" });
-      return state.nearTarget === false ? on(`${DISTANT_STANDING_METERS} m from the dummy (distance group: Distant, reference data "6m away")${params.upTo ? "; the full 'up to' value assumed (provisional)" : ""}`, { provisional: Boolean(params.upTo) }) : off(`close to the dummy (distance group): not Distant (${DISTANT_STANDING_METERS} m away); the Distant alternative is compared automatically`);
+      return state.nearTarget === false ? on(`${distantMetersOf(state)} m from the dummy (distance group: Distant, reference data "6m away")${params.upTo ? "; the full 'up to' value assumed (provisional)" : ""}`, { provisional: Boolean(params.upTo) }) : off(`close to the dummy (distance group): not Distant (${distantMetersOf(state)} m away); the Distant alternative is compared automatically`);
     }
     case "channeling": return state.channeledMain ? on("channeling the main skill on the dummy (a channeled main skill is held)") : off("no channeled main skill");
     // The build-wide "+N Combo Points gained from Combo Starters" lines raise the points per Starter (src/combo-points.js
@@ -968,11 +970,11 @@ function resolveKey(condition, state) {
     // the player (src/dummy-target.js), at most the cap. A record with calcCountByRarity on its node 700 (game affix 1393437) counts
     // the Boss dummy as 5 enemies (the Enemy Count rule, src/boss-enemy-count.js; 2026-11-13), else 1.
     case "enemiesWithin": {
-      const holds = explicitRadiusHolds(params.meters, state.nearTarget);
+      const holds = explicitRadiusHolds(params.meters, state.nearTarget, state.distantMeters);
       const enemies = params.bossRecord ? BOSS_ENEMY_COUNT : 1;
       const count = holds ? Math.min(enemies, params.cap / Math.max(1e-9, params.per)) : 0;
       const who = params.bossRecord ? `the Boss dummy counts as ${BOSS_ENEMY_COUNT} enemies (record ${params.bossRecord}: calcCountByRarity, the game's Enemy Count rule)` : "1 enemy (the training dummy)";
-      return count > 0 ? on(`${who} within ${params.meters} m (${state.nearTarget === false ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away` : "the player stands within 10 m"}): ×${round(count)} (up to +${params.cap}%)`, { factor: count }) : off(`the dummy is outside ${params.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
+      return count > 0 ? on(`${who} within ${params.meters} m (${state.nearTarget === false ? `the Distant alternative stands ${distantMetersOf(state)} m away` : "the player stands within 10 m"}): ×${round(count)} (up to +${params.cap}%)`, { factor: count }) : off(`the dummy is outside ${params.meters} m (the Distant alternative stands ${distantMetersOf(state)} m away)`);
     }
     // Main Attack Skill revived family (game affix 6038069, chunk 2 2026-11-01: each cast adds to local l0 and takes it back 4 s later, on
     // trigger 1000069 with Attack + Main Skill, not Channeled or Sentry): stacks = Main Skill casts in the last 4 s, at most the cap; the
@@ -1156,7 +1158,7 @@ function resolveKey(condition, state) {
       if (state.moving === false) return off("standing still (movement group): no stacks from leaving Stand Still");
       if (!(stacks > 0)) return off("no line grants the stacks gained when exiting Stand Still");
       const speedText = `+${params.attackSpeed}% Attack Speed per stack (game record 1525925 row 3)`;
-      if (state.nearTarget === false) return on(`moving (movement group): ${stacks} stacks held, so ${speedText}; the Distant alternative stands ${DISTANT_STANDING_METERS} m away, so the damage part (range 4 m in the game record) is off`, { factor: 0, bodyFactors: [0, stacks], provisional: true });
+      if (state.nearTarget === false) return on(`moving (movement group): ${stacks} stacks held, so ${speedText}; the Distant alternative stands ${distantMetersOf(state)} m away, so the damage part (range 4 m in the game record) is off`, { factor: 0, bodyFactors: [0, stacks], provisional: true });
       return on(`moving (movement group) and within 4 m of the dummy: ${stacks} stacks held (best case; Movement group, user-confirmed 2026-10-18), one additional term; ${speedText}`, { factor: stacks, bodyFactors: [stacks, stacks], provisional: true });
     }
     // Heat Up's 4 s buff: the Sentry skill recast within every 4 s (best case: the player has the time; the model's own recast on
@@ -1370,12 +1372,12 @@ function resolveKey(condition, state) {
       return value !== 0 ? on(`+${round(speed)}% increased Movement Speed ÷ ${params.per} × ${params.value}% = ${round(raw)}%${raw > params.cap ? `, capped at +${params.cap}%` : ""} (game affix 647724864: node 114, linear)`, { factor: value / params.value }) : off("no increased Movement Speed");
     }
     case "eliteWithin": {
-      const holds = dummyTarget.elite && explicitRadiusHolds(params.meters, state.nearTarget);
+      const holds = dummyTarget.elite && explicitRadiusHolds(params.meters, state.nearTarget, state.distantMeters);
       const group = params.meters < DISTANT_STANDING_METERS ? "distance" : null;
-      return holds ? on(`the dummy is a Boss, so an Elite, within ${params.meters} m (src/dummy-target.js; ${state.nearTarget === false ? `the Distant alternative stands ${DISTANT_STANDING_METERS} m away` : "the player stands within 10 m"}); the record's untagged damage write reaches all your damage (provisional: open question prism-haze-base-lines)`, { group, provisional: true }) : off(`the dummy is outside ${params.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`, { group });
+      return holds ? on(`the dummy is a Boss, so an Elite, within ${params.meters} m (src/dummy-target.js; ${state.nearTarget === false ? `the Distant alternative stands ${distantMetersOf(state)} m away` : "the player stands within 10 m"}); the record's untagged damage write reaches all your damage (provisional: open question prism-haze-base-lines)`, { group, provisional: true }) : off(`the dummy is outside ${params.meters} m (the Distant alternative stands ${distantMetersOf(state)} m away)`, { group });
     }
     case "noEliteWithin": {
-      const near = dummyTarget.elite && explicitRadiusHolds(params.meters, state.nearTarget);
+      const near = dummyTarget.elite && explicitRadiusHolds(params.meters, state.nearTarget, state.distantMeters);
       return near ? off(`the dummy is a Boss, so an Elite, within ${params.meters} m (src/dummy-target.js)`, { notOnDummy: params.meters >= DISTANT_STANDING_METERS }) : on(`the dummy is outside ${params.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
     }
     case "perEvasion": {
@@ -1454,9 +1456,9 @@ function resolveKey(condition, state) {
     }
     case "nearbyEnemiesAtLeast": {
       // A flagged record (calcCountByRarity on its count gate) counts the Boss dummy as 5 enemies; the player stands within 10 m.
-      if (params.count > 1 && params.bossRecord && BOSS_ENEMY_COUNT >= params.count && explicitRadiusHolds(params.meters ?? KEYWORD_RADII_METERS.nearby, state.nearTarget)) return on(`the Boss dummy counts as ${BOSS_ENEMY_COUNT} enemies (record ${params.bossRecord}: calcCountByRarity, the game's Enemy Count rule) ≥ ${params.count}, within ${params.meters} m`);
+      if (params.count > 1 && params.bossRecord && BOSS_ENEMY_COUNT >= params.count && explicitRadiusHolds(params.meters ?? KEYWORD_RADII_METERS.nearby, state.nearTarget, state.distantMeters)) return on(`the Boss dummy counts as ${BOSS_ENEMY_COUNT} enemies (record ${params.bossRecord}: calcCountByRarity, the game's Enemy Count rule) ≥ ${params.count}, within ${params.meters} m`);
       if (params.count > 1) return off(`needs ${params.count} enemies Nearby: ${params.bossRecord ? `the Boss dummy counts as ${BOSS_ENEMY_COUNT} (record ${params.bossRecord})` : "the training dummy is one enemy"}`, { notOnDummy: true });
-      return state.nearTarget !== false ? on(`the dummy is Nearby (within ${KEYWORD_RADII_METERS.nearby} m; distance group: close, best case)`) : off(`${DISTANT_STANDING_METERS} m from the dummy (distance group: Distant): no enemy Nearby`);
+      return state.nearTarget !== false ? on(`the dummy is Nearby (within ${KEYWORD_RADII_METERS.nearby} m; distance group: close, best case)`) : off(`${distantMetersOf(state)} m from the dummy (distance group: Distant): no enemy Nearby`);
     }
     case "auraCountAtLeast": { const auraCount = ownAuraCount(state); return (auraCount || 0) >= params.count ? on(`${auraCount} active Aura type${auraCount === 1 ? "" : "s"} ≥ ${params.count} (own Auras only${condition.wording && /your Minions/i.test(condition.wording) ? "; your Minions stand inside them: best case" : ""}: provisional)`, { provisional: true }) : off(`${auraCount || 0} active Aura types < ${params.count}`); }
     case "auraCountExactly": { const auraCount = ownAuraCount(state); return (auraCount || 0) === params.count ? on(`exactly ${params.count} active Aura type${params.count === 1 ? "" : "s"} (own Auras only: provisional)`, { provisional: true }) : off(`${auraCount || 0} active Aura types, not ${params.count}`); }
@@ -1517,7 +1519,7 @@ function resolveKey(condition, state) {
     case "mobilityCastsRecently": {
       const rate = Math.max(0, Number(state.mobilityUsesPerSecond) || 0);
       const stacks = Math.min(params.stacks, rate * params.seconds);
-      return stacks > 0 ? on(`${round(rate)} Mobility uses/s on the board (each at its cooldown) × ${params.seconds} s ("recently") = ${round(rate * params.seconds)}${rate * params.seconds > params.stacks ? `, capped at ${params.stacks}` : ""} stacks, one factor per stack`, { power: stacks }) : off("no enabled Mobility skill on the skill board");
+      return stacks > 0 ? on(`${round(rate)} Mobility uses/s on the board (${state.mobilityUsesNote || "each at its cooldown"}) × ${params.seconds} s ("recently") = ${round(rate * params.seconds)}${rate * params.seconds > params.stacks ? `, capped at ${params.stacks}` : ""} stacks, one factor per stack`, { power: stacks }) : off("no enabled Mobility skill on the skill board");
     }
     case "numbedInflictedRecently": {
       if (!has("Numbed")) return off("the build inflicts no Numbed");

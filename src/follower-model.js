@@ -438,6 +438,40 @@ function areaDamageUses(entry, model) {
 
 const cadenceText = (entry) => entry ? `cast every ${round(entry.periodSeconds)} s (${entry.notes.join("; ") || "on cooldown"})` : "not cast";
 const uptimeOf = (durationSeconds, entry) => entry && entry.castsPerSecond > 0 ? Math.min(1, durationSeconds * entry.castsPerSecond) : 0;
+// R1 of research/remediation-held-buffs-2026-11-21.md (2026-11-22): a follower buff or debuff is up only after the follower's first cast of its skill
+// (the ring's first use, followerCadence firstUseSeconds), then `durationSeconds` of every cast period, so the windows and the loop read that schedule
+// instead of the time average from t = 0. `heldAfterFirst`: a buff with no duration in its record (Fire Infiltration) is held from the first cast.
+// The planner gives the part the paths whose ledgers hold the derived line (src/planner.js followerTimedParts); sustained = the uptime the line holds.
+const periodicTimed = (entry, durationSeconds, fullPercent, { heldAfterFirst = false } = {}) => entry && entry.castsPerSecond > 0 && fullPercent ? { durationSeconds: heldAfterFirst ? null : durationSeconds, periodSeconds: 1 / entry.castsPerSecond, startSeconds: Math.max(0, Number(entry.firstUseSeconds) || 0), fullPercent, heldAfterFirst } : null;
+const periodicPartsOf = (derived, scopeSource) => {
+  // A stacking buff's own steps (castStepsParts): one part per derived line, each keyed to the paths that hold it.
+  if (derived?.stepParts?.length) return derived.stepParts.map((part) => ({ ...part, scopeSource }));
+  const timed = derived?.periodic;
+  if (!timed) return [];
+  const schedule = timed.heldAfterFirst ? { kind: "steps", points: [[timed.startSeconds, 1]], sustained: 1 } : { kind: "periodic", durationSeconds: timed.durationSeconds, periodSeconds: timed.periodSeconds, startSeconds: timed.startSeconds };
+  return [{ type: null, reach: "all", percent: timed.fullPercent, schedule, scopeSource }];
+};
+// R1 remainder (2026-11-22, research/remediation-held-buffs-2026-11-21.md §R1): a stacking follower buff built cast by cast on the ring. Each cast
+// of `entries` (the ring's first use, followerCadence firstUseSeconds, then one every 1 / its casts per second) adds `perCast` stacks, each its own
+// `durationSeconds` (Infinity: renewed by the next casts and held once gained, the reading of a line the planner holds at its cap), capped at
+// `cap`. `value(stacks)` is the derived line's bonus as a fraction at that many stacks; `sustained` the fraction the ledger line holds (its
+// text's value ÷ 100), so the sustained figure does not move and the windows and the loop read (1 + value(t)) ÷ (1 + sustained). The casts are
+// the ring's periodic schedule (as periodicTimed: a ring that bunches casts is averaged), up to the timed effects' 120 s horizon.
+const STEPS_HORIZON_SECONDS = 120;
+function castSteps(entries, { perCast = 1, durationSeconds = Infinity, cap = Infinity, value, sustained, rate = (entry) => entry.castsPerSecond }) {
+  const casts = [];
+  for (const entry of entries) {
+    const perSecond = entry ? rate(entry) : 0;
+    if (!(perSecond > 0)) continue;
+    for (let at = Math.max(0, Number(entry.firstUseSeconds) || 0); at < STEPS_HORIZON_SECONDS; at += 1 / perSecond) casts.push(at);
+  }
+  if (!casts.length) return null;
+  const EPS = 1e-9, times = [...new Set([...casts, ...(Number.isFinite(durationSeconds) ? casts.map((at) => at + durationSeconds) : [])].map((at) => Math.round(at * 1e9) / 1e9))].filter((at) => at < STEPS_HORIZON_SECONDS).sort((a, b) => a - b);
+  const points = times.map((time) => [time, value(Math.min(cap, perCast * casts.filter((at) => at <= time + EPS && time < at + durationSeconds - EPS).length))]);
+  return { kind: "steps", points, sustained };
+}
+// The part for one derived line: a factor (1 + 100% × level) relative to the sustained level, on `type` (null: all) and `reach`.
+const stepsPart = (schedule, { type = null, reach = "all" } = {}) => schedule ? { type, reach, percent: 100, schedule } : null;
 // Warcry Skill Effect on the follower's own Warcries: Howl of the Pack's "+20% Warcry Skill Effect for the Follower and you"
 // (provisional: Warcry Skill Effect scales the Warcry's buff values).
 const warcryEffectFactor = (selection) => 1 + (selection?.follower?.traitLines || []).reduce((sum, text) => { const match = String(text).match(/^\+(\d+(?:\.\d+)?)% Warcry Skill Effect for the Follower and you$/i); return sum + (match ? Number(match[1]) : 0); }, 0) / 100;
@@ -673,9 +707,28 @@ export const FOLLOWER_MARKERS = [
   { skill: "Tartarus: Wilt Spike", pattern: /^Inflicts 1 stack\(s\) of Wilt when this skill hits$/i, texts: () => ["The Follower inflicts Wilt on the dummy"], reason: "the dummy carries the follower's Wilt: an Ailment on the dummy (its own Wilt damage, 1 base per stack, is not counted)" },
   { skill: "Tartarus: Double Thrusts", pattern: /^\+30% chance for this skill to inflict Trauma$/i, texts: () => ["The Follower inflicts Trauma on the dummy"], reason: "the follower's two thrusts each cast give a 30% chance (1 − 0.7² = 51% per cast) and Trauma lasts 4 s, so the dummy keeps Trauma (an Ailment on the dummy; its own Trauma damage, 1 base, is not counted)" },
   { skill: "Tartarus: Forking Thunder", pattern: /^This skill inflicts Mark on Critical Strike$/i, texts: () => ["+100% chance to Mark the enemy on hit"], reason: "the follower's spear always crits, so it Marks the dummy each cast: +10% additional Critical Strike Damage taken on your hits' crit share (src/mark-effect.js, the Marked dummy switch)" },
-  { skill: "Tartarus: Focused Slash", pattern: /^-(\d+(?:\.\d+)?)% Fervor Effect for nearby allies for each Sweep Slash launched by this skill recently\. Stacks up to (\d+) time\(s\)$/i, texts: (match, entry) => { const stacks = Math.min(Number(match[2]), entry ? entry.castsPerSecond * FOLLOWER_RECENT_SECONDS : 0); return stacks > 0 ? [`-${round(Number(match[1]) * stacks)}% Fervor effect`] : []; }, reason: (match, entry) => `a penalty on your Fervor: the follower never launches a Steep Strike (no Steep Strike chance), so every cast is a Sweep Slash: ${round(Math.min(Number(match[2]), entry ? entry.castsPerSecond * FOLLOWER_RECENT_SECONDS : 0))} stacks in the last ${FOLLOWER_RECENT_SECONDS} s (${cadenceText(entry)}), -${round(Number(match[1]) * Math.min(Number(match[2]), entry ? entry.castsPerSecond * FOLLOWER_RECENT_SECONDS : 0))}% Fervor effect (src/combat-states.js)` },
-  { skill: "Tartarus: Icy Blade", pattern: /^-(\d+(?:\.\d+)?)% Frostbite Effect for nearby allies for each Sweep Slash launched by this skill recently\. Stacks up to (\d+) time\(s\)$/i, texts: (match, entry) => { const stacks = Math.min(Number(match[2]), entry ? entry.castsPerSecond * FOLLOWER_RECENT_SECONDS : 0); return stacks > 0 ? [`-${round(Number(match[1]) * stacks)}% Frostbite Effect`] : []; }, reason: (match, entry) => `a penalty on your Frostbite Effect: the follower never launches a Steep Strike, so every cast is a Sweep Slash: ${round(Math.min(Number(match[2]), entry ? entry.castsPerSecond * FOLLOWER_RECENT_SECONDS : 0))} stacks in the last ${FOLLOWER_RECENT_SECONDS} s (${cadenceText(entry)}) (src/combat-states.js)` }
+  // The Sweep penalties (6 T Corrosive Throw F1, 2026-11-20; record 1033360329 row 3: on a cast that is not a Steep Strike, notMine Steep): only the
+  // share of the follower's casts that launch no Steep Strike are Sweep Slashes (steepShareOf).
+  { skill: "Tartarus: Focused Slash", pattern: /^-(\d+(?:\.\d+)?)% Fervor Effect for nearby allies for each Sweep Slash launched by this skill recently\. Stacks up to (\d+) time\(s\)$/i, texts: (match, entry) => { const stacks = sweepStacks(match, entry); return stacks > 0 ? [`-${round(Number(match[1]) * stacks)}% Fervor effect`] : []; }, reason: (match, entry) => `a penalty on your Fervor: ${sweepText(entry)}: ${round(sweepStacks(match, entry))} stacks in the last ${FOLLOWER_RECENT_SECONDS} s (${cadenceText(entry)}), -${round(Number(match[1]) * sweepStacks(match, entry))}% Fervor effect (src/combat-states.js)` },
+  { skill: "Tartarus: Icy Blade", pattern: /^-(\d+(?:\.\d+)?)% Frostbite Effect for nearby allies for each Sweep Slash launched by this skill recently\. Stacks up to (\d+) time\(s\)$/i, texts: (match, entry) => { const stacks = sweepStacks(match, entry); return stacks > 0 ? [`-${round(Number(match[1]) * stacks)}% Frostbite Effect`] : []; }, reason: (match, entry) => `a penalty on your Frostbite Effect: ${sweepText(entry)}: ${round(sweepStacks(match, entry))} stacks in the last ${FOLLOWER_RECENT_SECONDS} s (${cadenceText(entry)}) (src/combat-states.js)` },
+  // The follower's lines on its own Steep Strike (6 T Corrosive Throw F1, user decision 2026-11-20; research/build-6t-corrosive-throw-deterioration-
+  // 2026-11-20.md §6, §9): read by the share of its casts that launch one (steepShareOf: the skill's own chance and its support affixes, Raging Slash
+  // +50%), Inactive at 0.
+  //   - Focused Slash (record 1033360329 rows 1-2: trigger 1000078 on [this skill, Steep Strike]; node 301 buff 390, Fervor, on the follower and on
+  //     its allies, you, for 4 s): a Fervor source for you ("Gains Fervor", every Fervor reader). Held once granted while you keep hitting the Boss
+  //     dummy (buff 390's affix 624561 refreshes it on every Rating gain: user-supplied reading, open question follower-granted-fervor-held); your
+  //     own Fervor Effect lines scale it; on the loop its Rating builds from 0 from the follower's first Steep Strike (src/trigger-bus.js section 12).
+  //   - Icy Blade: "+40% Frostbite Effect for nearby allies for 4 s": time-averaged at its uptime, 1 − (1 − share)^(casts/s × 4 s) (each cast one
+  //     chance, as the follower's crit-held buffs; min(1, 4 s × casts/s) when every cast is a Steep Strike).
+  { skill: "Tartarus: Focused Slash", pattern: /gain Fervor for (\d+(?:\.\d+)?) ?s when this skill launches a Steep Strike$/i, active: (match, entry) => steepCastShare(entry) > 0, texts: (match, entry) => steepCastShare(entry) > 0 ? [{ text: "Gains Fervor", fervorGrant: { skill: entry.skill.name, share: steepCastShare(entry), seconds: Number(match[1]) } }] : [], reason: (match, entry) => steepCastShare(entry) > 0 ? `a Fervor source for you: ${round(steepCastShare(entry) * 100)}% of its casts launch a Steep Strike (${cadenceText(entry)}), each granting Fervor (buff 390) for ${match[1]} s; held while you keep hitting the Boss dummy, every Rating gain refreshing it (provisional, open question follower-granted-fervor-held); on the loop its Rating builds from 0 from the follower's first Steep Strike` : NO_STEEP },
+  { skill: "Tartarus: Icy Blade", pattern: /^\+(\d+(?:\.\d+)?)% Frostbite Effect for nearby allies for (\d+(?:\.\d+)?) ?s when this skill launches a Steep Strike$/i, active: (match, entry) => steepCastShare(entry) > 0, texts: (match, entry) => { const uptime = steepUptime(entry, Number(match[2])); return uptime > 0 ? [`+${round(Number(match[1]) * uptime)}% Frostbite Effect`] : []; }, reason: (match, entry) => steepCastShare(entry) > 0 ? `+${match[1]}% Frostbite Effect on you for ${match[2]} s after each of its Steep Strikes (${round(steepCastShare(entry) * 100)}% of its casts, ${cadenceText(entry)}): ${round(steepUptime(entry, Number(match[2])) * 100)}% uptime, time-averaged +${round(Number(match[1]) * steepUptime(entry, Number(match[2])))}% Frostbite Effect (src/combat-states.js; provisional)` : NO_STEEP }
 ];
+// The share of a follower skill's casts that launch a Steep Strike (steepShareOf; 0 with no cadence entry), the uptime of a buff held D s after
+// each one (one chance per cast), and the Sweep Slash stacks in the last 4 s (the other casts).
+const steepCastShare = (entry) => entry?.skill ? steepShareOf(entry.skill) : 0;
+const steepUptime = (entry, seconds) => { const share = steepCastShare(entry), rate = entry?.castsPerSecond || 0; return !(share > 0) || !(rate > 0) ? 0 : share >= 1 ? Math.min(1, seconds * rate) : 1 - (1 - share) ** (rate * seconds); };
+const sweepStacks = (match, entry) => Math.min(Number(match[2]), entry ? entry.castsPerSecond * (1 - steepCastShare(entry)) * FOLLOWER_RECENT_SECONDS : 0);
+const sweepText = (entry) => steepCastShare(entry) > 0 ? `${round((1 - steepCastShare(entry)) * 100)}% of the follower's casts are Sweep Slashes (the rest launch a Steep Strike)` : "the follower never launches a Steep Strike (no Steep Strike chance), so every cast is a Sweep Slash";
 
 // Every line the follower carries: its trait (named followers), its equipped skills and their support affixes (kind "affix",
 // with `affix` the data entry and `entry` the selection's skill entry).
@@ -706,7 +759,7 @@ export function followerModifierTexts(state) {
   return followerLines(selection).flatMap((line) => {
     if (line.kind === "affix") return affixMarkerTexts(line, { selection, cadence }).map((text) => ({ text, source: line.source, origin: "follower", multiplier: 1, derivedFrom: line.text }));
     const marker = markerFor(line);
-    if (marker) return marker.texts(clean(line.text).match(marker.pattern), cadence.get(line.skill.name)).map((text) => ({ text, source: line.source, origin: "follower", multiplier: 1, derivedFrom: line.text }));
+    if (marker) return marker.texts(clean(line.text).match(marker.pattern), cadence.get(line.skill.name)).map((text) => typeof text === "string" ? { text, source: line.source, origin: "follower", multiplier: 1, derivedFrom: line.text } : { ...text, source: line.source, origin: "follower", multiplier: 1, derivedFrom: line.text });
     const body = plainFollowerLine(line.text);
     return body ? [{ text: body, source: line.source, origin: "follower", multiplier: 1, derivedFrom: line.text }] : [];
   });
@@ -823,7 +876,8 @@ export const FOLLOWER_BUFFS = [
   {
     id: "followerStarStalker", skill: "Tartarus: Star Stalker", label: "Star Stalker: Euphoria", target: "self", needsNear: true, engine: "dot",
     pattern: /allies gain Euphoria: \+?(\d+(?:\.\d+)?)% additional Damage Over Time/i,
-    derive: (match) => ({ text: `+${round(Number(match[1]))}% additional Damage Over Time`, origin: "buff", summary: `Euphoria held: +${round(Number(match[1]))}% additional Damage Over Time` }),
+    // R1 remainder (2026-11-22): held from the star bolt's first cast on the ring (periodicTimed heldAfterFirst), not from engagement.
+    derive: (match, ctx) => ({ periodic: periodicTimed(ctxEntry(ctx), null, Number(match[1]), { heldAfterFirst: true }), text: `+${round(Number(match[1]))}% additional Damage Over Time`, origin: "buff", summary: `Euphoria held: +${round(Number(match[1]))}% additional Damage Over Time` }),
     reason: "best case: the star bolt tracks Elites and attaches to the dummy (an Elite), you stand close inside its area, and it lasts 4 s on a 4 s cooldown, so Euphoria is held, from t = 0 in the 5 s / 20 s windows"
   },
   {
@@ -831,7 +885,9 @@ export const FOLLOWER_BUFFS = [
     pattern: /^\+?(\d+(?:\.\d+)?)% additional Spell Damage taken by enemies \(multiplies\) for each time this skill hits recently\. Stacks up to (\d+) time\(s\)$/i,
     // Game affix 19669: attr 57201 (damage taken, buff layer) mod 4 against Spell-tagged damage, a timed buff (mode 3, 4 s, count P2).
     recipe: { 1: { concept: "damageTaken", bucket: "additional" }, 2: { concept: "damageTaken", field: "count" } },
-    derive: (match) => { const value = round(((1 + Number(match[1]) / 100) ** Number(match[2]) - 1) * 100); return { text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `${match[2]} stacks × ${round(Number(match[1]))}% (multiplies): +${value}% additional Spell Damage taken` }; },
+    // R1 remainder (2026-11-22): the layers come from the beam's own hits (OWN_HITS_PER_USE: 3 a cast), so they build from its first cast on the ring
+    // (castSteps) to the cap the planner holds, then stay (renewed by the next hits: the held reading).
+    derive: (match, ctx) => { const v = Number(match[1]) / 100, cap = Number(match[2]), value = round(((1 + v) ** cap - 1) * 100); return { stepParts: [stepsPart(castSteps([ctxEntry(ctx)], { perCast: OWN_HITS_PER_USE["Tartarus: Lightning Beam"], cap, value: (stacks) => (1 + v) ** stacks - 1, sustained: value / 100 }))].filter(Boolean), text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `${match[2]} stacks × ${round(Number(match[1]))}% (multiplies): +${value}% additional Spell Damage taken` }; },
     reason: "best case: the follower casts Lightning Beam (3 beams, no cooldown) at the dummy, so the stacks stay at max, held from t = 0 in the 5 s / 20 s windows; Spell hits and a Spell skill's own damage over time (and its Reaps), not ailments (the record writes the Spell tag, no Hit tag; user decision 2026-11-13)"
   },
   {
@@ -864,7 +920,7 @@ export const FOLLOWER_BUFFS = [
     pattern: /^Enemies take \+(\d+(?:\.\d+)?)% additional Spell Damage when this skill hits$/i,
     derive: (match, ctx) => {
       const entry = ctxEntry(ctx), uptime = uptimeOf(SPEED_PHANTOM_DEBUFF_SECONDS, entry), value = round(Number(match[1]) * uptime);
-      return { text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `+${round(Number(match[1]))}% additional Spell Damage taken for ${SPEED_PHANTOM_DEBUFF_SECONDS} s per hit (game affix 3578901), ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` };
+      return { periodic: periodicTimed(entry, SPEED_PHANTOM_DEBUFF_SECONDS, Number(match[1])), text: `+${value}% additional Spell Damage taken`, origin: "derived", summary: `+${round(Number(match[1]))}% additional Spell Damage taken for ${SPEED_PHANTOM_DEBUFF_SECONDS} s per hit (game affix 3578901), ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` };
     },
     reason: "best case: the follower's Remnants reach the dummy each cast; Spell hits and a Spell skill's own damage over time (and its Reaps), not ailments (the record writes the Spell tag, no Hit tag; user decision 2026-11-13); time-averaged in the 5 s / 20 s windows"
   },
@@ -893,7 +949,9 @@ export const FOLLOWER_BUFFS = [
     pattern: /^This unit and nearby allies gain Ferocity for (\d+(?:\.\d+)?) ?s when this skill deals damage$/i,
     derive: (match, ctx) => {
       const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[1]), entry), value = round(10 * uptime);
-      return { text: `+${value}% additional Physical Damage`, origin: "buff", summary: `Ferocity (+10% additional Physical Damage) for ${match[1]} s per cast, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime; its -3% damage taken is defence and "Physical Damage cannot be converted" is not modeled` };
+      // A2 (2026-11-22, research/remediation-plumbing-2026-11-21.md): Ferocity (record 1033360331, filter 20: the holder's friendly units, inferred
+      // reading filter-target-allies) is on your Minions too: their Physical damage at the same uptime (a Minion keeps the time average).
+      return { periodic: periodicTimed(entry, Number(match[1]), 10), texts: [{ text: `+${value}% additional Physical Damage for Minions`, origin: "buff" }], text: `+${value}% additional Physical Damage`, origin: "buff", summary: `Ferocity (+10% additional Physical Damage) for ${match[1]} s per cast, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime; its -3% damage taken is defence and "Physical Damage cannot be converted" is not modeled` };
     },
     reason: "best case: you stand next to the follower thrusting at the dummy, so Ferocity is refreshed each cast"
   },
@@ -905,7 +963,7 @@ export const FOLLOWER_BUFFS = [
     pattern: /^Inflicts Fire Infiltration when this skill hits, and \+(\d+(?:\.\d+)?)% Fire Infiltration Effect$/i,
     // Game affix 1033360328: gains buff 3441 (Fire Infiltration) on hit and attr 3401 (status effect) mod 3 on its tag 5200074.
     recipe: { 1: { concept: "statusEffect", bucket: "increased" } },
-    derive: (match, ctx) => { const value = round(13 * (1 + Number(match[1]) / 100)); return { text: `+${value}% additional Fire Damage taken`, origin: "derived", summary: `Fire Infiltration 13% × (1 + ${match[1]}% effect) = +${value}% additional Fire Damage taken, ${cadenceText(ctxEntry(ctx))}` }; },
+    derive: (match, ctx) => { const value = round(13 * (1 + Number(match[1]) / 100)); return { periodic: periodicTimed(ctxEntry(ctx), null, value, { heldAfterFirst: true }), text: `+${value}% additional Fire Damage taken`, origin: "derived", summary: `Fire Infiltration 13% × (1 + ${match[1]}% effect) = +${value}% additional Fire Damage taken, ${cadenceText(ctxEntry(ctx))}` }; },
     reason: "best case: the follower keeps hitting the dummy, so Fire Infiltration is held (its keyword names no duration: provisional)"
   },
   {
@@ -913,7 +971,10 @@ export const FOLLOWER_BUFFS = [
     pattern: /^\+(\d+(?:\.\d+)?)% Skill Effect Duration and \+(\d+(?:\.\d+)?)% Cooldown Recovery Speed for allies for (\d+(?:\.\d+)?) ?s when casting this skill$/i,
     derive: (match, ctx) => {
       const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[3]), entry);
-      return { text: `+${round(Number(match[1]) * uptime)}% Skill Effect Duration`, texts: [{ text: `+${round(Number(match[2]) * uptime)}% Cooldown Recovery Speed`, origin: "buff" }], origin: "buff", summary: `+${match[1]}% Skill Effect Duration and +${match[2]}% Cooldown Recovery Speed for ${match[3]} s, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` };
+      // A3 (2026-11-22, research/remediation-plumbing-2026-11-21.md): record 12172341 writes on filter 9 (the holder's allies, inferred reading
+      // filter-target-allies), so your Minions take its Cooldown Recovery Speed too (their skills' cooldowns); its Skill Effect Duration has no
+      // Minion reader (left).
+      return { text: `+${round(Number(match[1]) * uptime)}% Skill Effect Duration`, texts: [{ text: `+${round(Number(match[2]) * uptime)}% Cooldown Recovery Speed`, origin: "buff" }, { text: `+${round(Number(match[2]) * uptime)}% Cooldown Recovery Speed for Minions`, origin: "buff" }], origin: "buff", summary: `+${match[1]}% Skill Effect Duration and +${match[2]}% Cooldown Recovery Speed for ${match[3]} s, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` };
     },
     reason: "best case: the follower blinks on cooldown (shortened by the dummy within 10 m), so the buff is held; stats only, read wherever a skill's duration or cooldown is modeled"
   },
@@ -930,7 +991,7 @@ export const FOLLOWER_BUFFS = [
     // time-averaged into one additional term (provisional at part uptime).
     id: "followerFrostSpikeShadow", skill: "Tartarus: Frost Spike", label: "Frost Spike: Shadow Damage", target: "self", needsNear: true, engine: "shadow",
     pattern: /^\+(\d+(?:\.\d+)?)% additional Shadow Damage for nearby allies for (\d+(?:\.\d+)?) ?s when this skill hits$/i,
-    derive: (match, ctx) => { const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[2]), entry); return { text: `+${round(Number(match[1]) * uptime)}% additional Shadow Damage`, origin: "buff", summary: `+${match[1]}% additional Shadow Damage for ${match[2]} s, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime (record 1033360306; your Shadows' hits only, tag 6020014)` }; },
+    derive: (match, ctx) => { const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[2]), entry); return { periodic: periodicTimed(entry, Number(match[2]), Number(match[1])), text: `+${round(Number(match[1]) * uptime)}% additional Shadow Damage`, origin: "buff", summary: `+${match[1]}% additional Shadow Damage for ${match[2]} s, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime (record 1033360306; your Shadows' hits only, tag 6020014)` }; },
     reason: "the follower's Frost Spike hits the dummy next to you; your Shadow Strike skills' Shadows take it"
   },
   {
@@ -1006,10 +1067,11 @@ export const FOLLOWER_BUFFS = [
       const period = entry?.periodSeconds ?? Infinity;
       if (!(entry?.castsPerSecond > 0)) return { inactive: "the follower never casts it" };
       if (period <= duration) {
-        return { text: `+${round(perStack * max)}% additional damage taken`, origin: "derived", parts: [{ type: null, reach: "all", percent: perStack, schedule: { kind: "ramp", maxStacks: max, intervalSeconds: period, startStacks: 1 } }], summary: `${max} stacks × ${perStack}% = +${round(perStack * max)}% additional damage taken: ${cadenceText(entry)} refreshes the ${duration} s debuff before it ends; one stack per cast from t = 0 on the clean dummy (${max} after ${round((max - 1) * period)} s)` };
+        // R1 remainder (2026-11-22): one stack per cast from the dash's first cast on the ring (castSteps; was from t = 0).
+        return { text: `+${round(perStack * max)}% additional damage taken`, origin: "derived", parts: [stepsPart(castSteps([entry], { cap: max, value: (stacks) => perStack * stacks / 100, sustained: round(perStack * max) / 100 }))].filter(Boolean), summary: `${max} stacks × ${perStack}% = +${round(perStack * max)}% additional damage taken: ${cadenceText(entry)} refreshes the ${duration} s debuff before it ends; one stack per cast from its first cast on the clean dummy (${max} after ${round((max - 1) * period)} s more)` };
       }
       const uptime = duration / period;
-      return { text: `+${round(perStack * uptime)}% additional damage taken`, origin: "derived", parts: [{ type: null, reach: "all", percent: perStack, schedule: { kind: "periodic", durationSeconds: duration, periodSeconds: period } }], summary: `1 stack of +${perStack}% for ${duration} s per cast, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` };
+      return { text: `+${round(perStack * uptime)}% additional damage taken`, origin: "derived", parts: [{ type: null, reach: "all", percent: perStack, schedule: { kind: "periodic", durationSeconds: duration, periodSeconds: period, startSeconds: Math.max(0, Number(entry.firstUseSeconds) || 0) } }], summary: `1 stack of +${perStack}% for ${duration} s per cast, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime` };
     },
     reason: "best case: the follower dashes through the dummy on cooldown; every damage you deal takes it (provisional: shared, refreshed stack duration)"
   },
@@ -1039,7 +1101,8 @@ export const FOLLOWER_BUFFS = [
       const perStack = Number(keyword.match(/\+(\d+(?:\.\d+)?)% additional Spell Damage/i)?.[1]) || 14, seconds = Number(keyword.match(/for (\d+(?:\.\d+)?) ?s/i)?.[1]) || 8, max = (Number(keyword.match(/stacks up to (\d+)/i)?.[1]) || 4) + affixSum(entry, /^\+(\d+) Max Mystic Spread$/i);
       const stacks = Math.min(max, seconds * (entry?.castsPerSecond || 0));
       if (!(stacks > 0)) return { inactive: "the follower never casts it" };
-      return { text: `+${round(perStack * stacks)}% additional Spell Damage`, origin: "buff", summary: `Mystic Spread: ${round(stacks)} stacks on average (${seconds} s each, independent; ${cadenceText(entry)}) (up to ${max}) × ${perStack}% = +${round(perStack * stacks)}% additional Spell Damage; the extra stacks from the follower's Spell Burst are not modeled` };
+      // R1 remainder (2026-11-22): a stack per cast from the first cast on the ring, each its own `seconds` (castSteps).
+      return { stepParts: [stepsPart(castSteps([entry], { durationSeconds: seconds, cap: max, value: (held) => perStack * held / 100, sustained: round(perStack * stacks) / 100 }))].filter(Boolean), text: `+${round(perStack * stacks)}% additional Spell Damage`, origin: "buff", summary: `Mystic Spread: ${round(stacks)} stacks on average (${seconds} s each, independent; ${cadenceText(entry)}) (up to ${max}) × ${perStack}% = +${round(perStack * stacks)}% additional Spell Damage; the extra stacks from the follower's Spell Burst are not modeled` };
     },
     reason: "best case: cast on cooldown; Spell hits and a Spell skill's own damage over time take it (user-confirmed rule 2026-10-11), ailments do not"
   },
@@ -1058,7 +1121,8 @@ export const FOLLOWER_BUFFS = [
     // the base-plus-field sum inferred); Jumps and returns move the same projectile (inferred: no new one). Deep Accumulation
     // (1033360310: attr 3440 flat on Projectile Amplification's tag 5200102, on [1] and [38]) raises your cap too; Glacial Trajectory
     // (1033360311: one attr 5109 mod 4 write of GetBuffStack(12180) × p0 on [1] and [38]) is one +X% × stacks additional Cold Damage
-    // term, not a factor per stack. The gain needs no target (a skill use), so the windows hold it pre-built. Provisional links:
+    // term, not a factor per stack. The gain needs no target (a skill use), but it is the follower's: its ring starts at engagement (proven ring,
+    // chunk 14), so since R1's remainder (2026-11-22) the windows and the loop build the stacks from Ice Shot's first cast. Provisional links:
     // open question follower-ice-shot-projectile-amplification.
     id: "followerIceShot", skill: "Origin Tartarus: Ice Shot", label: "Ice Shot: Projectile Amplification", target: "self", needsNear: true, engine: "projectile",
     pattern: /^This unit and nearby allies gain 1 stack of Projectile Amplification for each Projectile fired recently$/i,
@@ -1073,9 +1137,13 @@ export const FOLLOWER_BUFFS = [
       const value = round(((1 + perStack / 100) ** stacks - 1) * 100);
       // Glacial Trajectory: one write of stacks × X% (record 1033360311), so one additional term.
       const coldValue = cold ? round(cold * stacks) : 0;
-      return { text: `+${value}% additional Projectile Damage`, ...(coldValue ? { texts: [{ text: `+${coldValue}% additional Cold Damage`, origin: "buff" }] } : {}), origin: "buff", summary: `${round(stacks)} stacks (Ice Shot ${round(casts)} casts/s × ${projectiles.text} = ${round(perSecond)} projectiles per second × ${seconds} s, up to ${max}; each stack its own ${seconds} s) × ${perStack}% (multiplies) = +${value}% additional Projectile Damage${coldValue ? `; Glacial Trajectory ${cold}% × ${round(stacks)} stacks (one term) = +${coldValue}% additional Cold Damage` : ""}` };
+      // R1 remainder (2026-11-22): the stacks build from Ice Shot's first cast on the ring (castSteps: each cast's projectiles, each stack its own
+      // 4 s, the cap), not held from engagement; the Projectile factor on hits (the line's own reach), Glacial Trajectory's term on Cold damage.
+      const steps = (stackValue, sustained, part) => stepsPart(castSteps([entry], { rate: totalCasts, perCast: projectiles.perCast, durationSeconds: seconds, cap: max, value: stackValue, sustained }), part);
+      const stepParts = [steps((held) => (1 + perStack / 100) ** held - 1, value / 100, { reach: "hit" }), coldValue ? steps((held) => cold * held / 100, coldValue / 100, { type: "Cold" }) : null].filter(Boolean);
+      return { stepParts, text: `+${value}% additional Projectile Damage`, ...(coldValue ? { texts: [{ text: `+${coldValue}% additional Cold Damage`, origin: "buff" }] } : {}), origin: "buff", summary: `${round(stacks)} stacks (Ice Shot ${round(casts)} casts/s × ${projectiles.text} = ${round(perSecond)} projectiles per second × ${seconds} s, up to ${max}; each stack its own ${seconds} s) × ${perStack}% (multiplies) = +${value}% additional Projectile Damage${coldValue ? `; Glacial Trajectory ${cold}% × ${round(stacks)} stacks (one term) = +${coldValue}% additional Cold Damage` : ""}` };
     },
-    reason: "game affix 1033360312: Ice Shot's own projectiles add the stacks (trigger 1001160 with the \"this skill\" tag), each stack its own 4 s (buff 12180, cap 40); the follower's other skills and your projectiles add none; best case: you stand near it"
+    reason: "game affix 1033360312: Ice Shot's own projectiles add the stacks (trigger 1001160 with the \"this skill\" tag), each stack its own 4 s (buff 12180, cap 40); the follower's other skills and your projectiles add none; best case: you stand near it; the 5 s / 20 s windows and the loop build them from Ice Shot's first cast on the follower's ring"
   },
   {
     // Origin Fearless Warcry: "+6% additional Attack Damage and Ailment Damage dealt by attacks for allies for each Warcry Skill
@@ -1089,7 +1157,10 @@ export const FOLLOWER_BUFFS = [
       const stacks = Math.min(Number(match[2]), seconds * warcries);
       if (!(stacks > 0)) return { inactive: "the follower casts no Warcry" };
       const value = round(Number(match[1]) * effect * stacks);
-      return { text: `+${value}% additional Attack Damage`, origin: "buff", summary: `${round(stacks)} stacks on average (${round(warcries)} follower Warcries per second × ${seconds} s) × ${round(Number(match[1]) * effect)}% = +${value}% additional Attack Damage; its attack Ailment Damage half is not read` };
+      // R1 remainder (2026-11-22): a stack per follower Warcry from each Warcry's first cast on the ring, each its own `seconds` (castSteps).
+      const warcryEntries = [...(ctx?.cadence?.values() || [])].filter((entry) => entry.skill.tags.includes("Warcry") && entry.castsPerSecond > 0);
+      const stepParts = [stepsPart(castSteps(warcryEntries.length ? warcryEntries : [ctxEntry(ctx)], { durationSeconds: seconds, cap: Number(match[2]), value: (held) => Number(match[1]) * effect * held / 100, sustained: value / 100 }))].filter(Boolean);
+      return { stepParts, text: `+${value}% additional Attack Damage`, origin: "buff", summary: `${round(stacks)} stacks on average (${round(warcries)} follower Warcries per second × ${seconds} s) × ${round(Number(match[1]) * effect)}% = +${value}% additional Attack Damage; its attack Ailment Damage half is not read` };
     },
     reason: "best case: the follower shouts on cooldown next to you (provisional stack reading)"
   },
@@ -1103,7 +1174,7 @@ export const FOLLOWER_BUFFS = [
       // A Trauma only your Minions keep (src/minion-ailment-types.js; provisional) holds its uptime share: × that share.
       const share = minionAilmentShare(ctx, "Trauma");
       const entry = ctxEntry(ctx), uptime = uptimeOf(Number(match[2]), entry) * share, value = round(Number(match[1]) * uptime);
-      return { text: `+${value}% additional Physical Damage taken`, origin: "derived", summary: `+${match[1]}% additional Physical Damage taken for ${match[2]} s per hit on the Traumatized dummy, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime${share < 1 ? ` (× ${round(share * 100)}%: Trauma from your Minions)` : ""}` };
+      return { periodic: periodicTimed(entry, Number(match[2]), Number(match[1]) * share), text: `+${value}% additional Physical Damage taken`, origin: "derived", summary: `+${match[1]}% additional Physical Damage taken for ${match[2]} s per hit on the Traumatized dummy, ${cadenceText(entry)}: ${round(uptime * 100)}% uptime${share < 1 ? ` (× ${round(share * 100)}%: Trauma from your Minions)` : ""}` };
     },
     reason: "best case: the follower keeps slashing the Traumatized dummy"
   },
@@ -1155,7 +1226,8 @@ export const FOLLOWER_BUFFS = [
     derive: (match, ctx) => {
       const timing = (ctx?.selection?.follower?.traitLines || []).map((text) => String(text).match(/^Every (\d+(?:\.\d+)?) ?s, .*Rat Guard .*for (\d+(?:\.\d+)?) ?s$/i)).find(Boolean);
       const period = Number(timing?.[1]) || 10, duration = Number(timing?.[2]) || 5, uptime = Math.min(1, duration / period), value = round(Number(match[1]) * uptime);
-      return { text: `+${value}% additional Spell Damage`, origin: "buff", summary: `Rat Guard: +${match[1]}% additional Spell Damage for ${duration} s every ${period} s: ${round(uptime * 100)}% uptime, time-averaged` };
+      // R1 remainder (2026-11-22): the trait's own timer, from t = 0 as Relentless Claws' (periodic), keyed to the paths that hold the line.
+      return { periodic: uptime < 1 ? { durationSeconds: duration, periodSeconds: period, startSeconds: 0, fullPercent: Number(match[1]), heldAfterFirst: false } : null, text: `+${value}% additional Spell Damage`, origin: "buff", summary: `Rat Guard: +${match[1]}% additional Spell Damage for ${duration} s every ${period} s: ${round(uptime * 100)}% uptime, time-averaged` };
     },
     reason: "best case: you stand inside the Rat Guard's area (it lands at a random spot nearby); Spell hits and a Spell skill's own damage over time take it"
   },
@@ -1234,8 +1306,6 @@ export const FOLLOWER_LINE_RULES = [
   { skill: "Tartarus: Wilt Spike", pattern: /^Adds \d+ ?-? ?\d+ Base Wilt Damage to this skill$/i, status: "In calc", reason: "the base of the follower's Wilt on the dummy (an Ailment there); its own Wilt damage (1 base per stack) is not counted" },
   { skill: "Tartarus: Double Thrusts", pattern: /^Adds \d+ ?-? ?\d+ Base Trauma Damage to this skill$/i, status: "In calc", reason: "the base of the follower's Trauma on the dummy (an Ailment there); its own Trauma damage (1 base) is not counted" },
   { skill: "Tartarus: Thunder Spike", pattern: /^Grants you Blur when the Shadows of this skill hit$/i, status: "In calc", reason: "a Blur source for you (src/blur-sources.js), like your own: Blur is assumed up while the Blur condition is on" },
-  { skill: "Tartarus: Focused Slash", pattern: /gain Fervor for \d+ ?s when this skill launches a Steep Strike$/i, status: "Inactive", reason: NO_STEEP },
-  { skill: "Tartarus: Icy Blade", pattern: /Frostbite Effect for nearby allies for \d+ ?s when this skill launches a Steep Strike$/i, status: "Inactive", reason: NO_STEEP },
   { skill: "Origin Tartarus: Black Hole", pattern: /gains Synergy Shift$/i, status: "Not modeled", reason: "Synergy Shift (-2% resistance to the type the holder inflicts per stack, +1% to the others, up to 30) needs the follower's own Fire / Cold / Lightning / Erosion damage events per second (its damage-over-time tick rate is not published) and whether the shift reaches your damage" },
   { skill: "Origin Tartarus: Split Firebolt", pattern: /Elemental Resonance/i, status: "Not modeled", reason: "Elemental Infiltration needs 3 types of Elemental Resonance (Ignite, a Lightning crit and Cold Infiltration by the follower); the follower's Ignite chance is not published" },
   { skill: "Origin Tartarus: Raging Warcry", pattern: /\+\d+% additional Attack Hit Damage taken/i, status: "Partly modeled", reason: "its 50 Physical hit is counted with the follower's own damage; the 5-stack debuff (+50% additional Attack Hit Damage taken, one stack lost per attack hit) needs your attack-hit rate per 4 s and is not modeled" },
@@ -1645,7 +1715,7 @@ export const AFFIX_EFFECTS = [
       const area = String(OWN_DAMAGE[ctx.skill.name]?.text || "").match(/per second for its (\d+(?:\.\d+)?) s/);
       const held = area && Number(area[1]) >= entry.periodSeconds - 1e-9;
       const afflictionClear = { amount: Number(match[1]), gateSeconds: Number(match[2]), minRating: Number(match[1]), eventSeconds: held ? 1 / 30 : 1 / entry.castsPerSecond, firstSeconds: Math.max(0, entry.firstUseSeconds ?? 0), skill: ctx.skill.name };
-      return { afflictionClear, text: `+${value}% additional Damage Over Time`, origin: "buff", summary: `+${match[3]}% additional Damage Over Time taken for ${match[4]} s (game record 1033360284, needs ${match[1]} Affliction on the dummy), ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime; the ${match[1]} Affliction it clears every ${match[2]} s comes off your rating` };
+      return { afflictionClear, periodic: dealsDamage(ctx) ? periodicTimed(entry, Number(match[4]), Number(match[3])) : null, text: `+${value}% additional Damage Over Time`, origin: "buff", summary: `+${match[3]}% additional Damage Over Time taken for ${match[4]} s (game record 1033360284, needs ${match[1]} Affliction on the dummy), ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime; the ${match[1]} Affliction it clears every ${match[2]} s comes off your rating` };
     },
     reason: "best case: the dummy holds 10 Affliction whenever the skill lands; your damage over time takes the debuff, hits do not" },
   { id: "followerAffixDeepCorrosion", label: "Deep Corrosion: Erosion Resistance", target: "enemy", needsNear: false, engine: "penetration",
@@ -2190,7 +2260,7 @@ function applyAffixEffect(result, reading, base, { selection, near, on }) {
   result.lines.push({ ...base, status: active ? "In calc" : "Inactive", reason, toggle: effect.id, derivedText, active, summary: derived.summary });
   result.buffs.push({ id: effect.id, label: effect.label, source: base.source, active, on, text: derivedText, summary: derived.summary, reason });
   // `parts`: a timed effect for the 5 s / 20 s windows and the loop (High Voltage's chance schedule); none on the other readings.
-  result.timedEffects.push({ ...timed, active, reason, summary: derived.summary, parts: active ? derived.parts || [] : [] });
+  result.timedEffects.push({ ...timed, active, reason, summary: derived.summary, parts: active ? derived.parts || periodicPartsOf(derived, `${base.source}: ${effect.label}`) : [] });
   if (!active) return;
   for (const item of texts) result.derived.push({ text: item.text, source: `${base.source}: ${effect.label}`, origin: item.origin, multiplier: 1, derivedFrom: base.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) } });
   for (const item of derived.armour || []) result.armourShreds.push({ ...item, source: base.source });
@@ -2275,7 +2345,7 @@ export function resolveFollowerEffects(selection, state = {}) {
       result.buffs.push({ id: buff.id, label: buff.label, source: line.source, active, on, text: shown, summary: derived.summary, reason });
       if (active && derived.illWill) result.illWill = { ...derived.illWill, source: line.source };
       // Listed in the Config tab's best-case assumptions as "<label> (<follower> follower)" (src/planner.js bestCaseAssumptions).
-      result.timedEffects.push({ id: buff.id, label: buff.label, source: `${selection.follower.displayName} follower`, target: buff.target, toggle: true, enabled: on, active, reason, summary: derived.summary, parts: active ? derived.parts || [] : [] });
+      result.timedEffects.push({ id: buff.id, label: buff.label, source: `${selection.follower.displayName} follower`, target: buff.target, toggle: true, enabled: on, active, reason, summary: derived.summary, parts: active ? derived.parts || periodicPartsOf(derived, `${line.source}: ${buff.label}`) : [] });
       if (active) for (const item of texts) result.derived.push({ text: item.text, source: `${line.source}: ${buff.label}`, origin: item.origin, multiplier: 1, derivedFrom: line.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) }, ...(derived.reapWindow && item.text === derived.text ? { followerReapWindow: derived.reapWindow } : {}) });
       continue;
     }
@@ -2284,7 +2354,8 @@ export function resolveFollowerEffects(selection, state = {}) {
       const match = text.match(marker.pattern), entry = cadence.get(line.skill.name);
       const own = OWN_DAMAGE_LINE.test(text) && damage.get(line.skill.name);
       const reason = typeof marker.reason === "function" ? marker.reason(match, entry) : marker.reason;
-      result.lines.push({ text: line.text, source: line.source, skill: line.skill.name, status: "In calc", reason: `${own ? `${own.text}; ` : ""}${reason}`, markerTexts: marker.texts(match, entry) });
+      const active = marker.active ? marker.active(match, entry) : true;
+      result.lines.push({ text: line.text, source: line.source, skill: line.skill.name, status: active ? "In calc" : "Inactive", reason: `${own ? `${own.text}; ` : ""}${reason}`, markerTexts: marker.texts(match, entry).map((item) => typeof item === "string" ? item : item.text) });
       continue;
     }
     if (plain) { result.lines.push({ text: line.text, source: line.source, skill: line.skill?.name || null, status: null, reason: `read as "${plain}" for you`, plainText: plain }); continue; }

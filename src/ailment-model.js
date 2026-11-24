@@ -421,7 +421,7 @@ export function calculateAilment({ ailmentKey, modifierTexts = [], shared, crit 
   };
   const perRecentCrit = typed.perRecentCritAdditional.map((line) => {
     const { stacks, factor } = recentCritStacks(line.cap, line.windowSeconds ?? 4, 1 + line.value / 100);
-    return { source: line.source, text: line.text, stacks, factor, meanStackFactor: (1 + line.value / 100) ** stacks };
+    return { source: line.source, text: line.text, stacks, factor, meanStackFactor: (1 + line.value / 100) ** stacks, cap: line.cap, windowSeconds: line.windowSeconds ?? 4, perStack: 1 + line.value / 100 };
   });
   const critOnlyFactor = product(typed.critOnlyAdditional.map((line) => line.value));
 

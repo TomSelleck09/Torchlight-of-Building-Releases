@@ -357,6 +357,8 @@ export function collectDummyRecountInputs({
   // Scheduled hits (Minions, src/minion-damage-model.js): explicit damage events on the timeline, no ailment chain.
   const scheduled = (scheduledHits || []).filter((source) => source && Array.isArray(source.events) && source.events.length).map((source) => ({ key: source.key, label: source.label || source.key, steadyDps: Number(source.steadyDps) || 0, events: source.events.filter((event) => Number.isFinite(event.time) && Number.isFinite(event.damage) && event.time >= 0).map((event) => ({ time: event.time, damage: event.damage, ...(event.timedShare ? { timedShare: event.timedShare } : {}) })) }));
   // Timed effects (src/timed-effects.js): each part's factor series relative to the sustained value; the listed shares follow it.
+  // A part keeps its side (`target` "self" / "enemy"): the tick engine snapshots a "self" part (the attacker's own buff) at each DoT
+  // application (src/tick-ailments.js sideOf, `tick-ailment-snapshot`); without it every part read as an enemy debuff, re-read each tick.
   const timedParts = (timedEffects?.parts || []).filter((part) => Array.isArray(part?.edges) && part.edges.length && part.edges.length === part.factors?.length && part.factors.every(Number.isFinite));
   // A share keeps its source key and a part its `keys`, so a part keyed to one skill's hits reaches that skill only.
   const timedShares = Object.fromEntries(Object.entries(timedEffects?.shares || {}).filter(([, share]) => share && typeof share === "object").map(([key, share]) => [key, { hit: Boolean(share.hit), types: Object.fromEntries(Object.entries(share.types || {}).filter(([, value]) => Number.isFinite(value) && value > 0)), ...(typeof share.key === "string" ? { key: share.key } : {}) }]));
@@ -368,7 +370,7 @@ export function collectDummyRecountInputs({
     skillHits: hitSources,
     scheduledHits: scheduled,
     timedDotLayers: timed.map((layer) => ({ startSeconds: layer.startSeconds, durationSeconds: layer.durationSeconds, factor: layer.factor })),
-    ...(timedParts.length ? { timedEffects: { parts: timedParts.map((part) => ({ type: part.type || null, reach: part.reach || "all", ...(Array.isArray(part.keys) ? { keys: [...part.keys] } : {}), edges: [...part.edges], factors: [...part.factors] })), shares: timedShares } } : {}),
+    ...(timedParts.length ? { timedEffects: { parts: timedParts.map((part) => ({ type: part.type || null, reach: part.reach || "all", ...(part.target === "self" || part.target === "enemy" ? { target: part.target } : {}), ...(Array.isArray(part.keys) ? { keys: [...part.keys] } : {}), edges: [...part.edges], factors: [...part.factors] })), shares: timedShares } } : {}),
     channel: ramp ? { minStacks: channel.minStacks, maxStacks: channel.maxStacks, perStackSupercharge: channel.perStackSupercharge, superchargeFlat: channel.superchargeFlat } : null,
     ailments: recountAilments,
     afflictionPerSecond: Math.max(0, Number(afflictionPerSecond) || 0),

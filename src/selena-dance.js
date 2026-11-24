@@ -218,8 +218,8 @@ export function resolveDanceOfTheDeep({ state, modifierTexts = [], resolvedMain 
 //   (the support rules; sourced text, the DoT reach by the support rule);
 // - the trigger needs no use time (manual "Trigger": triggered skills act without the casting action); a cast fires each time
 //   the charges refill to max, every Max Terra Charge × charge interval, and consumes them all (the dummy stands within 10 m);
-// - the seal is a flat 20% of Mana, or of Life with Drenched Hem. Sealed Mana Compensation does not reduce it
-//   (user-confirmed 2026-10-13).
+// - the seal is 20% of Mana, or of Life with Drenched Hem, ÷ (1 + the global Sealed Mana Compensation) (user decision 2026-11-23,
+//   the two buckets; src/planner.js compensatedSeal). Superseded: the user-confirmed 2026-10-13 "Compensation does not reduce it".
 export const ACTIVATION_MEDIUM_TERRA = Object.freeze({ additionalPercent: 30, sealPercent: 20, triggerMeters: 25, movementSpeedPercent: -30, movementSeconds: 2, source: "Activation_Medium_Terra (2026-10-13)" });
 const AM_TERRA_GRANT = /^The Main Terra Skill is supported by Activation Medium: Terra$/i;
 const AM_TERRA_LIFE = /^Activation Medium: Terra seals Life instead$/i;

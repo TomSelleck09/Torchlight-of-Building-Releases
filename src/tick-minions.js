@@ -36,11 +36,15 @@ function actorBlock(minion, skills) {
 }
 
 // A run past the planner's list: the steady part again, one window on each time.
+// A list whose last event lands on a whole second (end = that second) already holds the first repeat's first event: the window
+// [20 s, end) shifted by end − 20 s starts at end, so a shifted copy at or before the list's last event is left out (2026-11-23: Charge
+// Calling's explosions on a 1 s grid from 1 s read the 59 s and 60 s explosions twice).
 function repeatedEvents(events, seconds) {
-  const end = Math.ceil(events[events.length - 1]?.time ?? 0), period = end - STEADY_FROM_SECONDS;
+  const last = events[events.length - 1]?.time ?? 0;
+  const end = Math.ceil(last), period = end - STEADY_FROM_SECONDS;
   if (!(seconds > end) || !(period > 0)) return events;
   const steady = events.filter((event) => event.time >= STEADY_FROM_SECONDS), repeated = [...events];
-  for (let shift = period; end + shift - period < seconds; shift += period) repeated.push(...steady.map((event) => ({ ...event, time: event.time + shift })));
+  for (let shift = period; end + shift - period < seconds; shift += period) repeated.push(...steady.filter((event) => event.time + shift > last + 1e-9).map((event) => ({ ...event, time: event.time + shift })));
   return repeated;
 }
 

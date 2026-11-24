@@ -1,6 +1,6 @@
 import { DEFAULT_SHOTGUN_KEPT, keptShareFromCoefficient } from "./shotgun-effect.js";
 import { supportProgressionSs13 } from "./data/skills/support-progression-ss13.generated.js";
-import { dummyTarget, explicitRadiusHolds, DISTANT_STANDING_METERS } from "./dummy-target.js";
+import { dummyTarget, explicitRadiusHolds, DISTANT_STANDING_METERS, distantMetersOf } from "./dummy-target.js";
 import { residualNonDamageStatus } from "./line-families.js";
 import { resolveLineCondition } from "./line-conditions.js";
 import { allSkillEffectsSs13 } from "./data/skills/all-skill-effects-ss13.generated.js";
@@ -8,7 +8,7 @@ import { specialSupportTierData, progressionSupportTierData, progressionSupportT
 import { EMPOWER_MODELED_SKILLS, EMPOWER_BUFF_SKILLS } from "./empower-effects.js";
 import { WARCRY_BUFF_NAMES } from "./empower-buffs.js";
 import { readsFocusBuffRecord } from "./focus-buffs.js";
-import { supportDataMode, supportGameLine, supportLineAffix } from "./game-skill-data.js";
+import { supportDataMode, supportGameLine, supportLineAffix, supportStoneAffixes } from "./game-skill-data.js";
 // Movement rate for per-metre support lines (Hunting Tempo, 2026-10-15 patch update): the player's movement speed, src/dummy-target.js
 // playerMoveSpeed (6.5 m/s base × the build's Movement Speed; user decision 2026-11-10), passed in the support state as `playerMoveSpeed`.
 import { BASE_PLAYER_MOVE_SPEED } from "./dummy-target.js";
@@ -28,6 +28,8 @@ import { classifyMechanic, FAMILY_RULES } from "./mechanic-classifier.js";
 import { stoneTagChanges } from "./stone-tag-registry.js";
 import { BOSS_ENEMY_COUNT, recordCountsBossAsFive } from "./boss-enemy-count.js";
 import { atLeastShare, enemyBuffSet, ownCombatHeld, playerBuffSet } from "./unit-buff-set.js";
+import { SKILL_HIT_DEBUFFS } from "./data/game/skill-hit-debuffs.generated.js";
+import { skillHitDebuffClauseStatus } from "./skill-hit-debuffs.js";
 // Your held buffs on your unit buff set (W9 step 2; the support state's `playerBuffs`), else the support state's flat fields (TLI_BUFF_SET=off).
 const heldOwn = (state) => ownCombatHeld(state);
 const ownAgilityStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.stacks("Agility", { stage: "blessing" }) : Number(state?.blessingStacks?.Agility) || 0; };
@@ -361,6 +363,8 @@ const CENSUS_SUPPORT_RULES = [
 ];
 // The two debuffs' values, config_char_buff 11920 and 11930 (chunk 8). What they reach: open question support-turmoil-ablaze-values.
 const TURMOIL_TAKEN_PERCENT = 17;
+// Buff 11921 (Turmoil Burst's per-Spell-Burst-consumed stacks): config_char_buff default duration 4 s.
+const TURMOIL_RECENT_SECONDS = 4;
 const ABLAZE_TAKEN_PERCENT = 15;
 
 // ---- Activation Medium event triggers and Spell Burst consumption (census items #8 / #12, 2026-10-27) ----
@@ -568,6 +572,12 @@ export const SUPPORT_CLAUSE_RULES = [
   // and steepAttemptShare (perRepeats).
   { family: "multistrike", pattern: /^Multistrikes of the supported skill are always deemed to have the Max Multistrike Count, but the Max Multistrike Count for the supported skill is (\d+)$/i, build: (m) => ({ value: num(m[1]), kind: "flurry" }) },
   { family: "multistrike", pattern: new RegExp(`^${N}% additional Attack Speed when the supported skill launches Multistrikes$`, "i"), build: (m) => ({ value: num(m[1]), kind: "repeatSpeed" }) },
+  // A skill's own Multistrike buff (Corrosive Throw's record 103010108; 6 T Corrosive Throw G3, 2026-11-20): Swift Strike's "+X% additional damage"
+  // (691396864: field 2600253) and "+X% additional Attack Speed" (654225280: field 2600252) per stack, Augmentation's "+N buff stack upper limit"
+  // (675984960: field 2600251). Read by src/skill-hit-model.js multistrikeSequence castBuff (both halves; the speed half since 2026-11-20).
+  { family: "multistrike", pattern: new RegExp(`^Buffs gained from Multistrikes of the supported skill also ${N}% additional damage for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "buffDamage", recipe: 691396864 }) },
+  { family: "multistrike", pattern: new RegExp(`^Buffs gained from Multistrikes of the supported skill also ${N}% additional Attack Speed for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "buffSpeed", recipe: 654225280 }) },
+  { family: "multistrike", pattern: new RegExp(`^${N} buff stack upper limit for the supported skill$`, "i"), build: (m) => ({ value: num(m[1]), kind: "buffCap", recipe: 675984960 }) },
   { family: "steepStrike", pattern: new RegExp(`^${N} to the number of Multistrikes required for the supported skill's Steep Strike attempts$`, "i"), build: (m) => ({ value: num(m[1]), kind: "attemptRepeats" }) },
   // Steep Strike chance on the supported skill (Raging Slash; 2026-10-14): summed with the skill's own chance and the build's
   // plain lines in src/skill-hit-model.js steepStrikeState.
@@ -857,6 +867,13 @@ function tagClauseStatus(clause, ctx, s) {
   return s("In calc", `the game's stone filter ${clause.kind === "add" ? "adds" : "removes"} the ${applied.join(", ")} tag ${clause.kind === "add" ? "to" : "from"} the skill: its hits, damage over time and ailments read it (setup.supportAddedTags; src/support-compatibility.js skillTagsWithSupportChanges)${restNote}`, ["skill-hit", "skill-dot", "ailments"]);
 }
 
+// A support stone's skill-hit debuff records (src/data/game/skill-hit-debuffs.generated.js), by support name.
+const stoneDebuffCache = new Map();
+function stoneDebuffRecords(name) {
+  if (!stoneDebuffCache.has(name)) stoneDebuffCache.set(name, supportStoneAffixes(name).map((affix) => Number(affix.id)).filter((id) => SKILL_HIT_DEBUFFS[id]));
+  return stoneDebuffCache.get(name);
+}
+
 function clauseStatus(clause, support, ctx) {
   const engine = ctx.engine;
   const name = support.name;
@@ -883,12 +900,24 @@ function clauseStatus(clause, support, ctx) {
     const sacrifice = !ctx.setupSupportNames || ctx.setupSupportNames.has("Thornfield: Sacrifice (Magnificent)");
     if (clause.kind === "selfDamage") {
       if (!sacrifice) return s("No DPS effect", "defence or recovery: the True Damage you take (it feeds Thornfield: Sacrifice's stacks when that support is on the skill)");
-      if (ctx.conditions && ctx.conditions.nearTarget === false) return s("Inactive", `standing ${DISTANT_STANDING_METERS} m away (Distance group: Distant) is read as outside the skill's Terra: no True Damage taken, so no Sacrifice stack from it`);
+      if (ctx.conditions && ctx.conditions.nearTarget === false) return s("Inactive", `standing ${distantMetersOf(ctx.conditions)} m away (Distance group: Distant) is read as outside the skill's Terra: no True Damage taken, so no Sacrifice stack from it`);
       return s("Provisional", "the True Damage you take inside the Terra feeds Thornfield: Sacrifice's stacks (one per 20% of Max Life and Energy Shield taken; record 778012032), read on the skill's damage over time", ["skill-dot"]);
     }
     if (engine !== "skill-dot") return s("Inactive", "the buff raises the supported skill's damage over time (attr 5902); the supported skill deals none modeled");
     const what = clause.kind === "lifeLost" ? "a stack per P1% of Max Life and Energy Shield taken, from the Terra's own True Damage" : clause.kind === "reap" ? "a stack chance on each Reap of yours against the dummy (an Elite inside the Terra)" : "each stack's lifetime and the cap";
     return s("Provisional", `${what}: read in the per-stack line's held stacks (src/support-conditional-batch4.js sacrificeStacks; record 778012032; each stack its own lifetime: inferred)`, ["skill-dot"]);
+  }
+  // A skill whose own buff model reads its supports' Effect clauses (Aim, src/aim-model.js: Mass Effect's per-charge Effect and +1 Max
+  // Charges, Well-Fought Battle's stacks, and every other "this skill" 3401 write inside its buff 10320's tags by its record, Thrive in
+  // Adversity's gated +20% included: 6 T Corrosive Throw G5, user decision 2026-11-20). Before, the engine guard read them Not modeled.
+  if (!engine && OWN_EFFECT_READERS.has(ctx.skillName) && clause.family === "empower" && ["charges", "perCharge", "perCast", "conditionalEffect"].includes(clause.kind)) {
+    const reader = OWN_EFFECT_READERS.get(ctx.skillName);
+    if (clause.kind === "conditionalEffect") {
+      if (clause.active == null) return s("Provisional", `${clause.conditionText || "the Elite gate is settled at the dummy's distance"}: ${reader}`, ["aim"]);
+      if (!clause.active) return s("Inactive", clause.conditionText);
+      return s("In calc", `+${clause.appliedValue}% Effect (${clause.conditionText}; its record writes attr 3401 on [this skill, Empower], inside the buff's tags): ${reader}`, ["aim"]);
+    }
+    return s("In calc", `${clause.kind === "charges" ? "Max Charges, which Mass Effect's per-charge Effect counts" : clause.kind === "perCast" ? "Effect per cast, its stacks held (own buffs built before engaging)" : "Effect per charge"}: ${reader}`, ["aim"]);
   }
   // Census item #2 build-wide buffs and Thrive in Adversity's Empower Effect: read whatever engine the supported skill has.
   if (clause.census && (clause.family === "censusBuff" || clause.family === "empower")) return censusStatus(clause, ctx);
@@ -957,6 +986,12 @@ function clauseStatus(clause, support, ctx) {
     return s("In calc", "Vendetta's own crit: Feline Fury's extra Main Skill triggers and Excess roll it (record 401776160, GetCurSkillCritValue on Vendetta's use; src/vendetta-model.js vendettaCritChances)", ["trigger-main"]);
   }
   if (!["scorching-beam", "skill-hit", "skill-dot", "minion"].includes(engine)) return s("Not modeled", "the setup's own damage has no engine that reads support clauses");
+  // "+X% Command Return Speed per second" (Modularization: Resonance; record 645344: attr 3621 mod 3 with no Minion routing, on you): joins
+  // the Command return every Command reader takes (src/planner.js commandSupportLines; 6 T Trog audit G6, 2026-11-23).
+  if (/^[+-]?[\d.]+% Command Return Speed per second$/i.test(String(clause.text || "").trim())) {
+    if (ctx.conditions && !(Number(ctx.conditions.commandPoints) > 0)) return s("No DPS effect", ctx.conditions.commandReason || "no Command held: the return it raises takes nothing that reaches damage");
+    return s("In calc", "Command Return Speed on you (record 645344, attr 3621 mod 3: the caster): the Command return 13 × (1 + Σ) every Command reader takes (src/minion-cores.js commandState)", ["minion"]);
+  }
   // Residual (C) wordings with no dummy-damage effect (src/line-families.js; residual batch 2026-10-12 §6).
   const residual = residualNonDamageStatus(clause.text);
   if (residual) return s(residual.status, residual.reason);
@@ -1153,7 +1188,7 @@ function clauseStatus(clause, support, ctx) {
         case "target": {
           // The dummy is a Boss (so an Elite); the player stands close (best case, user decision 2026-10-12), so an explicit
           // radius holds at point blank (src/dummy-target.js). Before 2026-10-12 rolls under 10 m read Inactive.
-          if (clause.kind === "target" && !(dummyTarget[clause.target] && explicitRadiusHolds(clause.meters, ctx.conditions?.nearTarget))) return s("Inactive", `needs a ${clause.target} within ${clause.meters} m; the dummy is a Boss and Elite, and the Distant alternative stands ${DISTANT_STANDING_METERS} m away`);
+          if (clause.kind === "target" && !(dummyTarget[clause.target] && explicitRadiusHolds(clause.meters, ctx.conditions?.nearTarget, ctx.conditions?.distantMeters))) return s("Inactive", `needs a ${clause.target} within ${clause.meters} m; the dummy is a Boss and Elite, and the Distant alternative stands ${distantMetersOf(ctx.conditions)} m away`);
           if (notHit && ctx.windRhythmTerraDot && clause.castSpeedScaled) return s("Provisional", "Wind Rhythm recasts the Terra at each trigger: cooldown ÷ ((1 + Cooldown Recovery Speed + share × Cast Speed) × additional Cast Speed) (the creator's calc v0.3, user-provided 2026-10-13; provisional); no use time", [engine]);
           if (notHit && ctx.triggeredDot) return s("Provisional", `triggers the DoT skill every ${clause.interval} s${clause.castSpeedScaled ? " (Wind Rhythm: cooldown ÷ ((1 + Cooldown Recovery Speed + share × Cast Speed) × additional Cast Speed), the creator's calc v0.3)" : ""}, capped by the skill's own cooldown: uses per second = 1 / max(interval, effective cooldown) (rule user-confirmed 2026-10-12, Q2); no use time; each use refreshes the DoT (strongest application, src/skill-dot-model.js)`, [engine]);
           if (notHit) return s("Not modeled", "triggered cadence is modeled for skill hits and non-channeled skill DoTs only");
@@ -1193,13 +1228,22 @@ function clauseStatus(clause, support, ctx) {
       { const volley = batch5ProjectileVolleyStatus(ctx.skillName, ctx.setupSupportNames); if (volley) return s(volley.status, volley.reason, ["skill-hit"]); }
       // A skill's own projectile rule (src/skill-hit-profiles.js projectileVolley / additionalPerProjectileQuantityPercent).
       if (ctx.profile?.projectileVolley) return s("In calc", ctx.profile.projectileVolley.status, ["skill-hit"]);
-      if (ctx.profile?.additionalPerProjectileQuantityPercent) return s("In calc", `+${ctx.profile.additionalPerProjectileQuantityPercent}% additional damage for every +1 Projectile Quantity of the skill (skill text); the extra projectiles themselves need other enemies`, ["skill-hit"]);
+      if (ctx.profile?.additionalPerProjectileQuantityPercent) return s("In calc", `+${ctx.profile.additionalPerProjectileQuantityPercent}% additional damage for every +1 Projectile Quantity of the skill (skill text)${ctx.profile.projectileQuantityOnFrostbite ? "; the projectiles fired stay at the skill's base count (its Projectile Quantity is not affected by bonuses; user decision 2026-11-23)" : "; the extra projectiles themselves need other enemies"}`, ["skill-hit"]);
       return ctx.shotgun ? s("Provisional", `the skill text says its projectiles can hit the same enemy: the volley is a fan that lands every projectile standing close (one at range), each after the first keeping ×${ctx.shotgun} (linear Shotgun falloff: the hit rule's table, else 100% − the skill text's coefficient, else 30%; client repeat multiplier, user decision 2026-11-05)`, ["skill-hit"]) : s("No DPS effect", "the skill text does not say its projectiles can hit the same enemy, so one reaches the dummy (Ice Lances run 2026-10-12: Multiple Projectiles moved only by its additional damage)");
     case "multistrike":
       if (engine !== "skill-hit" || !ctx.speedType) return s("Not modeled", "Multistrike is read for skill hits only");
       if (ctx.speedType !== "attack-speed") return s("Inactive", "Multistrike needs an Attack Skill (reference data glossary)");
       if (ctx.channeled || ctx.sentry || tags.has("Mobility")) return s("No DPS effect", "Mobility, Channeled and Sentry skills cannot Multistrike (reference data glossary)");
       if (clause.kind === "flurry") return s("Provisional", `the repeat attacks are capped at ${clause.value} and each takes the Max Multistrike Count's increment and "+X% on reaching the Max Multistrike Count" bonus, and counts as a Max Multistrike Count event (game affix 711264384; src/skill-hit-model.js multistrikeSequence; provisional)`, ["skill-hit"]);
+      if (clause.kind === "buffDamage" || clause.kind === "buffSpeed" || clause.kind === "buffCap") {
+        const own = ctx.profile?.multistrikeBuff;
+        if (!own) return s("Inactive", "the supported skill has no Multistrike buff of its own (Corrosive Throw's record 103010108)");
+        if (clause.kind === "buffSpeed") return s("Provisional", `+${clause.value}% additional Attack Speed per stack on each strike of a Multistrike (field 2600252): the strike's own time ÷ (1 + ${clause.value}% × its stacks), min(${own.cap} + field 2600251, its Multistrike Count − 1), so the sequence's time and the uses per second follow (record ${own.record}; user decision 2026-11-20; src/skill-hit-model.js multistrikeSequence castBuff)`, ["skill-hit"]);
+        const reach = "on uses that raise 1000074 (your own uses; Activation Medium: Still Attack's casts count as yours, user-stated 2026-11-11 for Motionless; a triggered use raises 1000060 and gains none)";
+        if (clause.kind === "buffCap") return s("Provisional", `+${clause.value} to the buff's stack limit (field 2600251, ${own.cap} + ${clause.value}): each strike's stacks are min(limit, its Multistrike Count − 1), ${reach} (record ${own.record}; src/skill-hit-model.js multistrikeSequence castBuff)`, ["skill-hit"]);
+        return s("Provisional", `+${clause.value}% additional damage per stack on each strike of a Multistrike (field 2600253): its stacks are min(${own.cap} + field 2600251, its Multistrike Count − 1), on the strike's own instance (node 624 bOnceToSkill: no lag), ${reach} (record ${own.record}; src/skill-hit-model.js multistrikeSequence castBuff)`, ["skill-hit"]);
+      }
+      if (clause.kind === "initial") return s("Provisional", `+${clause.value} initial Multistrike Count (field 2006252, default 1): the first count is 1 + ${clause.value}, each repeat adds 1 until the sequence's Max Multistrike Count, its attacks (SS14 client, user decision 2026-11-20; src/skill-hit-model.js multistrikeSequence; open question multistrike-count-cap-links)`, ["skill-hit"]);
       if (clause.kind === "repeatSpeed") return s("Provisional", `+${clause.value}% additional Attack Speed on the repeat attacks of a Multistrike sequence (game affix 491653184, gated on the Multistriking state; src/skill-hit-model.js multistrikeSequence; provisional: the first attack keeps its own speed)`, ["skill-hit"]);
       return s("Provisional", "expected Multistrikes per attack (reference data glossary: one extra attack per 100% chance, +20% Attack Speed during them); increasing damage per Multistrike count (provisional reading)", ["skill-hit"]);
     case "steepStrike":
@@ -1269,7 +1313,10 @@ function clauseStatus(clause, support, ctx) {
     // it ticks; 8 T Thornfield audit G5, 2026-11-13).
     case "selfDebuff":
       if (engine === "skill-dot") return s("Provisional", "expected uptime from the skill's damage events: 1 − (1 − chance)^(events in the duration), its damage over time raising one per server tick while it ticks (trigger 1000030 of record 13336589); one damage-taken factor on the skill's DoT and so its Reaps (src/skill-dot-model.js)", ["skill-dot"]);
-      return engine === "skill-hit" ? s("Provisional", "expected uptime from the skill's hit rate: 1 − (1 − chance)^(hits in the duration)", ["skill-hit"]) : s("Not modeled", "read for skill hits and skill DoTs only");
+      // The debuff writes on damage from "this skill" (the skill's own id), which an ailment's DoT record keeps (src/ailment-record-tags.js): the
+      // skill's own Ignite, Trauma and Wilt take it too (path matrix v2 P4).
+      if (engine === "scorching-beam") return s("Provisional", "expected uptime 1 − (1 − chance)^(events in the duration), one damage event per beam cast (trigger 1000030 of record 13336589): one damage-taken factor on the beam's hits and the Ignite it inflicts, and so its Reaps (src/build-mechanics.js)", ["scorching-beam"]);
+      return engine === "skill-hit" ? s("Provisional", "expected uptime from the skill's hit rate: 1 − (1 − chance)^(hits in the duration); one damage-taken factor on its hits and on the Ignite, Trauma and Wilt it inflicts (their DoT records keep the skill's id; src/ailment-applications.js ownAilmentScale)", ["skill-hit"]) : s("Not modeled", "read for skill hits, skill DoTs and Scorching Beam only");
     case "targetTaken":
       return s("Provisional", "enemy debuff while the supported skill deals damage (uptime 1: provisional)", ["planner"]);
     case "reaping":
@@ -1414,7 +1461,7 @@ function amEventStatus(clause, ctx) {
   const notHit = engine !== "skill-hit";
   if (notHit && !(engine === "skill-dot" && !ctx.channeled && clause.event !== "burstFull")) return s("Not modeled", "event triggers are modeled for skill hits and non-channeled skill DoTs only");
   if (!notHit && (ctx.channeled || ctx.rateModel || ctx.combo)) return s("Not modeled", "triggering a channeled, rate-driven or Combo skill is not modeled");
-  if (clause.event === "lockOn" && !explicitRadiusHolds(clause.meters, ctx.conditions?.nearTarget)) return s("Inactive", `needs a Locked-On enemy within ${clause.meters} m; the Distant alternative stands ${DISTANT_STANDING_METERS} m away`);
+  if (clause.event === "lockOn" && !explicitRadiusHolds(clause.meters, ctx.conditions?.nearTarget, ctx.conditions?.distantMeters)) return s("Inactive", `needs a Locked-On enemy within ${clause.meters} m; the Distant alternative stands ${distantMetersOf(ctx.conditions)} m away`);
   if (clause.event === "burstFull") {
     if (ctx.conditions && !(ctx.conditions.maxSpellBurst >= 1)) return s("Inactive", "the build has no Max Spell Burst, so Spell Burst is never fully charged");
     // A Spell Burst refill line (record 32278) on the uses of yours (src/spell-burst-refill.js; 15 T Chain Lightning audit G1, 2026-11-18).
@@ -1473,7 +1520,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       return state.targetMarked === false ? off("Dummy always Marked is switched off") : on("the supported skill's hits keep the dummy Marked (its Enhanced Mark; best case, the 'Dummy always Marked' switch)", { appliedValue: clause.value });
     case "aggressionPerEnemy": {
       if (!(heldOwn(state) ? heldOwn(state).hasAttackAggression || heldOwn(state).hasSpellAggression : state.hasAggression)) return off("no Attack or Spell Aggression source (src/combat-states.js)");
-      if (!explicitRadiusHolds(clause.meters, state.nearTarget)) return off(`the dummy is outside ${clause.meters} m`);
+      if (!explicitRadiusHolds(clause.meters, state.nearTarget, state.distantMeters)) return off(`the dummy is outside ${clause.meters} m`);
       // Record 370519520's node 700 carries calcCountByRarity: the Boss dummy counts as 5 enemies (src/boss-enemy-count.js; G1c 2026-11-13).
       const enemies = recordCountsBossAsFive(clause.recipe) ? BOSS_ENEMY_COUNT : 1;
       const applied = Math.min(clause.cap, clause.value * enemies);
@@ -1528,9 +1575,14 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       if (block) return off(block);
       const perStack = Number(siblingMatch(siblings, new RegExp(`^${N}% Turmoil Effect for each stack`, "i"))?.[1]) || 0;
       const maxStacks = Number(siblingMatch(siblings, /^Max stacks: (\d+)$/i)?.[1]) || 6;
-      const stacks = Math.min(maxStacks, Math.max(0, Number(state.maxSpellBurst) || 0));
+      // Record 3195285 row 2 (trigger 1000303, no tag): every Spell Burst you consume adds |Δ Spell Burst Charge| stacks of buff 11921
+      // (header: subtype 1, cap 6, mode 1, 4 s): held = min(6, stacks consumed per second × 4 s) (4 T Thea audit G6, 2026-11-23; was
+      // min(6, Max Spell Burst), one activation). Before the hit pass has measured the activations the old one-activation reading stands.
+      const consumed = Number.isFinite(state.spellBurstStacksConsumedPerSecond) ? state.spellBurstStacksConsumedPerSecond : null;
+      const stacks = consumed === null ? Math.min(maxStacks, Math.max(0, Number(state.maxSpellBurst) || 0)) : Math.min(maxStacks, consumed * TURMOIL_RECENT_SECONDS);
       const value = r(clause.value * (1 + perStack * stacks / 100));
-      return on(`Turmoil on the dummy from the skill's Spell Burst hits: +${clause.value}% damage taken from the supported skill (patch notes; provisional) × (1 + ${perStack}% × ${r(stacks)} Spell Burst stacks consumed recently: one activation of Max Spell Burst ${r(state.maxSpellBurst)} within 4 s, up to ${maxStacks}; provisional) = +${value}%`, { appliedValue: value, provisional: true });
+      const how = consumed === null ? `one activation of Max Spell Burst ${r(state.maxSpellBurst)} within 4 s (not measured yet)` : `${r(consumed)} Spell Burst stacks consumed per second (every Spell-Bursting skill's activations × its charge, record 3195285 row 2) × ${TURMOIL_RECENT_SECONDS} s`;
+      return on(`Turmoil on the dummy from the skill's Spell Burst hits: +${clause.value}% damage taken from the supported skill (patch notes; provisional) × (1 + ${perStack}% × ${r(stacks)} Spell Burst stacks consumed recently: ${how}, up to ${maxStacks}; buff 11921 header) = +${value}%`, { appliedValue: value, provisional: true });
     }
     case "ablaze": {
       if (!hits) return off("the supported skill deals no hits, so it Ignites nothing");
@@ -1539,7 +1591,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
       const effect = siblingMatch(siblings, new RegExp(`^${N}% additional Ablaze Effect for each enemy within ${N} m Ignited by the supported skill, up to ${N}%$`, "i"));
       const perEnemy = effect ? num(effect[1]) : 0, meters = effect ? num(effect[2]) : 10, cap = effect ? num(effect[3]) : 0;
       // Record 357258688's node 700 carries calcCountByRarity: the Ignited Boss dummy counts as 5 enemies (src/boss-enemy-count.js; G1f 2026-11-13).
-      const enemies = explicitRadiusHolds(meters, state.nearTarget) ? (recordCountsBossAsFive(357258688) ? BOSS_ENEMY_COUNT : 1) : 0;
+      const enemies = explicitRadiusHolds(meters, state.nearTarget, state.distantMeters) ? (recordCountsBossAsFive(357258688) ? BOSS_ENEMY_COUNT : 1) : 0;
       const boost = Math.min(cap, perEnemy * enemies);
       const value = r(clause.value * (1 + boost / 100));
       return on(`the dummy is Ignited (the supported skill deals Fire hits; provisional attribution): Ablaze +${clause.value}% Fire Damage taken from the supported skill (patch notes; provisional) × (1 + ${r(boost)}% Ablaze Effect for ${enemies === BOSS_ENEMY_COUNT ? `the Ignited Boss dummy, counted as ${enemies} enemies (record 357258688: calcCountByRarity),` : `${enemies} Ignited enemy`} within ${meters} m) = +${value}%`, { appliedValue: 0, typedParts: [{ typed: "Fire", value }], provisional: true });
@@ -1571,7 +1623,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     }
     case "nearOwnProjectile":
       if (!hits) return off("the supported skill deals no hits");
-      return explicitRadiusHolds(clause.meters, state.nearTarget) ? on(`the projectile flies to the dummy and the character stands within ${clause.meters} m of it (Distance group: Nearby, best case)`, { appliedValue: clause.value }) : off(`the character stands ${DISTANT_STANDING_METERS} m away (Distance group), outside ${clause.meters} m of the projectile`);
+      return explicitRadiusHolds(clause.meters, state.nearTarget, state.distantMeters) ? on(`the projectile flies to the dummy and the character stands within ${clause.meters} m of it (Distance group: Nearby, best case)`, { appliedValue: clause.value }) : off(`the character stands ${distantMetersOf(state)} m away (Distance group), outside ${clause.meters} m of the projectile`);
     case "beamExplosions":
       if (full.engine !== "scorching-beam") return off("the explosions are Scorching Beam's");
       return on(`+${clause.value}% × the beam's explosions in the last ${clause.seconds} s (casts/s ÷ Max Channeled Stacks; none with Immolate), up to ${clause.cap}, on the Scorching Beam path (src/build-mechanics.js; provisional)`, { appliedValue: 0, provisional: true });
@@ -1597,7 +1649,7 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
     case "traumatizedNearby": {
       if (full.engine !== "skill-hit") return off("Attack Speed of the supported skill: read on skill hits only");
       if (!(enemyBuffSet(state)?.holds("Trauma") ?? (state.enemyAilments || []).includes("Trauma"))) return off("the dummy is not Traumatized (enemy-ailment model)");
-      if (!explicitRadiusHolds(clause.meters, state.nearTarget)) return off(`the dummy is outside ${clause.meters} m (the Distant alternative stands ${DISTANT_STANDING_METERS} m away)`);
+      if (!explicitRadiusHolds(clause.meters, state.nearTarget, state.distantMeters)) return off(`the dummy is outside ${clause.meters} m (the Distant alternative stands ${distantMetersOf(state)} m away)`);
       // Record 164098032's node 700 carries calcCountByRarity: the Boss dummy counts as 5 Traumatized enemies (src/boss-enemy-count.js; G1e 2026-11-13).
       const enemies = recordCountsBossAsFive(clause.recipe) ? BOSS_ENEMY_COUNT : 1;
       const applied = Math.min(clause.cap, clause.value * enemies);
@@ -1664,9 +1716,13 @@ function resolveCensusCondition(clause, full, siblings, setupKey) {
   }
 }
 // The Thrive in Adversity lines: the dummy is an Elite (a Boss) within 10 m, so an Elite is inside 20 m at both distances.
+// Skills whose own buff model reads their supports' Effect clauses (the badge above the engine guard).
+const OWN_EFFECT_READERS = new Map([["Aim", "Aim's +X% additional Projectile and Beam Damage and Ailment Damage × its Effect (src/aim-model.js)"]]);
+/** Thrive in Adversity's gate for a reader that runs before the planner's second resolve (src/aim-model.js): { active, appliedValue, conditionText }. */
+export function settleEliteEffect(clause, conditions) { return resolveEliteEffect(clause, { conditions }); }
 function resolveEliteEffect(clause, full) {
   if (!full.conditions) return { active: null, appliedValue: 0, conditionText: "condition not resolved (no planner state)" };
-  const inside = dummyTarget.elite && explicitRadiusHolds(clause.meters, full.conditions.nearTarget);
+  const inside = dummyTarget.elite && explicitRadiusHolds(clause.meters, full.conditions.nearTarget, full.conditions.distantMeters);
   const active = clause.eliteNeeded ? inside : !inside;
   return { active, appliedValue: active ? clause.value : 0, conditionText: inside ? `the dummy is an Elite (a Boss; src/dummy-target.js) within ${clause.meters} m` : `no Elite within ${clause.meters} m` };
 }
@@ -1815,6 +1871,9 @@ export function resolveSupportEffects(setup, ctx = {}) {
   const enabledSupports = (setup?.supports || []).filter((support) => support.enabled !== false);
   let setupTexts = null;
   full.setupSupportNames = new Set(enabledSupports.map((support) => support.name));
+  // A debuff the skill's own record puts on the dummy when it hits, scaled by the skill's own Effect (src/skill-hit-debuffs.js; 6 T Corrosive Throw
+  // G2, 2026-11-20): the records on this setup's supports' stones, for the badges of the record's, the buff's and the fitting Effect clauses.
+  full.skillHitDebuffs = [...new Set(enabledSupports.flatMap((support) => stoneDebuffRecords(support.name)))].map((id) => ({ id, ...SKILL_HIT_DEBUFFS[id] }));
   full.setupClauseTexts = () => (setupTexts ??= enabledSupports.flatMap((support) => supportClauses(setup, support, full).map((raw) => tidy(raw.text))));
   for (const support of setup?.supports || []) {
     if (support.enabled === false) continue;
@@ -1872,6 +1931,10 @@ export function resolveSupportEffects(setup, ctx = {}) {
         clause.appliedValue = round(clause.value * (clause.stacks ?? 0));
       }
       Object.assign(clause, clauseStatus(clause, support, full));
+      if (full.skillHitDebuffs.length && clause.status === "Not modeled") {
+        const debuff = skillHitDebuffClauseStatus(clause, full.skillHitDebuffs, { hits: engine === "skill-hit" || engine === "scorching-beam" });
+        if (debuff) Object.assign(clause, debuff, { consumers: ["skill-hit-debuff"] });
+      }
       // A Magnificent / Noble star line worth +0% (1★; specialSupportStarBonus 0 / 4 / 8 / 14 / 20) moves nothing, so it must not lift the
       // support's header to In calc (2026-11-13, review §4 B5).
       if (clause.origin === "star" && /^\+?0(?:\.0+)?% additional damage\b/i.test(String(clause.text)) && (clause.status === "In calc" || clause.status === "Provisional")) Object.assign(clause, { status: "No DPS effect", reason: `${clause.stars ?? 1}★: the star bonus is +0% at this star count (+20% at 5★)`, consumers: [] });
@@ -1958,7 +2021,7 @@ export function resolveSupportEffects(setup, ctx = {}) {
         case "chunk8Focus": effects.focusSpeed.push({ ...entry, value: clause.value, additional: clause.additional }); break;
         case "chunk8Max": effects.maxDamage.push({ ...entry, value: clause.value }); break;
         case "chunk8Fervor": if (clause.active && clause.appliedValue) effects.fervorOnSkill.push({ ...entry, value: clause.appliedValue }); break;
-        case "chunk8Deterioration": effects.deterioration.push({ ...entry, value: clause.value, kind: clause.kind, stacks: clause.stacks ?? 1, profane: Boolean(clause.profane) }); break;
+        case "chunk8Deterioration": effects.deterioration.push({ ...entry, value: clause.value, kind: clause.kind, stacks: clause.stacks ?? 1, profane: Boolean(clause.profane), ...(clause.once ? { chance: clause.chance, once: true } : {}) }); break;
         case "chunk8SpeedShare": effects.projectileSpeedShare.push({ ...entry, value: clause.value }); break;
         case "chunk8DotRoll": effects.dotRoll.push({ ...entry, min: clause.min, max: clause.max }); break;
         case "chunk8FinisherHits": effects.finisherHits.push({ ...entry, value: clause.value, every: clause.every, cap: clause.cap }); break;

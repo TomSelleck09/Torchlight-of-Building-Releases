@@ -131,8 +131,11 @@ export function decayingEvasionLayers(planner) {
 }
 
 // "+2 Max Energy Shield per 5 Intelligence" (Magister): game affix 101140081 is a node 114 conversion (Intelligence → Max
-// Energy Shield, p1 per p0, no step and no limit), so it is linear. The same shape for Life / Mana and the other attributes.
-const PER_ATTRIBUTE = /^\+?(\d+(?:\.\d+)?) Max (Life|Energy Shield|Mana) per (\d+(?:\.\d+)?) (Strength|Dexterity|Intelligence)$/i;
+// Energy Shield, p1 per p0, no step and no limit), so it is linear. The same shape for Life / Mana and the other attributes:
+// "+1 Max Life per 5 Strength" / "+4 Max Life per 10 Strength" (record 556017: node 114 from Strength, fromMod 5, into Max Life flat,
+// attr 1001) and "+1 Mana per 6 Intelligence" (record 101140065: from Intelligence into Max Mana flat, attr 1301; the text has no
+// "Max"). Both have no GetFloorInt, so linear (indirect-stat remediation F2, 2026-11-22).
+const PER_ATTRIBUTE = /^\+?(\d+(?:\.\d+)?) (?:Max )?(Life|Energy Shield|Mana) per (\d+(?:\.\d+)?) (Strength|Dexterity|Intelligence)$/i;
 const POOL_KEY = { life: "maxLife", "energy shield": "maxEnergyShield", mana: "maxMana" };
 export function perAttributePoolLines(modifierTexts, totals) {
   const out = { maxLife: [], maxEnergyShield: [], maxMana: [] };
@@ -188,9 +191,9 @@ function auraDefense(planner) {
  * @param {{ modifierTexts?: object[], totals: object, auraEntries?: object[], lineEffects?: object, skipTownHeld?: boolean }} input
  * @returns {{ flat: { source, text, value }[], increased: { source, text, value }[], additional: { source, text, value }[] }} the pool's `extra`
  */
-export function energyShieldPoolExtra({ modifierTexts = [], totals, auraEntries = [], lineEffects = null, skipTownHeld = false } = {}) {
+export function energyShieldPoolExtra({ modifierTexts = [], totals, auraEntries = [], lineEffects = null, skipTownHeld = false, skipKeys = null } = {}) {
   const aura = auraDefense({ aura: { entries: auraEntries } });
-  const held = lineEffects ? heldConditionalPoolExtra(lineEffects, "maxEnergyShield", { skipTownHeld, modifierTexts }) : { flat: [], increased: [], additional: [] };
+  const held = lineEffects ? heldConditionalPoolExtra(lineEffects, "maxEnergyShield", { skipTownHeld, modifierTexts, skipKeys }) : { flat: [], increased: [], additional: [] };
   return { flat: [...perAttributePoolLines(modifierTexts, totals).maxEnergyShield, ...aura.pools.maxEnergyShield.flat, ...held.flat], increased: held.increased, additional: [...aura.pools.maxEnergyShield.additional, ...held.additional] };
 }
 

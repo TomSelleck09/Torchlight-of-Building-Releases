@@ -179,7 +179,7 @@ export function ailmentAppliersFor({ ailmentKey, candidates = [], modifierTexts 
     const overly = overlyModified && candidate.setup ? overlyModifiedLine(overlyModified, candidate.setup) : null;
     if (overly) { scale *= 1 + overly.value / 100; scaleSources.push({ source: overly.source, text: `${overly.text}; the ailment inherits the inflicting skill's classification (user-supplied 2026-10-19)`, factor: 1 + overly.value / 100, overlyModified: overly.overlyModified }); }
     // Rehan – Anger: the factors on the ailments Burst itself inflicts (src/rehan-traits.js burstAilmentScale).
-    for (const line of candidate.hit?.ownAilmentScale || []) { scale *= line.factor; scaleSources.push({ source: line.source, text: line.text, factor: line.factor }); }
+    for (const line of candidate.hit?.ownAilmentScale || []) { scale *= line.factor; scaleSources.push({ source: line.source, text: line.text, factor: line.factor, ...(line.selfDebuff ? { selfDebuff: true } : {}) }); }
     // Bard's −20% (src/selena-tide.js channeledLine, Sing with the Tide only): game affix 311410880 attr 3604 on [Channeled, Ignite / Trauma / Wilt,
     // Bard], so only the ailments a Channeled skill inflicts. The beam's Ignite takes it in its ledger (src/theoretical-sources.js).
     if (channeledAilmentLine && tags.has("channeled") && !(candidate.beam && ailmentKey === "ignite")) { const factor = 1 + channeledAilmentLine.value / 100; scale *= factor; scaleSources.push({ source: channeledAilmentLine.source, text: `${channeledAilmentLine.text}, on the ailments a Channeled skill inflicts (game affix 311410880)`, factor }); }

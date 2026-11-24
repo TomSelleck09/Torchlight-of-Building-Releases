@@ -66,6 +66,8 @@ const FIXED_COST = /^The skill cost is fixed at (\d+(?:\.\d+)?)$/i;
 const CONVERT = /^Converts (?:(\d+(?:\.\d+)?)% of )?(?:(\w+) Skills' )?Mana Cost to Life Cost$/i;
 const SUPPORT_REPLACE = /Replace Mana Cost from the supported skill with Life\b/i;
 const SUPPORT_LIFE = /(\d+(?:\.\d+)?) ?% of current Life(?: and Energy Shield)? will be consumed when the supported skill is cast/i;
+/** A setup whose supports consume current Life on every cast (Recklessness, record 134953): the planner measures its casts (`castUses`). */
+export const castsConsumeCurrentLife = (setup) => (setup?.supports || []).some((support) => support.enabled !== false && !support.incompatible && (support.effects || []).some((text) => SUPPORT_LIFE.test(clean(text))));
 const OWN_LIFE = /^This skill costs Life instead of Mana$/i;
 
 export const ATTACK_LIFE_CONSUME = /^Consumes (\d+(?:\.\d+)?)% of current Life when you use Attack Skills$/i;
@@ -145,6 +147,37 @@ export function spiritLifeConsumeLines(modifierTexts = []) {
 export function spiritLifeConsumption(lines = [], { spiritUses = null, currentLife = 0 } = {}) {
   if (!lines.length || !spiritUses) return null;
   return attackLifeConsumption(lines, { attackUses: [spiritUses], currentLife });
+}
+
+// "Consumes X% of current Life and Energy Shield per second" (record 386333824: gate 206 0.1 s, node 500 current Life (blackboard 13) × X / 10,
+// node 122 type 1) and "… per second while Fervor is active" (Ghost Slaughter, record 824274: gate 10 on Fervor 4010080, gate 206 0.2 s, node 500
+// current Life × X / 5, node 122 type 1): node 122 type 1 adds to the frame's pending Life consume, which the resource update posts as Life
+// consumed (data types 10000000 / 10000001; proven for the consume pair, research/attack-life-consume-2026-11-09.md), so each drain is Life
+// consumed for the node 612 collectors and the consumed-recently readers: X% of current Life a second (10 × X/10 or 5 × X/5; both intervals
+// are whole frames). The Energy Shield half is not Life (plumbing note C3, 2026-11-22). The Life balance keeps them as losses, which take the
+// same Life (src/life-balance.js lifeLossStreams).
+export const LIFE_DRAIN_CONSUME = /^Consumes (\d+(?:\.\d+)?) ?% of current Life(?: and Energy Shield)? per second( while Fervor is active)?$/i;
+
+/** The drain copies whose node 122 consumes current Life: [{ percent (a second), fervor, source, text }]. */
+export function lifeDrainConsumeLines(modifierTexts = []) {
+  const lines = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived" || line.lineEffect) continue;
+    for (const text of clauses(line.text)) {
+      const match = text.match(LIFE_DRAIN_CONSUME);
+      if (match) lines.push({ percent: Number(match[1]) * (line.multiplier ?? 1), fervor: Boolean(match[2]), source: line.source, text });
+    }
+  }
+  return lines;
+}
+
+/** Life the drains consume per second at `currentLife` (a Fervor drain only while Fervor is held), null without a copy. */
+export function lifeDrainConsumption(lines = [], { currentLife = 0, hasFervor = false } = {}) {
+  if (!lines.length) return null;
+  const active = lines.filter((line) => !line.fervor || hasFervor);
+  const percent = active.reduce((sum, line) => sum + line.percent, 0);
+  const life = Math.max(0, Number(currentLife) || 0);
+  return { copies: lines, active: active.length, percentPerSecond: round(percent), currentLife: round(life), lifePerSecond: round(percent / 100 * life) };
 }
 
 export const MAIN_SKILL_MANA_CONSUME = /^Consumes (\d+(?:\.\d+)?)% of current Mana when casting a Main Skill(?:\. Interval: (\d+(?:\.\d+)?) ?s)?$/i;
@@ -242,12 +275,19 @@ export function setupCost(setup, costLines = [], { fixedSupportMultiplierPercent
   return { known, base: known ? base : null, cost: round(cost), mana: round(cost * (1 - lifeShare)), life: round(cost * lifeShare + currentLifeCost), lifeShare, currentLifePercent: lifePercent, working: `${parts.join(" ")} = ${round(cost)}${lifeShare ? ` (${round(lifeShare * 100)}% paid in Life)` : ""}${lifePercent ? ` + ${lifePercent}% of current Life ${round(currentLife)}` : ""}` };
 }
 
+// Casts per second of one setup for Recklessness (record 134953: rows on 1000074 and 1000060, "this skill"): `uses.castUses` (every 1000074 and
+// 1000060 instance, src/planner.js) where measured, else the setup's presses.
+function castUsesPerSecond(uses, setupKey, use) {
+  const entry = uses?.castUses?.get?.(setupKey);
+  return entry ? Number(entry.usesPerSecond) || 0 : Number(use?.usesPerSecond) || 0;
+}
+
 /**
  * Player-cast uses per second by setup, from the planner's hit pass (src/planner.js hitRateFacts.resource). Modeled skill hits give
  * their own player uses (Multistrike repeats and triggered uses excluded: rate.playerUsesPerSecond); the beam its casts; a DoT-only
  * skill its applications unless a trigger casts it (`triggeredKeys`).
  */
-export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey = null, beamCastsPerSecond = 0, triggeredKeys = new Set(), main = null, attackUses = [], skillUses = [] } = {}) {
+export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey = null, beamCastsPerSecond = 0, triggeredKeys = new Set(), main = null, attackUses = [], skillUses = [], castUses = null } = {}) {
   const uses = new Map();
   const add = (key, value, label) => { if (!key || !(value > 0)) return; const current = uses.get(key) || { usesPerSecond: 0, from: [] }; current.usesPerSecond += value; current.from.push(label); uses.set(key, current); };
   if (beamSetupKey) add(beamSetupKey, beamCastsPerSecond, "beam casts");
@@ -264,14 +304,15 @@ export function resourceUseFacts({ skillHits = [], skillDots = [], beamSetupKey 
   // 1000060), for the "Consumes X% of current Mana when casting a Main Skill" copies.
   // The Attack skills' player uses (1000074) with their skill instances per use, for "Consumes X% of current Life when you use Attack Skills".
   // Every skill's 1000074 uses (any skill, Attack or not), for "Consumes X% of current Life on skill use" (record 539780864).
-  return { measured: true, bySetup: uses, attackUses, skillUses, main: main && main.usesPerSecond > 0 ? { setupKey: main.setupKey ?? null, name: main.name ?? null, usesPerSecond: main.usesPerSecond } : null };
+  // `castUses`: every instance of each setup on 1000074 or 1000060 (Recklessness, record 134953); without it the setup's presses stand in.
+  return { measured: true, bySetup: uses, attackUses, skillUses, ...(castUses ? { castUses } : {}), main: main && main.usesPerSecond > 0 ? { setupKey: main.setupKey ?? null, name: main.name ?? null, usesPerSecond: main.usesPerSecond } : null };
 }
 
 /**
  * The build's Mana and Life consumed per second and in the last 4 s. `uses` is resourceUseFacts' output (null before the hit pass:
  * the result is unmeasured and every consumption line stays off with that reason).
  */
-export function resourceConsumption({ setups = [], activeNames = new Set(), modifierTexts = [], uses = null, maxMana = 0, maxLife = 0, currentLife = 0, currentMana = null, consumeBlocked = null, fixedSupportMultiplierPercent = 100, spiritAttackUses = null, spiritUses = null } = {}) {
+export function resourceConsumption({ setups = [], activeNames = new Set(), modifierTexts = [], uses = null, maxMana = 0, maxLife = 0, currentLife = 0, currentMana = null, consumeBlocked = null, fixedSupportMultiplierPercent = 100, spiritAttackUses = null, spiritUses = null, hasFervor = false } = {}) {
   const costLines = skillCostLines(modifierTexts);
   // Frozen Lotus "Skills no longer cost Mana" (record 342173504, label 3010050; chunk 4, 2026-11-01): no Mana is consumed, so every
   // "Mana consumed recently" line reads 0. A share converted to Life stays a Life cost.
@@ -281,17 +322,24 @@ export function resourceConsumption({ setups = [], activeNames = new Set(), modi
   for (const setup of setups) {
     if (setup.enabled === false || !activeNames.has(setup.name)) continue;
     const use = uses.bySetup?.get(setup.setupKey);
-    if (!use || !(use.usesPerSecond > 0)) continue;
+    const castRate = castUsesPerSecond(uses, setup.setupKey, use);
+    if (!(use?.usesPerSecond > 0) && !(castRate > 0)) continue;
+    const pressed = Number(use?.usesPerSecond) || 0;
     const cost = setupCost(setup, costLines, { fixedSupportMultiplierPercent, currentLife });
+    if (!(pressed > 0) && !(cost.currentLifePercent > 0)) continue;
     if (noManaCost) cost.mana = 0;
-    skills.push({ setupKey: setup.setupKey, name: setup.name, usesPerSecond: round(use.usesPerSecond), from: use.from, ...cost, manaPerSecond: round(use.usesPerSecond * cost.mana), lifePerSecond: round(use.usesPerSecond * cost.life) });
+    // The skill cost (Mana, and the share paid in Life) on the presses; Recklessness's share of current Life on every cast (1000074 / 1000060).
+    const currentLifeCost = Math.max(0, cost.currentLifePercent / 100 * Math.max(0, currentLife));
+    const fixedLife = Math.max(0, cost.life - currentLifeCost);
+    skills.push({ setupKey: setup.setupKey, name: setup.name, usesPerSecond: round(pressed), from: use?.from || [], ...cost, ...(currentLifeCost > 0 ? { castsPerSecond: round(castRate) } : {}), manaPerSecond: round(pressed * cost.mana), lifePerSecond: round(pressed * fixedLife + castRate * currentLifeCost) });
   }
   const consume = mainSkillManaConsumption(mainSkillManaConsumeLines(modifierTexts), { mainUsesPerSecond: Number(uses.main?.usesPerSecond) || 0, mainName: uses.main?.name ?? null, currentMana: currentMana ?? maxMana, blocked: consumeBlocked });
   const attackConsume = attackLifeConsumption(attackLifeConsumeLines(modifierTexts), { attackUses: [...(uses.attackUses || []), ...(spiritAttackUses ? [spiritAttackUses] : [])], currentLife });
   const skillConsume = attackLifeConsumption(skillUseLifeConsumeLines(modifierTexts), { attackUses: [...(uses.skillUses || []), ...(spiritUses ? [spiritUses] : [])], currentLife });
   const spiritConsume = spiritLifeConsumption(spiritLifeConsumeLines(modifierTexts), { spiritUses, currentLife });
-  const manaPerSecond = skills.reduce((sum, skill) => sum + skill.manaPerSecond, 0) + (consume?.manaPerSecond || 0), lifePerSecond = skills.reduce((sum, skill) => sum + skill.lifePerSecond, 0) + (attackConsume?.lifePerSecond || 0) + (spiritConsume?.lifePerSecond || 0) + (skillConsume?.lifePerSecond || 0);
-  return { measured: true, manaPerSecond: round(manaPerSecond), lifePerSecond: round(lifePerSecond), manaRecently: round(manaPerSecond * RESOURCE_RECENT_SECONDS), lifeRecently: round(lifePerSecond * RESOURCE_RECENT_SECONDS), maxMana, maxLife, skills, costLines, consume, attackConsume, spiritConsume, skillConsume };
+  const drainConsume = lifeDrainConsumption(lifeDrainConsumeLines(modifierTexts), { currentLife, hasFervor });
+  const manaPerSecond = skills.reduce((sum, skill) => sum + skill.manaPerSecond, 0) + (consume?.manaPerSecond || 0), lifePerSecond = skills.reduce((sum, skill) => sum + skill.lifePerSecond, 0) + (attackConsume?.lifePerSecond || 0) + (spiritConsume?.lifePerSecond || 0) + (skillConsume?.lifePerSecond || 0) + (drainConsume?.lifePerSecond || 0);
+  return { measured: true, manaPerSecond: round(manaPerSecond), lifePerSecond: round(lifePerSecond), manaRecently: round(manaPerSecond * RESOURCE_RECENT_SECONDS), lifeRecently: round(lifePerSecond * RESOURCE_RECENT_SECONDS), maxMana, maxLife, skills, costLines, consume, attackConsume, spiritConsume, skillConsume, ...(drainConsume ? { drainConsume } : {}) };
 }
 
 /**
@@ -322,11 +370,13 @@ export function currentLifeConsumeStreams({ setups = [], activeNames = new Set()
   for (const setup of setups) {
     if (setup.enabled === false || !activeNames.has(setup.name)) continue;
     const use = uses.bySetup?.get(setup.setupKey);
-    if (!use || !(use.usesPerSecond > 0)) continue;
+    const castRate = castUsesPerSecond(uses, setup.setupKey, use);
+    if (!(use?.usesPerSecond > 0) && !(castRate > 0)) continue;
     const cost = setupCost(setup, costLines, { fixedSupportMultiplierPercent, currentLife: 0 });
-    // "N% of current Life will be consumed when the supported skill is cast" (Recklessness) on the setup's player uses.
-    add(setup.setupKey, setup.name, use.usesPerSecond, cost.currentLifePercent, "supported skill cast");
-    fixedLifePerSecond += use.usesPerSecond * cost.life;
+    // "N% of current Life will be consumed when the supported skill is cast" (Recklessness, record 134953: 1000074 and 1000060 on this skill) on
+    // every cast of the setup: presses, Multistrike repeats, Spell Burst automatic casts and triggered uses (plumbing note C1).
+    add(setup.setupKey, setup.name, castRate, cost.currentLifePercent, "supported skill cast");
+    fixedLifePerSecond += (Number(use?.usesPerSecond) || 0) * cost.life;
   }
   const streams = [...byKey.values()].map((entry) => ({ source: entry.source, percentOfCurrent: entry.percentRate / entry.eventsPerSecond, eventsPerSecond: entry.eventsPerSecond, consumed: true, from: entry.from }));
   return { streams, fixedLifePerSecond };

@@ -83,7 +83,53 @@ function targetBlessingPercent(planner, key, blessing) {
 }
 
 // A DoT's path: damagePerBase with Affliction live.
-function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null) {
+// Penetration stacks gained on your Elemental hits (Dreamweaver, records 371288 / 747307 row 2; src/tick-layers.js penetrationLayer) on a DoT whose
+// ledger holds the line at its full stacks: the line and the DoT's resistance after its static penetration (R5, 2026-11-22).
+// R5 remainder (2026-11-22): also a DoT on the max-Affliction resistance reading (src/max-affliction-resistance.js maxAfflictionResistanceLayer) and
+// Scorching Beam's Ignite path (planner.theoretical: its penetration list, its maxAffliction resistance). Their resistance term is two states (below
+// and at max Affliction, the max-Affliction modifier picks one on each tick, the dummy's side); the stacks' step reads one net resistance, the
+// steady-weighted one, target − static penetration + steady share × the reduction: exact at the steady share, about (red ÷ (100 − net))² off in a
+// state away from it (approximation, inferred; no fixture carries either case). On the beam's Ignite the step reads the dummy's resistance without
+// Scorch's share (Scorch's own modifier keeps its share: a second-order error, inferred). Not reached yet on a real beam build: the stacks are
+// compiled only from skill-hit targets that hold the line (src/tick-layers.js penetrationLayer), and the beam is not one, so a pure beam build
+// passes no stacking entry here and its Ignite keeps the held stacks (found after 727e48f; open).
+export function dotPenetrationStacks(planner, key, stacking) {
+  if (!stacking?.length) return null;
+  const dot = (planner.skillDots || []).find((item) => item.key === key);
+  const shared = dot ? dot.shared : planner.ailments?.[key]?.shared;
+  const beamIgnite = !shared && key === "ignite" ? planner.theoretical : null;
+  if (!shared && !beamIgnite) return null;
+  const lines = shared ? shared.ledger?.penetration || [] : beamIgnite.recipeLists?.penetration || [];
+  const held = stacking.filter((entry) => lines.some((line) => line.source === entry.source && (line.text === undefined || line.text === entry.text)));
+  if (!held.length) return null;
+  const weighted = (layer) => (Number(layer.resistancePercent) || 0) - (Number(layer.penetrationPercent) || 0) + (Number(layer.steadyFraction) || 0) * (Number(layer.reductionPercent) || 0);
+  if (beamIgnite) { const layer = beamIgnite.combat?.maxAffliction; return layer && Number.isFinite(Number(layer.resistancePercent)) ? { entries: held, netResistancePercent: weighted(layer) } : null; }
+  const max = shared.maxAfflictionResistance;
+  return { entries: held, netResistancePercent: max?.active ? weighted(max) : (Number(shared.targetResistancePercent) || 0) - (Number(shared.penetrationPercent) || 0) };
+}
+
+// R4 (research/remediation-held-buffs-2026-11-21.md, 2026-11-22): a DoT ledger's lines gated on a dummy state a layer drives on the loop
+// (src/tick-layers.js dotStateGates: Frozen / Frostbitten on the frostbite buff, Cursed on the curse, Marked, an ailment state), each an additional
+// factor of the DoT's held value. The DoT record reads them at its build (SS14 client 0x141d48bc0 -> 0x141f89510 reads attr 5719 with the record's
+// query, proven; the victim's states in that query inferred). A skill DoT's additional and combat additional lists, an ailment's additional,
+// town, outgoing and combat extra lists (the additional factors of its value); an increased line stays held (not on a fixture's DoT gated list).
+function dotStateLines(planner, key, gates) {
+  if (!gates?.length) return [];
+  const dot = (planner.skillDots || []).find((item) => item.key === key);
+  const ledger = dot ? dot.ledger : planner.ailments?.[key]?.shared?.ledger;
+  if (!ledger) return [];
+  const lists = dot ? [ledger.additional, ledger.combatAdditional] : [ledger.additional, ledger.extraTown, ledger.combatOutgoing, ledger.extraCombat];
+  const out = [];
+  for (const line of lists.flat().filter(Boolean)) {
+    const value = Number(line.value);
+    if (!(value > -100) || !value) continue;
+    const gate = gates.find((item) => item.pattern.test(String(line.text || "")));
+    if (gate && !/^Frostbite \(keyword/.test(String(line.source || ""))) out.push({ ...line, value, gate });
+  }
+  return out;
+}
+
+function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null, penetration = null, stateLines = []) {
   const simulated = inputs.options?.afflictionModel === "simulated";
   const { configuredRating = 0, perPoint = 0 } = ailment.affliction || {};
   const live = simulated && perPoint > 0;
@@ -114,9 +160,26 @@ function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null)
   // The Fervor Rating held on the loop (census C1, src/trigger-bus.js section 12): its additional damage readers on this DoT, the same way.
   const fervor = bus?.fervorDotCorrection ? bus.fervorDotCorrection(ailment.key) : null;
   if (fervor) modifiers.push(fervor);
+  // Penetration stacks gained only on your hits (R5): out of the held value, back per stack through the resistance step, the attacker's own buff,
+  // fixed at each application.
+  let net = penetration?.netResistancePercent, penetrationBase = 1;
+  for (const entry of penetration?.entries || []) {
+    penetrationBase *= (100 - net - entry.value) / (100 - net);
+    net += entry.value;
+    modifiers.push({ source: entry.source, text: `${entry.text} (up to ${entry.stacks} stacks, from 0 on your Elemental hits, fixed at each application)`, buff: entry.buff, perStack: true, layer: "penetration", liveKey: "penetrationStacks", percent: entry.value / entry.stacks, steadyAmount: entry.value, attacker: true });
+  }
+  // Lines gated on a dummy state (R4): out of the held value, back as the attacker's additional damage while the state's buff is held at the
+  // DoT's application, fixed for the record's life.
+  let stateBase = 1;
+  for (const line of stateLines) {
+    stateBase *= 1 + line.value / 100;
+    // A Max Affliction gate (2026-11-22, Pain Amplification's "against enemies with Max Affliction"): the dummy's rating at the application.
+    const gate = line.gate.maxAffliction ? { amount: (world) => (world.affliction?.rating ?? 0) >= 100 - 1e-9 ? line.value : 0 } : { buff: line.gate.buff, percent: line.value };
+    modifiers.push({ source: line.source, text: `${line.text} (on the dummy's state at each application, fixed for the record)`, ...gate, layer: "additional", liveKey: line.gate.liveKey, steadyAmount: line.value, attacker: true });
+  }
   return {
     label: ailment.name, kind: "dot",
-    parts: [{ key: "dot", type, base: ailment.damagePerBase / (live ? 1 + configuredRating * perPoint : 1) / heldBlessing, increasedPercent: 0, additionalFactor: 1 }],
+    parts: [{ key: "dot", type, base: ailment.damagePerBase / (live ? 1 + configuredRating * perPoint : 1) / heldBlessing * penetrationBase / stateBase, increasedPercent: 0, additionalFactor: 1, ...(penetration ? { netResistancePercent: net } : {}) }],
     modifiers,
     working: { damagePerBase: ailment.damagePerBase, duration: ailment.duration, stacking: ailment.stacking, chance: ailment.chance, notActiveChance: ailment.notActiveChance, affliction: ailment.affliction || null, maxAffliction: max || null }
   };
@@ -222,15 +285,17 @@ function heldStoreSpec(planner, ailment, streams, weights, aimBuff) {
   };
 }
 
-function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null, bus = null, othersIgnite = null } = {}) {
+function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null, bus = null, othersIgnite = null, penetrationStacks = [], stateGates = [] } = {}) {
   const streams = streamsOf(planner, ailment, othersIgnite), independent = ailment.stacking === "independent";
   // On the loop when its hit gains landed on a hit or Reaps can build it (with no Reap on the loop src/tick-ledger.js holds it full, the planner's value).
   const blessings = targetBlessings.filter((item) => item.hitPlaced || (item.gains?.reap && inputs.reaping?.length)).map((item) => ({ ...item, percent: targetBlessingPercent(planner, ailment.key, item) }));
   // `relink`: a linked skill DoT is added again by its link the frame after a removal (src/tick-engine.js; Approaching Nightfall).
   const shared = { key: ailment.key, seconds: ailment.duration, path: ailment.silent ? null : ailment.key, ...(ailment.relink ? { relink: true } : {}) };
   // A Terra's area layers (src/area-dot-layers.js, S1): each layer carries one layer's value; the area effect (dotEffect) places them on its checks.
-  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.areaLayers ? ailment.areaLayers.layerValue : ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus) };
-  const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings, bus);
+  const penetration = dotPenetrationStacks(planner, ailment.key, penetrationStacks);
+  const stateLines = dotStateLines(planner, ailment.key, stateGates);
+  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.areaLayers ? ailment.areaLayers.layerValue : ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus, penetration, stateLines) };
+  const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings, bus, penetration, stateLines);
   const weights = heldStrength === "refresh" ? null : heldWeights(planner, ailment, streams);
   if (weights) {
     const { store, variant } = heldStoreSpec(planner, ailment, streams, weights, aimBuff);
@@ -334,12 +399,16 @@ function hitsIn(item, series) {
  * @returns {{ paths, ailments, affliction, actions, periodics, dotEffect, attach, layers, assumptions, held }} `attach` puts each stream on its
  *   skill's hits and returns what lands on the loop, Reaps included; `dotEffect` is the application effect of a skill DoT
  */
-export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null, bus = null, othersIgnite = null } = {}) {
+export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null, bus = null, othersIgnite = null, penetrationStacks = [], stateGates = [] } = {}) {
   const inputs = planner?.dummyRecount?.inputs;
   if (!inputs) return null;
   const simulated = inputs.options?.afflictionModel === "simulated";
+  // With the rating on the loop, a DoT line "against enemies with Max Affliction" (Pain Amplification, record 200000378: attr 5719 mod 4 on [this skill, DoT] behind the
+  // target's max-Affliction state 4000900; the DoT record reads it at its build, R4) needs the rating at 100 at the application (2026-11-22; the
+  // state's entry in the record's query inferred, as R4's).
+  stateGates = simulated ? [...stateGates, { liveKey: "affliction", maxAffliction: true, pattern: /\bagainst enem(?:y|ies) with Max Affliction\b/i }] : stateGates;
   const timedLayers = (inputs.timedDotLayers || []).map((layer, index) => ({ ...layer, buff: `timedDot:${index}` }));
-  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff, bus, othersIgnite }) }]));
+  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff, bus, othersIgnite, penetrationStacks, stateGates }) }]));
   const removers = (inputs.reaping || []).filter((source) => source.trigger === "full Affliction").map((source) => ({ key: source.key, label: source.source, baseSeconds: source.timing?.baseSeconds ?? source.recoverySeconds ?? 0, speedFactor: source.timing?.speedFactor ?? 1, removedPercent: Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 100)), settle: readings.reapSettle ?? "lastDot" }));
   // Magmaskull's first infliction (src/initial-affliction.js): only where the rating builds from 0 (a configured rating holds from the start).
   const initial = simulated && Number.isFinite(inputs.initialAffliction?.value) ? inputs.initialAffliction.value : undefined;
@@ -422,6 +491,6 @@ export function compileAilmentProgram(planner, readings = {}, timerFields = {}, 
   }
 
   const aimLive = [...compiled.values()].some((item) => item.held?.variant);
-  const held = (inputs.ailments || []).length || inputs.hits ? [{ key: "ailmentLayers", label: "The other DoT and beam multipliers", reason: `the planner's combat factor on every tick: ailment-type count, recent crit stacks, curses${aimLive ? "" : ", Aim"} and the other conditional buffs enter as its averages${aimLive ? " (Aim's state enters each held Ignite or Trauma application's amount)" : ""}. A held stack keeps the attacker's buffs of the application that set it: the recent crit stacks do not enter the compare, so their average is right in expectation, and the engine shows no single run's swing (open question ailment-held-strength)`, lines: [] }] : [];
+  const held = (inputs.ailments || []).length || inputs.hits ? [{ key: "ailmentLayers", label: "The other DoT and beam multipliers", reason: `the planner's combat factor on every tick: ailment-type count, curses${aimLive ? "" : ", Aim"} and the other conditional buffs enter as its averages${aimLive ? " (Aim's state enters each held Ignite or Trauma application's amount)" : ""}. A held stack keeps the attacker's buffs of the application that set it: the recent crit stacks (a timed part from the first crits, R3 2026-11-22) do not enter the compare, and the engine shows no single run's swing (open question ailment-held-strength)`, lines: [] }] : [];
   return { paths: beam.paths, actions: beam.actions, periodics: [...beam.periodics, ...timedPeriodics], affliction, dotEffect, attach, held };
 }

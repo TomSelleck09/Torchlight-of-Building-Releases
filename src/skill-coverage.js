@@ -327,6 +327,10 @@ function classifySkill(planner, skillName, setup) {
   const role = setup?.role;
   if (NON_DAMAGE_SKILLS[skillName]) return result("No DPS effect", NON_DAMAGE_SKILLS[skillName]);
   if (setup && planner?.activation?.activeNames && !planner.activation.activeNames.has(skillName)) return result("Inactive", "switched off on the board");
+  // A Mobility skill the press rotation does not press (user decision 2026-11-23, src/press-schedule.js `notPressed`: nothing it keeps up moves
+  // a damage figure): its own hits and damage over time deal nothing, so the skill changes no figure (the same four figures as switched off).
+  const notPressed = setup?.setupKey ? (planner?.hitRateFacts?.pressInputs?.skills || []).find((item) => item.key === setup.setupKey && item.notPressed) : null;
+  if (notPressed && planner?.pressRotation) return result("No DPS effect", notPressed.reason);
   // A listed skill whose hits the skill-hit engine now models (Speed Phantom's Remnant explosion; badge movement probe 2026-10-27:
   // it moved every probe build while it read Not modeled): its hits are in calc, the rest of its text is not.
   const listed = UNSUSTAINED_SKILLS[skillName] || UNMODELED_SKILLS[skillName];

@@ -1,4 +1,5 @@
 import { normalizePercentageText } from "./percentage-text.js";
+import { parseCharacterStatClause } from "./character-stats.js";
 import { supportProgressionSs13 } from "./data/skills/support-progression-ss13.generated.js";
 import { collectEnemyAilments, ailmentStateNames } from "./enemy-ailments.js";
 import { enemyBuffSet } from "./unit-buff-set.js";
@@ -115,6 +116,40 @@ function focusBuffSyntheticLines({ buffs, effectPercent }) {
     if (match) ignite.chance.push({ source: line.source, text: line.text, value: number(match[1]) });
   }
   return { lines, notes, ignite };
+}
+
+// The Intelligence main-stat pool's own wordings (collectBuildMechanics below) and the gear / memory ledger's (src/engine.js
+// modifierPatterns: "+N Intelligence", "+N to All Stats", positive only). A line none of them reads but the stat sheet's parser does
+// ("+20 Strength and Intelligence", "-10% Intelligence", "-20 Intelligence", a gear "-30 to All Stats", "+230 Strength. -100 Dexterity
+// and Intelligence") joins the pool by the sheet's reading (src/character-stats.js parseCharacterStatClause, clause by clause), so the
+// Intelligence main-stat bonus takes every Intelligence write Strength and Dexterity take from the sheet (indirect-stat remediation F3,
+// 2026-11-22; record shape 3|flat|attr: attr 31 flat). The pool's arithmetic is unchanged, so a build without such a line is bit-identical.
+const POOL_INTELLIGENCE = [/^\+(\d+(?:\.\d+)?) Intelligence$/i, /^([+-]\d+(?:\.\d+)?)% All Stats$/i, /^\+(\d+(?:\.\d+)?)% Intelligence$/i, /^([+-]\d+(?:\.\d+)?)% additional (?:(?:Strength|Dexterity) and )?Intelligence(?: and (?:Strength|Dexterity))?$/i];
+const LEDGER_INTELLIGENCE = [/^\+(\d+(?:\.\d+)?) Intelligence$/i, /^\+(\d+(?:\.\d+)?) to All Stats$/i];
+function poolsIntelligence(line) {
+  const text = String(line.text ?? "");
+  if (POOL_INTELLIGENCE.some((pattern) => pattern.test(text))) return true;
+  // "+/-N to All Stats": the pool reads it off every origin but gear and memories, whose ledger reads only the positive wording.
+  if (/^([+-]\d+(?:\.\d+)?) to All Stats$/i.test(text)) return !["gear", "memory"].includes(line.origin) || LEDGER_INTELLIGENCE[1].test(normalizePercentageText(text).replace(/\s+/g, " ").trim());
+  return false;
+}
+function intelligenceFromSheetReading(line, intelligence, mark) {
+  if (line.origin === "derived" || line.lineEffect) return;
+  const text = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim();
+  if (!/Intelligence|All Stats/i.test(text)) return;
+  if (["gear", "memory"].includes(line.origin) && LEDGER_INTELLIGENCE.some((pattern) => pattern.test(text))) return;
+  const multiplier = Number.isFinite(line.multiplier) ? line.multiplier : 1;
+  let read = false;
+  for (const clause of text.split(/\.\s+(?=[+-]\d)/)) for (const item of parseCharacterStatClause(clause)) {
+    if (item.stat !== "intelligence" || !Number.isFinite(item.value) || !item.value) continue;
+    const value = item.value * multiplier;
+    if (item.bucket === "flat") intelligence.extraFlat += value;
+    else if (item.bucket === "increased") intelligence.percent += value;
+    else if (item.bucket === "additional") intelligence.additionalFactor *= Math.max(0, 1 + value / 100);
+    else continue;
+    read = true;
+  }
+  if (read) { intelligence.sources.push({ source: line.source, text: line.text }); mark(line, "Intelligence (main-stat damage; the stat sheet's reading)"); }
 }
 
 export function collectBuildMechanics({ main, setups = [], activeNames = new Set(), modifierTexts = [], specialSupportConfigs = {}, castsPerSecond = 0, curseLimitMaximum = 1, skillCurses = [], heroMemories = { lines: [] }, targetLife = true, auraAilmentChance = null, minionsDealDamage = false, twoHandedWeapon = false, grantedSupportLevelBonus = () => 0, triggeredSkillLevel = null, minionAilmentTypes = [], eventSources = null, tenacityGain = null, dealtTypesBySetup = null } = {}) {
@@ -495,6 +530,7 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   // ledgers; talents, slates, and pacts add flat points, and "% Intelligence" scales the total.
   const intelligence = { extraFlat: 0, percent: 0, additionalFactor: 1, sources: [] };
   for (const line of modifierTexts) {
+    if (!poolsIntelligence(line)) intelligenceFromSheetReading(line, intelligence, mark);
     let match = line.text.match(/^\+(\d+(?:\.\d+)?) Intelligence$/i);
     if (match) {
       // A per-level gear line ("+3 Intelligence per 4 level(s)", resolved by the planner) is not in the gear ledger: counted here.
