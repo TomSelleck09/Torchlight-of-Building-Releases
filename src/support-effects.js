@@ -880,7 +880,11 @@ function clauseStatus(clause, support, ctx) {
   const beam = engine === "scorching-beam";
   const dedicated = beam && SCORCHING_BEAM_DEDICATED_SUPPORTS.has(name);
   const attack = ctx.speedType === "attack-speed";
-  const types = ctx.dealtTypes || [];
+  // A skill hit's typed clause reaches the types its parts carry after the skill's own conversion (the hit model's measured scope types,
+  // hitRateFacts.bySetup scopeTypes: a converted part reads every type in its chain, SS14 0x141fc3a80), as src/skill-hit-model.js
+  // supportLayers applies it; the profile's pre-conversion types alone read "Fire Explosion's 29% additional Fire Damage" Inactive on a
+  // Physical → Fire skill the hit applies it to (3 T Berserking audit G6, line sweep 2026-11-24). Badge only: the hit reads its own types.
+  const types = engine === "skill-hit" && ctx.measuredDealtTypes?.length ? [...new Set([...(ctx.dealtTypes || []), ...ctx.measuredDealtTypes])] : ctx.dealtTypes || [];
   const tags = ctx.tags || new Set();
   const s = (status, reason, consumers = []) => ({ status, reason, consumers });
   // Chunk 8: the families with a reader of their own (src/support-chunk8.js).
@@ -1761,6 +1765,8 @@ function censusStatus(clause, full) {
   if (clause.family === "minion" && engine !== "minion") return s("No DPS effect", "the setup summons no modeled Minion");
   // conditionalAdditional
   if (clause.unmodeled) return s("Not modeled", clause.conditionText);
+  // A clause the planner reads whose value moves nothing here (Sweep's Skill Area with no Skill Area reader on the setup).
+  if (clause.neutral && clause.active) return s("No DPS effect", clause.conditionText);
   if (clause.typedParts && engine === "scorching-beam" && !clause.typedParts.some((part) => part.typed === "Fire")) return s("Inactive", "does not reach Scorching Beam's Fire damage");
   if (clause.active == null) return s("Provisional", clause.conditionText, [engine]);
   if (!clause.active) return s("Inactive", clause.conditionText);

@@ -126,6 +126,50 @@ const scaleLeadingNumber = (body, factor) => {
 // Juggernaut's Armor scale is read against the level-85 dummy's Physical Armor mitigation (src/target-hit-mitigation.js).
 const AFFLICTION_PERCENT_PER_POINT = AFFLICTION_DAMAGE_PER_POINT * 100;
 const JUGGERNAUT_DUMMY_PHYSICAL_ARMOUR_PERCENT = level85DummyDefenses.armourPercent;
+// Feline Stimulant (Kitty Express: Assassin Cat Snack; line sweep 2026-11-24). Buff 11360's header (config_char_buff "maoyongxingfenji"): subtype
+// 2, stack mode 1, cap 3, 9 s, tags [5200081] (no Skill Effect Duration tag 5100310): each layer its own 9 s, the oldest out at the cap.
+export const FELINE_STIMULANT_SECONDS = 9;
+// P(min(cap, N) = k) for k = 0 … cap, N ~ Poisson(mean).
+function cappedPoissonShares(mean, cap) {
+  const shares = [];
+  let p = Math.exp(-Math.max(0, mean)), below = 0;
+  for (let k = 0; k < cap; k++) { shares.push(p); below += p; p *= mean / (k + 1); }
+  shares.push(Math.max(0, 1 - below));
+  return shares;
+}
+/**
+ * Feline Stimulant's held layers at `rate` triggered Main Skill uses per second: S = min(cap, N), N ~ Poisson(rate × 9 s). `stackFactor` E[1.05^S]
+ * (5% per stack, multiplies), `anyShare` P(S ≥ 1) ("+X% additional Attack Damage when having Feline Stimulant", 798760960 on state 4015366),
+ * `atCap` P(S = cap) (Attack Aggression, 86855680's gate 185). No rate yet (the measuring pass): the cap, held.
+ */
+export function felineStimulantHold(maxStacks, rate) {
+  const cap = Math.max(0, Math.round(Number(maxStacks) || 0));
+  if (!(Number(rate) > 0)) return { rate: 0, cap, meanStacks: cap, stackFactor: 1.05 ** cap, anyShare: cap > 0 ? 1 : 0, atCap: 1 };
+  const shares = cappedPoissonShares(rate * FELINE_STIMULANT_SECONDS, cap);
+  return { rate, cap, meanStacks: shares.reduce((total, share, k) => total + share * k, 0), stackFactor: shares.reduce((total, share, k) => total + share * 1.05 ** k, 0), anyShare: 1 - shares[0], atCap: shares[cap] };
+}
+/**
+ * The opening of Feline Stimulant's lines (src/timed-effects.js steps, one point per 1/30 s frame until the layers are steady): the triggered uses
+ * start with the fight, the first at `first` s, so at t the layers are min(cap, N(t)), N(t) ~ Poisson(rate × min(t − first, 9 s)). One part per
+ * line, each its expectation over the line's full value (sustained: the held expectation, so the sustained figure does not move), reaching the
+ * hits whose ledgers hold the line (scopeSource, src/planner.js followerTimedPart).
+ */
+export function felineStimulantParts({ maxStacks, rate, first, havingPercent = 0, aggressionPercent = 0, felineSource, aggressionSource }) {
+  const cap = Math.max(0, Math.round(Number(maxStacks) || 0)), full = 1.05 ** cap - 1;
+  if (!(rate > 0) || !(cap > 0)) return [];
+  const at = (time) => cappedPoissonShares(rate * Math.max(0, Math.min(FELINE_STIMULANT_SECONDS, time - first)), cap);
+  const steady = at(first + FELINE_STIMULANT_SECONDS);
+  const frames = [];
+  for (let frame = 0; frame / 30 <= first + FELINE_STIMULANT_SECONDS + 1e-9; frame++) frames.push(frame / 30);
+  const series = (level) => ({ kind: "steps", points: frames.map((time) => [time, level(at(time))]), sustained: level(steady) });
+  const stackLevel = (shares) => (shares.reduce((total, share, k) => total + share * 1.05 ** k, 0) - 1) / full;
+  return [
+    { type: null, reach: "all", percent: full * 100, schedule: series(stackLevel), scopeSource: felineSource },
+    ...(havingPercent ? [{ type: null, reach: "all", percent: havingPercent, schedule: series((shares) => 1 - shares[0]), scopeSource: felineSource }] : []),
+    ...(aggressionPercent ? [{ type: null, reach: "all", percent: aggressionPercent, schedule: series((shares) => shares[cap]), scopeSource: aggressionSource }] : [])
+  ];
+}
+
 /** E[min(cap, N)] for N ~ Poisson(mean): the expected count of events in a window, capped (recent-crit stacks). */
 export function expectedCappedPoisson(mean, cap) {
   if (!(mean > 0) || !(cap > 0)) return 0;
@@ -191,6 +235,9 @@ const PATTERNS = {
   // read by src/blessing-model.js (every Blessing while an Elixir Skill is on the board and cast).
   elixirBlessings: /^Gains \d+ stack\(s\) of all Blessings when casting an Elixir Skill$/i,
   elixirOther: /Elixir Skill/i,
+  // Nether King's Divinity: Banishment's Bonus Effect Provision (affixes 819689024, 4155397; read with the Elixir Skills below).
+  elixirToMinions: /^Non-Restorative Elixir effects apply to Minions instead of yourself$/i,
+  minionElixirDamage: /^\+(\d+(?:\.\d+)?)% additional damage for Minions affected by Elixir Effects?$/i,
   // Storm's Command (core audit B8, src/storm-command.js): +X% additional Attack Damage per different Warcry cast recently.
   stormCommand: STORM_COMMAND_LINE,
   frail: /^Inflicts Frail when dealing Spell Damage$/i,
@@ -302,6 +349,8 @@ const PATTERNS = {
   // state tag 4000180 (Paralyzed), the "+X% additional damage on Critical Strike" bucket (src/crit-only-lines.js), gated on
   // Paralysis on the dummy.
   critVsParalyzed: /^\+(\d+(?:\.\d+)?)% additional Critical Strike Damage against Paralyzed enemies$/i,
+  // Nether King's Divinity: Banishment's Bonus Effect Demolisher, its damage line (affix 739519360; read below by the Paralysis uptime).
+  banishmentDemolisherBonus: /^Demolisher Skills deal \+(\d+(?:\.\d+)?)% additional damage to Paraly(?:zed|sis) enemies\. Bonuses (?:that affect|to) Paralysis (?:is|are) also applied to this (?:effect's )?bonus(?:es)?$/i,
   weaken: /Weaken/i,
   // Frostbitten Heart's Artificial Moon line "+10 Max Frostbite Rating and +50% additional Cold Pulse Skill Area" (game affix
   // 2125501 [10, 50]: field 2007015 Max Frostbite Rating, attr 6201 Skill Area on the Cold Pulse tag 6100040; hero trait audit
@@ -682,6 +731,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // mainTriggerPossible; before 2026-11-15 any Main Skill use, so a never-triggered Main Skill measured its rates with Attack Aggression).
   const mainTriggered = Number.isFinite(state.mainTriggeredUsesPerSecond) ? state.mainTriggeredUsesPerSecond > 0 : Number(state.mainUsesPerSecond) > 0 && state.mainTriggerPossible !== false;
   const felineOn = find(PATTERNS.felineGain).length > 0 && conditionOn("felineStimulant") && mainTriggered;
+  // Feline Stimulant's held layers (line sweep 2026-11-24): buff 11360 is subtype 2, stack mode 1 (each layer its own 9 s, the oldest out at the
+  // cap; config_char_buff header), cap 3 + "+N to Max Feline Stimulant stacks" (86855680 / 540910080), one layer per triggered Main Skill use
+  // (715628480: 1000060 on [Main 6020000]). Gains at the measured triggered rate λ hold S = min(cap, N), N ~ Poisson(λ × 9 s) (the own-timer
+  // mean, src/blessing-layers.js poissonLayerMean), not the cap at any rate; before the rate is measured, the cap.
+  const felineHold = felineOn ? felineStimulantHold(3 + sum(find(PATTERNS.felineMax).map((line) => num(line.clean.match(PATTERNS.felineMax)[1]) * (line.multiplier ?? 1))), state.mainTriggeredUsesPerSecond) : null;
   // "Gains Attack / Spell Aggression when Minions land a (Spell) Critical Strike": the Minion holds it, not you. Raw affixes 77639088 and 817133056: row 1 hands
   // row 2 to the Minions ([3]), and row 2's buff filter is [1], that row's own holder; a line that reaches you says so (Command's 9338664 writes on [4]). The
   // buff's own values at uptime 1 while the Minion crits (open question gear-aggression-minion-crit; chunk 11, 2026-11-01).
@@ -695,10 +749,14 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const hasAttackAggression = attackAggressionLines.length > 0 || (felineOn && find(PATTERNS.felineAggression).length > 0);
   for (const line of find(PATTERNS.attackAggressionGain)) entry(line, attackAggressionLines.includes(line), attackAggressionLines.includes(line) ? "Attack Aggression held (gained by the build's Attack skill / always)" : "no active Attack skill");
   for (const line of find(PATTERNS.attackAggressionDefeat)) entry(line, false, "the training dummy never dies", { status: "Not on dummy" });
+  // Attack Aggression from Feline Stimulant alone (86855680: node 325 "Has" buff 3411 behind gate 185, the stacks at the cap) holds while the
+  // stacks sit at the cap: its share P(S = cap) (line sweep 2026-11-24); another source holds it in full.
+  const aggressionShare = attackAggressionLines.length || !felineHold ? 1 : felineHold.atCap;
   if (hasAttackAggression) {
-    const value = round(BUFF_VALUES.attackAggression.percent * (1 + aggressionEffect("attack") / 100));
-    derive(`+${value}% additional Attack Damage`, BUFF_VALUES.attackAggression.source, "Attack Aggression held");
-    derive(`+${value}% additional Attack Speed`, BUFF_VALUES.attackAggression.source, "Attack Aggression held");
+    const value = round(BUFF_VALUES.attackAggression.percent * (1 + aggressionEffect("attack") / 100) * aggressionShare);
+    const held = aggressionShare < 1 ? `Attack Aggression held at Max Feline Stimulant stacks ${round(aggressionShare * 100)}% of the time` : "Attack Aggression held";
+    derive(`+${value}% additional Attack Damage`, BUFF_VALUES.attackAggression.source, held);
+    derive(`+${value}% additional Attack Speed`, BUFF_VALUES.attackAggression.source, held);
   }
   // "Gains Spell Aggression when casting a Spell Skill" (residual batch A-3): held while the build casts a Spell on the dummy.
   const spellAggressionLines = [...find(PATTERNS.spellAggressionGain), ...find(PATTERNS.spellAggressionOnCast).filter(() => state.castsSpell ?? state.dealsSpellDamage), ...(hasFervor ? fervorAggressionLines : [])];
@@ -866,8 +924,31 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Sage (hero trait audit B8): the Scent Bottle setup is in state.elixirSetups; Scent of Ambition's and Everlasting Nectar's Elixir
   // Skill Effect lines (time-averaged, src/sage-traits.js) join the engine's lines.
   const elixirs = hasElixir ? resolveElixirs({ elixirs: elixirSetups, lines: [...lines, ...(state.sage?.elixirExtraLines || [])] }) : null;
-  for (const item of elixirs?.derived || []) derive(item.text, item.source, item.conditionText, true, item.uptime);
-  const elixirBodies = (elixirs?.derived || []).map((item) => item.text);
+  // Banishment: Provision (config_modifier 151200801 = affixes 819689024 + 438453088 [40] + 4155397 [15]; not in the generated recipe table but
+  // 438453088, read from the raw config_affix_effect rows 2026-11-24): 819689024 grants you label 3016060 (config_char_label
+  // "lingyaoxiaoguozhuanyizhizhaohuanwu", Elixir effects transfer to summons); 438453088 is +P1% Elixir Skill Effect (attr 3631 mod 3, the
+  // Elixir model's increased pool); 4155397 row 1 (node 111) hands row 2 to your Minions (filter target 3): gated (node 10) on the Minion's state
+  // 4000910 (lingyaozhuangtai, under an Elixir), attr 5719 mod 4 = P1 on that Minion (proven). How the client moves an Elixir's buff under the
+  // label is not traced: read (provisional, open question banishment-provision-elixirs) as each Effect Elixir's buff (a Restoration Elixir keeps
+  // its Life / Mana restoration on you) going to your Minions instead of you: its value lines leave you (and your panel), you are not in the
+  // Elixir state (the "while an Elixir Skill is active" lines read off), your Minions take the lines they have a reader for (Critical Strike
+  // Rating, Attack and Cast Speed, Hit Damage as their damage, which is all hits) and +P1% additional damage while one is up. Without a
+  // modeled Minion the Elixir Effects reach nobody. Cast-based lines (Elixir Fairies, Miraculous Gain, Blessings on an Elixir cast) stay yours.
+  const provision = find(PATTERNS.elixirToMinions).length > 0 && Boolean(elixirs);
+  const minionElixirText = (text) => { const match = String(text).match(/^([+-]\d+(?:\.\d+)?)% (Critical Strike Rating|Attack and Cast Speed|Hit Damage)$/i); return !match ? null : /^Hit Damage$/i.test(match[2]) ? `${match[1]}% Minion Damage` : `${match[1]}% Minion ${match[2]}`; };
+  const provisionMoved = [];
+  for (const item of elixirs?.derived || []) {
+    if (!provision) { derive(item.text, item.source, item.conditionText, true, item.uptime); continue; }
+    const text = state.minionsCrit ? minionElixirText(item.text) : null;
+    provisionMoved.push({ text: item.text, minionText: text });
+    if (text) derive(text, `${item.source}, on your Minions (Banishment: Provision)`, `${item.conditionText}; Banishment: Provision: on your Minions instead of you (label 3016060; provisional)`, true, item.uptime);
+  }
+  if (provision) {
+    elixirs.toMinions = { moved: provisionMoved, minions: Boolean(state.minionsCrit) };
+    elixirs.panel = { ...elixirs.panel, lines: [], effectLines: [] };
+  }
+  // Under Provision the Elixir Effect lines' bodies are what your Minions take (the player's own lines are not derived).
+  const elixirBodies = provision ? provisionMoved.map((item) => item.minionText).filter(Boolean) : (elixirs?.derived || []).map((item) => item.text);
   const elixirUp = (elixirs?.setups || []).some((setup) => setup.uptime > 0);
   const elixirStateText = elixirs?.setups?.length ? elixirs.setups.map((setup) => elixirSetupText(setup, elixirs)).join(" | ") : "no Elixir Skill on the skill board";
   // A line that acts only through the Elixir Effects: In calc where an Elixir Effect with a value line is up (its bodies are the
@@ -878,6 +959,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (blocked) return entry(line, false, blocked, { status: "Inactive", provisional: true });
     if (!elixirs.setups.some((setup) => setup.kind === "effect")) return entry(line, false, elixirStateText, { status: "No DPS effect" });
     if (!elixirUp) return entry(line, false, elixirStateText, { status: "Not on dummy" });
+    if (provision && !elixirBodies.length) return entry(line, false, `${elixirStateText}; Banishment: Provision moves the Elixir Effects to your Minions, and ${state.minionsCrit ? "none of their value lines has a Minion reader" : "no Minion is modeled"} (provisional)`, { status: "No DPS effect", provisional: true });
     if (!elixirBodies.length) return entry(line, false, `${elixirStateText}: the Elixir Effects carry no value line the planner can average`, { status: "Not modeled" });
     return entry(line, true, elixirStateText, { provisional: true, bodies: elixirBodies });
   };
@@ -916,7 +998,27 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, true, `${how} → ×${round(factor)} (time-averaged; provisional)`, { provisional: true, bodies });
     for (const text of bodies) derive(text, line.source, how, true);
   };
-  for (const line of find(PATTERNS.elixirActive)) elixirTimed(line, line.clean.match(PATTERNS.elixirActive)[1], elixirShare, `an Elixir Skill is active ${round(elixirShare * 100)}% of the time (${elixirStateText})`);
+  for (const line of find(PATTERNS.elixirActive)) {
+    if (provision) { entry(line, false, "Banishment: Provision moves the Elixir buffs to your Minions: you are not in the Elixir state (label 3016060; provisional)", { status: "Inactive", provisional: true }); continue; }
+    elixirTimed(line, line.clean.match(PATTERNS.elixirActive)[1], elixirShare, `an Elixir Skill is active ${round(elixirShare * 100)}% of the time (${elixirStateText})`);
+  }
+  // Banishment: Provision's two Minion rows (above): the redirect, and +P1% additional damage for a Minion in the Elixir state, held while an
+  // Effect Elixir is up (1 − Π(1 − uptime) over the Effect Elixirs, independent casts: provisional), time-averaged.
+  {
+    const effectShare = elixirs?.setups?.length ? 1 - elixirs.setups.filter((setup) => setup.kind === "effect").reduce((product, setup) => product * (1 - Math.max(0, Math.min(1, setup.uptime ?? 0))), 1) : 0;
+    for (const line of find(PATTERNS.elixirToMinions)) {
+      const moved = provisionMoved.filter((item) => item.minionText);
+      const reason = !hasElixir || !elixirs?.setups?.length ? "no Elixir Skill on the skill board" : !(effectShare > 0) ? `${elixirStateText}: no Elixir Effect is up on the dummy` : !state.minionsCrit ? `the Elixir Effects leave you and no Minion is modeled to take them (${provisionMoved.map((item) => item.text).join("; ") || "no value line"}; label 3016060; provisional)` : `the Elixir Effects leave you for your Minions (label 3016060; provisional): ${provisionMoved.map((item) => item.minionText ? `${item.text} → ${item.minionText}` : `${item.text} (no Minion reader)`).join("; ")}`;
+      entry(line, effectShare > 0, reason, { status: effectShare > 0 ? "In calc" : "Inactive", provisional: true, bodies: moved.map((item) => item.minionText) });
+    }
+    for (const line of find(PATTERNS.minionElixirDamage)) {
+      const percent = num(line.clean.match(PATTERNS.minionElixirDamage)[1]) * (line.multiplier ?? 1), value = round(percent * effectShare);
+      const active = provision && Boolean(state.minionsCrit) && effectShare > 0;
+      const reason = !provision ? "needs the Elixir buffs on your Minions (Provision's label 3016060)" : !state.minionsCrit ? "no modeled Minion" : !(effectShare > 0) ? "no Elixir Effect is up on the dummy" : `your Minions are in the Elixir state while an Effect Elixir is up, ${round(effectShare * 100)}% of the time: +${percent}% × ${round(effectShare)} = +${value}% additional Minion Damage (game affix 4155397: node 111 to your Minions, state 4000910, attr 5719 mod 4; time-averaged, provisional)`;
+      entry(line, active, reason, { provisional: true, bodies: active ? [`+${value}% additional Minion Damage`] : [] });
+      if (active && value) derive(`+${value}% additional Minion Damage`, `${line.source} (Banishment: Provision)`, reason, true);
+    }
+  }
   for (const line of find(PATTERNS.elixirCastRecently)) elixirTimed(line, line.clean.match(PATTERNS.elixirCastRecently)[1], elixirRecent, `an Elixir Skill cast in the last ${RECENT_SECONDS} s ${round(elixirRecent * 100)}% of the time (${round(elixirCastsPerSecond)} casts/s)`);
   for (const line of find(PATTERNS.elixirPerCastRecently)) {
     const match = line.clean.match(PATTERNS.elixirPerCastRecently); const stacks = Math.min(num(match[2]), elixirCastsPerSecond * RECENT_SECONDS);
@@ -1502,9 +1604,18 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const chanceParalysisActive = chanceParalysisSources.filter((item) => item.active);
   // Your own Paralysis Effect scales only Paralysis your build inflicts (not the follower's).
   const ownParalysis = paralysisHeld || chanceParalysisActive.some((item) => !item.follower);
+  // Banishment: Demolisher's damage line (config_modifier 151200101 = affix 739519360 [P1]; not in the generated recipe table, read from the raw
+  // row 2026-11-24): attr 5719 mod 4 on the Demolisher tag 6010010 against a Paralyzed target (others 4000180), value (GetAttr(3401, [5100111]) +
+  // GetAttr(3401, [5100101]) − 1) × P1, so P1 × (1 + inflicted Paralysis Effect + Crowd Control Effect): your own Effect pools, as Paralysis's
+  // GetEffectScale reads them, whoever Paralyzed the dummy (proven; an untagged attr 3401 write would count twice, none is read). Its Paralysis
+  // (affix 547348736 on Demolisher casts) is a recipe holder (src/crowd-control-recipes.js RAW_RECORD_READINGS).
+  const demolisherBonusLines = find(PATTERNS.banishmentDemolisherBonus);
+  const demolisherHits = Boolean(state.activeDamageTags?.has("Demolisher"));
+  const demolisherReadsEffect = demolisherBonusLines.length > 0 && demolisherHits && (paralysisHeld || chanceParalysisActive.length > 0);
   for (const line of find(PATTERNS.paralysisEffect)) {
     const hand = line.clean.match(PATTERNS.paralysisEffect)[2], held = !hand || (hand === "Two" ? state.twoHanded : !state.twoHanded);
-    entry(line, ownParalysis && held, !held ? `not holding a ${hand}-Handed Weapon` : ownParalysis ? "scales Paralysis (provisional: the effect scales its damage taken)" : "no Paralysis source", { provisional: true });
+    if (demolisherReadsEffect && !ownParalysis) { entry(line, held, !held ? `not holding a ${hand}-Handed Weapon` : "scales Banishment: Demolisher's bonus against Paralyzed enemies (affix 739519360: (1 + Paralysis Effect) × P1)"); continue; }
+    entry(line, ownParalysis && held, !held ? `not holding a ${hand}-Handed Weapon` : ownParalysis ? `scales Paralysis (provisional: the effect scales its damage taken)${demolisherReadsEffect ? " and Banishment: Demolisher's bonus against Paralyzed enemies (affix 739519360)" : ""}` : "no Paralysis source", { provisional: true });
   }
   if (paralysisHeld) derive(`+${round(BUFF_VALUES.paralysis * (1 + paralysisEffect / 100))}% damage taken`, "Paralysis (keyword 704)", "Paralysis on the dummy", true);
   const scriptedWeaken = [PATTERNS.witchAntelope, PATTERNS.holyMaiden, PATTERNS.channelWeaken, PATTERNS.paralysisDealDamage];
@@ -1547,7 +1658,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // effect (Weaken / Slow only change the enemy; Taunt / Blind / Freeze carry no scaled value; the follower's and a Minion's crowd control
   // take their caster's own Effect).
   {
-    const scales = [ownParalysis && "your Paralysis's damage taken (buff 230, tag 5100101)", frostbitten && !minionFrostbite && "your Frostbite's Cold Damage taken (buff 112, tag 5100101)"].filter(Boolean);
+    const scales = [ownParalysis && "your Paralysis's damage taken (buff 230, tag 5100101)", frostbitten && !minionFrostbite && "your Frostbite's Cold Damage taken (buff 112, tag 5100101)", demolisherReadsEffect && "Banishment: Demolisher's bonus against Paralyzed enemies (affix 739519360)"].filter(Boolean);
     for (const line of find(PATTERNS.crowdControlEffect)) entry(line, scales.length > 0, scales.length ? `scales ${scales.join(" and ")}: GetEffectScale sums it with the inflicted Paralysis / Frostbite Effect (game affix 14388, attr 3401 on tag 5100101)` : "no Paralysis or Frostbite of yours on the dummy: the other crowd control types carry no scaled damage value", { status: scales.length ? "In calc" : "No DPS effect" });
   }
   // Condensed Frost (Gemma – Glacial Night; chunk 1, 2026-10-31; buff 81233 on every enemy, affix 3166437 [7/20, -10, 28, 120], tag 5008005):
@@ -1835,6 +1946,18 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     entry(line, active, reason, { bodies: [`+${value}% additional damage on Critical Strike`] });
     if (active && value) derive(`+${value}% additional damage on Critical Strike`, line.source, `Paralysis on the dummy (${round(paralysisUptime * 100)}% uptime)`, false);
   }
+  // Banishment: Demolisher (affix 739519360, above): one additional write on a Demolisher Skill's damage while the dummy is Paralyzed, so its
+  // mean is P1 × (1 + Paralysis Effect) × the Paralysis uptime (any holder: the Bonus Effect's own Paralysis on Demolisher casts, Grudge, the
+  // follower, …), on the Demolisher Skills' hits; an ailment's record keeps no Demolisher tag (src/ailment-record-tags.js), so not their ailments.
+  // The 5 s / 20 s windows read the sustained mean (no skill-scoped timed part; the Paralysis's own damage taken has its timed part).
+  for (const line of demolisherBonusLines) {
+    const percent = num(line.clean.match(PATTERNS.banishmentDemolisherBonus)[1]) * (line.multiplier ?? 1), scale = Math.max(0, 1 + paralysisEffect / 100);
+    const full = round(percent * scale), value = round(full * paralysisUptime);
+    const active = demolisherHits && paralysisUptime > 0;
+    const reason = !demolisherHits ? "no Demolisher Skill deals damage on the dummy" : !(paralysisUptime > 0) ? "no Paralysis on the dummy" : `+${percent}% × (1 + ${round(paralysisEffect)}% Paralysis and Crowd Control Effect) = +${full}% additional damage for Demolisher Skills while the dummy is Paralyzed (${round(paralysisUptime * 100)}% of the time${paralysisUptime < 1 ? `: +${value}% on average` : ""}; game affix 739519360, proven)`;
+    entry(line, active, reason, { bodies: [`+${value}% additional Demolisher Skill Damage`] });
+    if (active && value) derive(`+${value}% additional Demolisher Skill Damage`, line.source, `Banishment: Demolisher: the dummy Paralyzed ${round(paralysisUptime * 100)}% of the time`, false);
+  }
   const ccTypes = [...ccSchedules.keys()];
   // First Flake of Strange Snow counts these too (see deemedFrostbite above): a type it missed asks for the second run.
   deemedRerun = deemedFrostbite && !state.deemedCrowdControl && ccTypes.some((type) => !deemedFrostbite.types.includes(type)) ? ccTypes : null;
@@ -2060,15 +2183,24 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Attack Damage when having Feline Stimulant"; Attack Aggression at max (read above). Own buff, full when pre-built
   // (condition felineStimulant); its duration is not in the saved data (provisional).
   for (const line of find(PATTERNS.felineGain)) {
-    const maxStacks = 3 + sum(values(PATTERNS.felineMax)), having = sum(values(PATTERNS.felineDamage));
-    const buff = round((1.05 ** maxStacks - 1) * 100);
+    const maxStacks = 3 + sum(values(PATTERNS.felineMax)), havingFull = sum(values(PATTERNS.felineDamage));
+    // The held layers' expectations (felineHold): E[1.05^S] on the stacks line, P(S ≥ 1) on the "while having" line; the cap before the rate is measured.
+    const hold = felineHold || felineStimulantHold(maxStacks, null);
+    const buff = round((hold.stackFactor - 1) * 100), having = round(havingFull * hold.anyShare);
     const allowed = conditionOn("felineStimulant"), active = felineOn;
-    const reason = !allowed ? offReason("felineStimulant") : !active ? (Number(state.mainUsesPerSecond) > 0 ? "the Main Skill is never triggered (trigger 1000060: a triggered use, not one you cast yourself)" : "no Main Skill in use") : `best case: ${maxStacks} Feline Stimulant stacks held (own buff${prebuilt ? ", pre-built" : "; held from t = 0, its build-up is not modeled"}): +${buff}% additional Attack Damage (5% per stack, multiplies)${having ? `, +${having}% additional Attack Damage while having it` : ""}${find(PATTERNS.felineAggression).length ? ", Attack Aggression at max stacks" : ""} (provisional: the duration is not in the saved data)`;
-    const derivedLines = [[`+${buff}% additional Attack Damage`, `${maxStacks} Feline Stimulant stacks`], ...(having ? [[`+${having}% additional Attack Damage`, "having Feline Stimulant"]] : [])];
+    const holdText = hold.rate > 0 ? `${round(hold.rate)} triggered Main Skill uses/s × ${FELINE_STIMULANT_SECONDS} s (buff 11360: each layer its own timer, cap ${maxStacks}): ${round(hold.meanStacks)} stacks on average${hold.atCap < 1 ? `, at the cap ${round(hold.atCap * 100)}% of the time` : ""}` : `${maxStacks} Feline Stimulant stacks held (the rate not measured yet)`;
+    const reason = !allowed ? offReason("felineStimulant") : !active ? (Number(state.mainUsesPerSecond) > 0 ? "the Main Skill is never triggered (trigger 1000060: a triggered use, not one you cast yourself)" : "no Main Skill in use") : `${holdText}: +${buff}% additional Attack Damage (5% per stack, multiplies; E[1.05^stacks])${having ? `, +${having}% additional Attack Damage while having it` : ""}${find(PATTERNS.felineAggression).length ? ", Attack Aggression at max stacks" : ""}; the 5 s / 20 s windows and the 60 s recount build the layers from 0 from the first triggered use (line sweep 2026-11-24; provisional, open question feline-stimulant-build-up)`;
+    const derivedLines = [[`+${buff}% additional Attack Damage`, `${round(hold.meanStacks)} Feline Stimulant stacks`], ...(having ? [[`+${having}% additional Attack Damage`, "having Feline Stimulant"]] : [])];
+    // The opening (line sweep 2026-11-24): the triggered uses start with the fight (the first one at the measured first triggered use), so the
+    // layers build from 0: at t s in, N(t) ~ Poisson(λ × min(t − first, 9 s)). One part per derived line, each the line's expectation at t over
+    // its full value, sustained the held expectation, so the sustained figure does not move; each reaches the hits whose ledgers hold the line
+    // (scopeSource). Attack Aggression's damage at P(N(t) ≥ cap) when Feline Stimulant alone holds it (its +5% Attack Speed stays held: no live speed).
+    const first = Number.isFinite(state.mainTriggeredFirstSeconds) ? Math.max(0, state.mainTriggeredFirstSeconds) : null;
+    const openingParts = active && hold.rate > 0 && first !== null ? felineStimulantParts({ maxStacks, rate: hold.rate, first, havingPercent: havingFull, aggressionPercent: attackAggressionLines.length ? 0 : find(PATTERNS.felineAggression).length ? round(BUFF_VALUES.attackAggression.percent * (1 + aggressionEffect("attack") / 100)) : 0, felineSource: `${line.source}: Feline Stimulant (Kitty Express)`, aggressionSource: BUFF_VALUES.attackAggression.source }) : [];
     // Everything it gives is Attack Damage and Attack Aggression (Attack Damage and Attack Speed): a build with no Attack hit takes none of it
     // (badge movement probe 2026-11-15: In calc on the Youga Homing Frost Bolt probe, a Spell build, moving nothing).
     const noAttack = active && !state.attackHits;
-    addTimed({ id: "felineStimulant", label: "Feline Stimulant (Kitty Express)", target: "self", enabled: allowed, active, reason: noAttack ? `${reason}; the build has no Attack hit, the only thing Feline Stimulant and Attack Aggression reach` : reason, ...(noAttack ? { status: "No DPS effect" } : {}), summary: `${maxStacks} Feline Stimulant stacks held`, parts: [], bodies: derivedLines.map(([text]) => text), derived: derivedLines },
+    addTimed({ id: "felineStimulant", label: "Feline Stimulant (Kitty Express)", target: "self", enabled: allowed, active, reason: noAttack ? `${reason}; the build has no Attack hit, the only thing Feline Stimulant and Attack Aggression reach` : reason, ...(noAttack ? { status: "No DPS effect" } : {}), summary: `${round(hold.meanStacks)} Feline Stimulant stacks held`, parts: openingParts, bodies: derivedLines.map(([text]) => text), derived: derivedLines },
       line, [...find(PATTERNS.felineMax), ...find(PATTERNS.felineDamage), ...find(PATTERNS.felineAggression)]);
   }
 
@@ -2247,7 +2379,8 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   const deflectionMax = 4 + lines.reduce((total, line) => total + (Number(line.clean.match(/^\+(\d+) to Max Deflection$/i)?.[1]) || 0) * (line.multiplier ?? 1), 0);
   const deflectionActive = deflectionGain.filter((item) => item.active);
   const deflection = { held: deflectionActive.length > 0, max: deflectionMax, reason: deflectionActive.length ? `gained by ${deflectionActive.map((item) => `${item.source} (${item.kind})`).join(", ")}, never consumed (the dummy never attacks)` : deflectionGain.length ? "its Deflection gain sources do not hold (Movement group, Reaping, Hit or blocked recently)" : "no Deflection gain source in the build" };
-  const elixirLucky = (elixirs?.setups || []).filter((setup) => setup.uptime > 0 && (setup.states || []).some((item) => /^Damage (?:triggers|gains|becomes) Lucky\.?$/i.test(item.text))).map((setup) => ({ share: setup.uptime, source: setup.name, text: "Damage triggers Lucky" }));
+  // (Banishment: Provision moves the Elixir buffs to your Minions: an Elixir's Lucky Damage is not yours then.)
+  const elixirLucky = (elixirs?.toMinions ? [] : elixirs?.setups || []).filter((setup) => setup.uptime > 0 && (setup.states || []).some((item) => /^Damage (?:triggers|gains|becomes) Lucky\.?$/i.test(item.text))).map((setup) => ({ share: setup.uptime, source: setup.name, text: "Damage triggers Lucky" }));
   const { luckyLines, veryLucky, luckyCritLines, luckyNumbed, damageRolls, plainLucky, critRolls, scoped: scopedLucky, ignitedLightning, deflectionLines, randomLines, partial: luckyPartial, unlucky: unluckyWindows } = readLuckyDamage(lines, { numbed, ignited: ignitedDummy, deflection, elixirLucky });
   const lucky = { damageRolls, plainLucky, critRolls, scoped: scopedLucky.map((item) => ({ kind: item.kind, rolls: item.rolls, source: item.line.source, text: item.line.clean })), partial: luckyPartial, unlucky: unluckyWindows };
   for (const line of ignitedLightning) entry(line, ignitedDummy, ignitedDummy ? "the dummy is Ignited: Lightning damage rolls are Lucky (the best of 2)" : "the build does not Ignite the dummy", { provisional: true });
@@ -2378,7 +2511,8 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   for (const item of entries) if (!item.bodies.length && item.active) { const effects = effectsOf(item); if (effects.length) item.bodies = effects.map((text) => ({ body: text, derivedText: text, readers: ["state"] })); }
   // Prism Butterfly Distillate (chunk 9): "Inflicts all Infiltration Effects when a Spell Skill deals damage. Interval on each enemy: 1 s" (record 1018285): the three
   // keywords' +13% on a build with a Spell hit, time-averaged by the Elixir's uptime (no value line, so no Elixir Skill Effect); a type another line holds stays one Infiltration.
-  for (const setup of elixirs?.setups || []) {
+  // (Banishment: Provision moves the Elixir buffs to your Minions: their Spell damage is not modeled to inflict it, so none is held then.)
+  for (const setup of elixirs?.toMinions ? [] : elixirs?.setups || []) {
     if (!(setup.uptime > 0) || !setup.states.some((item) => /^Inflicts all Infiltration Effects/i.test(item.text)) || !state.spellHitTypes?.size) continue;
     for (const type of ["Fire", "Cold", "Lightning"]) if (!infiltrationHeld(type)) derive(`+${round(BUFF_VALUES.infiltration * setup.uptime)}% additional ${type} Damage taken`, `${setup.name}: ${type} Infiltration`, `${setup.name} up ${setup.uptime} of the time, a Spell hit inflicts ${type} Infiltration (time-averaged; provisional)`, true, setup.uptime);
   }

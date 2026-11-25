@@ -229,8 +229,8 @@ export function compileTickLedger(planner, { seconds = 54, live = TICK_LAYER_KEY
   if (plain) Object.assign(paths, plain.paths);
   // Main Skill triggers (Vendetta) as loop actions (src/tick-trigger-main.js; chunk 15 §10.4): the casts and the Main Skill's own uses on one
   // queue, each cast's triggered uses on the Main Skill's layered path.
-  const triggerMain = plain && !program ? compileTriggerMains(planner, { hits: plainHits, paths, actions: plain.actions, layered }) : null;
-  if (triggerMain) { Object.assign(paths, triggerMain.paths); plain.actions = [...plain.actions.map((action) => triggerMain.replaced.get(action.key) ?? action), ...triggerMain.actions]; plain.layers.push(...triggerMain.layers); plain.assumptions.push(...triggerMain.assumptions); }
+  const triggerMain = plain && !program ? compileTriggerMains(planner, { hits: plainHits, paths, actions: plain.actions, layered, handsSplit: plain.handsSplit }) : null;
+  if (triggerMain) { Object.assign(paths, triggerMain.paths); plain.actions = [...plain.actions.map((action) => triggerMain.replaced.has(action.key) ? triggerMain.replaced.get(action.key) : action).filter(Boolean), ...triggerMain.actions]; plain.layers.push(...triggerMain.layers); plain.assumptions.push(...triggerMain.assumptions); }
   if (ailmentProgram) Object.assign(paths, ailmentProgram.paths);
   // A layer's modifiers on the Minions' paths (W10 step 4a: the per-ailment-type Minion bodies, src/tick-layers.js minionTypeModifiers).
   const minionModifiers = layerContext?.ailmentTypeMinion?.length ? (minion, skill) => minionTypeModifiers(layerContext, minion, skill) : null;

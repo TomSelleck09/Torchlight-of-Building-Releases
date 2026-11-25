@@ -1,3 +1,4 @@
+import { t } from "./i18n.js";
 import { parseBlessingRecovery } from "./blessing-gear-effects.js";
 import { parseBlessingModifier } from "./blessing-model.js";
 import { parseBlockModifier } from "./block-model.js";
@@ -26,7 +27,7 @@ import { migrateSlateTalentText } from "./talent-text-migrations.js";
 
 export function coverageBadge(status, title = "") {
   const titleAttribute = title ? ` title="${String(title).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")}"` : "";
-  return `<b class="calc-coverage ${status === "In calc" ? "calculated" : neutralStatuses.has(status) ? "neutral" : "pending"}"${titleAttribute}>${status}</b>`;
+  return `<b class="calc-coverage ${status === "In calc" ? "calculated" : neutralStatuses.has(status) ? "neutral" : "pending"}"${titleAttribute}>${t(status)}</b>`;
 }
 
 function baseGearLineCoverage(item, text, active, block, lowResources, blurEffects) {
@@ -75,6 +76,12 @@ function baseGearLineCoverage(item, text, active, block, lowResources, blurEffec
     if (/Gear Elemental Damage$/i.test(lines[0]) && !["Fire", "Cold", "Lightning"].some((type) => damage[type])) return "Inactive";
     const planner = coverageContext();
     if (!planner?.activation) return "In calc";
+    // Joined Force (user-confirmed 2026-10-14; src/weapon-damage-model.js main-hand-only): the off-hand does not attack and its share joins the
+    // main hand's damage, so the off-hand's local Attack Speed and Critical Strike Rating are never read (speed and crit are the main hand's);
+    // its local damage lines join through the share (line sweep 2026-11-24: the 3 T off-hand's "500 Critical Strike Rating" and "1.5 Attack
+    // Speed" read In calc and moved nothing).
+    const offHand = planner.weaponAttack?.dualWieldMode === "main-hand-only" && item?.slot === "secondaryHand";
+    if (offHand && (/gear Attack Speed$|Critical Strike Rating for this gear$/i.test(lines[0]) || /^[\d.]+ (?:Critical Strike Rating|Attack Speed)$/i.test(lines[0]))) return "No DPS effect";
     // A weapon-scaled hit with a fixed cadence (Erika's Precise: Thunder Focus) reads the weapon too (legendary audit 2026-10-22:
     // Twisted Branch's local lines moved Erika while they read Inactive). Its cadence is fixed, so a local Attack Speed line needs an
     // attack-speed hit (badge movement probe 2026-11-01: Twisted Branch's +X% gear Attack Speed read In calc there and moved nothing).
@@ -665,6 +672,10 @@ export function gearLineCoverage(item, text, active, block, lowResources, blurEf
 }
 
 export function talentLineCoverage(text, active) {
+  // Movement Speed, ±% Armor and two-stat lines: In calc where the build has a reader, as on gear and slates (heldStatLineStatus; line sweep
+  // 2026-11-24: the 3 T build's "+2% Movement Speed" talents read Counted in stats while Spiral Strike's speed reads the Movement Speed).
+  const heldStat = active && coverageContext() && !/\s+\|\s+|\s+·\s+|\n/.test(String(text || "")) ? heldStatLineStatus(String(text).trim()) : null;
+  if (heldStat) return heldStat;
   return refineCoverage(baseTalentLineCoverage(text, active), text, undefined, (clause) => baseTalentLineCoverage(clause, active));
 }
 

@@ -4,6 +4,7 @@
 // cell reads the fixed maximum level (5) with a "MAX" caption. Hovering the row (outside its trait) shows where it comes
 // from; the trait's own tooltip carries the same note.
 import { escapeHtml } from "./html.js";
+import { displayGameText } from "./i18n.js";
 import { TREE_ROW_LEVELS, EXTRA_PICK_AFFIX, EXTRA_PICK_LEVEL, treeRowLevelKey } from "./hero-trait-tree.js";
 
 export const EXTRA_ROW_CHIP = "+1 Youga Count";
@@ -25,6 +26,6 @@ export function treeExtraRowMarkup(heroId, traits = [], selections = [], artwork
   const foot = `<div class="hero-col-memory"><span class="tree-extra-row-chip">${escapeHtml(EXTRA_ROW_CHIP).replace(" ", "&nbsp;")}</span></div>`; // "+1 Youga" / "Count"
   const attributes = `data-selena-dance-row="${row}" data-tree-extra-row-tooltip aria-label="Fourth trait row, ${escapeHtml(EXTRA_ROW_CHIP)}, level ${EXTRA_PICK_LEVEL} (max)"`;
   if (!trait) return `<div class="hero-trait-col hero-col-empty tree-extra-row" ${attributes}>${head}<div class="hero-col-choices"></div>${foot}</div>`;
-  const name = escapeHtml(trait.name);
-  return `<div class="hero-trait-col tree-extra-row" ${attributes}>${head}<div class="hero-col-choices"><button type="button" class="hero-choice selected selena-dance-pick" data-selena-dance-pick="${row}" data-hero-trait-tooltip="${name}" data-hero-trait-level-key="${escapeHtml(treeRowLevelKey(heroId, row))}" aria-label="${name}, level ${EXTRA_PICK_LEVEL}" aria-pressed="true"><span class="hero-choice-icon">${artwork(trait.icon, trait.name, "hero-choice-art")}</span><span class="hero-choice-name">${name}</span><span class="hero-choice-level">LV.${EXTRA_PICK_LEVEL}</span></button></div>${foot}</div>`;
+  const name = escapeHtml(trait.name), shown = escapeHtml(displayGameText("trait", trait.name));
+  return `<div class="hero-trait-col tree-extra-row" ${attributes}>${head}<div class="hero-col-choices"><button type="button" class="hero-choice selected selena-dance-pick" data-selena-dance-pick="${row}" data-hero-trait-tooltip="${name}" data-hero-trait-level-key="${escapeHtml(treeRowLevelKey(heroId, row))}" aria-label="${shown}, level ${EXTRA_PICK_LEVEL}" aria-pressed="true"><span class="hero-choice-icon">${artwork(trait.icon, trait.name, "hero-choice-art")}</span><span class="hero-choice-name">${shown}</span><span class="hero-choice-level">LV.${EXTRA_PICK_LEVEL}</span></button></div>${foot}</div>`;
 }

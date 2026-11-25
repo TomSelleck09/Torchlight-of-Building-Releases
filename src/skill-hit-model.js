@@ -37,6 +37,7 @@ import { maxChanneledStacksLine } from "./channeled-stack-lines.js";
 import { SPELL_BURST_USE_GAIN, spellBurstUseGainLines, spellBurstRefillWalk } from "./spell-burst-refill.js";
 import { landingEvents, oncePerFrameWalk, onceGateFrames, spellBurstExtraCastSpacing, useSchedule } from "./once-per-frame.js";
 import { mergeRotationTurns } from "./rotating-buffs.js";
+import { steepStrikeTriggerRate } from "./main-skill-retriggers.js";
 
 // Generic spell-hit engine (profile kind "hit", engine "skill-hit"; src/skill-hit-profiles.js).
 //
@@ -103,6 +104,11 @@ export const PROJECTILE_QUANTITY_LIMIT_LINE = /^Projectile Quantity Upper limit:
 // Speed, × 75% into additional Attack Speed on this skill, up to +60%. Chunk 8 read the same record on Rumbling Thunder and Wrathful Vault.
 export const MOVEMENT_ATTACK_SPEED_SKILLS = new Set(["Leap Attack", "Rocket Jump", "Blink Arrow", "Swift Shadow Raid", "Spiral Strike"]);
 const MOVEMENT_ATTACK_SPEED = Object.freeze({ sharePercent: 75, capPercent: 60 });
+// "X% of the bonuses for Movement Speed is also applied to the Attack and Cast Speed / the Cooldown Recovery Speed of Mobility Skills"
+// (Bladerunner (5,2); records 970091904: two node 114 rows from attr 41 mod 3, the increased Movement Speed, into 60011 / 60021 mod 3 ×
+// P1 / 100, and 256691184: the same into 60071 mod 3, each on toTags [Mobility 6000010]; proven): on a Mobility skill, the increased combat
+// Movement Speed × X% as increased Attack or Cast Speed (its speed type) and as increased Cooldown Recovery Speed (line sweep 2026-11-24).
+export const MOBILITY_MOVEMENT_SHARE_LINE = /^([+-]?\d+(?:\.\d+)?)% of the bonuses for Movement Speed is also applied to the (Attack and Cast Speed|Cooldown Recovery Speed) of Mobility [Ss]kills$/i;
 export const SPELL_RIPPLE_LINE = /^Main Spell Skills on hit have a (\d+(?:\.\d+)?)% chance to spawn a Pulse, dealing True Damage equal to (\d+(?:\.\d+)?)% of Hit Damage\. Interval: (\d+(?:\.\d+)?)\s?s$/i;
 export const SPELL_BURST_CHARGE_PATTERN =/^([+-]?\d+(?:\.\d+)?)\s?% (additional )?Spell Burst Charge Speed$/i;
 // Fifth Cosmic Velocity (hero trait audit B4): Spell Burst Charge stacks gained on an interval.
@@ -124,6 +130,21 @@ const round = (value) => Math.round(value * 10000) / 10000;
 // Also the gear wording "+N Parabolic Projectile Split Quantity" (craft / base affixes; gear affix audit 2026-10-22, read as the
 // same stat).
 const PARABOLIC_SPLIT_LINE = /^\+(\d+(?:\.\d+)?) (?:to )?Parabolic Projectile Splits? quantity$/i;
+// A build-wide Split Quantity line (field 2006214 written by node 108 with no tag: records 101080024 / 7874; the craft, base,
+// corrosion, talent and Three Birds wordings). Support clauses ("for the supported skill") do not match.
+export const BUILD_SPLIT_QUANTITY_LINE = /^\+(\d+(?:\.\d+)?) (?:to )?(?:Parabolic Projectile Splits? quantity|(?:Parabolic Projectile )?Split Quantity)$/i;
+/** The build's Split Quantity from untagged lines (every non-support source), linear in each line's rank multiplier. */
+export function buildSplitQuantity(modifierTexts = []) {
+  const sources = [];
+  let total = 0;
+  for (const line of modifierTexts) {
+    const match = normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim().match(BUILD_SPLIT_QUANTITY_LINE);
+    if (!match) continue;
+    const value = Number(match[1]) * (line.multiplier ?? 1);
+    total += value; sources.push({ source: line.source, text: line.text, value });
+  }
+  return { total, sources };
+}
 export const MAIN_SPELL_REPEAT_LINE = /^\+(\d+(?:\.\d+)?)% chance to trigger the Main Spell Skill 1 additional time when using it$/i;
 const lineText = (line) => normalizePercentageText(String(line?.text ?? "")).replace(/\s+/g, " ").trim();
 // "Adds X% of <A> Damage as <B> Damage during Multistrike" (gear; game recipe 424512480: attr 5130 on {Multistriking 4000810, Attack 6001090};
@@ -617,7 +638,7 @@ export function movementFocusProfile(profile, moveSpeed) {
   return { ...profile, focus: { ...profile.focus, pointsPerSecond }, useModel: { ...profile.useModel, usesPerSecond, firstUseSeconds: pointsPerSecond > 0 ? perUse / pointsPerSecond : Infinity, note } };
 }
 
-export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null, projectileHits = null, isMainSkill = null, spellBurstUseStreams = null, deteriorationShared = null, attackSpeedToChargePool = null } = {}) {
+export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null, projectileHits = null, isMainSkill = null, spellBurstUseStreams = null, deteriorationShared = null, attackSpeedToChargePool = null, steepStrikeTrigger = null, steepTriggerOtherCasts = null } = {}) {
   // A Focus skill that gains its Focus Pts per metre moved (Thunder Focus) at the player's movement speed (user decision 2026-11-10).
   profile = movementFocusProfile(profile, moveSpeed);
   // The Main Skill is the planner's Main Skill (isMainSkill, from src/planner.js resolvedMain; 2026-11-15): every active-slot skill of a
@@ -880,6 +901,15 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // equivalent increased-speed line: the harmonic mean of the two speed pools), and the damage is +Y% on half the casts.
   // A tag-scoped buff speed (Archery Bond): on a skill with every tag of the line, in the increased pool; the Attack line needs the Attack tag, so it never reaches a cast.
   for (const line of tagSpeedLines) if (line.tags.every((tag) => skillTags.has(tag))) supports.castSpeed.push({ source: line.source, text: line.text, value: line.value, additional: false });
+  // Bladerunner's Movement Speed share on a Mobility skill (MOBILITY_MOVEMENT_SHARE_LINE above): increased speed, and increased Cooldown Recovery Speed.
+  if (skillTags.has("Mobility") && movementSpeedPercent) for (const line of modifierTexts) {
+    const match = normalizePercentageText(String(line.text ?? "")).trim().match(MOBILITY_MOVEMENT_SHARE_LINE);
+    if (!match) continue;
+    const share = Number(match[1]) * (line.multiplier ?? 1), value = round(share * movementSpeedPercent / 100), cooldownShare = /^Cooldown/i.test(match[2]);
+    const text = `+${value}% ${cooldownShare ? "Cooldown Recovery Speed" : speedType === "attack-speed" ? "Attack Speed" : "Cast Speed"} for this Mobility skill: ${round(share)}% of +${round(movementSpeedPercent)}% Movement Speed (game recipe ${cooldownShare ? 256691184 : 970091904})`;
+    if (cooldownShare) supports.cooldown.push({ source: line.source, text, value, additional: false });
+    else if (speedType === "attack-speed" || speedType === "cast-speed") supports.castSpeed.push({ source: line.source, text, value, additional: false });
+  }
   if (speedType === "attack-speed" && MOVEMENT_ATTACK_SPEED_SKILLS.has(profile.name) && movementSpeedPercent > 0) {
     const value = round(Math.min(MOVEMENT_ATTACK_SPEED.capPercent, movementSpeedPercent * MOVEMENT_ATTACK_SPEED.sharePercent / 100));
     supports.castSpeed.push({ source: `${profile.name}: Movement Speed share`, text: `+${value}% additional Attack Speed for this skill: ${MOVEMENT_ATTACK_SPEED.sharePercent}% of +${round(movementSpeedPercent)}% Movement Speed, up to +${MOVEMENT_ATTACK_SPEED.capPercent}% (game recipe 811059904)`, value, additional: true });
@@ -1367,7 +1397,22 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const repeatLines = mainSkill && skillTags.has("Spell") && !skillTags.has("Channeled") && playerUsesPerSecond > 0 ? modifierTexts.flatMap((line) => { const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(MAIN_SPELL_REPEAT_LINE); return match ? [{ source: line.source, text: line.text, value: Number(match[1]) * (line.multiplier ?? 1) }] : []; }) : [];
   const mainSpellRepeat = repeatLines.length ? { chancePercent: Math.min(100, Math.max(0, sum(repeatLines))), lines: repeatLines } : null;
   if (mainSpellRepeat) { mainSpellRepeat.usesPerSecond = playerUsesPerSecond * mainSpellRepeat.chancePercent / 100; notes.push(`${profile.name}: ${round(mainSpellRepeat.chancePercent)}% chance to trigger the Main Spell Skill once more per use: + ${round(mainSpellRepeat.usesPerSecond)} uses/s (provisional).`); }
-  const ownUsesPerSecond = manualUsesPerSecond + heroTriggerUsesPerSecond + outsideTriggerUsesPerSecond + bingUsesPerSecond + (mainSpellRepeat?.usesPerSecond || 0);
+  const ownUsesBeforeSteepTrigger = manualUsesPerSecond + heroTriggerUsesPerSecond + outsideTriggerUsesPerSecond + bingUsesPerSecond + (mainSpellRepeat?.usesPerSecond || 0);
+  // Nether King's Divinity: Banishment's Bonus Effect Steep Strike (affix 802178624; src/main-skill-retriggers.js steepStrikeTriggerRate; 3 T
+  // Berserking audit G1, user decision 2026-11-24): every cast instance of the Main Skill (1000069; not a Multistrike repeat, which makes no new
+  // instance: inferred) that launches a Steep Strike triggers it again 0.2 s later with (Steep Strike chance − 100)% chance, each success on its
+  // own Wait; the triggered cast (tag 6400012) does not trigger again. Its uses are triggered uses (1000060) and take no use time.
+  // Other casters' Steep Strike casts whose 1000069 reaches your affix component (`steepTriggerOtherCasts`: the Seething Spirit's, src/planner.js;
+  // 3 T Berserking audit K1) add to the casts that roll it, each success your triggered cast; they stay out of the cooldown gap.
+  const steepRetrigger = steepStrikeTrigger && !inactiveReason && intervalSeconds > 0 ? (() => {
+    const extra = multistrike?.expectedExtraAttacks || 0;
+    const rate = steepStrikeTriggerRate(steepStrikeTrigger, { mainSkill, slashStrike: skillTags.has("Slash-Strike"), steepChancePercent: steepStrike?.chancePercent ?? 0, steepShare: steepStrike?.share ?? 0, castsPerSecond: Math.max(0, ownUsesBeforeSteepTrigger - manualUsesPerSecond * extra / (1 + extra)), cooldownSeconds: effectiveCooldown || 0, otherSteepCastsPerSecond: steepTriggerOtherCasts?.steepCastsPerSecond || 0 });
+    return { ...steepStrikeTrigger, ...rate, ...(steepTriggerOtherCasts?.steepCastsPerSecond > 0 ? { otherCasts: steepTriggerOtherCasts } : {}) };
+  })() : steepStrikeTrigger ? { ...steepStrikeTrigger, active: false, reason: inactiveReason || "the skill is not used", chancePercent: 0, castsPerSecond: 0, usesPerSecond: 0 } : null;
+  if (steepRetrigger) notes.push(steepRetrigger.active
+    ? `${profile.name}: ${steepRetrigger.source}: Banishment's Steep Strike Bonus Effect: ${round(steepRetrigger.castsPerSecond)} Main Steep Strike casts/s${steepRetrigger.otherCasts ? ` (${round(steepRetrigger.otherSteepCastsPerSecond)} of them the ${steepRetrigger.otherCasts.source}'s, whose 1000069 reaches your affix component)` : ""} × ${round(steepRetrigger.chancePercent)}% ((Steep Strike chance ${round(steepStrike.chancePercent)}% − 100%) × ${round(steepRetrigger.chancePerPercent)}) = + ${round(steepRetrigger.usesPerSecond)} triggered casts/s, each ${steepRetrigger.waitSeconds} s after its cast, at +${steepRetrigger.additionalPercent}% additional damage and +${steepRetrigger.skillAreaPercent}% Skill Area (game affix ${steepRetrigger.recipe}; each success its own Wait: user decision 2026-11-24; provisional, open question banishment-steep-strike-trigger).`
+    : `${profile.name}: ${steepRetrigger.source}: Banishment's Steep Strike Bonus Effect triggers nothing: ${steepRetrigger.reason}.`);
+  const ownUsesPerSecond = ownUsesBeforeSteepTrigger + (steepRetrigger?.usesPerSecond || 0);
   // Selena – Lonely Ensemble's Crimson Shades (hero trait audit B13; src/selena-leftover-traits.js crimsonShadeState, provisional): each
   // Main Terra cast, at most once per summon interval (1 s), summons `count` Shades that each cast the Main Terra once on the dummy at
   // the trait's additional damage. Game affix 976528768 (2026-10-31): the Main Terra's cast stores the consumed rank (trigger 1001300) and
@@ -1939,6 +1984,60 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     }
     notes.push(`${profile.name}: +${percent}% additional Damage per +1 Projectile Quantity: ${round(projectileQuantity)} added Projectile Quantity${own ? ` + ${own} on hits against ${round(rating)} Frostbite Rating` : ` (the dummy's ${round(rating)} Frostbite Rating is below ${pqOnFrostbite.atLeast}, so the on-hit +${pqOnFrostbite.value} does not count)`}; the 2 base projectiles are not counted (user decision 2026-11-23).`);
   }
+  // Thunderbolt Overload's "+30% additional damage for each additional Split" above 3 (record 753715648, raw row: 1000069 on this skill,
+  // node 624 attr 57191 mod 4 = max(0, GetField(2006214) − P0) × P1; proven). Its GetField carries no tags, so it skips the "this skill"
+  // writes: the supports' Split Quantity ("does not include Split Quantity provided by the Support Skill") and the skill's own cap of 3
+  // (record 176793728, node 132 on [5000002]) (inferred). So the build's untagged Split Quantity lines, linear, one additional factor on
+  // every hit part (bOnlyNextLoopAction: the cast's own damage). The landings stay one per cast (open question thunderbolt-overload-landings).
+  const splitRule = profile.splitQuantityAdditional;
+  if (splitRule) {
+    const splits = buildSplitQuantity(modifierTexts);
+    const excess = Math.max(0, splits.total - splitRule.above);
+    if (excess > 0) {
+      const value = excess * splitRule.perSplitPercent;
+      const line = { source: `${profile.name}: Split Quantity`, text: `+${splitRule.perSplitPercent}% additional damage for each Split above ${splitRule.above} × ${round(excess)} (${round(splits.total)} Split Quantity from the build's lines: ${splits.sources.map((item) => item.source).filter(Boolean).join(", ")}; supports excluded; game record ${splitRule.recipe})`, value };
+      for (const component of components) component.extraAdditional = [...(component.extraAdditional || []), line];
+      notes.push(`${profile.name}: ${round(splits.total)} Split Quantity from the build's lines (Support Skills' excluded) is ${round(excess)} above ${splitRule.above}: +${round(value)}% additional damage on every hit (game record ${splitRule.recipe}; the split landings themselves are not modeled).`);
+    } else if (splits.total > 0) notes.push(`${profile.name}: ${round(splits.total)} Split Quantity from the build's lines is not above ${splitRule.above}: its per-Split bonus adds nothing (game record ${splitRule.recipe}).`);
+  }
+  // Banishment's Steep Strike trigger (steepRetrigger above): the triggered casts are `share` of the uses. Each deals a use's damage × (1 + P3%)
+  // (node 624 on that cast, aFL 57191, read as mod 4), with +P3% additional Skill Area (aFL 62011, read as mod 4, the text's word: 3 T Berserking
+  // audit K3, user decision 2026-11-24; the mods are not in the row: inferred, open question banishment-steep-strike-trigger) in the readers of
+  // the cast's Skill Area (a support clause carrying `skillArea`: Berserking Blade: Rampage's node-114 row on the combined additional pool,
+  // Π(1 + a) − 1, so the cast's row reads (1 + A)(1 + P3%) − 1 for A; src/support-conditional-batch4.js),
+  // and without the auto-use lines (Activation Medium: Motionless's "Auto-used supported skills +X% additional damage", record 5035554 on
+  // [6000084, this skill]: the triggered cast carries 6400012, not 6000084). Each part takes one expected factor 1 + share × (relative − 1).
+  if (steepRetrigger?.usesPerSecond > 0 && usesPerSecond > 0) {
+    const share = steepRetrigger.usesPerSecond / usesPerSecond;
+    const clauses = supports.effects.clauses || [];
+    const autoUsed = clauses.filter((clause) => clause.autoUsed && clause.active && clause.appliedValue && !clause.triggeredOnly);
+    const autoFactor = autoUsed.reduce((factor, clause) => factor * Math.max(1e-9, 1 + clause.appliedValue / 100), 1);
+    const areaReaders = clauses.filter((clause) => clause.skillArea && clause.component && clause.active && ["In calc", "Provisional"].includes(clause.status));
+    const relatives = [];
+    // The character's triggered-skill lines reach these casts (line sweep 2026-11-24): a node-2320 cast is a triggered instance (it raises
+    // 1000060, proven), so "+X% additional damage of a skill … when the skill is triggered" (Hair-trigger, record 281: 1000060 → node 624 on
+    // that instance) multiplies the triggered cast, and "+X% damage for Triggered Skills" (101010633: attr 5719 mod 3 on [Triggered
+    // 6000080]; the triggered instance carrying 6000080 inferred, as on an Activation Medium's uses) joins its part's increased pool below
+    // (steepRetriggerTriggered). A skill whose own uses are triggered took them on every use already (pushTriggered above).
+    const ownUsesTriggered = triggered || setup?.role === "item-trigger";
+    const triggeredLines = ownUsesTriggered ? [] : triggeredSkillAdditional;
+    const triggeredAdditional = triggeredLines.filter((line) => !line.increased).reduce((factor, line) => factor * Math.max(0, 1 + line.value / 100), 1);
+    const triggeredIncreased = triggeredLines.filter((line) => line.increased).reduce((total, line) => total + line.value, 0);
+    for (const component of components) {
+      const key = String(component.componentKey ?? component.key).split(/[+>:]/)[0];
+      const readers = areaReaders.filter((clause) => clause.component === key);
+      const areaFactor = readers.reduce((factor, clause) => { const p = clause.skillArea.sharePercent / 100, add = (Number(clause.skillArea.additionalCombinedPercent) || 0) / 100; return factor * (1 + p * ((1 + add) * (1 + steepRetrigger.skillAreaPercent / 100) - 1)) / Math.max(1e-9, 1 + p * add); }, 1);
+      const relative = (1 + steepRetrigger.additionalPercent / 100) * areaFactor / autoFactor * triggeredAdditional;
+      component.steepRetriggerRelative = relative;
+      const entry = { label: component.label, key, relative, areaFactor, triggeredFactor: triggeredAdditional };
+      relatives.push(entry);
+      if (triggeredIncreased) component.steepRetriggerTriggered = { increasedPercent: triggeredIncreased, share, baseRelative: relative, additionalFactor: triggeredAdditional };
+      component.extraAdditional = [...(component.extraAdditional || []), { source: `${steepRetrigger.source}: Banishment: Steep Strike (triggered casts)`, text: `${round(share * 100)}% of uses are Banishment's triggered casts at ×${round(relative)} (+${steepRetrigger.additionalPercent}% additional damage${areaFactor !== 1 ? `, ×${round(areaFactor)} from +${steepRetrigger.skillAreaPercent}% additional Skill Area in ${readers.map((clause) => clause.support || clause.source).join(", ")}` : ""}${autoFactor !== 1 ? `, ÷ ${round(autoFactor)} without the auto-use lines (${autoUsed.map((clause) => clause.support || clause.source).join(", ")})` : ""}${triggeredAdditional !== 1 ? `, ×${round(triggeredAdditional)} from the triggered-skill lines (${triggeredLines.filter((line) => !line.increased).map((line) => line.source).join(", ")})` : ""}): ×${round(1 + share * (relative - 1))} on average (game affix ${steepRetrigger.recipe}; provisional)`, value: share * (relative - 1) * 100 }];
+    }
+    steepRetrigger.share = share;
+    steepRetrigger.autoUsedFactor = autoFactor;
+    steepRetrigger.relatives = relatives;
+  }
   // Recalled hits (src/youga-ultimate-one.js; provisional): the recalling hit group (its typed parts share a strike key) lands
   // again `hitsFactor` times per use on average, as its own strike, with the Recalled-only lines. Added flat damage and
   // conversions reach it like the group it copies.
@@ -1987,22 +2086,42 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     }
     notes.push(`${profile.name}: +${round(parabolicSplits)} Parabolic Projectile Splits: each landing projectile's ${rule.components.join(" / ")} lands ${round(parabolicSplits)} more time(s) on the dummy${rule.additionalPercent ? ` at ${rule.additionalPercent}% additional damage (${rule.text})` : ""} (user-supplied 2026-10-19, Google AI Mode answer, not tested in game).`);
   }
-  const primaryComponent = components[0] || null;
   // Added flat damage joins its type's list before the gain and conversion passes (game code, SS14 0x141fbe3a0 → 0x141fc3a80;
   // research/core-formulas-chunk0-2026-10-31.md §1), so added damage of a type the skill's own conversion takes ("Converts 100% of
   // the skill's Physical Damage to Cold Damage", profile.conversion) rides that conversion: it lands on the parts converted from its
   // type (2026-11-05 build audit gap 2; before, added Physical stayed an unconverted Physical part on Frost Spike). A part's type before
   // the conversion pass is its original type when the profile converted it (support conversions run below).
+  // The client's added stage runs per hit record and adds every type's attacker flat to it (0x141e0ed00, proven), × that record's own
+  // factor at +0x80 (read as the hit's damage row effectiveness: inferred, its writer not found). So each hit group (strike: the typed parts
+  // of one hit share a strikeKey) takes every added line once: on its own parts of the line's type, else on its parts converted into it,
+  // else as an added-only part of its own that rides the strike (its hits per use, its effectiveness, its per-hit lines). Before 2026-11-24
+  // (3 T Berserking audit G5) an added type no part dealt rode only the first component's hit count and effectiveness, so the Sweep Slash's
+  // 0 hits per use dropped Berserking Blade's added Fire when every attack is a Steep Strike.
   const preConversionType = (item) => item.converted && !String(item.componentKey).includes("+as:") ? item.originalType : item.type;
   const ownConversion = (type) => (profile.conversion || []).find((rule) => rule.from === type && rule.percent >= 100) || null;
+  const strikeKeyOf = (item) => item.strikeKey ?? item.componentKey;
   for (const line of addedLines) {
-    let targets = components.filter((item) => !item.addedOnly && preConversionType(item) === line.type);
-    // No part of its own type: the parts converted into it take it as before (added Cold on a Physical → Cold part).
-    if (!targets.length) targets = components.filter((item) => item.type === line.type && !item.addedOnly);
-    if (!targets.length) {
+    const hosts = components.filter((item) => !item.addedOnly);
+    const strikes = [...new Map(hosts.map((item) => [strikeKeyOf(item), item])).values()];
+    const targets = [];
+    for (const strike of strikes) {
+      const parts = hosts.filter((item) => strikeKeyOf(item) === strikeKeyOf(strike));
+      let own = parts.filter((item) => preConversionType(item) === line.type);
+      // No part of its own type: the parts converted into it take it as before (added Cold on a Physical → Cold part).
+      if (!own.length) own = parts.filter((item) => item.type === line.type);
+      if (own.length) { targets.push(...own); continue; }
       const rule = ownConversion(line.type);
-      const extra = { componentKey: `added:${line.type}`, label: `Added ${line.type} damage`, type: rule ? rule.to : line.type, originalType: line.type, min: 0, max: 0, converted: Boolean(rule), effectiveness: primaryComponent?.effectiveness ?? 100, hitsPerUse: primaryComponent?.hitsPerUse ?? 1, hitsDetail: primaryComponent?.hitsDetail || "", basis: primaryComponent?.basis || "text", extraAdditional: primaryComponent?.extraAdditional || [], source: "added flat damage", added: { min: 0, max: 0 }, addedSources: [], addedOnly: true };
-      components.push(extra); targets = [extra];
+      // The strike's own fields (hits, effectiveness, per-hit lines and flags) without its damage ranges and the types it carries.
+      const host = { ...strike };
+      for (const field of ["hands", "joinedShare", "weaponDamage", "weaponPercent", "scopeTypes", "additionalScopeTypes"]) delete host[field];
+      const extra = { ...host, componentKey: `${strike.componentKey}+added:${line.type}`, strikeKey: strikeKeyOf(strike), ridesStrike: strikeKeyOf(strike), label: `Added ${line.type} damage (${strike.label})`, type: rule ? rule.to : line.type, originalType: line.type, min: 0, max: 0, converted: Boolean(rule), shotgun: null, source: "added flat damage", added: { min: 0, max: 0 }, addedSources: [], addedOnly: true };
+      components.push(extra); targets.push(extra);
+    }
+    // A skill with no hit part (an inactive skill's empty profile): one added-only part at 100%, one hit per use.
+    if (!strikes.length) {
+      const rule = ownConversion(line.type);
+      const extra = { componentKey: `added:${line.type}`, label: `Added ${line.type} damage`, type: rule ? rule.to : line.type, originalType: line.type, min: 0, max: 0, converted: Boolean(rule), effectiveness: 100, hitsPerUse: 1, hitsDetail: "", basis: "text", extraAdditional: [], source: "added flat damage", added: { min: 0, max: 0 }, addedSources: [], addedOnly: true };
+      components.push(extra); targets.push(extra);
     }
     for (const component of targets) {
       const effectiveness = Number.isFinite(component.effectiveness) ? component.effectiveness / 100 : 1;
@@ -2406,6 +2525,17 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const penetration = penetrationRead ? penetrationRead.entries : penetrationLines.filter((line) => line.damageTypes.has(component.type));
     // Pool sums continue in list order (the pool's writes first, then the model's entries), so they equal one list's sum.
     const increasedFactor = Math.max(0, 1 + (increasedRead ? sumValues(increased.slice(increasedRead.entries.length), increasedRead.increased) : sum(increased)) / 100);
+    // Banishment's triggered casts with "+X% damage for Triggered Skills" (steepRetriggerTriggered above): their relative takes (I + X) ÷ I on
+    // this part's increased pool I, and the averaged line follows (line sweep 2026-11-24).
+    // Per part (an added-only part riding a strike copies the strike's fields, so nothing shared is changed): the part's relative and its
+    // triggered-skill factor (steepRetriggerTriggeredFactor, read by src/tick-layers.js ownAreaStacksReaders to rebuild the line).
+    if (component.steepRetriggerTriggered && increasedFactor > 0) {
+      const { increasedPercent, share, baseRelative, additionalFactor: triggeredAdditional } = component.steepRetriggerTriggered;
+      const ratio = (increasedFactor + increasedPercent / 100) / increasedFactor, relative = baseRelative * ratio;
+      const line = additional.find((item) => String(item.source).endsWith("Banishment: Steep Strike (triggered casts)"));
+      if (line) { line.value = share * (relative - 1) * 100; line.text = `${line.text}; +${round(increasedPercent)}% damage for Triggered Skills on the triggered casts: ×${round(ratio)} on this part's increased pool`; }
+      component = { ...component, steepRetriggerRelative: relative, steepRetriggerTriggeredFactor: triggeredAdditional * ratio };
+    }
     const takenFactor = (takenRead ? Math.max(0, 1 + takenRead.increased / 100) * takenRead.additionalFactor : Math.max(0, 1 + sum(taken.filter((line) => line.layer === "increased" && !componentTaken.includes(line))) / 100) * product(taken.filter((line) => line.layer === "additional" && !componentTaken.includes(line)))) * product(componentTaken);
     const penetrationPercent = penetrationRead ? penetrationRead.base : sum(penetration);
     const resistancePercent = resistanceOf(component.type);
@@ -2465,7 +2595,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     })() : null;
     const targetFactor = converted ? (1 - converted.share) * takenFactor * armourFactor * resistanceFactor + converted.share * converted.factor : takenFactor * armourFactor * resistanceFactor;
     const perHit = perHitBeforeTarget * targetFactor;
-    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, label: component.label, ...(component.recalled ? { recalled: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.rebound ? { rebound: true, landingsPerUse: component.landingsPerUse } : {}), ...(profileComponentOf(component).afterLastLanding ? { afterLastLanding: profileComponentOf(component).afterLastLanding } : {}), type: component.type, originalType: component.originalType, converted: component.converted, ...(component.scopeTypes ? { scopeTypes: [...component.scopeTypes] } : {}), addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, ...(joined ? { joinedShare: { ...joined }, joinedMainHandFactor } : {}), townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
+    return { key: component.componentKey, strikeKey: component.strikeKey ?? component.componentKey, ...(component.ridesStrike ? { ridesStrike: component.ridesStrike } : {}), label: component.label, ...(component.steepRetriggerRelative ? { steepRetriggerRelative: component.steepRetriggerRelative } : {}), ...(component.steepRetriggerTriggeredFactor ? { steepRetriggerTriggeredFactor: component.steepRetriggerTriggeredFactor } : {}), ...(component.recalled ? { recalled: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.parabolicSplit ? { parabolicSplit: true } : {}), ...(component.shadow ? { shadow: true, landingsPerUse: component.landingsPerUse } : {}), ...(component.rebound ? { rebound: true, landingsPerUse: component.landingsPerUse } : {}), ...(profileComponentOf(component).afterLastLanding ? { afterLastLanding: profileComponentOf(component).afterLastLanding } : {}), type: component.type, originalType: component.originalType, converted: component.converted, ...(component.scopeTypes ? { scopeTypes: [...component.scopeTypes] } : {}), addedOnly: Boolean(component.addedOnly), splitPart: Boolean(component.splitPart), hitsPerUse: component.hitsPerUse, hitsDetail: component.hitsDetail, shotgun: component.shotgun || null, basis: component.basis, note: component.note, effectiveness: component.effectiveness, base: { min: component.min, max: component.max }, added: component.added, addedSources: component.addedSources, roll, increased, additional, combatAdditional, taken, maxOnly, minOnly, penetration, armourPenetration, armourPercent: armour.before, armourPenetrationPercent: armour.penetrationPercent, armourAfterPenetrationPercent: armour.after, ...(converted ? { takenConversion: converted } : {}), increasedFactor, additionalFactor, townAdditionalFactor, takenFactor, penetrationPercent, resistancePercent, resistanceFactor, armourFactor, maxFactor, minFactor, handRolls, mainHandOnly: mainHandOnlyLines, ...(joined ? { joinedShare: { ...joined }, joinedMainHandFactor } : {}), townPerHit, townPerHitNoCrit, perHitBeforeTarget, perHit, perUse: perHit * component.hitsPerUse, townPerUse: townPerHit * component.hitsPerUse };
   });
 
   if (typeRestriction) {
@@ -2602,13 +2732,53 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   })() : null;
   if (sweepingFury) notes.push(sweepingFury.rule);
   const perUse = hitPerUse + deteriorationPerUse + (spellRipple?.perUse || 0) + (sweepingFury?.perUse || 0);
+  // Banishment's triggered casts against the other uses (the tick loop places them as their own action, src/tick-plain-skills.js): one
+  // triggered cast's damage and another use's, from each part's expected factor (the per-use damage outside the parts is the same for both).
+  if (steepRetrigger?.share > 0) {
+    const share = steepRetrigger.share;
+    let triggered = 0, other = 0;
+    for (const part of perType) { const relative = part.steepRetriggerRelative ?? 1, mean = 1 + share * (relative - 1); triggered += part.perUse * relative / mean; other += part.perUse / mean; }
+    steepRetrigger.perUse = triggered + (perUse - hitPerUse);
+    steepRetrigger.otherPerUse = other + (perUse - hitPerUse);
+  }
+  // The uses that need no player time and ride on none of the player's own presses (2026-11-24; read by the trigger-main loss,
+  // src/vendetta-model.js, and the loop's hands queue, src/tick-trigger-main.js): the outside triggers on their own clocks (Miraculous Gain,
+  // the legendary interval triggers, Dual Kismet: Hunter's Hand, Banishment's Shadow Strike: node 2320 casts, 1000060, no use time), the
+  // hero triggers (Clockwork Core's Tangle casts) and the share of Banishment's Steep Strike casts those casts launch (its 1000069 row hears
+  // every cast instance; the share by cast count, inferred). Another skill's press (a Vendetta cast) stops the player's presses and what
+  // rides on them (their Multistrike repeats, the Main Spell repeat, the Steep Strike casts of pressed casts), never these. Booked as the hit
+  // books them: every use at perUse, Banishment's Steep Strike casts at their own per-use and the other uses at theirs. Present only on a
+  // skill that also has uses of yours (playerUsesPerSecond > 0); one with none has no hands uses at all (its reader takes the whole rate as
+  // free). Ingenuity Overload / Contingency machine casts and Crimson Shades are not listed: their own factors are averaged into perUse, and
+  // the one reader's Main Skill (a Melee Attack, src/vendetta-model.js pickMain) never has them. A later fold of the hit (src/planner.js
+  // registerStreamFold: Carino's Special Ammo, the Seething Spirit, the Spacetime Illusion) does not update it: none meets that reader.
+  const handsFree = playerUsesPerSecond > 0 && !bombs ? (() => {
+    const regular = steepRetrigger?.share > 0 ? steepRetrigger.otherPerUse : perUse;
+    const outsideParts = outsideTriggerUsesPerSecond > 0 ? (extraTriggeredUses.components || []).filter((item) => item.usesPerSecond > 0) : [];
+    const outsideRest = Math.max(0, outsideTriggerUsesPerSecond - outsideParts.reduce((total, item) => total + item.usesPerSecond, 0));
+    const freeCasts = outsideTriggerUsesPerSecond + heroTriggerUsesPerSecond;
+    const extra = multistrike?.expectedExtraAttacks || 0, castsInput = Math.max(0, ownUsesBeforeSteepTrigger - manualUsesPerSecond * extra / (1 + extra));
+    // The other casters' Steep Strike casts (the Seething Spirit's) are not your hands: their share of the triggered casts is free too.
+    const ownSteep = steepRetrigger?.ownSteepCastsPerSecond ?? 0, otherSteep = steepRetrigger?.otherSteepCastsPerSecond ?? 0, steepShareOwn = castsInput > 0 ? ownSteep / castsInput : 0;
+    const steepFreeShare = steepRetrigger?.usesPerSecond > 0 && ownSteep + otherSteep > 0 ? Math.min(1, (Math.min(freeCasts, castsInput) * steepShareOwn + otherSteep) / (ownSteep + otherSteep)) : 0;
+    const parts = [
+      ...outsideParts.map((item) => ({ key: "outside", source: item.source, usesPerSecond: item.usesPerSecond, firstUseSeconds: item.firstUseSeconds, perUse: regular })),
+      ...(outsideRest > 1e-12 ? [{ key: "outside", source: extraTriggeredUses.label, usesPerSecond: outsideRest, firstUseSeconds: null, perUse: regular }] : []),
+      ...(heroTriggerUsesPerSecond > 0 ? [{ key: "hero", source: heroTrigger.label || "hero triggers", usesPerSecond: heroTriggerUsesPerSecond, firstUseSeconds: null, perUse: regular }] : []),
+      ...(steepFreeShare > 0 ? [{ key: "steepRetrigger", source: steepRetrigger.source, usesPerSecond: steepRetrigger.usesPerSecond * steepFreeShare, firstUseSeconds: null, perUse: steepRetrigger.perUse }] : [])
+    ];
+    const free = parts.reduce((total, item) => total + item.usesPerSecond, 0);
+    return free > 0 ? { usesPerSecond: free, dps: parts.reduce((total, item) => total + item.usesPerSecond * item.perUse, 0), steepFreeShare, parts } : null;
+  })() : null;
   // Town / panel figure. For a channel skill the character panel reads one hit of the primary component per channel use
   // (Ring of Blades Lv16 runs 2026-10-11: panel 537 = 178.9 per hit × 3.003 uses/s, and × 1.245 with Quick Decision),
   // not the blades' landed hit rate; other skills read every hit of every component per use.
-  const primaryKey = perType.find((component) => !component.addedOnly)?.key ?? null;
+  const primaryPart = perType.find((component) => !component.addedOnly) ?? null;
+  const primaryKey = primaryPart?.key ?? null;
   // Attack panels read one hit of the primary component per attack (Hammer of Ash 298 = the Pummel alone, no Explosion;
-  // Whirlwind 358 = the Sweep Slash alone; Split Shot 472 = one arrow), the same shape as the channel rule.
-  const townHits = (component) => (channel && !release) || attackProfile ? (component.key === primaryKey || component.addedOnly ? 1 : 0) : component.hitsPerUse;
+  // Whirlwind 358 = the Sweep Slash alone; Split Shot 472 = one arrow), the same shape as the channel rule. An added-only part riding a
+  // strike (added damage of a type that strike does not deal) counts with its strike: the primary's, once.
+  const townHits = (component) => (channel && !release) || attackProfile ? (component.key === primaryKey || (component.addedOnly && (!component.ridesStrike || component.ridesStrike === primaryPart?.strikeKey)) ? 1 : 0) : component.hitsPerUse;
   const townPerUse = perType.reduce((total, component) => total + component.townPerHit * townHits(component), 0);
   // Panel readout without the crit expectation: the Flame Jet Lv16 panel showed 170 against 175.0 with crit and 170.7
   // without (one observation; the DoT panel figures never carry crit either).
@@ -2655,7 +2825,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // waits for its first trigger either way.
   // An outside trigger with its own first use (Dual Kismet: Hunter's Hand, src/main-skill-retriggers.js: 0.5 s after the first
   // Attack Horizontal Projectile use) counts its whole uses on its own schedule; the rest of the rate keeps the skill's first use.
-  const separateTriggers = outsideTriggerUsesPerSecond > 0 ? (extraTriggeredUses.components || []).filter((item) => item.usesPerSecond > 0 && Number.isFinite(item.firstUseSeconds) && item.firstUseSeconds >= 0) : [];
+  // Banishment's Steep Strike trigger (steepRetrigger) runs on the skill's own schedule one Wait (0.2 s) later.
+  const separateTriggers = [...(outsideTriggerUsesPerSecond > 0 ? (extraTriggeredUses.components || []).filter((item) => item.usesPerSecond > 0 && Number.isFinite(item.firstUseSeconds) && item.firstUseSeconds >= 0) : []),
+    ...(steepRetrigger?.usesPerSecond > 0 && Number.isFinite(firstUseSeconds) && firstUseSeconds >= 0 ? [{ usesPerSecond: steepRetrigger.usesPerSecond, firstUseSeconds: firstUseSeconds + steepRetrigger.waitSeconds }] : [])];
   const scheduleUses = (seconds, first, rate) => !(rate > 0) ? 0 : seconds + 1e-9 < first ? 0 : Math.floor((seconds - first) * rate + 1e-9) + 1;
   const windowUses = (seconds) => {
     const separateRate = separateTriggers.reduce((total, item) => total + item.usesPerSecond, 0);
@@ -2707,7 +2879,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     level, baseLevel: base.level, effectiveness: primary?.effectiveness ?? base.effectiveness, components: perType, primary,
     // Double Damage chance of the hits (condition-unread batch 3: "when dealing Double Damage recently" reads the event rate).
     doubleDamageChancePercent: wholePercentRoll(doubleDamage.chancePercent),
-    rate: { useTimeSeconds: baseUseTime, ...(exposedCycleSteps ? { cycleSteps: exposedCycleSteps } : {}), speedType, speedFactor, supportSpeedFactor, spellBurstBlock: spellBurstBlock || null, overloadBurstBlock: overloadBurstBlock || null, castFrequency: sentry ? { factor: castFrequencyFactor, sources: castFrequencyLines, weaponAttacksPerSecond: sentry.weaponAttackSpeed ? weaponAttacksPerSecond || 0 : null } : null, furyLucky: furyLucky ? { active: furyActive, share: furyActive ? spellBurst.share : 0, source: furyLucky.line.source, minStacks: Number(furyLucky.match[1]) } : null, sentryTiming: sentry ? { idle: sentryIdleLines.map((line) => ({ source: line.source, text: line.text, value: line.value, share: line.sentryIdle.share })), startTimeFactor: sentryStartFactor, startTime: sentryStartLines } : null, sentryQuantity: sentry ? { count: sentryQuantity, base: sentry.baseQuantity ?? 1, sources: sentryQuantityLines, deployCap: Number.isFinite(sentryDeployCap) ? sentryDeployCap : null } : null, conversions: supports.conversion, addedAs: supports.addedAs, castSpeedSources: speedType === "attack-speed" ? [...(attackSpeed?.sources || []), ...supports.castSpeed, ...multistrikeSpeedLines, ...(ownSpeedLine ? [ownSpeedLine] : [])] : [...(castSpeed.sources || []), ...supports.castSpeed], attackSpeed: speedType === "attack-speed" ? attackSpeed : null, effectiveUseTimeSeconds: useTime, cooldownSeconds: timing?.cooldownSeconds || 0, charges: timing?.charges || 0, cooldownFactor, cooldownSources: cooldownRecovery, effectiveCooldownSeconds: effectiveCooldown, useModel: triggered ? `triggered (every ${round(triggerInterval)} s; provisional)` : terra ? `${terra.label || "terra"} (${terra.durationSeconds} s ${terra.label === "sentry" ? "sentry" : "ground effect"})` : release ? `channel and release (${channelState.maxStacks} stacks × ${round(useTime || 0)} s, ${round(intervalSeconds || 0)} s per cycle)` : channel ? `channel (${round(baseUseTime)} s interval, ${channelState.maxStacks} stacks held)` : rateModel ? `trigger rate (${round(usesPerSecond)} per second)` : profile.cycle ? "combo cycle" : "cast", terraDurationSeconds: terra?.durationSeconds ?? null, intervalSeconds, usesPerSecond, playerUsesPerSecond, pressedUsesPerSecond, usesBySource, firstUseSeconds, hitsPerUse, hitsPerUseBasis: provisionalComponents.length ? "provisional" : "text", hitsPerUseNote: perType.filter((component) => !component.addedOnly).map((component) => `${component.label}: ${component.hitsDetail} — ${component.note}`).join(" · "), hitsPerSecond: usesPerSecond * hitsPerUse, critChecksPerUse, critChecksPerSecond: usesPerSecond * critChecksPerUse, critEventsPerUse, critEventsPerSecond: usesPerSecond * critEventsPerUse, critCache: { cached: critCache.cached, reason: critCache.reason }, source: timing?.source || null, refdataCastSeconds: timing?.refdataCastSeconds ?? null, demolisherShare, demolisherEverySeconds: profile.demolisher ? demolisherEvery : null, fullManualUsesPerSecond, rotation: rotation || null, multistrike, spellBurst, spellBurstBlock: skillTags.has("Spell") ? spellBurstBlock || (spellBurstStacks < 1 ? "no Max Spell Burst" : null) : "it is not a Spell Skill", bardSong, crimsonShade, bombs: bombs ? { mode: bombs.mode, bonusFactor: bombs.bonusFactor, throwFactor: bombs.throwFactor, additionalFactor: bombs.additionalFactor, throwsPerSecond: bombs.throwsPerSecond, bombsPerThrow: bombs.bombsPerThrow, bombsPerSecond: bombs.bombsPerSecond, firstSeconds: bombs.firstSeconds, onField: bombs.onField, lines: bombs.lines } : null, overload, machines, rateComponents, extraProjectiles: falloffFactor && projectileTargets.length ? { count: extraProjectiles, falloff: falloffFactor } : null, trigger: triggered ? { source: triggerLine.source, text: triggerLine.text, intervalSeconds: triggerInterval, kind: triggerLine.kind, provisional: true } : null },
+    rate: { useTimeSeconds: baseUseTime, ...(exposedCycleSteps ? { cycleSteps: exposedCycleSteps } : {}), speedType, speedFactor, supportSpeedFactor, spellBurstBlock: spellBurstBlock || null, overloadBurstBlock: overloadBurstBlock || null, castFrequency: sentry ? { factor: castFrequencyFactor, sources: castFrequencyLines, weaponAttacksPerSecond: sentry.weaponAttackSpeed ? weaponAttacksPerSecond || 0 : null } : null, furyLucky: furyLucky ? { active: furyActive, share: furyActive ? spellBurst.share : 0, source: furyLucky.line.source, minStacks: Number(furyLucky.match[1]) } : null, sentryTiming: sentry ? { idle: sentryIdleLines.map((line) => ({ source: line.source, text: line.text, value: line.value, share: line.sentryIdle.share })), startTimeFactor: sentryStartFactor, startTime: sentryStartLines } : null, sentryQuantity: sentry ? { count: sentryQuantity, base: sentry.baseQuantity ?? 1, sources: sentryQuantityLines, deployCap: Number.isFinite(sentryDeployCap) ? sentryDeployCap : null } : null, conversions: supports.conversion, addedAs: supports.addedAs, castSpeedSources: speedType === "attack-speed" ? [...(attackSpeed?.sources || []), ...supports.castSpeed, ...multistrikeSpeedLines, ...(ownSpeedLine ? [ownSpeedLine] : [])] : [...(castSpeed.sources || []), ...supports.castSpeed], attackSpeed: speedType === "attack-speed" ? attackSpeed : null, effectiveUseTimeSeconds: useTime, cooldownSeconds: timing?.cooldownSeconds || 0, charges: timing?.charges || 0, cooldownFactor, cooldownSources: cooldownRecovery, effectiveCooldownSeconds: effectiveCooldown, useModel: triggered ? `triggered (every ${round(triggerInterval)} s; provisional)` : terra ? `${terra.label || "terra"} (${terra.durationSeconds} s ${terra.label === "sentry" ? "sentry" : "ground effect"})` : release ? `channel and release (${channelState.maxStacks} stacks × ${round(useTime || 0)} s, ${round(intervalSeconds || 0)} s per cycle)` : channel ? `channel (${round(baseUseTime)} s interval, ${channelState.maxStacks} stacks held)` : rateModel ? `trigger rate (${round(usesPerSecond)} per second)` : profile.cycle ? "combo cycle" : "cast", terraDurationSeconds: terra?.durationSeconds ?? null, intervalSeconds, usesPerSecond, playerUsesPerSecond, pressedUsesPerSecond, usesBySource, firstUseSeconds, hitsPerUse, hitsPerUseBasis: provisionalComponents.length ? "provisional" : "text", hitsPerUseNote: perType.filter((component) => !component.addedOnly).map((component) => `${component.label}: ${component.hitsDetail} — ${component.note}`).join(" · "), hitsPerSecond: usesPerSecond * hitsPerUse, critChecksPerUse, critChecksPerSecond: usesPerSecond * critChecksPerUse, critEventsPerUse, critEventsPerSecond: usesPerSecond * critEventsPerUse, critCache: { cached: critCache.cached, reason: critCache.reason }, source: timing?.source || null, refdataCastSeconds: timing?.refdataCastSeconds ?? null, demolisherShare, demolisherEverySeconds: profile.demolisher ? demolisherEvery : null, fullManualUsesPerSecond, rotation: rotation || null, multistrike, spellBurst, spellBurstBlock: skillTags.has("Spell") ? spellBurstBlock || (spellBurstStacks < 1 ? "no Max Spell Burst" : null) : "it is not a Spell Skill", bardSong, crimsonShade, bombs: bombs ? { mode: bombs.mode, bonusFactor: bombs.bonusFactor, throwFactor: bombs.throwFactor, additionalFactor: bombs.additionalFactor, throwsPerSecond: bombs.throwsPerSecond, bombsPerThrow: bombs.bombsPerThrow, bombsPerSecond: bombs.bombsPerSecond, firstSeconds: bombs.firstSeconds, onField: bombs.onField, lines: bombs.lines } : null, overload, machines, rateComponents, extraProjectiles: falloffFactor && projectileTargets.length ? { count: extraProjectiles, falloff: falloffFactor } : null, trigger: triggered ? { source: triggerLine.source, text: triggerLine.text, intervalSeconds: triggerInterval, kind: triggerLine.kind, provisional: true } : null,
+      // Banishment's Steep Strike trigger (only with the Bonus Effect active on the board): its triggered casts, their first one (one Wait after the
+      // skill's first use) and one triggered cast's damage against another use's.
+      ...(steepRetrigger ? { steepRetrigger: { source: steepRetrigger.source, text: steepRetrigger.text, recipe: steepRetrigger.recipe, active: Boolean(steepRetrigger.active), reason: steepRetrigger.reason || null, steepChancePercent: steepStrike?.chancePercent ?? null, chancePercent: steepRetrigger.chancePercent, castsPerSecond: steepRetrigger.castsPerSecond, ...(steepRetrigger.otherCasts ? { ownSteepCastsPerSecond: steepRetrigger.ownSteepCastsPerSecond, otherSteepCastsPerSecond: steepRetrigger.otherSteepCastsPerSecond, otherCasts: steepRetrigger.otherCasts } : {}), usesPerSecond: steepRetrigger.usesPerSecond, waitSeconds: steepRetrigger.waitSeconds, firstUseSeconds: steepRetrigger.usesPerSecond > 0 && Number.isFinite(firstUseSeconds) && firstUseSeconds >= 0 ? firstUseSeconds + steepRetrigger.waitSeconds : null, additionalPercent: steepRetrigger.additionalPercent, skillAreaPercent: steepRetrigger.skillAreaPercent, share: steepRetrigger.share ?? 0, autoUsedFactor: steepRetrigger.autoUsedFactor ?? 1, relatives: steepRetrigger.relatives || [], perUse: steepRetrigger.perUse ?? null, otherPerUse: steepRetrigger.otherPerUse ?? null } } : {}), ...(handsFree ? { handsFree } : {}) },
     weapon: attackProfile ? { damageByType: weapon?.damageByType || {}, mainHand: weapon?.mainHand ? { name: weapon.mainHand.name, type: weapon.mainHand.type, hands: weapon.mainHand.hands } : null, dualWielding: Boolean(weapon?.dualWielding), dualWieldMode: weapon?.dualWieldMode || null, hands: weapon?.hands ? weapon.hands.map((hand) => ({ hand: hand.hand, name: hand.name, type: hand.type, share: hand.share, critRating: hand.critRating, attackSpeed: hand.attackSpeed })) : null, percents: base.weaponPercents } : null,
     crit: { ...crit, chancePercent: critChance * 100, townDamagePercent: townCritDamage * 100, combatDamagePercent: critDamage * 100, critOnlyFactor, critOnlySources, supportRating: supportCrit, factor: critFactor, townFactor: townCritFactor, hands: handCrits ?? crit.hands ?? null },
     town: { perUse: townPerUse, dps: townPerUse * usesPerSecond, perUseNoCrit: townPerUseNoCrit, dpsNoCrit: townPerUseNoCrit * usesPerSecond, hitsPerUse: strikeHitsPerUse(perType, townHits), formula: attackProfile ? "one hit of the primary component after the dummy's armour / resistance × attack speed × crit, without the Demolisher expectation (observed on the Hammer of Ash / Whirlwind / Split Shot Lv16 panels 2026-10-12: 298 / 358 / 472)" : channel ? "average hit × one hit per channel use × channel uses per second (cast-speed scaled); town layers only (Ring of Blades panel runs 2026-10-11: matched with the crit expectation, 537 = 178.9 × 3.003)" : "average hit (with crit) × hits per use × uses per second; town layers only (hypothesis for the character panel's skill DPS)" },

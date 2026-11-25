@@ -1,4 +1,5 @@
 import { escapeHtml } from "./html.js";
+import { displayGameLine, displayGameText, t } from "./i18n.js";
 import { beltBlendsSs13 } from "./data/gear/belt-blends-ss13.generated.js";
 
 export const BELT_BLEND_CATEGORIES = ["Medium Talent", "Core Talent", "Aromatic Talent"];
@@ -18,11 +19,11 @@ export function beltBlendDescription(entry) {
 }
 
 export function beltBlendOptions(selectedId = "") {
-  return `<option value="">None</option>${BELT_BLEND_CATEGORIES.map((category) => `<optgroup label="${category}">${beltBlendsSs13
+  return `<option value="">${escapeHtml(t("None"))}</option>${BELT_BLEND_CATEGORIES.map((category) => `<optgroup label="${escapeHtml(displayGameText("talent", category))}">${beltBlendsSs13
     .filter((entry) => entry.category === category)
     .map((entry) => {
       const description = beltBlendDescription(entry);
-      return `<option value="${entry.id}"${description ? ` data-option-description="${escapeHtml(description)}"` : ""} ${entry.id === selectedId ? "selected" : ""}>${escapeHtml(entry.label)}</option>`;
+      return `<option value="${entry.id}"${description ? ` data-option-description="${escapeHtml(description)}"` : ""} ${entry.id === selectedId ? "selected" : ""}>${escapeHtml(displayGameLine("affix", entry.label))}</option>`;
     })
     .join("")}</optgroup>`).join("")}`;
 }

@@ -1,6 +1,6 @@
 import { enemyBuffSet } from "./unit-buff-set.js";
 import { normalizePercentageText } from "./percentage-text.js";
-import { MOVEMENT_ATTACK_SPEED_SKILLS } from "./skill-hit-model.js";
+import { MOVEMENT_ATTACK_SPEED_SKILLS, MOBILITY_MOVEMENT_SHARE_LINE, BUILD_SPLIT_QUANTITY_LINE } from "./skill-hit-model.js";
 import { collectAilmentTypedSources, collectDamagingAilmentChance, collectAilmentDuration, CHANCE_TO_DAMAGE } from "./ailment-model.js";
 import { collectReapingModifiers } from "./reaping-model.js";
 import { skillHitDotComponents } from "./skill-hit-profiles.js";
@@ -34,6 +34,7 @@ import { RADICAL_EVOLUTION, radicalEvolutionAuraEffects } from "./origin-of-spir
 import { classifyHitLine, splitHitLineText } from "./skill-hit-lines.js";
 import { INSATIABLE_GREED_LINE, MULTISTRIKE_SPEED_LINE, UNSTOPPABLE_FORCE_LINE, SENTRY_IDLE_LINE, SENTRY_START_LINE, FURY_LUCKY_LINE, CAST_SPEED_TO_CHARGE_LINE, SPELL_RIPPLE_LINE, SWEEPING_FURY_LINE, PROJECTILE_QUANTITY_LIMIT_LINE, MAIN_SPELL_REPEAT_LINE, SHADOW_QUANTITY_LINE, SHADOW_DAMAGE_LINE, SHADOW_CHANCE_LINE, BARRAGE_WAVE_CHANCE_LINE, BARRAGE_PER_WAVE_LINE, SPELL_BURST_USE_GAIN, DEMOLISHER_CONSUMED_LINE } from "./skill-hit-model.js";
 import { SOLID_RIVER_DAMAGE_LINE, SOLID_RIVER_TRIGGER_LINE, BANISHMENT_SPELL_BURST_TRIGGER_LINE } from "./activation-medium-events.js";
+import { isSteepStrikeTriggerLine } from "./main-skill-retriggers.js";
 import { TERRA_CHARGE_ON_USE } from "./selena-dance.js";
 import { ATTACK_AILMENT_CHANCE, CRIT_AILMENT_CHANCE } from "./ailment-applications.js";
 import { COMBO_POINTS_GAINED_LINE, COMBO_EXTRA_LINE } from "./combo-points.js";
@@ -508,7 +509,12 @@ export function heldStatLineStatus(text, planner = context) {
   const perMetre = () => (planner?.skillHits || []).some((hit) => hit.modeled && Number(hit.profile?.focus?.pointsPerMeter) > 0);
   if (/^(?:Feline Steps: )?[+-][\d.]+% Movement Speed(?: for Nearby allies and you)?$/i.test(clean)) {
     const state = planner?.lineEffects?.state;
-    const reads = (planner?.skillHits || []).some((hit) => hit.modeled && MOVEMENT_ATTACK_SPEED_SKILLS.has(hit.name)) || state?.windStalker?.interest || state?.windStalker?.catDive || state?.felineFigure?.active || perMetre();
+    // The Movement Speed shares on a skill's speed: the Mobility attacks' own 75% (811059904), a support clause's "X% of the bonuses for
+    // Movement Speed is also applied to the additional Attack Speed of the skill" (Thunder Spike: Rumbling Thunder, Groundshaker: Wrathful Vault,
+    // the same record; condition movementToAttackSpeed) and Bladerunner's Mobility shares (970091904; 256691184 on a cooldown) (line sweep 2026-11-24: the 10 T Frost Spike
+    // build's Movement Speed talents read Counted in stats while Rumbling Thunder read them).
+    const shares = (planner?.skillHits || []).some((hit) => hit.modeled && (MOVEMENT_ATTACK_SPEED_SKILLS.has(hit.name) || (hit.rate?.castSpeedSources || []).some((line) => /game recipe 970091904/.test(String(line.text || ""))) || (hit.rate?.cooldownSeconds > 0 && (hit.rate?.cooldownSources || []).some((line) => /game recipe 256691184/.test(String(line.text || "")))))) || Object.values(planner?.supportEffects || {}).some((effects) => (effects?.clauses || []).some((clause) => clause.condition === "movementToAttackSpeed" && clause.active));
+    const reads = shares || state?.windStalker?.interest || state?.windStalker?.catDive || state?.felineFigure?.active || perMetre();
     return reads ? "In calc" : "Counted in stats";
   }
   // "+X% additional Movement Speed" is its own factor on the player's movement speed only (src/character-stats.js; the stat sheet's increased
@@ -1019,8 +1025,10 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     // The splits land as area explosions that can hit the same single target (user-supplied 2026-10-19, Google AI Mode answer,
     // not tested in game; open question core-three-birds-splits): In calc where a modeled hit carries split components (the
     // profile's `parabolicSplit`, src/skill-hit-model.js). Thunderbolt Overload's own "+30% additional damage for each
-    // additional Split" above 3 needs its base Split count, which is not in the data: Not modeled there, and on any parabolic
-    // skill whose profile names no landing component.
+    // additional Split" above 3 (record 753715648) reads the field itself, not a base count: In calc where a modeled Thunderbolt
+    // Overload hit takes it (the build's untagged Split Quantity above 3; MIA sheet check P1, 2026-11-24). At 3 or fewer the line
+    // only adds split landings, which the one-hit Thunderbolt Overload profile does not count (open question
+    // thunderbolt-overload-landings): Not modeled there, and on any parabolic skill whose profile names no landing component.
     // "Max Terra Charge Stacks +N" (gear affix audit 2026-10-22: read Not modeled while it moved Flame Jet): a Terra skill consumes up to
     // its Max Terra Charge Stacks per cast (src/selena-dance.js resolveTerraCharges). In calc where a modeled Terra hit or DoT carries a
     // Terra Charge bonus, Inactive without one.
@@ -1032,6 +1040,7 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
       const terra = (planner.skillHits || []).some((hit) => hit.modeled && hit.profile?.terraCharge) || (planner.skillDots || []).some((dot) => dot.profile?.terraCharge || dot.terraCharge || terraDot(dot));
       return terra ? "In calc" : "Inactive";
     }
+    if (BUILD_SPLIT_QUANTITY_LINE.test(text) && (planner.skillHits || []).some((hit) => hit.modeled && (hit.components || []).some((component) => (component.additional || []).some((line) => String(line.source || "").endsWith(": Split Quantity") && /game record 753715648/.test(String(line.text || "")))))) return "In calc";
     if (/^\+\d+ (?:to )?Parabolic Projectile Splits? quantity$/i.test(text)) {
       const active = planner.activation.activeNames || new Set();
       const parabolic = (planner.activation.setups || []).filter((setup) => setup.enabled !== false && active.has(setup.name) && (setup.tags || []).includes("Parabolic"));
@@ -1407,6 +1416,9 @@ function clauseStatus(text, planner, { allowGeneric = true } = {}) {
     // adds held conditional Movement Speed to the combat figure): badge movement probe 2026-11-15, Enamor's "When a Mobility Skill is equipped in the
     // second slot, +25% Movement Speed" moved Erika's Spiral Strike while it read No DPS effect.
     if (heldMovementSpeedRead(text, planner, lineEffect)) return "In calc";
+    // A held increased Skill Area body joins the combat Skill Area pool (src/planner.js heldSkillArea → combatSkillArea; 3 T Berserking G4,
+    // 2026-11-24): In calc where a Skill Area reader (Rampage, Ignition Point) is active, the No DPS effect rule below otherwise.
+    if (lineEffect.active && lineEffect.status !== "Inactive" && lineEffect.bodies?.length && lineEffect.bodies.every((body) => /^\+[\d.]+% Skill Area$/i.test(normalizePercentageText(String(body.derivedText || body.body || "")).trim())) && skillAreaClauseRead(planner)) return "In calc";
     if (["Inactive", "Not modeled", "No DPS effect"].includes(lineEffect.status) && !lineEffect.enemyDebuff && lineEffect.bodies?.length && lineEffect.bodies.every((body) => isNonDamageBody(body.body))) return lineEffect.status !== "Inactive" && lineEffect.active && lineEffect.bodies.every((body) => isCharacterStatLine(body.body)) ? "Counted in stats" : "No DPS effect";
     // A Minion body in a build without a modeled Minion (P9: "+2% Minion Fire Penetration against Ignited enemies").
     // The Minion copies of player lines (core audit B7: Focused Strike, Dirty Tricks, Reflection; bodies "… for Minions") read like the
@@ -1939,6 +1951,18 @@ export function refineCoverage(status, text, planner = context, baseForClause = 
   // Dual Kismet: Sun Slash's "Gains Blazing Sun" (buff 35090, affix 882869952; src/skill-hit-model.js, 2026-11-09): In calc where a modeled
   // hit has Steep Strike chance, else Inactive.
   if (/^Gains Blazing Sun$/i.test(String(text || "").trim()) && planner?.skillHits) return planner.skillHits.some((hit) => hit.modeled && hit.steepStrike?.chancePercent > 0) ? "In calc" : "Inactive";
+  // Nether King's Divinity: Banishment's Steep Strike Bonus Effect (affix 802178624; src/main-skill-retriggers.js, 3 T Berserking audit G1): In calc
+  // where a modeled Main Skill hit takes its triggered casts (a Slash-Strike Main Skill above 100% Steep Strike chance), else Inactive (the hit's
+  // rate.steepRetrigger.reason names why).
+  if (isSteepStrikeTriggerLine(text) && planner?.skillHits) return planner.skillHits.some((hit) => hit.modeled && hit.rate?.steepRetrigger?.usesPerSecond > 0) ? "In calc" : "Inactive";
+  // Bladerunner's "X% of the bonuses for Movement Speed is also applied to the Attack and Cast Speed / Cooldown Recovery Speed of Mobility Skills"
+  // (records 970091904 / 256691184; src/skill-hit-model.js MOBILITY_MOVEMENT_SHARE_LINE, line sweep 2026-11-24): In calc where a modeled Mobility
+  // skill takes it (its speed, which sets its use time and so its press time; its cooldown when it has one), else No DPS effect.
+  const mobilityShare = planner?.skillHits ? normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim().match(MOBILITY_MOVEMENT_SHARE_LINE) : null;
+  if (mobilityShare) {
+    const cooldown = /^Cooldown/i.test(mobilityShare[2]), recipe = cooldown ? "256691184" : "970091904";
+    return planner.skillHits.some((hit) => hit.modeled && (cooldown ? hit.rate?.cooldownSeconds > 0 && (hit.rate?.cooldownSources || []).some((line) => String(line.text || "").includes(recipe)) : (hit.rate?.castSpeedSources || []).some((line) => String(line.text || "").includes(recipe)))) ? "In calc" : "No DPS effect";
+  }
   // Magmaskull's "Affliction gains an additional effect: +X% additional Hit Fire Damage taken, up to +Y%" (game recipe 16021013; src/affliction-fire-hits.js,
   // 2026-10-28): In calc where a modeled skill hit takes it, else Inactive (no Affliction on the dummy, or no Fire hit).
   if (planner?.afflictionFireHits && MAGMASKULL_AFFLICTION_FIRE_LINE.test(normalizePercentageText(String(text || "")).replace(/\s+/g, " ").trim())) {

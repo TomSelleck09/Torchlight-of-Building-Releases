@@ -45,6 +45,10 @@ export const AURA_AFFIX_STATS = {
   // each is its own additional write. The town panel has no target (combatOnly). Parameters [radius, enemies, value] (2026-11-13, G1b).
   263618880: { stat: "additionalAreaDamageCrowdPercent", line: -1, digits: 1, param: 2, enemiesParam: 1, combatOnly: true },
   687124224: { stat: "additionalAreaAilmentDamageCrowdPercent", line: -1, digits: 1, param: 2, enemiesParam: 1, combatOnly: true },
+  // Its "+P3% Skill Area when there are at least P2 enemies within P1 m" (495834240, attr 6201 mod 3 × GetEffectScale, the same gate): the
+  // Precise form's [10, 5, 20] holds on the Boss dummy, the plain Domain Expansion's [10, 8, 20] does not; read by the hit's Skill Area readers
+  // (src/planner.js combatSkillArea; line sweep 2026-11-24).
+  495834240: { stat: "skillAreaCrowdPercent", line: -1, digits: 1, param: 2, enemiesParam: 1, combatOnly: true },
   363414400: { stat: "additionalAilmentDamagePercent", line: 1, digits: 1 },
   101080017: { stat: "ailmentChancePercent", line: 2, digits: 1 },
   101010359: { stat: "ailmentDurationPercent", line: 3, digits: 1 }

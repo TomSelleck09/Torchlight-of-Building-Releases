@@ -82,7 +82,7 @@ import { permafrostTerraState, permafrostTrigger, permafrostTerraSetup, permafro
 import { cataclysmHitAilments, cataclysmEffectPercent } from "./cataclysm-hit-ailments.js";
 import { afflictionFireHitState, afflictionFireHitLines } from "./affliction-fire-hits.js";
 import { AFFLICTION_DAMAGE_PER_POINT } from "./game-attribute-defaults.js";
-import { auraTagLines, calculateSkillHit, supportLayers, INSATIABLE_GREED_LINE, MOVEMENT_ATTACK_SPEED_SKILLS } from "./skill-hit-model.js";
+import { auraTagLines, calculateSkillHit, supportLayers, INSATIABLE_GREED_LINE, MOVEMENT_ATTACK_SPEED_SKILLS, MOBILITY_MOVEMENT_SHARE_LINE } from "./skill-hit-model.js";
 import { skillHitDotComponents, skillHitTiming } from "./skill-hit-profiles.js";
 import { DOT_TICKS_PER_SECOND, lineTriggerRows, rowTagsFit } from "./trigger-rows.js";
 import { regainBlessingSpends, supportRecipeCrowdControl } from "./crowd-control-recipes.js";
@@ -169,7 +169,7 @@ import { HIT_GAIN } from "./blessing-model.js";
 import { resolveEmpowerEffects, EMPOWER_MODELED_SKILLS } from "./empower-effects.js";
 import { resolveSkillHitDebuffs, settleSkillHitDebuffStarts } from "./skill-hit-debuffs.js";
 import { EMPOWER_BUFF_SPECS, empowerTimedParts, parseChanceTriggerPair } from "./empower-buffs.js";
-import { mainSkillRetriggers, isMainRetriggerLine, HUNTERS_HAND_LINE, isAttackHorizontalProjectile } from "./main-skill-retriggers.js";
+import { mainSkillRetriggers, isMainRetriggerLine, HUNTERS_HAND_LINE, SHADOW_STRIKE_TRIGGER_LINE, isAttackHorizontalProjectile, isAttackMobility, steepStrikeTriggerSpec, isSteepStrikeTriggerLine } from "./main-skill-retriggers.js";
 import { collectEnemyAilments } from "./enemy-ailments.js";
 import { BY_YOU, BY_YOU_OR_FOLLOWER, copyCombatHolds, enemyBuffSet, isAuraTaggedName, empowerOrDefensiveTaggedName, empowerTagShares, putCurses, createPlayerBuffSet, playerBuffSet, putBlessings, putAuras, putEmpowerBuffs, putArmorBuffs, putBlock, putBarrier, putBlur, putElixirBuffs, putDefensiveBuffs, putFocusBuffs, putFollowerBuffs, putTimedOwnBuffs, ownCombatHeld } from "./unit-buff-set.js";
 import { resolveDefensiveBuffs } from "./defensive-buffs.js";
@@ -467,6 +467,15 @@ function sourceDealtTypes(source, dealtBySetup = null) {
   return dealtBySetup?.get?.(source?.setupKey) || source?.profile?.dealtTypes || (source?.profile?.damageType ? [source.profile.damageType] : []);
 }
 
+// A skill's uses without the press rotation's share of your action time: full ÷ press-shared manual rate (1 with no rotation or no manual
+// uses). The Seething Spirit's cadence reads it (3 T Berserking audit K2): its AI attacks at its own speed, not on your presses.
+// The press-shared manual rate is the hit's presses, Spell Burst automatic casts and Multistrike repeats (src/skill-hit-model.js usesBySource).
+const pressShareUndone = (hit) => {
+  if (!hit?.rate?.rotation) return 1;
+  const by = hit.rate.usesBySource || {}, full = Number(hit.rate.fullManualUsesPerSecond) || 0;
+  const manual = (Number(by.manual) || 0) + (Number(by.spellBurstAuto) || 0) + (Number(by.multistrikeRepeat) || 0);
+  return full > 0 && manual > 0 ? full / manual : 1;
+};
 // The press rotation lives in src/press-schedule.js (2026-11-05; re-exported here for its tests).
 export { pressRotation } from "./press-schedule.js";
 // Life lost for the "per 1% Life lost" readers (2026-11-05; research/rosa-build-followups-2026-11-05.md §1.6): 100 × (1 − current ÷ full Max
@@ -703,6 +712,9 @@ function buildLineConditionState({ state, requestedConditions, conditions, lowRe
     mobilitySkillUsed: requestedConditions.mobilitySkillUsed !== false,
     hasMobilitySkill: mobilitySkillNames(setups).length > 0,
     mobilitySkillNames: mobilitySkillNames(setups),
+    // The Mobility skills that are Attacks too (with their supports' tag changes), for a line that needs one: Banishment: Shadow Strike's "after
+    // casting an Attack Mobility Skill" (affix 151352640, trigger 1000069 on [Mobility, Attack]). Absent on a build without such a line.
+    ...(modifierTexts.some((line) => /after casting an Attack Mobility Skill$/i.test(String(line.text ?? "").trim())) ? { attackMobilitySkillNames: [...new Set((setups || []).filter((setup) => setup.enabled !== false && setup.role !== "support" && isAttackMobility(skillTagsWithSupportChanges(setup.tags || [], setup))).map((setup) => setup.name))] } : {}),
     // Equipped active skills by tag, for "For every Active <Type> Skill equipped" (Keen Intellect; game node 208 counts the equipped
     // skills with the tag; core audit batch B2): enabled skill-board setups, supports and passive skills left out.
     equippedSkillsByTag: Object.fromEntries(["Empower", "Curse", "Mobility", "Defensive", "Warcry", "Synthetic Troop"].map((tag) => [tag, [...new Set(setups.filter((setup) => setup.enabled !== false && setup.role !== "support" && !(setup.tags || []).includes("Passive") && (setup.tags || []).includes(tag)).map((setup) => setup.name))]])),
@@ -715,7 +727,7 @@ function buildLineConditionState({ state, requestedConditions, conditions, lowRe
     hasHasten: modifierTexts.some((line) => /^Has Hasten$/i.test(String(line.text).trim())),
     // A support on an active skill that reads the hit's Skill Area bonuses (Berserking Blade: Rampage, Blazing Bullet: Ignition Point;
     // src/support-conditional-batch4.js): the combat-only Skill Area sources (Fervor's added base effect) then move damage (2026-11-05).
-    skillAreaReaders: setups.some((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.supports || []).some((support) => support.enabled !== false && /bonus(?:es)? and additional bonus(?:es)? to Skill Area/i.test([...(support.effects || []), supportProgressionSs13[support.name]?.baseEffect || ""].join("\n")))),
+    skillAreaReaders: setupsReadSkillArea(setups, activeNames),
     dealtTypes: new Set(mechanics.penetration?.dealtTypes || []),
     // Whether you deal damage yourself: a Minion's damage does not fire your trigger 1000030 (lines that count it name trigger 1000047).
     ownDamage: Boolean(beam) || skillHitSources.length > 0 || damageSources.some((source) => source.status === "modeled" && source.profile?.engine === "skill-dot" && activeNames.has(source.name)),
@@ -876,7 +888,11 @@ function buildLineConditionState({ state, requestedConditions, conditions, lowRe
     // levels"), Max Life / Energy Shield (Split Form, Hysteria), the Skill Area bonus (Uncontrolled Anger) and the weapon's Attack Speed
     // bonuses before the derived lines (Rampaging's share for the badges; the Burst source reads the final weapon model).
     rehanInputs: { main: resolvedMain && activeNames.has(resolvedMain.name) ? { setupKey: resolvedMain.setupKey, name: resolvedMain.name, tags: resolvedMain.tags || [] } : null, characterLevel: buildCharacterLevel(state),
-      maxLife: maxLifePool, maxEnergyShield: maxEnergyShieldPool, skillAreaPercent: stat("skillArea"), attackSpeed: weapon.attackSpeed || null },
+      maxLife: maxLifePool, maxEnergyShield: maxEnergyShieldPool, skillAreaPercent: stat("skillArea"), attackSpeed: weapon.attackSpeed || null,
+      // A Skill Area reader on an active setup (Rampage, Ignition Point): "+X% Skill Area while Berserk is active" then moves damage (G4).
+      ...(setupsReadSkillArea(setups, activeNames) ? { skillAreaReaders: true } : {}),
+      // A Movement Speed reader on an active setup: the Berserk and per-Rage Movement Speed then move damage (line sweep 2026-11-24).
+      ...(setupsReadMovementSpeed(setups, activeNames, modifierTexts) ? { movementSpeedReaders: true } : {}) },
     // Rosa – Unsullied Blade (hero trait audit B11; src/rosa-traits.js): Max Mana (Max Mercury Pts, Utmost Devotion's Mana consumed) and
     // the unsealed share of it (Mystic Mercury and Realm of Mercury read Unsealed Max Mana).
     rosaInputs: { maxMana: maxManaPool, manaUnsealedPercent: manaRemaining },
@@ -1258,6 +1274,25 @@ function movementAssumption(planner) {
   if (!sources.length) return { id: "movement", value: "no effect", text: `Moving vs standing still: ${idyll}; no other modeled condition depends on movement, so the recount is the same either way.` };
   const moving = planner.conditions?.moving !== false;
   return { id: "condition:moving", value: moving, text: `Moving vs standing still: ${moving ? "moving" : "standing still"}. Movement-dependent sources: ${sources.join(", ")} (movement buffs at max while moving; standing-still buffs only while standing still); ${idyll}.` };
+}
+
+// A support on an active skill that reads the hit's Skill Area bonuses (Berserking Blade: Rampage, Blazing Bullet: Ignition Point;
+// src/support-conditional-batch4.js): the combat-only Skill Area sources then move damage (2026-11-05; 3 T Berserking G4, 2026-11-24).
+function setupsReadSkillArea(setups, activeNames) {
+  return setups.some((setup) => setup.enabled !== false && activeNames.has(setup.name) && (setup.supports || []).some((support) => support.enabled !== false && /bonus(?:es)? and additional bonus(?:es)? to Skill Area/i.test([...(support.effects || []), supportProgressionSs13[support.name]?.baseEffect || ""].join("\n"))));
+}
+
+// An active setup whose speed reads the combat Movement Speed (line sweep 2026-11-24): the Mobility attacks' own 75% share (recipe 811059904,
+// src/skill-hit-model.js MOVEMENT_ATTACK_SPEED_SKILLS) and any Mobility skill when the build carries "X% of the bonuses for Movement Speed is also
+// applied to the Attack and Cast Speed / Cooldown Recovery Speed of Mobility Skills" (records 970091904 / 256691184). The Rehan module's held
+// Movement Speed parts read In calc with one (src/rehan-traits.js berserkMove).
+function setupsReadMovementSpeed(setups, activeNames, modifierTexts = []) {
+  const active = setups.filter((setup) => setup.enabled !== false && setup.role !== "support" && activeNames.has(setup.name));
+  if (active.some((setup) => MOVEMENT_ATTACK_SPEED_SKILLS.has(setup.name))) return true;
+  // A support's "X% of the bonuses for Movement Speed is also applied to the additional Attack Speed of the skill" (Thunder Spike: Rumbling Thunder,
+  // Groundshaker: Wrathful Vault; recipe 811059904, src/support-chunk8.js movementToAttackSpeed): its skill's speed reads the Movement Speed too.
+  if (active.some((setup) => (setup.supports || []).some((support) => support.enabled !== false && /bonuses for Movement Speed is also applied to the additional Attack Speed/i.test([...(support.effects || []), supportProgressionSs13[support.name]?.baseEffect || ""].join("\n"))))) return true;
+  return modifierTexts.some((line) => MOBILITY_MOVEMENT_SHARE_LINE.test(normalizeLineText(String(line.text ?? "")).trim())) && active.some((setup) => (setup.tags || []).includes("Mobility"));
 }
 
 export function calculatePlanner(input) {
@@ -1860,7 +1895,9 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const supportEffectsContext = (setup, focusBlessingStacks) => {
     const profile = inferDamageProfile(setup);
     // Activation Medium: Energy Shield's threshold (src/support-effects.js): always met at Max Energy Shield 0, read only when a clause asks.
-    return { noEnergyShield: () => noEnergyShieldGate().none, profile, engine: setup.name === "Scorching Beam" ? "scorching-beam" : profile?.engine ?? null, isMain: Boolean(resolvedMain) && setup.setupKey === resolvedMain.setupKey, hitDot: profile?.engine === "skill-hit" && skillHitDotComponents(profile).length > 0, hitAilment: cataclysmAilments.settled ? cataclysmAilments.bySetupKey.get(setup.setupKey)?.ailments || [] : null, speedType: profile?.engine === "skill-hit" ? skillHitTiming(profile)?.speedType || "cast-speed" : null, specialSupportConfigs: state.skills.specialSupportConfigs || {}, focusBlessingStacks };
+    return { noEnergyShield: () => noEnergyShieldGate().none, profile, engine: setup.name === "Scorching Beam" ? "scorching-beam" : profile?.engine ?? null, isMain: Boolean(resolvedMain) && setup.setupKey === resolvedMain.setupKey, hitDot: profile?.engine === "skill-hit" && skillHitDotComponents(profile).length > 0, hitAilment: cataclysmAilments.settled ? cataclysmAilments.bySetupKey.get(setup.setupKey)?.ailments || [] : null, speedType: profile?.engine === "skill-hit" ? skillHitTiming(profile)?.speedType || "cast-speed" : null, specialSupportConfigs: state.skills.specialSupportConfigs || {}, focusBlessingStacks,
+      // The hit pass's measured scope types (a converted part's whole chain): the typed clauses' badges (src/support-effects.js clauseStatus).
+      measuredDealtTypes: hitRateFacts?.bySetup?.get(setup.setupKey)?.scopeTypes || null };
   };
   for (const setup of setups) setup.supportEffects = resolveSupportEffects(setup, supportEffectsContext(setup));
   // Periodic Burst on a Mobility skill (src/periodic-burst.js; 2026-10-14, provisional): its time-averaged Attack and Cast Speed
@@ -2260,6 +2297,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // <tag> Skill recently") and the Main Skill's triggered uses (1000060 Feline Stimulant); null before the pass (the readers hold as before).
   lineConditionState.playerUseTags = Array.isArray(hitRateFacts?.playerUseTags) ? new Set(hitRateFacts.playerUseTags) : null;
   lineConditionState.mainTriggeredUsesPerSecond = Number.isFinite(hitRateFacts?.mainTriggeredUsesPerSecond) ? hitRateFacts.mainTriggeredUsesPerSecond : null;
+  lineConditionState.mainTriggeredFirstSeconds = Number.isFinite(hitRateFacts?.mainTriggeredFirstSeconds) ? hitRateFacts.mainTriggeredFirstSeconds : null;
   // Before the pass (the measuring pass itself), whether anything can trigger the Main Skill at all, from the build's structure: a trigger
   // clause on its supports (an Activation Medium; not a mere event source, an auto-use or a detail), a Main Skill retrigger line, a
   // trigger-main source (Vendetta) or a Clockwork Core. Feline Stimulant (1000060) reads it there, so a build whose Main Skill is never
@@ -2271,6 +2309,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
       (mainSetup?.supports || []).some((support) => support?.enabled !== false && /Clockwork Core/i.test(String(support.name || "")))
       || (mainSetup?.supportEffects?.clauses || []).some((clause) => clause.family === "trigger" && !["eventSource", "eventDetail", "autoUse"].includes(clause.kind))
       || modifierTexts.some((line) => line.origin !== "derived" && isMainRetriggerLine(line.text))
+      // Banishment's Steep Strike trigger casts a Slash-Strike Main Skill (affix 802178624; whether its chance passes 100% the hit pass measures).
+      || ((mainSetup?.tags || []).includes("Slash-Strike") && modifierTexts.some((line) => line.origin !== "derived" && isSteepStrikeTriggerLine(line.text)))
       || damageSources.some((source) => source.status === "modeled" && source.profile?.engine === "trigger-main"));
   }
   // Burning Touch (record 648060544; 15 T audit G4): the hit pass's Main Skill uses per second, your own and triggered; null before the pass.
@@ -2581,6 +2621,13 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     if (!activeNames.has(entry.name) || !Number.isFinite(value) || !value) continue;
     heldMovement.sources.push({ source: `${entry.name} (Aura)`, text: `${value > 0 ? "+" : ""}${Math.round(value * 10000) / 10000}% Movement Speed (Aura buff, at its Aura Effect)`, value, aura: true });
     heldMovement.percent = Math.round((heldMovement.percent + value) * 1000) / 1000;
+  }
+  // Rehan's held Movement Speed (src/rehan-traits.js combatMovementSpeed; line sweep 2026-11-24): "+X% Movement Speed while Berserk is active"
+  // (record 101010237) at the Berserk share and the Movement Speed half of "for every N Rage you have" (618976384) at the Rage held, as the
+  // module's Skill Area joins the Skill Area pool: increased combat Movement Speed for the readers from here on.
+  for (const item of lineConditionState.rehan?.combatMovementSpeed || []) {
+    heldMovement.sources.push({ source: item.source, text: item.text, value: item.value, hero: true });
+    heldMovement.percent = Math.round((heldMovement.percent + item.value) * 1000) / 1000;
   }
   lineConditionState.movementSpeedSheetPercent = lineConditionState.movementSpeedPercent || 0;
   lineConditionState.movementSpeedConditional = heldMovement;
@@ -2927,7 +2974,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const playerBuffs = lineConditionState.playerBuffs?.clone?.() ?? createPlayerBuffSet();
   putBlessings(playerBuffs, blessings);
   putBlur(playerBuffs, blurEffects);
-  putElixirBuffs(playerBuffs, lineEffects.combat?.elixir || null);
+  // Banishment: Provision moves the Elixir buffs to your Minions (src/combat-states.js, provisional): none is held on you.
+  putElixirBuffs(playerBuffs, lineEffects.combat?.elixir?.toMinions ? null : lineEffects.combat?.elixir || null);
   putFollowerBuffs(playerBuffs, lineEffects.follower || null);
   putTimedOwnBuffs(playerBuffs, { aim, periodicBurst });
   // Focus Blessing stacks from the blessing model: Overload's "for each stack of Focus Blessing" lines (B1) on every
@@ -2950,6 +2998,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const weaponToSpells = weaponToSpellEntries(modifierTexts, weaponAttack);
   modifierTexts.push(...weaponToSpells.lines);
   const targetCursed = curseLimit.active.length > 0 || mechanics.curses.active.length > 0 || modifierTexts.some((line) => /Curse upon dealing damage|are cursed by/i.test(line.text)) || danceOfTheDeep.cursed;
+  // Held conditional Skill Area no engine reads (3 T Berserking G4, 2026-11-24): the combat Skill Area pool the Skill Area readers take
+  // (support-conditional-batch4.js skillAreaState). The hero modules' derived lines are left out (Rosa's Baptism and Rehan's Berserk join
+  // combatSkillArea below at their own shares), and the static-held keys the stat sheet already folds (src/static-held-stats.js).
+  const heldSkillArea = heldConditionalPoolExtra({ ...lineEffects, derived: (lineEffects?.derived || []).filter((line) => line?.lineEffect?.key !== "heroModule") }, "skillArea", { skipKeys: STATIC_HELD_KEYS });
   // The state conditional support lines resolve against (src/support-effects.js resolveCondition): the dummy (one enemy, a
   // Boss within 10 m), its curses, the enemy-ailment model's types, the held weapons, movement and distance groups.
   const supportConditions = {
@@ -3008,13 +3060,23 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     dexterity: lineConditionState.stats?.dexterity || 0, skillAreaPercent: lineConditionState.stats?.skillArea || 0,
     // The build's "+X% additional Skill Area" (record 717307: attr 6201 mod 4, untagged), the combined additional bucket the Skill Area
     // readers' records read (Rampage 553331072 row 2 fromMod 4, Ignition Point 261391040 "bonus and additional bonus"; F4, 2026-11-22).
-    ...(lineConditionState.stats?.skillAreaAdditional ? { skillAreaAdditionalFactor: lineConditionState.stats.skillAreaAdditional } : {}),
+    ...((() => { const factor = (Number(lineConditionState.stats?.skillAreaAdditional) || 1) * heldSkillArea.additional.reduce((product, item) => product * (1 + item.value / 100), 1); return factor !== 1 ? { skillAreaAdditionalFactor: factor } : {}; })()),
     // Groundshaker: Frequent Quake's lingering fissure (src/support-hit-count-batch5.js): its area lasts 1.5 s × (1 + Skill Effect Duration).
     skillEffectDurationPercent: lineConditionState.skillEffectDurationPercent || 0,
     // Combat-only increased Skill Area the stat sheet leaves out (2026-11-05, Rosa build audit gap 4; records in research/oq-rosa-build-2026-11-04.md §6):
     // Fervor's added base effect at the held Rating × Fervor Effect, and Baptism: Impassive (buff 81934, 6468653: +60%) while Mercury Purged holds it.
     combatSkillArea: [...(lineEffects.combat?.buffs?.fervorSkillArea || []).map((item) => ({ source: item.source, value: item.value, text: item.text })),
-      ...(lineConditionState.rosa?.purged || []).filter((item) => item.active && /Skill Area/.test(item.body)).map((item) => ({ source: `Baptism: ${item.name} (Mercury Purged)`, value: (Number(String(item.body).match(/([\d.]+)%/)?.[1]) || 0) * (item.uptime ?? 1), text: `${item.body}${item.uptime != null && item.uptime < 1 ? ` × ${Math.round(item.uptime * 1000) / 1000} uptime` : ""} while held` }))],
+      ...(lineConditionState.rosa?.purged || []).filter((item) => item.active && /Skill Area/.test(item.body)).map((item) => ({ source: `Baptism: ${item.name} (Mercury Purged)`, value: (Number(String(item.body).match(/([\d.]+)%/)?.[1]) || 0) * (item.uptime ?? 1), text: `${item.body}${item.uptime != null && item.uptime < 1 ? ` × ${Math.round(item.uptime * 1000) / 1000} uptime` : ""} while held` })),
+      // 3 T Berserking G4 (2026-11-24): Seething Silhouette's "+45% Skill Area while Berserk is active" (record 14801477) at its Berserk share
+      // (src/rehan-traits.js), and every held conditional increased Skill Area line no engine reads (src/character-stats.js
+      // heldConditionalPoolExtra; the hero modules' derived lines are left out: Rosa's and Rehan's come in above at their own shares).
+      ...(lineConditionState.rehan?.combatSkillArea || []).map((item) => ({ source: item.source, value: item.value, text: item.text })),
+      ...heldSkillArea.increased.map((item) => ({ source: item.source, value: item.value, text: `${item.text} (held)` })),
+      // An active Aura's crowd-gated Skill Area (Precise: Domain Expansion's buff 15193 affix 495834240 [10, 5, 20]: gate node 4 "at least P2
+      // enemies within P1 m" with calcCountByRarity, attr 6201 mod 3 = P3 × GetEffectScale; proven): the Boss dummy counts as 5 enemies
+      // (src/boss-enemy-count.js), so it holds in combat, at the Aura's effect (src/data/skills/aura-scaling-ss13.js skillAreaCrowdPercent;
+      // the plain Domain Expansion's [10, 8, 20] does not hold). Combat only: the town panel has no target (line sweep 2026-11-24).
+      ...(aura.entries || []).filter((entry) => activeNames.has(entry.name) && Number(entry.effectiveEffects?.skillAreaCrowdPercent)).map((entry) => ({ source: `Aura: ${entry.name} / Skill Area (at least 5 enemies)`, value: Number(entry.effectiveEffects.skillAreaCrowdPercent), text: `+${Math.round(entry.effectiveEffects.skillAreaCrowdPercent * 10000) / 10000}% Skill Area when there are at least 5 enemies within 10 m (record 495834240 at the Aura's effect; the Boss dummy counts as 5)` }))],
     manaRemainingPercent: lineConditionState.manaRemainingPercent ?? 100,
     // The global Sealed Mana Compensation: Moon Strike: Lunar Eclipse's own 10% seal (record 972991104, node 130) takes it (two buckets, 2026-11-23).
     sealedManaCompensationPercent: globalSealedManaCompensationPercent,
@@ -3236,7 +3298,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const beamTypedAdded = activeNames.has("Scorching Beam") ? beamAddedTypedParts(beamAddedDamage, { conversions: [...(main?.supportEffects?.conversion || []), ...passiveSupportLines(modifierTexts).conversion], noConversion: Boolean(trinityState(modifierTexts)?.noConversion) }) : [];
   const hitModifiers = scorchingBeamHitModifiers({ modifierTexts, beamActive: activeNames.has("Scorching Beam"), typedScopes: beamTypedAdded.map((part) => ({ key: part.key, types: part.chain })), recipeState: { targetCursed, sealedLifeAndMana: aura.entries.some((entry) => entry.reservation?.resource === "life") && aura.entries.some((entry) => entry.reservation?.resource === "mana") }, extraSources: mechanics.hit, intelligenceAdjustment: mechanics.intelligence, blurEffects, curses, blessings, aim, block, coreTalents, enemyOnTideDamageTakenPercent, tideEffectFactor, waveAriaPercent, idyllPerStackPercent, heroMemories, main, talentSlate, equipment, pact, aura, heroId: state.hero.selectedHeroId, conditions, idyllStacks: damageCombat.idyllStacks });
   const levelFactor = main.effectiveLevel >= 20 ? skillLevelDamageMultiplier(main.effectiveLevel) / skillLevelDamageMultiplier(20) : 1;
-  const beamCritical = scorchingBeamCritical({ critAdjust, main, talentSlate, equipment: memoryEquipment, pact, modifierTexts, fireResistanceTotalPercent: resistances.entries.find((entry) => entry.element === "Fire")?.total || 0, castsPerSecond: beamCastRate.castsPerSecond, targetHasAilment: canIgnite || (enemyBuffSet(mechanics.enemyAilments)?.count() ?? mechanics.enemyAilments.count) > 0 });
+  // The beam's strikes count only while its setup is on the board and counted (activeNames, the test every beam reader uses): an absent or
+  // disabled beam keeps its echoed cast rate but adds no crit events to the ailments' recent-crit readers (ailmentCrit below) and no strikes to
+  // the Nether King recent-strike stacks (conditionalSources), which an inactive beam's 5 casts a second had fed (3 T Berserking audit §10).
+  const beamCritical = scorchingBeamCritical({ critAdjust, main, talentSlate, equipment: memoryEquipment, pact, modifierTexts, fireResistanceTotalPercent: resistances.entries.find((entry) => entry.element === "Fire")?.total || 0, castsPerSecond: activeNames.has("Scorching Beam") ? beamCastRate.castsPerSecond : 0, targetHasAilment: canIgnite || (enemyBuffSet(mechanics.enemyAilments)?.count() ?? mechanics.enemyAilments.count) > 0 });
   const hasSealedLife = aura.entries.some((entry) => entry.reservation?.resource === "life") && aura.entries.some((entry) => entry.reservation?.resource === "mana");
   const ailmentChanceFromAuras = aura.entries.filter((entry) => activeNames.has(entry.name)).reduce((sum, entry) => sum + (entry.effectiveEffects?.ailmentChancePercent || 0), 0);
   const ailmentDurationFromAuras = aura.entries.filter((entry) => activeNames.has(entry.name)).reduce((sum, entry) => sum + (entry.effectiveEffects?.ailmentDurationPercent || 0), 0);
@@ -3557,6 +3622,9 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // Dual Kismet: Hunter's Hand (src/main-skill-retriggers.js): the player's uses of Attack Horizontal Projectile skills, measured by
   // the first hit pass below (null until then); the Main Skill is then computed again with them.
   let attackProjectileUses = null;
+  // Banishment: Shadow Strike (src/main-skill-retriggers.js, affix 151352640): the Attack Mobility skills' cast instances per second, measured by
+  // the first hit pass below (null until then); the Main Skill is then computed again with them.
+  let attackMobilityUses = null;
   const itemMainSkillProfile = (source, { castSpeedFactor = 1, miraculous = null, guardUses = null } = {}) => {
     const setup = source.setup, entry = ITEM_GRANTED_SKILLS_SS14[setup?.name];
     if (!entry) return null;
@@ -3633,6 +3701,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // reads the merged extras without becoming the source's last ones (Youga's window states, the variants). Every hit computation goes
   // through here (tests/hit-recompute-extras.test.js checks the source).
   const lastHitExtra = new Map();
+  // Banishment's Steep Strike Bonus Effect on the board (its line in the modifier list; src/main-skill-retriggers.js), read by the Main Skill's hit.
+  const steepTriggerSpec = steepStrikeTriggerSpec(modifierTexts);
   // Streams folded into a stored hit after it is computed (the Spacetime Illusion's casts, the Seething Spirit's casts, Carino's Special Ammo and
   // Heat Up): each is a fold a source registers (`registerStreamFold`), applied again to every later computation of that source, so a recompute
   // (the hit pass's Spell Burst refill) keeps them (P1 of research/remediation-plumbing-2026-11-21.md, 2026-11-22). A copy of a source (`extraOrigin`,
@@ -3749,11 +3819,14 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     // An item-granted Main Skill takes its uses from triggers only (itemMainSkillProfile below), so it is skipped here.
     if (setup.setupKey && setup.setupKey === resolvedMain?.setupKey && !setup.itemGranted) {
       const cooldownSeconds = skillHitTiming(source.profile)?.cooldownSeconds || 0;
-      const retrigger = mainSkillRetriggers(modifierTexts, { moving: conditions.moving, maxBlessingStacks: (blessings?.entries || []).reduce((sum, entry) => sum + (Number(entry.maxStacks) || 0), 0), castSpeedFactor: common.castSpeed?.factor || 1, channeled: (setup.tags || []).includes("Channeled"), cooldownSeconds, manualUsesPerSecond: cooldownSeconds > 0 ? 1 / cooldownSeconds : 0, mainSkillName: setup.name, attackProjectileUses });
+      const retrigger = mainSkillRetriggers(modifierTexts, { moving: conditions.moving, maxBlessingStacks: (blessings?.entries || []).reduce((sum, entry) => sum + (Number(entry.maxStacks) || 0), 0), castSpeedFactor: common.castSpeed?.factor || 1, channeled: (setup.tags || []).includes("Channeled"), cooldownSeconds, manualUsesPerSecond: cooldownSeconds > 0 ? 1 / cooldownSeconds : 0, mainSkillName: setup.name, attackProjectileUses, attackMobilityUses, mainShadowStrike: skillTagsWithSupportChanges(setup.tags || [], setup).has("Shadow Strike") });
       if (retrigger.usesPerSecond > 0) {
         const label = retrigger.sources.filter((item) => item.active).map((item) => `${item.source}: ${item.text}`).join("; ");
         common.extraTriggeredUses = { components: [...(common.extraTriggeredUses?.components || []), ...retrigger.components], usesPerSecond: (common.extraTriggeredUses?.usesPerSecond || 0) + retrigger.usesPerSecond, label: [common.extraTriggeredUses?.label, `Main Skill triggers (${label}; provisional)`].filter(Boolean).join(" + "), note: [common.extraTriggeredUses?.note, retrigger.sources.filter((item) => item.active).map((item) => item.reason).join("; ")].filter(Boolean).join("; ") };
       }
+      // Nether King's Divinity: Banishment's Steep Strike Bonus Effect (affix 802178624; src/main-skill-retriggers.js): read in the hit model, which
+      // knows the skill's Steep Strike chance and its own casts (3 T Berserking audit G1).
+      if (steepTriggerSpec) common.steepStrikeTrigger = steepTriggerSpec;
     }
     // Item-granted Main Skill (src/item-main-skill-replacement.js; 2026-10-26): a rate model from its triggers and the runtime base.
     const itemMain = setup.itemGranted ? itemMainSkillProfile(source, { castSpeedFactor: common.castSpeed?.factor || 1, miraculous: common.extraTriggeredUses, guardUses: extra.itemMainGuardUses || null }) : null;
@@ -3813,6 +3886,20 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
       skillHits[mainIndex] = hunter.length ? { ...recomputed, notes: [...(recomputed.notes || []), ...hunter.map((item) => `${item.source}: Main Skill trigger inactive — ${item.reason}.`)] } : recomputed;
     }
   }
+  // Banishment: Shadow Strike (src/main-skill-retriggers.js, affix 151352640): every cast instance of an Attack Mobility skill (1000069 on
+  // [Mobility, Attack]: your presses at the press rotation's cadence, Spell Burst's automatic casts and triggered casts; not Multistrike repeats,
+  // which make no new instance) triggers the Main Shadow Strike skill twice; the Main Skill is computed again with that rate. The Main Skill's own
+  // casts are left out (the record has no notMine guard: an Attack Mobility Main Skill would trigger itself; open question
+  // banishment-shadow-strike-trigger). Skills with no modeled hit are not counted.
+  if (modifierTexts.some((line) => line.origin !== "derived" && !line.lineEffect && SHADOW_STRIKE_TRIGGER_LINE.test(normalizeLineText(String(line.text ?? "")).replace(/\s+/g, " ").trim()))) {
+    const mainIndex = allHitSources.findIndex((source) => source.setup?.setupKey && source.setup.setupKey === resolvedMain?.setupKey);
+    const qualifying = skillHits.map((hit, index) => ({ hit, setup: allHitSources[index]?.setup, index })).filter(({ hit, setup, index }) => setup && index !== mainIndex && setup.role !== "item-trigger" && !setup.rehanBurst && hit?.modeled && isAttackMobility(skillTagsWithSupportChanges(setup.tags || [], setup)));
+    const instances = (hit) => Math.max(0, (Number(hit.rate?.usesPerSecond) || 0) - (Number(hit.rate?.usesBySource?.multistrikeRepeat) || 0));
+    const live = qualifying.filter(({ hit }) => instances(hit) > 0);
+    const firsts = live.map(({ hit }) => hit.rate.firstUseSeconds).filter((value) => Number.isFinite(value) && value >= 0);
+    attackMobilityUses = { usesPerSecond: live.reduce((total, { hit }) => total + instances(hit), 0), firstUseSeconds: firsts.length ? Math.min(...firsts) : null, skills: live.map(({ setup }) => setup.name) };
+    if (mainIndex >= 0 && !allHitSources[mainIndex].setup.itemGranted) skillHits[mainIndex] = computeSkillHit(allHitSources[mainIndex]);
+  }
   // Barrier Burst (item-granted Main Skill): a Guard Barrier follows its channeled skill's uses (every 5), which the pass above measured.
   const barrierBurstIndex = allHitSources.findIndex((source) => source.setup?.itemGranted && source.setup.name === "Barrier Burst");
   if (barrierBurstIndex >= 0 && (barrierSources || []).length) skillHits[barrierBurstIndex] = computeSkillHit(allHitSources[barrierBurstIndex], { itemMainGuardUses: new Map(skillHits.map((hit) => [hit.setupKey, hit.rate?.usesPerSecond || 0])) });
@@ -3865,14 +3952,17 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // lines: records 775506 and 956328064's third write are attr 5719 mod 4 on [Projectile return 6001114, Projectile 6001110], with no Attack or
   // Horizontal tag and no item gate (the Stray Bird hover's "for Attack Horizontal Projectiles" is narrower than the record), each its own factor.
   // Stray Bird's "Attack Horizontal Projectiles always Penetrate" (956328064's label 3001036 on [Attack, Horizontal]) lets those skills pass
-  // through the dummy whatever their Penetration, for either return.
+  // through the dummy whatever their Penetration, for either return. Banishment's Projection grants the same label with no tag at 5 stacks
+  // (affix 270587072 row 3, src/nether-king-authority.js): "Horizontal Projectiles always Penetrate", any Horizontal Projectile skill.
   const returningLines = modifierTexts.map((line) => ({ line, match: strayClean(line).match(/^\+(\d+(?:\.\d+)?)% additional Returning Projectile Damage(?: for Attack Horizontal Projectiles)?$/i) }))
     .filter(({ match }) => match).map(({ line, match }) => ({ source: line.source, text: strayClean(line), value: Number(match[1]) * (line.multiplier ?? 1) }));
-  const alwaysPenetrateAH = modifierTexts.some((line) => /^Attack Horizontal Projectiles always Penetrate$/i.test(strayClean(line)));
+  const alwaysPenetrateLabels = modifierTexts.map((line) => strayClean(line).match(/^(Attack )?Horizontal Projectiles always Penetrate$/i)).filter(Boolean).map((match) => ({ attackOnly: Boolean(match[1]) }));
   const passesThrough = (setup, mechanics) => {
     const tags = new Set(setup?.tags || []), own = mechanics.penetration.total >= 1;
-    return { passes: own || (alwaysPenetrateAH && tags.has("Attack") && tags.has("Horizontal") && tags.has("Projectile")), byLabel: !own && alwaysPenetrateAH };
+    const label = tags.has("Horizontal") && tags.has("Projectile") && alwaysPenetrateLabels.some((item) => !item.attackOnly || tags.has("Attack"));
+    return { passes: own || label, byLabel: !own && alwaysPenetrateLabels.length > 0 };
   };
+  const alwaysPenetrateText = alwaysPenetrateLabels.some((item) => item.attackOnly) ? "Stray Bird: Attack Horizontal Projectiles always Penetrate" : "Banishment's Projection: Horizontal Projectiles always Penetrate";
   const strayReturn = !probeDebuffHitRates && !lineConditionState.carino?.returning && requestedConditions.carinoReturningHits !== false
     && modifierTexts.some((line) => /^Normal Projectiles will return after reaching their max range and will hit enemies on their path again$/i.test(strayClean(line)));
   if (strayReturn) {
@@ -3888,7 +3978,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
       const path = returnPathHit({ skill: source.setup?.name ?? hit.name, returnPercent: 100, standingMeters: standingMetersOf(lineConditionState), rangePercent: projectileRangePercent(modifierTexts) });
       if (!path.hits) return;
       const additional = returningLines;
-      const recall = { recallsPerProjectile: 1, shareOfUses: 1, hitsFactor: 1, strikeKey, additional, note: `Stray Bird's Return (provisional): each projectile passes through the dummy (${mechanics.penetration.total >= 1 ? `${mechanics.penetration.total} Penetration` : "Stray Bird: Attack Horizontal Projectiles always Penetrate"}), returns from its max range and hits it once more` };
+      const recall = { recallsPerProjectile: 1, shareOfUses: 1, hitsFactor: 1, strikeKey, additional, note: `Stray Bird's Return (provisional): each projectile passes through the dummy (${mechanics.penetration.total >= 1 ? `${mechanics.penetration.total} Penetration` : alwaysPenetrateText}), returns from its max range and hits it once more` };
       const returned = computeSkillHit(source, { carinoRecall: recall });
       returned.strayBirdReturn = { active: true, alwaysPenetrate: through.byLabel, returningAdditional: additional.map((line) => line.text) };
       skillHits[index] = returned;
@@ -3940,9 +4030,9 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
         const through = passesThrough(source.setup, mechanics);
         if (path.known && returning.on && !mechanics.recallBlock && through.passes && strikeKey) returning.readsDistance = true;
         const reason = !returning.on ? "the returning-projectiles switch is off" : mechanics.recallBlock ? `cannot return: ${mechanics.recallBlock}` : !through.passes ? "its projectiles stop at the dummy (no Penetration), so they never reach their max range" : !strikeKey ? "no projectile hit group" : !path.hits ? path.reason : "";
-        returning.setups.push({ setupKey: hit.setupKey, name: hit.name, active: !reason, penetration: mechanics.penetration.total, ...(through.byLabel ? { alwaysPenetrate: true } : {}), ...(!reason && returningLines.length ? { returningAdditional: returningLines.map((line) => line.text) } : {}), ...(path.known ? { returnPath: { rangeMeters: path.rangeMeters, fromMeters: path.fromMeters } } : {}), reason: reason || `${through.byLabel ? "Stray Bird: Attack Horizontal Projectiles always Penetrate" : `${mechanics.penetration.total} Penetration`}: each projectile passes through the dummy, returns over ${returning.percent}% of its range and hits it again as a full hit; ${path.reason}` });
+        returning.setups.push({ setupKey: hit.setupKey, name: hit.name, active: !reason, penetration: mechanics.penetration.total, ...(through.byLabel ? { alwaysPenetrate: true } : {}), ...(!reason && returningLines.length ? { returningAdditional: returningLines.map((line) => line.text) } : {}), ...(path.known ? { returnPath: { rangeMeters: path.rangeMeters, fromMeters: path.fromMeters } } : {}), reason: reason || `${through.byLabel ? alwaysPenetrateText : `${mechanics.penetration.total} Penetration`}: each projectile passes through the dummy, returns over ${returning.percent}% of its range and hits it again as a full hit; ${path.reason}` });
         if (reason) continue;
-        const recall = { recallsPerProjectile: 1, shareOfUses: 1, hitsFactor: 1, strikeKey, additional: returningLines, note: `Evil Ouroboros (hero trait audit B9, provisional): each projectile passes through the dummy (${through.byLabel ? "Stray Bird: Attack Horizontal Projectiles always Penetrate" : `${mechanics.penetration.total} Penetration`}), returns over ${returning.percent}% of its range and hits it once more as a full hit (best case: the dummy on the return path)` };
+        const recall = { recallsPerProjectile: 1, shareOfUses: 1, hitsFactor: 1, strikeKey, additional: returningLines, note: `Evil Ouroboros (hero trait audit B9, provisional): each projectile passes through the dummy (${through.byLabel ? alwaysPenetrateText : `${mechanics.penetration.total} Penetration`}), returns over ${returning.percent}% of its range and hits it once more as a full hit (best case: the dummy on the return path)` };
         recallFor.set(index, recall);
         skillHits[index] = computeSkillHit(source, { carinoRecall: recall });
       }
@@ -4011,18 +4101,34 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
       // as Stray Bird's on the Spirit's projectiles is not read; its Starfall Wasteland return is its own recall below).
       const source = { ...allHitSources[mainIndex], lineSwap: { drop: (line) => Boolean(line.rehanPhase), add: rehanPhaseLines(rehan, "berserk") }, rehanRateFactor: null };
       const effects = { additional: spirit.additional, extraModifierTexts: spirit.extraLines };
-      let hit = computeSkillHit(source, { heroEffects: effects });
+      // The Spirit's own hit rolls no Banishment Steep Strike of its own: its casts' 1000069 reaches your affix component, so their successes are
+      // your triggered casts, read on the Main Skill's hit below (3 T Berserking audit K1).
+      let hit = computeSkillHit(source, { heroEffects: effects, steepStrikeTrigger: null });
       if (spirit.returning) {
         const projectiles = projectileMechanics(source.setup, [...modifierTexts, ...spirit.extraLines]);
         const strike = (hit.components || []).find((component) => !component.addedOnly);
         const strikeKey = strike ? strike.strikeKey ?? strike.key : null;
         const reason = !spirit.returning.on ? "switched off" : projectiles.recallBlock ? `cannot return: ${projectiles.recallBlock}` : !(source.setup?.tags || []).includes("Horizontal") ? "not a Horizontal Projectile skill" : !(projectiles.penetration.total >= 1) ? "its projectiles stop at the dummy (no Penetration)" : !strikeKey ? "no projectile hit group" : "";
         spiritReturning = { active: !reason, reason, penetration: projectiles.penetration.total };
-        if (!reason) hit = computeSkillHit(source, { heroEffects: { ...effects, recall: { recallsPerProjectile: spirit.returning.percent / 100, shareOfUses: 1, hitsFactor: spirit.returning.percent / 100, strikeKey, additional: [], note: `Starfall Wasteland (hero trait audit B10, provisional): ${spirit.returning.percent}% of the Spirit's projectiles pass through the dummy (${projectiles.penetration.total} Penetration), return and hit it again` } } });
+        if (!reason) hit = computeSkillHit(source, { steepStrikeTrigger: null, heroEffects: { ...effects, recall: { recallsPerProjectile: spirit.returning.percent / 100, shareOfUses: 1, hitsFactor: spirit.returning.percent / 100, strikeKey, additional: [], note: `Starfall Wasteland (hero trait audit B10, provisional): ${spirit.returning.percent}% of the Spirit's projectiles pass through the dummy (${projectiles.penetration.total} Penetration), return and hit it again` } } });
       }
-      const usesPerSecond = (hit.rate?.usesPerSecond || 0) * spirit.speedFactor * spirit.presence * rehan.rage.uptime;
+      // Your own uses only (record 826807424: trigger 1000074, which a triggered use never raises; 3 T Berserking audit G9): the Main Skill's uses
+      // less its triggered ones (Activation Medium, item, outside and Banishment triggers).
+      // Not cut by your press share (3 T Berserking audit K2, user decision 2026-11-24): with label 3050021 (Fury's Onslaught) behaviour tree 234394
+      // loops FindThreat → TryDecideAttackToUse → SendAttackCommand at the Spirit's own Attack Speed with no wait of its own (the 2026-11-12
+      // note; read), so your presses of another skill do not slow it: your own uses × full ÷ press-shared manual rate (pressShareUndone).
+      const usesPerSecond = ((hit.rate?.usesPerSecond || 0) - (hit.rate?.usesBySource?.triggered || 0)) * pressShareUndone(hit) * spirit.speedFactor * spirit.presence * rehan.rage.uptime;
       const perUse = hit.combat?.perUse || 0, perUseBefore = hit.combat?.perUseBeforeTarget || 0;
       spiritHit = { modeled: Boolean(hit.modeled) && usesPerSecond > 0, inactiveReason: hit.inactiveReason || null, usesPerSecond, perUse, dps: usesPerSecond * perUse };
+      // Banishment's Steep Strike Bonus Effect on the Spirit's casts (3 T Berserking audit K1, user decision 2026-11-24): the SS14 cast routine
+      // 0x141df2c00 raises 1000069 through 0x142417e30, which forwards it to the master's affix component with ghost 10100's flags (proven, REA
+      // 2026-11-24); record 802178624 row 1 has no Spirit exclusion, and the Spirit's instance carrying Main 6020000 and Steep Strike 5006010 is
+      // inferred. So each Spirit cast that launches a Steep Strike rolls your trigger, and a success is your triggered cast (node 2320 on your
+      // affix). The Main Skill's hit is computed again with them (recorded, so a later recompute keeps them).
+      const spiritSteepShare = Math.max(0, Math.min(1, Number(hit.steepStrike?.share) || 0));
+      if (steepTriggerSpec && spiritHit.modeled && spiritSteepShare > 0 && skillHits[mainIndex]?.rate?.steepRetrigger) {
+        skillHits[mainIndex] = computeSkillHit(allHitSources[mainIndex], { steepTriggerOtherCasts: { source: "Seething Spirit", castsPerSecond: usesPerSecond, steepShare: spiritSteepShare, steepCastsPerSecond: usesPerSecond * spiritSteepShare } });
+      }
       if (spiritHit.modeled) {
         // A fold (registerStreamFold): the Spirit's casts join the Main Skill's stored hit, and a later computation of it keeps them (P1, 2026-11-22).
         const spiritOwn = hit;
@@ -4033,7 +4139,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
           if (hit.ailmentInputs) hit.ailmentInputs = { ...hit.ailmentInputs, hitsPerSecond: (hit.ailmentInputs.hitsPerSecond || 0) + usesPerSecond * (spiritOwn.rate?.hitsPerUse || 0) };
           hit.combat = { ...hit.combat, perUse: totalUses > 0 ? dps / totalUses : hit.combat.perUse, dps, dpsBeforeTarget: (hit.combat?.dpsBeforeTarget || 0) + usesPerSecond * perUseBefore, fiveSecondAverageDps: (hit.combat?.fiveSecondAverageDps || 0) + spiritHit.dps, twentySecondAverageDps: (hit.combat?.twentySecondAverageDps || 0) + spiritHit.dps };
           hit.modeled = true;
-          hit.notes = [...(hit.notes || []), `Seething Spirit (hero trait audit B10, provisional): +${r4(usesPerSecond)} casts/s of ${hit.name} (your use rate × ${spirit.speedFactor} × ${r4(spirit.presence * 100)}% presence × ${r4(rehan.rage.uptime * 100)}% Berserk uptime), ${r4(perUse)} per cast with the Berserk lines${spirit.additional.length ? ` and ${spirit.additional.map((line) => `${line.value}%`).join(", ")} additional` : ""} = ${r4(spiritHit.dps)} DPS; its hits count as applications of this skill's ailments.`];
+          hit.notes = [...(hit.notes || []), `Seething Spirit (hero trait audit B10, provisional): +${r4(usesPerSecond)} casts/s of ${hit.name} (your use rate without the press share × ${spirit.speedFactor} × ${r4(spirit.presence * 100)}% presence × ${r4(rehan.rage.uptime * 100)}% Berserk uptime), ${r4(perUse)} per cast with the Berserk lines${spirit.additional.length ? ` and ${spirit.additional.map((line) => `${line.value}%`).join(", ")} additional` : ""} = ${r4(spiritHit.dps)} DPS; its hits count as applications of this skill's ailments.`];
           return hit;
         };
         registerStreamFold(allHitSources[mainIndex], fold);
@@ -5179,6 +5285,8 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
       usesPerSecond: hit.rate?.usesPerSecond || 0,
       // Census batch 4 (src/support-conditional-batch4.js): the setup's hits per second (Icebound Beam: Frostbitten's debuff stacks).
       hitsPerSecond: hit.rate?.hitsPerSecond || 0,
+      // A skill's own buff gained on its Steep Strikes (Berserking Blade's 947447, src/support-conditional-batch4.js): the hit's Steep Strike share.
+      ...(Number.isFinite(hit.steepStrike?.share) ? { steepShare: hit.steepStrike.share } : {}),
       // Psychic Surge (census item #2): the setup's Spell Burst activations per second.
       spellBurstActivationsPerSecond: hit.rate?.spellBurst?.activationsPerSecond || 0,
       // Turmoil Burst (record 3195285 row 2: 1000303 adds |Δ Spell Burst Charge| stacks of buff 11921): the charge each activation consumes.
@@ -5280,6 +5388,14 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
         const mainHit = skillHits.find((hit) => hit.modeled && hit.setupKey === resolvedMain?.setupKey) || null;
         const mainTriggers = triggerSkills.filter((trigger) => trigger.modeled && trigger.main?.setupKey === resolvedMain?.setupKey).reduce((sum, trigger) => sum + (trigger.rate?.triggersPerSecond || 0), 0);
         facts.mainTriggeredUsesPerSecond = (mainHit?.rate?.usesBySource?.triggered || 0) + mainTriggers;
+        // The first triggered Main Skill use (Feline Stimulant's opening, src/combat-states.js; line sweep 2026-11-24): Banishment's Steep Strike
+        // casts one Wait after the skill's first use, an Activation Medium trigger's first use, an outside trigger one interval in.
+        const triggeredFirsts = [
+          ...(mainHit?.rate?.steepRetrigger?.usesPerSecond > 0 && Number.isFinite(mainHit.rate.steepRetrigger.firstUseSeconds) ? [mainHit.rate.steepRetrigger.firstUseSeconds] : []),
+          ...(mainHit?.rate?.trigger && Number.isFinite(mainHit.rate.firstUseSeconds) ? [mainHit.rate.firstUseSeconds] : []),
+          ...triggerSkills.filter((trigger) => trigger.modeled && trigger.main?.setupKey === resolvedMain?.setupKey && trigger.rate?.triggersPerSecond > 0).map((trigger) => Number.isFinite(trigger.rate.firstUseSeconds) ? trigger.rate.firstUseSeconds : 1 / trigger.rate.triggersPerSecond)
+        ];
+        facts.mainTriggeredFirstSeconds = triggeredFirsts.length ? Math.min(...triggeredFirsts) : null;
         // Every Main Skill use, your own and triggered (1000074 and 1000060 on the Main tag; Burning Touch, record 648060544): the hit's
         // measured uses (a Spacetime Illusion's casts raise both on you too: 0x142417e30, 15 T audit G4) and the triggers. A channel's 1000074
         // comes per paid loop step, not per use (src/trigger-bus.js), so a channelled Main Skill keeps the early rate (null).
@@ -5375,23 +5491,27 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     // they were measured at (the Rage share of it is corrected per phase).
     if (rehanRates) {
       const beamCasts = activeNames.has("Scorching Beam") ? beamCastRate.castsPerSecond || 0 : 0;
-      const rehan = { meleeCasts: 0, channelStacks: 0, skillUses: beamCasts, rangedUses: 0, attackUses: 0, attackCritUses: 0, hitUses: beamCasts, mainUses: 0, attackSteps: 0, mainStepsPerUse: 1, mainIsAttack: false };
+      const rehan = { meleeCasts: 0, channelStacks: 0, skillUses: beamCasts, rangedUses: 0, attackUses: 0, attackCritUses: 0, hitUses: beamCasts, mainUses: 0, spiritMainUses: 0, attackSteps: 0, mainStepsPerUse: 1, mainIsAttack: false };
       for (const hit of skillHits.filter((item) => item.modeled && item.setupKey !== BURST_SETUP_KEY)) {
         const tags = new Set(setups.find((setup) => setup.setupKey === hit.setupKey)?.tags || hit.profile?.tags || []);
         const uses = hit.rate?.usesPerSecond || 0, kind = hit.profile?.useModel?.kind;
+        // Your own uses (the triggered ones raise 1000069 and 1000060, never 1000070 or 1000074: SS14 client, research/use-events-rea-2026-11-04.md;
+        // 3 T Berserking audit G9): the Melee Attack cast cost (434583584, 1000070), the Seething Spirit's refresh (826807424, 1000074) and the
+        // Attack consume copies (200000005, 1000074) read them; the hit-driven rates keep every use.
+        const own = uses - (hit.rate?.usesBySource?.triggered || 0);
         rehan.skillUses += uses; rehan.hitUses += uses;
         // Each Combo step is its own skill instance (its own Split): a Combo cycle is (steps − 1 + Finishers) Melee casts and Attack uses
         // (2026-11-08 build audit gaps 4 and 5).
         const steps = hit.rate?.useModel === "combo cycle" ? Math.max(1, (hit.profile?.cycle?.steps?.length || 1) - 1 + (Number(hit.combo?.finishersPerCycle) || 1)) : 1;
         if (tags.has("Melee") && tags.has("Attack")) {
           if (kind === "channel") rehan.channelStacks += uses;
-          else { rehan.meleeCasts += uses * steps; if (kind === "channel-release") rehan.channelStacks += uses * (hit.channel?.maxStacks || 0); }
+          else { rehan.meleeCasts += own * steps; if (kind === "channel-release") rehan.channelStacks += uses * (hit.channel?.maxStacks || 0); }
         }
-        if (tags.has("Attack") && !tags.has("Focus")) rehan.attackSteps += uses * steps;
+        if (tags.has("Attack") && !tags.has("Focus")) rehan.attackSteps += own * steps;
         if (hit.setupKey === resolvedMain?.setupKey) { rehan.mainStepsPerUse = steps; rehan.mainIsAttack = tags.has("Attack"); }
         if (tags.has("Ranged")) rehan.rangedUses += uses;
         if (tags.has("Attack")) { rehan.attackUses += uses; rehan.attackCritUses += uses * Math.max(0, Math.min(100, hit.crit?.chancePercent || 0)) / 100; }
-        if (hit.setupKey === resolvedMain?.setupKey) rehan.mainUses += uses;
+        if (hit.setupKey === resolvedMain?.setupKey) { rehan.mainUses += own; rehan.spiritMainUses += own * pressShareUndone(hit); }
       }
       for (const dot of (skillDots || []).filter((item) => item.modeled && !skillHits.some((hit) => hit.modeled && hit.setupKey === item.setupKey))) rehan.skillUses += dot.applicationsPerSecond || 0;
       const burstHit = skillHits.find((hit) => hit.setupKey === BURST_SETUP_KEY);

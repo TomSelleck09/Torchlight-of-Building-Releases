@@ -50,7 +50,12 @@ const DEFINITIONS = [
   { name: "Lightning Storm", delivery: "spell-area", components: [{ key: "hit", label: "Lightning Storm strikes", groupId: 571, perUse: 10, ...provisional("Reference data: strikes once every 0.5 s for 5 s = 10 strikes per storm; best case assumes every strike lands on the dummy") }], notes: ["Lightning Storm: 2 s cooldown (game); storms overlap (up to 40), so each cast adds 10 strikes over 5 s."] },
   { name: "Ring of Ice", delivery: "spell-area", components: [{ key: "hit", label: "Icy Ring", groupId: 231, perUse: 1, ...text("one ring hit per cast") }] },
   { name: "Sparkle", delivery: "spell-projectile", components: [{ key: "hit", label: "Sparkle", groupId: 281, perUse: 6, ...provisional("Reference data: projectiles hit once every 0.25 s for 1.5 s = 6 hits per projectile (Split 564131: hitTimeLimit 0.25 s, life 1.5 s). Best case (user decision 2026-11-13): every projectile's 6 hits land on the dummy, standing where the orb stops") }] },
-  { name: "Thunderbolt Overload", delivery: "spell-projectile", components: [{ key: "hit", label: "Thunderbolt Overload", groupId: 531, perUse: 1, ...text("splits beyond the first need other targets: one hit per cast") }], conversion: [{ from: "Physical", to: "Lightning", percent: 100, source: "Reference data: Converts 100% of the skill's Physical Damage to Lightning Damage" }], notes: ["Thunderbolt Overload: the Physical base is dealt as Lightning; both Physical and Lightning modifiers are applied to the converted component (provisional rule, not yet checked in game)."] },
+  { name: "Thunderbolt Overload", delivery: "spell-projectile",
+    // "When this skill's Split Quantity exceed 3, +30% additional damage for each additional Split (this effect does not include Split
+    // Quantity provided by the Support Skill)": record 753715648 (1000069 on this skill; node 624 attr 57191 mod 4 = max(0,
+    // GetField(2006214, no tags) − P0) × P1, linear). 3 and 30 from the skill text (constant over its level table). MIA sheet check P1.
+    splitQuantityAdditional: { above: 3, perSplitPercent: 30, recipe: 753715648, text: "+30% additional damage for each Split above 3 (Split Quantity from Support Skills excluded)" },
+    components: [{ key: "hit", label: "Thunderbolt Overload", groupId: 531, perUse: 1, ...text("splits beyond the first need other targets: one hit per cast") }], conversion: [{ from: "Physical", to: "Lightning", percent: 100, source: "Reference data: Converts 100% of the skill's Physical Damage to Lightning Damage" }], notes: ["Thunderbolt Overload: the Physical base is dealt as Lightning; both Physical and Lightning modifiers are applied to the converted component (provisional rule, not yet checked in game)."] },
   { name: "Whirlwind Blade", delivery: "spell-projectile", heldProjectile: { seconds: 5, note: "one blade at a time (game description: \"Projectiles can only be fired again after all previous Projectiles have been recalled\"; auto-recalled after 5 s; the blade stops on an Elite, so it stays on the dummy): a cycle is the blade's 5 s plus the cast (Split 537296, 0.65 s, 0.8 s cooldown)" }, components: [{ key: "hit", label: "Whirlwind Blade", groupId: 910, perUse: 20, ...provisional("Reference data: one projectile dealing damage every 0.25 s, recovered after 5 s = 20 hits per blade; best case assumes the blade stays on the dummy (projectiles can hit the same enemy)") }] },
   // --- batch 2a, part 2 (2026-10-11): multi-component, Terra, Combo, built-in Reap ---
   { name: "Blizzard", delivery: "spell-area", components: [{ key: "waves", label: "Blizzard waves", groupId: 141, perUse: 3, ...text("Reference data: 1 wave + 2 total waves; game description (group 141): the three waves can hit the same enemy") }],
@@ -337,6 +342,8 @@ function buildProfile(definition) {
     // Parabolic Projectile Splits (Three Birds with One Stone; user-supplied 2026-10-19): the components a split lands as again and
     // the skill's after-split damage (src/skill-hit-model.js).
     parabolicSplit: definition.parabolicSplit || null,
+    // Thunderbolt Overload's per-Split-above-N additional damage (record 753715648; src/skill-hit-model.js).
+    ...(definition.splitQuantityAdditional ? { splitQuantityAdditional: { ...definition.splitQuantityAdditional } } : {}),
     heldProjectile: definition.heldProjectile || null,
     fervorBonus: definition.fervorBonus || null,
     // A Shadow Strike skill's own Shadow Quantity (Wilt Spike: +1 at max buff stacks; src/skill-hit-model.js shadowState).

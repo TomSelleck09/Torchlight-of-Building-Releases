@@ -32,7 +32,8 @@ const RULES = [
   { pattern: new RegExp(`^\\+${N}% chance to deal Double Damage while channeling$`, "i"), tags: ["Channeled"] },
   // Ring-slot wording (residual batch): only from that ring slot (the gear line keeps its slot, src/modifier-texts.js).
   { pattern: new RegExp(`^\\+${N}% chance to deal Double Damage while channeling when equipped in the (left|right) Ring slot$`, "i"), tags: ["Channeled"], ringSlot: true },
-  // "+1% chance to deal Double Damage per 10 Strength, up to +30%": stat-sheet Strength, rounded down (provisional).
+  // "+1% chance to deal Double Damage per 10 Strength, up to +30%": stat-sheet Strength, linear (record 101140082: node 114 from
+  // attr 11 with no GetFloorInt; MIA sheet check P4, 2026-11-24). The whole-percent roll floors the total chance (D4) only.
   { pattern: new RegExp(`^\\+${N}% chance to deal Double Damage per (\\d+) (Strength|Dexterity|Intelligence), up to \\+${N}%$`, "i"), tags: [], perStat: true },
   // The revived Main Attack Skill family at max stacks (game affix 6038069; src/line-conditions.js mainAttackCastsRecently derives
   // this body): 1 in every N casts of the Main Attack Skill deals guaranteed Double Damage, read as +100% Double Damage chance on that
@@ -80,7 +81,7 @@ export function doubleDamageForSkill(modifierTexts = [], { tags = [], stats = {}
       continue;
     }
     const scale = line.multiplier ?? 1;
-    const value = rule.perStat ? Math.min(rule.cap, Math.floor(Math.max(0, Number(stats[rule.stat]) || 0) / rule.per) * rule.value) * scale : rule.value * scale;
+    const value = rule.perStat ? Math.min(rule.cap, Math.max(0, Number(stats[rule.stat]) || 0) / rule.per * rule.value) * scale : rule.value * scale;
     if (value) sources.push({ source: line.source, text: line.text, value });
   }
   const chancePercent = sources.reduce((total, line) => total + line.value, 0);

@@ -3,6 +3,7 @@ import { statSheetPanelModel } from "./stat-sheet-panel.js";
 import { toggleNumberMarkup } from "./dummy-recount-panel.js";
 import { summarizeRecount } from "./dummy-recount.js";
 import { ALL_SKILLS, skillDamageWindows } from "./sidebar-skill-damage.js";
+import { displayGameText, t } from "./i18n.js";
 
 export { ALL_SKILLS };
 
@@ -123,12 +124,12 @@ const levelText = (option) => Number.isFinite(option.baseLevel) ? `Lv.${option.b
  */
 export function sidebarSkillPickerMarkup(view, escapeHtml, icon = () => "") {
   const selected = view.options.find((option) => option.selected) || view.options[0];
-  const frame = (inner) => `<div class="stat-sheet-banner sidebar-damage sidebar-skill-picker"><section class="dummy-recount-panel"><header class="dummy-recount-head"><span class="dummy-recount-tab" id="sidebar-skill-label">Main skill</span></header><div class="sidebar-skill-body">${inner}</div></section></div>`;
+  const frame = (inner) => `<div class="stat-sheet-banner sidebar-damage sidebar-skill-picker"><section class="dummy-recount-panel"><header class="dummy-recount-head"><span class="dummy-recount-tab" id="sidebar-skill-label">${t("Main skill")}</span></header><div class="sidebar-skill-body">${inner}</div></section></div>`;
   // No skill on the board (user request 2026-10-30): the box opens the skill board's picker for Active skill slot 1, the Main
   // Skill slot (src/app.js, data-sidebar-skill-add).
-  if (!selected) return frame(`<button type="button" id="sidebar-skill" class="sidebar-skill-button sidebar-skill-add" aria-label="Choose a main skill" data-sidebar-skill-add><span id="sidebar-skill-button-text" class="sidebar-skill-current"><span class="sidebar-skill-icon sidebar-skill-empty" aria-hidden="true">+</span><span class="sidebar-skill-text"><strong>Choose a main skill</strong></span></span></button>`);
+  if (!selected) return frame(`<button type="button" id="sidebar-skill" class="sidebar-skill-button sidebar-skill-add" aria-label="${t("Choose a main skill")}" data-sidebar-skill-add><span id="sidebar-skill-button-text" class="sidebar-skill-current"><span class="sidebar-skill-icon sidebar-skill-empty" aria-hidden="true">+</span><span class="sidebar-skill-text"><strong>${t("Choose a main skill")}</strong></span></span></button>`);
   // "All skills" (user request 2026-11-22): the Main Skill's icon, no level (the gold Σ only when no Main Skill is known).
-  const body = (option) => `${option.all ? (option.iconName ? icon(option.iconName) : '<span class="sidebar-skill-icon sidebar-skill-all" aria-hidden="true">Σ</span>') : icon(option.name)}<span class="sidebar-skill-text"><strong>${escapeHtml(option.name)}</strong><small>${levelText(option)}</small></span>`;
+  const body = (option) => `${option.all ? (option.iconName ? icon(option.iconName) : '<span class="sidebar-skill-icon sidebar-skill-all" aria-hidden="true">Σ</span>') : icon(option.name)}<span class="sidebar-skill-text"><strong>${escapeHtml(option.all ? t(option.name) : displayGameText("skill", option.name))}</strong><small>${levelText(option)}</small></span>`;
   const options = view.options.map((option, index) => `<li role="option" id="sidebar-skill-option-${index}" class="sidebar-skill-option${option.selected ? " selected" : ""}" data-sidebar-skill-value="${escapeHtml(option.value)}" aria-selected="${option.selected ? "true" : "false"}">${body(option)}</li>`).join("");
   return frame(`<button type="button" id="sidebar-skill" class="sidebar-skill-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="sidebar-skill-list" aria-labelledby="sidebar-skill-label sidebar-skill-button-text" data-sidebar-skill-toggle><span id="sidebar-skill-button-text" class="sidebar-skill-current">${body(selected)}</span><b class="sidebar-skill-caret" aria-hidden="true">▾</b></button><ul id="sidebar-skill-list" class="sidebar-skill-list" role="listbox" tabindex="-1" aria-labelledby="sidebar-skill-label" hidden>${options}</ul>`);
 }
@@ -159,14 +160,15 @@ export function fitSidebarSpacing(sidebar) {
 }
 
 export function statsSidebarMarkup(view, format, escapeHtml, icon) {
-  const row = (item) => `<div class="stat-sheet-row"${item.title ? ` title="${escapeHtml(item.title)}"` : ""}><span class="stat-row-label">${escapeHtml(item.label)}</span><strong class="stat-row-value">${escapeHtml(item.value)}${item.detail ? `<small>${escapeHtml(item.detail)}</small>` : ""}</strong></div>`;
+  const row = (item) => `<div class="stat-sheet-row"${item.title ? ` title="${escapeHtml(item.title)}"` : ""}><span class="stat-row-label">${escapeHtml(t(item.label))}</span><strong class="stat-row-value">${escapeHtml(item.value)}${item.detail ? `<small>${escapeHtml(item.detail)}</small>` : ""}</strong></div>`;
   // Offence / Defence headings: the Damage panel heading-tab style, no row count (user request 2026-10-29).
-  const section = (title, body) => `<details class="stat-section" open data-sidebar-section="${escapeHtml(title.toLowerCase())}"><summary class="sidebar-section-head"><span class="sidebar-section-tab">${escapeHtml(title)}</span></summary><div class="stat-section-body">${body}</div></details>`;
-  const damageRow = (item, hero) => `<div class="dummy-recount-row${hero ? " dummy-recount-hero" : ""}" title="${escapeHtml(item.note)}"><span class="dummy-recount-label">${escapeHtml(item.label)}</span>${Number.isFinite(item.value) ? toggleNumberMarkup(`sidebar:${item.key}`, item.value, { className: "dummy-recount-value" }) : '<strong class="dummy-recount-value">—</strong>'}</div>`;
+  // The section key (its data attribute and the closed-section memory) stays English; the heading is shown in the language.
+  const section = (key, body, title = t(key)) => `<details class="stat-section" open data-sidebar-section="${escapeHtml(key.toLowerCase())}"><summary class="sidebar-section-head"><span class="sidebar-section-tab">${escapeHtml(title)}</span></summary><div class="stat-section-body">${body}</div></details>`;
+  const damageRow = (item, hero) => `<div class="dummy-recount-row${hero ? " dummy-recount-hero" : ""}" title="${escapeHtml(item.note)}"><span class="dummy-recount-label">${escapeHtml(item.key === "recount" ? t("{seconds} s recount", { seconds: SIDEBAR_RECOUNT_SECONDS }) : t(item.label))}</span>${Number.isFinite(item.value) ? toggleNumberMarkup(`sidebar:${item.key}`, item.value, { className: "dummy-recount-value" }) : '<strong class="dummy-recount-value">—</strong>'}</div>`;
   const [hero, ...rest] = view.damage;
   const headingNote = view.notModeled ? ` title="${escapeHtml(view.notModeled)}"` : "";
-  const damage = `<section class="dummy-recount-panel" aria-label="Estimated damage"><header class="dummy-recount-head"><span class="dummy-recount-tab"${headingNote}>Estimated damage (Level 85)</span></header><div class="dummy-recount-body">${damageRow(hero, true)}<div class="dummy-recount-pair sidebar-recount-trio">${rest.map((item) => damageRow(item, false)).join("")}</div></div></section>`;
-  const resistanceGrid = `<div class="resistance-grid sidebar-resistances">${view.resistances.map((item) => `<article class="${item.element.toLowerCase()}"><span><i class="sidebar-element sidebar-element-${item.element.toLowerCase()}" aria-hidden="true"></i>${escapeHtml(item.element)}</span><strong>${escapeHtml(`${format(item.value)}%`)}</strong></article>`).join("")}</div>`;
+  const damage = `<section class="dummy-recount-panel" aria-label="${t("Estimated damage")}"><header class="dummy-recount-head"><span class="dummy-recount-tab"${headingNote}>${t("Estimated damage (Level 85)")}</span></header><div class="dummy-recount-body">${damageRow(hero, true)}<div class="dummy-recount-pair sidebar-recount-trio">${rest.map((item) => damageRow(item, false)).join("")}</div></div></section>`;
+  const resistanceGrid = `<div class="resistance-grid sidebar-resistances">${view.resistances.map((item) => `<article class="${item.element.toLowerCase()}"><span><i class="sidebar-element sidebar-element-${item.element.toLowerCase()}" aria-hidden="true"></i>${escapeHtml(t(item.element))}</span><strong>${escapeHtml(`${format(item.value)}%`)}</strong></article>`).join("")}</div>`;
   const offence = view.offence.length ? section("Offence", view.offence.map(row).join("")) : "";
   const defence = section("Defence", view.defence.map(row).join("") + resistanceGrid);
   return `${sidebarSkillPickerMarkup(view, escapeHtml, icon)}<div class="stat-sheet-banner sidebar-damage">${damage}</div><div class="sidebar-stat-sections">${offence}${defence}</div>`;

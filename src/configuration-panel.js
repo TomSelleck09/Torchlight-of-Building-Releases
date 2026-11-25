@@ -5,6 +5,7 @@
 // modeled Reap source; 2026-10-23) and the rarely used number inputs (Advanced, collapsed; only those that apply, 2026-11-12) are shown.
 // Calculations are unchanged; every control writes the same combat state keys as before.
 import { escapeHtml } from "./html.js";
+import { displayGameText, t } from "./i18n.js";
 import { aimUptimeControl } from "./aim-controls.js";
 import { PRESS_SWITCH, PRESS_SWITCH_LABEL, PRESS_SWITCH_HELP } from "./press-schedule.js";
 
@@ -21,10 +22,10 @@ const groupConditions = { moving: "Movement", nearTarget: "Distance", lowLifeAss
 const energySkills = { aim: "Aim", entangledPain: "Entangled Pain", scorch: "Scorch" };
 
 const toggleRow = ({ label, note, attrs, checked, disabled = false }) =>
-  `<label class="toggle-row${disabled ? " energy-disabled-condition" : ""}"><span><strong>${escapeHtml(label)}</strong>${note ? `<small>${escapeHtml(note)}</small>` : ""}</span><input type="checkbox" ${attrs}${checked ? " checked" : ""}${disabled ? " disabled" : ""}></label>`;
+  `<label class="toggle-row${disabled ? " energy-disabled-condition" : ""}"><span><strong>${escapeHtml(t(label))}</strong>${note ? `<small>${escapeHtml(t(note))}</small>` : ""}</span><input type="checkbox" ${attrs}${checked ? " checked" : ""}${disabled ? " disabled" : ""}></label>`;
 
 const section = ({ key, title, count, open, body, extraClass = "" }) =>
-  `<details class="stat-section${extraClass ? ` ${extraClass}` : ""}" data-config-section="${key}"${open ? " open" : ""}><summary><span class="stat-section-title">${escapeHtml(title)}</span>${count == null ? "" : `<span class="stat-section-count">${count}</span>`}</summary><div class="stat-section-body">${body}</div></details>`;
+  `<details class="stat-section${extraClass ? ` ${extraClass}` : ""}" data-config-section="${key}"${open ? " open" : ""}><summary><span class="stat-section-title">${escapeHtml(t(title))}</span>${count == null ? "" : `<span class="stat-section-count">${count}</span>`}</summary><div class="stat-section-body">${body}</div></details>`;
 
 /** Which manual conditions this build has a source for: `probe` is the planner for the same build in automatic mode. */
 export function applicableManualConditions(planner, probe) {
@@ -46,18 +47,18 @@ function manualConditionsHtml(planner, probe, activeNames) {
       : active ? "On" : "Off";
     return toggleRow({ label, note, attrs: `data-combat-condition="${id}"`, checked: active, disabled: Boolean(sealed) });
   });
-  return rows.length ? rows.join("") : `<p class="stat-sheet-note">This build has no conditions to switch.</p>`;
+  return rows.length ? rows.join("") : `<p class="stat-sheet-note">${t("This build has no conditions to switch.")}</p>`;
 }
 
 function choicesHtml(assumptions, format) {
   return assumptions.map((item) => {
     const best = item.best ?? item.chosen;
-    const figures = item.compared.map((option) => `${option.label}: ${format(option.twentySecondDps)}`).join(" · ");
+    const figures = item.compared.map((option) => `${t(option.label)}: ${format(option.twentySecondDps)}`).join(" · ");
     const buttons = item.compared.map((option, index) => {
       const selected = option.label === item.chosen;
-      return `<button type="button" class="${selected ? "active" : ""}" aria-pressed="${selected}" data-config-choice="${escapeHtml(item.group)}" data-choice-index="${index}">${escapeHtml(option.label)}${option.label === best ? "<em>best</em>" : ""}</button>`;
+      return `<button type="button" class="${selected ? "active" : ""}" aria-pressed="${selected}" data-config-choice="${escapeHtml(item.group)}" data-choice-index="${index}">${escapeHtml(t(option.label))}${option.label === best ? `<em>${t("best")}</em>` : ""}</button>`;
     }).join("");
-    return `<div class="config-choice"><span><strong>${escapeHtml(item.group)}</strong><small>20 s DPS, steady comparison (the sidebar's window is the tick engine's) · ${escapeHtml(figures)}</small></span><div class="config-segmented" role="group" aria-label="${escapeHtml(item.group)}">${buttons}</div></div>`;
+    return `<div class="config-choice"><span><strong>${escapeHtml(t(item.group))}</strong><small>${escapeHtml(t("20 s DPS, steady comparison (the sidebar's window is the tick engine's)"))} · ${escapeHtml(figures)}</small></span><div class="config-segmented" role="group" aria-label="${escapeHtml(item.group)}">${buttons}</div></div>`;
   }).join("");
 }
 
@@ -73,7 +74,7 @@ function advancedHtml(planner, combat, probe) {
   const aimUptime = aimUptimeControl(undefined, planner.aim);
   const toggles = planner.firesAllure?.active ? toggleRow({ label: "Fire's Allure · enemy within 10 m", attrs: 'data-combat-condition="firesAllureNearby"', checked: combat.conditions?.firesAllureNearby !== false }) : "";
   const number = (label, key, value, { min, max, step = 1, readonly = false, title = "" } = {}) =>
-    `<label${title ? ` title="${escapeHtml(title)}"` : ""}><span>${escapeHtml(label)}</span><input type="number"${min != null ? ` min="${min}"` : ""}${max != null ? ` max="${max}"` : ""} step="${step}"${key ? ` data-combat-value="${key}"` : ""} value="${escapeHtml(String(value ?? ""))}"${readonly ? " readonly" : ""}></label>`;
+    `<label${title ? ` title="${escapeHtml(title)}"` : ""}><span>${escapeHtml(t(label))}</span><input type="number"${min != null ? ` min="${min}"` : ""}${max != null ? ` max="${max}"` : ""} step="${step}"${key ? ` data-combat-value="${key}"` : ""} value="${escapeHtml(String(value ?? ""))}"${readonly ? " readonly" : ""}></label>`;
   const manualAffliction = combat.conditionMode === "manual" && probe?.conditions?.affliction === true;
   const inputs = [
     planner.firesAllure?.active ? number("Scorch stacks for resistance reduction (best case by default)", "firesAllureScorchStacks", combat.firesAllureScorchStacks ?? planner.igniteLimit, { min: 0, max: planner.igniteLimit }) : "",
@@ -103,12 +104,12 @@ export function projectileLandingRows(planner) {
 function projectileHitsHtml(rows, combat, icon) {
   return rows.map((row) => {
     const saved = combat.projectileHits?.[row.setupKey];
-    const head = `<span class="config-projectile-skill">${icon(row.name)}<span><strong>${escapeHtml(row.name)}</strong>`;
+    const head = `<span class="config-projectile-skill">${icon(row.name)}<span><strong>${escapeHtml(displayGameText("skill", row.name))}</strong>`;
     if (!row.canHitSame) return `<div class="config-choice config-projectile-row">${head}<small>1 of ${row.fired} fired: extra projectiles can't hit the same enemy</small></span></span><span class="config-projectile-fixed" aria-label="${escapeHtml(row.name)}: 1 projectile hits the dummy">1</span></div>`;
     const set = Number.isInteger(saved) && saved >= 1;
-    const note = set ? `Set: ${row.landed} of ${row.fired}${saved > row.fired ? ` (saved ${saved}, ${row.fired} fired now)` : ""} · best case ${row.auto}` : `Auto: ${row.auto} of ${row.fired} (best case)`;
+    const note = set ? `Set: ${row.landed} of ${row.fired}${saved > row.fired ? ` (saved ${saved}, ${row.fired} fired now)` : ""} · best case ${row.auto}` : t("Auto: {auto} of {fired} (best case)", { auto: row.auto, fired: row.fired });
     const label = `Projectiles of ${row.name} hitting the dummy`;
-    return `<div class="config-choice config-projectile-row">${head}<small>${escapeHtml(note)}</small></span></span><span class="config-projectile-control"><input type="number" min="1" max="${row.fired}" step="1" inputmode="numeric" data-projectile-hits="${escapeHtml(row.setupKey)}" value="${set ? row.landed : ""}" placeholder="Auto: ${row.auto} of ${row.fired}" aria-label="${escapeHtml(label)}"><span class="config-segmented"><button type="button" class="${set ? "" : "active"}" aria-pressed="${!set}" data-projectile-hits-reset="${escapeHtml(row.setupKey)}" title="Back to the automatic best case">Auto</button></span></span></div>`;
+    return `<div class="config-choice config-projectile-row">${head}<small>${escapeHtml(note)}</small></span></span><span class="config-projectile-control"><input type="number" min="1" max="${row.fired}" step="1" inputmode="numeric" data-projectile-hits="${escapeHtml(row.setupKey)}" value="${set ? row.landed : ""}" placeholder="${escapeHtml(t("Auto: {auto} of {fired}", { auto: row.auto, fired: row.fired }))}" aria-label="${escapeHtml(label)}"><span class="config-segmented"><button type="button" class="${set ? "" : "active"}" aria-pressed="${!set}" data-projectile-hits-reset="${escapeHtml(row.setupKey)}" title="${t("Back to the automatic best case")}">${t("Auto")}</button></span></span></div>`;
   }).join("");
 }
 
@@ -147,7 +148,7 @@ export function configurationPanelMarkup({ planner, combat, probe = null, active
   const bestCase = planner.bestCaseAssumptions || [];
   // The press rotation's lines (one per pressed skill and the Main Skill's share; src/press-schedule.js), listed above the switches.
   const pressLines = (planner.pressRotation?.assumptions || []).filter((item) => item.id === "pressRotation" || /^pressRotation:(?!free$|unresolved$)/.test(item.id));
-  const bestCaseBody = `${pressLines.map((item) => `<p class="stat-sheet-note config-press-line">${escapeHtml(item.text)}</p>`).join("")}${bestCase.map((item) => `<label class="toggle-row" title="${escapeHtml(item.text)}"><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.note || item.text)}</small></span><input type="checkbox" data-best-case="${escapeHtml(item.toggle)}"${item.on !== false ? " checked" : ""}></label>`).join("")}`;
+  const bestCaseBody = `${pressLines.map((item) => `<p class="stat-sheet-note config-press-line">${escapeHtml(item.text)}</p>`).join("")}${bestCase.map((item) => `<label class="toggle-row" title="${escapeHtml(item.text)}"><span><strong>${escapeHtml(t(item.label))}</strong><small>${escapeHtml(item.note || item.text)}</small></span><input type="checkbox" data-best-case="${escapeHtml(item.toggle)}"${item.on !== false ? " checked" : ""}></label>`).join("")}`;
   const advanced = advancedHtml(planner, combat, probe);
   const projectileRows = projectileLandingRows(planner);
   const sections = [
@@ -157,5 +158,5 @@ export function configurationPanelMarkup({ planner, combat, probe = null, active
     projectileRows.length ? section({ key: "projectiles", title: "Projectiles hitting the dummy", count: projectileRows.length, open: open.projectiles !== false, body: projectileHitsHtml(projectileRows, combat, icon), extraClass: "config-projectiles" }) : "",
     advanced ? section({ key: "advanced", title: "Advanced", open: open.advanced, body: advanced }) : ""
   ].join("");
-  return `<section class="stat-sheet-banner stat-sheet-banner-wide config-banner" aria-label="Configuration"><h2>Configuration <small>${automatic ? "Best case" : "Manual"}</small><button type="button" class="config-best-case-button" data-best-case-reset>Set all to best case</button></h2><div class="config-sections">${sections}</div></section>`;
+  return `<section class="stat-sheet-banner stat-sheet-banner-wide config-banner" aria-label="${t("Configuration")}"><h2>${t("Configuration")} <small>${t(automatic ? "Best case" : "Manual")}</small><button type="button" class="config-best-case-button" data-best-case-reset>${t("Set all to best case")}</button></h2><div class="config-sections">${sections}</div></section>`;
 }

@@ -26,6 +26,9 @@ export const AURA_STAT_SCOPES = Object.freeze({
   // own additional factor beside the ones above (G1b, 2026-11-13).
   additionalAreaDamageCrowdPercent: { kind: "ledger" },
   additionalAreaAilmentDamageCrowdPercent: { kind: "ledger", requiresSkillTag: "Area" },
+  // Its crowd-gated "+X% Skill Area" (495834240): the hit's Skill Area readers (Rampage, Ignition Point) take it in combat (src/planner.js
+  // combatSkillArea); with none on the build it moves nothing.
+  skillAreaCrowdPercent: { kind: "skillArea" },
   additionalAilmentDamagePercent: { kind: "ledger" },
   additionalDamageOverTimePercent: { kind: "ledger" },
   afflictionPerSecond: { kind: "ledger" },
@@ -167,6 +170,12 @@ export function auraScopeCoverage(entry, planner) {
     if (scope?.requiresSkillTag && !mainTags.has(scope.requiresSkillTag)) { inactive.push(`${label}: ${main?.name || "the skill inflicting the ailment"} is not an ${scope.requiresSkillTag} skill`); continue; }
     if (!scope || scope.kind === "ledger") { notModeled.push(label); continue; }
     if (scope.kind === "resistance") { inCalc.push(`${label} (resistance model)`); continue; }
+    if (scope.kind === "skillArea") {
+      const readers = Object.values(planner?.supportEffects || {}).flatMap((effects) => (effects?.clauses || []).filter((clause) => clause.active && clause.skillArea).map((clause) => clause.support));
+      if (readers.length) inCalc.push(`${label} (the Skill Area readers: ${[...new Set(readers)].join(", ")})`);
+      else noEffect.push(`${label}: no Skill Area reader on the build (the dummy stands within the area)`);
+      continue;
+    }
     if (scope.kind === "none") { noEffect.push(`${label}: ${scope.reason}`); continue; }
     if (scope.kind === "speed") {
       const users = (planner?.skillHits || []).filter((hit) => hit.modeled && (hit.rate?.speedType || "cast-speed") === scope.speedType);

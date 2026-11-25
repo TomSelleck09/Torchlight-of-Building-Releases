@@ -905,13 +905,22 @@ export const FOLLOWER_BUFFS = [
       const rate = strikers.reduce((sum, entry) => sum + steepRateOf(entry), 0);
       if (!(rate > 0)) return { inactive: "the follower launches no Steep Strike (both Mammoth stones start at 0% Steep Strike chance: it needs a \"+X% Steep Strike Chance\" affix such as Raging Slash on one of its Slash-Strike skills); your own Steep Strikes do not count" };
       const mean = FOLLOWER_RECENT_SECONDS * rate;
-      let expected = 0, p = Math.exp(-mean), below = 0;
-      for (let k = 0; k < cap; k += 1) { expected += p * (1 + v) ** k; below += p; p *= mean / (k + 1); }
-      expected += (1 - below) * (1 + v) ** cap;
+      const expectedAt = (layers) => { let total = 0, p = Math.exp(-layers), below = 0; for (let k = 0; k < cap; k += 1) { total += p * (1 + v) ** k; below += p; p *= layers / (k + 1); } return total + (1 - below) * (1 + v) ** cap; };
+      const expected = expectedAt(mean);
       const value = round((expected - 1) * 100);
-      return { text: `+${value}% additional Steep Strike Damage`, origin: "buff", summary: `the follower's own Steep Strike casts (${strikers.map((entry) => `${entry.skill.shortName || entry.name} ${round(steepRateOf(entry))}/s`).join(", ")}): ${round(mean)} layers on average in ${FOLLOWER_RECENT_SECONDS} s (each its own timer, up to ${cap}), E[(1 + ${round(Number(match[1]))}%)^layers] = +${value}% additional Steep Strike Damage (game record 14163733; provisional: the follower's cadence)` };
+      // The opening (line sweep 2026-11-24): the layers come from the follower's own Steep Strike casts, so the 5 s / 20 s windows and the 60 s
+      // recount build them from each striker's first cast on the ring (followerCadence firstUseSeconds): N(t) ~ Poisson(Σ rate × min(t − first,
+      // 4 s)), E[(1 + v)^min(cap, N(t))], one point per 1/30 s frame until every striker's window is full (the R3 shape; the steady reading over
+      // time, so the sustained figure does not move). The part reaches the hits holding the line (their Steep Strike hits; on a hit with Sweep
+      // Slashes too the ramp is read on the whole hit: an approximation, as the Frost Spike Shadow part).
+      const firstOf = (entry) => Math.max(0, Number(entry.firstUseSeconds) || 0);
+      const layersAt = (time) => strikers.reduce((sum, entry) => sum + steepRateOf(entry) * Math.max(0, Math.min(FOLLOWER_RECENT_SECONDS, time - firstOf(entry))), 0);
+      const end = Math.max(...strikers.map(firstOf)) + FOLLOWER_RECENT_SECONDS;
+      const points = [];
+      for (let frame = 0; frame / 30 <= end + 1e-9; frame++) points.push([frame / 30, expectedAt(layersAt(frame / 30)) - 1]);
+      return { stepParts: [stepsPart({ kind: "steps", points, sustained: expected - 1 })], text: `+${value}% additional Steep Strike Damage`, origin: "buff", summary: `the follower's own Steep Strike casts (${strikers.map((entry) => `${entry.skill.shortName || entry.name} ${round(steepRateOf(entry))}/s`).join(", ")}): ${round(mean)} layers on average in ${FOLLOWER_RECENT_SECONDS} s (each its own timer, up to ${cap}), E[(1 + ${round(Number(match[1]))}%)^layers] = +${value}% additional Steep Strike Damage (game record 14163733; provisional: the follower's cadence)` };
     },
-    reason: "game code: only the follower's own Steep Strike casts add layers (4 s each, up to 8); expected factor over the follower's Steep Strike rate; only Steep Strike hits take it (patch notes: \"Slash Damage\"); the 5 s / 20 s windows read the steady expectation (provisional)"
+    reason: "game code: only the follower's own Steep Strike casts add layers (4 s each, up to 8); expected factor over the follower's Steep Strike rate; only Steep Strike hits take it (patch notes: \"Slash Damage\"); the 5 s / 20 s windows build the layers from the follower's first Steep Strike cast (provisional)"
   },
   {
     // Stone 90049's own affix 3578901 (chunk 14): on hit, a 4 s buff (node 306, mode 3, count 1) of attr 57201 mod 4 on the Spell tag: an enemy Spell Damage
@@ -1522,15 +1531,22 @@ const AFFIX_MARKERS = [
   },
   {
     // Shaking Conduct (Origin Thunder Slash): "+30% Numbed Effect for this unit and allies when a Steep Strike from this skill hits
-    // an enemy. Lasts 4s": uptime from the follower's Steep Strikes (steepShareOf).
+    // an enemy. Lasts 4s". Game record 1033360263 (config_modifier 776000020): trigger 1000033 on [this skill 5000002, Steep Strike
+    // 6001222] (the tag record 14163733 writes Steep Strike Damage on), then two node-306 carriers in mode 2, count 1, p1 s, attr 3401
+    // mod 3 (increased Effect) on the Numbed tag 5100009, on the follower ([1]) and on its friendly units ([20], you; condition 324):
+    // one buff, renewed by each Steep Strike hit of this skill (mode 2 refreshes an alive instance, proven: research/oq-aeterna-stack-
+    // modes-2026-11-04.md). So it needs this skill's own Steep Strikes (steepShareOf: base 0, field
+    // 2011002 default; research/oq-rosa-client-2026-11-05.md §3), Inactive at 0 (the attempt going to the rolling skill is the inferred
+    // link of open question follower-thunder-slash-steep-stacks), and holds at the follower's lines' Steep Strike uptime, one chance per
+    // cast: 1 − (1 − share)^(casts/s × D) (steepUptime, the 6 T Corrosive Throw F1 rule; min(1, D × casts/s) when every cast is one).
     pattern: /^\+(\d+(?:\.\d+)?)% Numbed Effect for this unit and allies when a Steep Strike from this skill hits an enemy\. Lasts (\d+(?:\.\d+)?) ?s$/i,
-    texts: (match, ctx) => { const uptime = Math.min(1, Number(match[2]) * steepRateOf(cadenceOf(ctx))); return uptime > 0 ? [`+${round(Number(match[1]) * uptime)}% Numbed Effect`] : []; },
+    texts: (match, ctx) => { const uptime = steepUptime(cadenceOf(ctx), Number(match[2])); return uptime > 0 ? [`+${round(Number(match[1]) * uptime)}% Numbed Effect`] : []; },
     read: (match, ctx) => {
-      const rate = steepRateOf(cadenceOf(ctx));
-      if (!(rate > 0)) return { status: "Inactive", reason: "the skill launches no Steep Strike (no Steep Strike chance on it or its support affixes)" };
+      const entry = cadenceOf(ctx), rate = steepRateOf(entry);
+      if (!(rate > 0)) return { status: "Inactive", reason: "the skill launches no Steep Strike (no Steep Strike chance on it or its support affixes: the follower's stones start at 0%, game field 2011002; record 1033360263 needs this skill's own Steep Strike hit)" };
       if (!onDummy(ctx, "Numbed")) return { status: "Inactive", reason: "the dummy is not Numbed" };
-      const uptime = Math.min(1, Number(match[2]) * rate);
-      return { status: "In calc", reason: `+${match[1]}% Numbed Effect for ${match[2]} s per follower Steep Strike (${round(rate)}/s): ${round(uptime * 100)}% uptime, time-averaged (src/combat-states.js; provisional)` };
+      const uptime = steepUptime(entry, Number(match[2]));
+      return { status: "In calc", reason: `+${match[1]}% Numbed Effect for ${match[2]} s after each of this skill's Steep Strikes (${round(steepCastShare(entry) * 100)}% of its casts, ${round(rate)}/s; record 1033360263, one buff renewed per Steep Strike hit): ${round(uptime * 100)}% uptime, time-averaged (src/combat-states.js; provisional)` };
     }
   },
   {

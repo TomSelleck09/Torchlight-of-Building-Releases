@@ -1,5 +1,7 @@
 import { escapeHtml } from "./html.js";
 import { formatShortNumber, toggleNumberMarkup } from "./dummy-recount-panel.js";
+import { formatChineseShort, usesChineseUnits } from "./number-units.js";
+import { t, tParts } from "./i18n.js";
 import { BASE_CRITICAL_DAMAGE_PERCENT } from "./game-attribute-defaults.js";
 
 // Build-driven Damage path views. The options follow what the build actually
@@ -74,6 +76,7 @@ export const STAGE_KINDS = Object.freeze({
 export function compactNumber(value, format = (n) => String(n)) {
   if (!Number.isFinite(value)) return "—";
   const abs = Math.abs(value);
+  if (usesChineseUnits() && abs >= 1e3) return abs >= 1e4 ? formatChineseShort(value) : format(Math.round(value));
   const units = [[1e15, "Q"], [1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]];
   const unit = units.find(([size]) => abs >= size);
   if (!unit) return format(Math.round(value * 100) / 100);
@@ -237,7 +240,7 @@ export function stageArithmetic(stage, { names = {}, format = (n) => String(n) }
  */
 export const perSourceRunning = (sources, render) => ({ value: sources.map((source) => render(source)).join(" · "), detail: sources.map((source) => `${escapeHtml(source.source)}: ${render(source)}`).join(" · ") });
 
-const feederRow = (row) => `<li class="damage-feed" tabindex="0" data-damage-source="${escapeHtml(row.source)}" data-damage-category="${escapeHtml(row.category)}"${row.share != null ? ` style="--share:${(row.share * 100).toFixed(1)}%"` : ""}><span class="damage-feed-name">${escapeHtml(row.source)}${row.text ? `<small>${escapeHtml(row.text)}</small>` : ""}</span><em class="damage-feed-tag">${escapeHtml(row.group)}</em><strong class="damage-feed-value">${row.value}</strong></li>`;
+const feederRow = (row) => `<li class="damage-feed" tabindex="0" data-damage-source="${escapeHtml(row.source)}" data-damage-category="${escapeHtml(row.category)}"${row.share != null ? ` style="--share:${(row.share * 100).toFixed(1)}%"` : ""}><span class="damage-feed-name">${escapeHtml(row.source)}${row.text ? `<small>${escapeHtml(row.text)}</small>` : ""}</span><em class="damage-feed-tag">${escapeHtml(t(row.group))}</em><strong class="damage-feed-value">${row.value}</strong></li>`;
 
 // One bucket of the pipeline: header (step, name, how it combines, factor, running value after it),
 // then the rule, the assumed conditions and the feeders ranked by contribution.
@@ -246,17 +249,17 @@ function stageMarkup(stage, index, { planner, format, names, open, connector }) 
   const rows = rankedFeeders(stage, { names });
   const { math, byOrigin } = stageArithmetic(stage, { names, format });
   const assumptions = stageAssumptions(stage, planner);
-  const feeders = rows.length ? `<ol class="damage-feeders" aria-label="Sources feeding this bucket">${rows.map(feederRow).join("")}</ol>` : "";
+  const feeders = rows.length ? `<ol class="damage-feeders" aria-label="${t("Sources feeding this bucket")}">${rows.map(feederRow).join("")}</ol>` : "";
   // The running value after the bucket; left out when it only repeats the bucket's own figure (base buckets).
   // A per-source running value ({ value, detail }) shows the figures prominently and the full source text on one
   // muted, ellipsized line (whole text in the title).
   const runningValue = stage.running && typeof stage.running === "object" ? stage.running.value : stage.running;
   const runningDetail = stage.running && typeof stage.running === "object" ? stage.running.detail : "";
-  const running = runningValue && runningValue !== stage.value ? `<span class="damage-stage-after"><span>${stage.kind === "base" ? "Starting value" : "Running value"}</span><strong${runningDetail ? ` title="${runningDetail}"` : ""}>${runningValue}</strong>${runningDetail ? `<small class="damage-stage-after-detail" title="${runningDetail}">${runningDetail}</small>` : ""}</span>` : "";
+  const running = runningValue && runningValue !== stage.value ? `<span class="damage-stage-after"><span>${t(stage.kind === "base" ? "Starting value" : "Running value")}</span><strong${runningDetail ? ` title="${runningDetail}"` : ""}>${runningValue}</strong>${runningDetail ? `<small class="damage-stage-after-detail" title="${runningDetail}">${runningDetail}</small>` : ""}</span>` : "";
   const notes = (stage.notes || []).map((note) => `<p class="stat-drill-note">${note}</p>`).join("");
-  const chips = assumptions.length ? `<ul class="damage-stage-assumptions" aria-label="Conditions assumed">${assumptions.map((tag) => `<li>${escapeHtml(tag)}</li>`).join("")}</ul>` : "";
-  const link = connector ? `<div class="damage-stage-link ${escapeHtml(stage.kind)}" aria-hidden="true"><span>${escapeHtml(connector)}</span></div>` : "";
-  const head =`<span class="damage-stage-step">${String(index + 1).padStart(2, "0")}</span><span class="damage-stage-head"><span class="stat-section-title">${stage.title}</span>${math ? `<span class="damage-stage-math">${escapeHtml(math)}</span>` : `<span class="damage-stage-kind">${escapeHtml(stage.action || kind.label)}</span>`}</span><strong class="damage-stage-value">${stage.value}</strong>${running}`;
+  const chips = assumptions.length ? `<ul class="damage-stage-assumptions" aria-label="${t("Conditions assumed")}">${assumptions.map((tag) => `<li>${escapeHtml(tag)}</li>`).join("")}</ul>` : "";
+  const link = connector ? `<div class="damage-stage-link ${escapeHtml(stage.kind)}" aria-hidden="true"><span>${escapeHtml(t(connector))}</span></div>` : "";
+  const head =`<span class="damage-stage-step">${String(index + 1).padStart(2, "0")}</span><span class="damage-stage-head"><span class="stat-section-title">${tParts(stage.title)}</span>${math ? `<span class="damage-stage-math">${escapeHtml(math)}</span>` : `<span class="damage-stage-kind">${escapeHtml(t(stage.action || kind.label))}</span>`}</span><strong class="damage-stage-value">${stage.value}</strong>${running}`;
   return `${link}<details class="stat-section damage-stage ${escapeHtml(stage.kind)}"${open ? " open" : ""} data-damage-stage="${escapeHtml(stage.key || stage.title)}"><summary>${head}</summary><div class="stat-section-body">${byOrigin ? `<p class="damage-stage-origins">${escapeHtml(byOrigin)}</p>` : ""}<p class="stat-drill-formula damage-stage-rule">${stage.rule || ""}</p>${notes}${chips}${feeders}</div></details>`;
 }
 
@@ -278,10 +281,10 @@ export function stageChainMarkup(model, format) {
   const stages = model.stages.filter((stage) => !stageEmpty(stage) && stage.kind !== "info");
   const chips = stages.map((stage) => {
     const op = stage.op || model.chainOp || STAGE_KINDS[stage.kind]?.op || "×";
-    return `<li class="damage-chain-stage ${escapeHtml(stage.kind)}"${stage.kind === "base" ? "" : ` data-op="${op}"`}><span>${escapeHtml(stage.chainLabel || stage.title.replace(/<[^>]+>/g, ""))}</span><strong>${chipFor(stage, format)}</strong></li>`;
+    return `<li class="damage-chain-stage ${escapeHtml(stage.kind)}"${stage.kind === "base" ? "" : ` data-op="${op}"`}><span>${escapeHtml(tParts(stage.chainLabel || stage.title.replace(/<[^>]+>/g, "")))}</span><strong>${chipFor(stage, format)}</strong></li>`;
   });
-  chips.push(`<li class="damage-chain-stage result" data-op="="><span>${escapeHtml(model.final.chainLabel || "Result")}</span><strong>${model.final.compact || compactRange(model.final.raw, format)}${model.final.unit ? `<small>${escapeHtml(model.final.unit)}</small>` : ""}</strong></li>`);
-  return `<ol class="damage-chain" aria-label="How the stages combine">${chips.join("")}</ol>`;
+  chips.push(`<li class="damage-chain-stage result" data-op="="><span>${escapeHtml(tParts(model.final.chainLabel || "Result"))}</span><strong>${model.final.compact || compactRange(model.final.raw, format)}${model.final.unit ? `<small>${escapeHtml(t(model.final.unit))}</small>` : ""}</strong></li>`);
+  return `<ol class="damage-chain" aria-label="${t("How the stages combine")}">${chips.join("")}</ol>`;
 }
 
 // Large figures are truncated ("21.84 Trillion") and expand to the full integer on click (2026-10-13); the unit
@@ -295,7 +298,7 @@ const heroValue = (final, format, id = final.label) => {
   const short = final.text || (range ? `${formatShortNumber(raw.min)}–${formatShortNumber(raw.max)}` : Number.isFinite(single) && Math.abs(single) >= 1000 ? formatShortNumber(single) : full);
   const value = range ? raw.max : single;
   const figure = short === full ? `<strong class="damage-path-hero-value">${escapeHtml(full)}</strong>` : toggleNumberMarkup(`path:${id}`, value, { className: "damage-path-hero-value", unitClass: "damage-path-hero-magnitude", short, full });
-  return `${figure}${final.unit ? `<span class="damage-path-hero-unit">${escapeHtml(final.unit)}</span>` : ""}`;
+  return `${figure}${final.unit ? `<span class="damage-path-hero-unit">${escapeHtml(t(final.unit))}</span>` : ""}`;
 };
 
 /**
@@ -304,7 +307,7 @@ const heroValue = (final, format, id = final.label) => {
  * <details>.
  */
 export function extraSectionMarkup({ title, count = null, open = false, body = "", className = "", attrs = "" }) {
-  return `<details class="stat-section damage-extra${className ? ` ${className}` : ""}"${open ? " open" : ""}${attrs ? ` ${attrs}` : ""}><summary><span class="stat-section-title">${escapeHtml(title)}</span>${count == null ? "" : `<span class="stat-section-count">${escapeHtml(String(count))}</span>`}</summary><div class="stat-section-body">${body}</div></details>`;
+  return `<details class="stat-section damage-extra${className ? ` ${className}` : ""}"${open ? " open" : ""}${attrs ? ` ${attrs}` : ""}><summary><span class="stat-section-title">${escapeHtml(t(title))}</span>${count == null ? "" : `<span class="stat-section-count">${escapeHtml(String(count))}</span>`}</summary><div class="stat-section-body">${body}</div></details>`;
 }
 
 /**
@@ -316,12 +319,12 @@ export function pathMarkup(model, { planner = null, format = (n) => String(n), n
   const stageAssumed = new Set(stages.flatMap((stage) => stageAssumptions(stage, planner)));
   const assumed = [...new Set([...(model.assumptions || []), ...stageAssumed])];
   const windows = (model.windows || []).filter((item) => item && item.value != null && item.value !== "");
-  const windowsMarkup = windows.length ? `<dl class="damage-path-windows">${windows.map((item) => `<div${item.emphasis ? ' class="emphasis"' : ""}><dt>${escapeHtml(item.label)}</dt><dd>${escapeHtml(item.value)}${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</dd></div>`).join("")}</dl>` : "";
-  const assumedMarkup = assumed.length ? `<div class="damage-path-assumed"><span>Assumes</span><ul>${assumed.map((tag) => `<li>${escapeHtml(tag)}</li>`).join("")}</ul></div>` : "";
-  const extras = (model.sections || []).map((section) => extraSectionMarkup({ title: section.title, count: section.rows.length, open: section.open, body: section.rows.map((row) => `<div class="stat-sheet-row"${row.title ? ` title="${escapeHtml(row.title)}"` : ""}><span class="stat-row-label">${escapeHtml(row.label)}</span><strong class="stat-row-value">${escapeHtml(row.value)}${row.detail ? `<small>${escapeHtml(row.detail)}</small>` : ""}</strong></div>`).join("") })).join("");
+  const windowsMarkup = windows.length ? `<dl class="damage-path-windows">${windows.map((item) => `<div${item.emphasis ? ' class="emphasis"' : ""}><dt>${escapeHtml(tParts(item.label))}</dt><dd>${escapeHtml(item.value)}${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</dd></div>`).join("")}</dl>` : "";
+  const assumedMarkup = assumed.length ? `<div class="damage-path-assumed"><span>${t("Assumes")}</span><ul>${assumed.map((tag) => `<li>${escapeHtml(tag)}</li>`).join("")}</ul></div>` : "";
+  const extras = (model.sections || []).map((section) => extraSectionMarkup({ title: section.title, count: section.rows.length, open: section.open, body: section.rows.map((row) => `<div class="stat-sheet-row"${row.title ? ` title="${escapeHtml(row.title)}"` : ""}><span class="stat-row-label">${escapeHtml(tParts(row.label))}</span><strong class="stat-row-value">${escapeHtml(row.value)}${row.detail ? `<small>${escapeHtml(row.detail)}</small>` : ""}</strong></div>`).join("") })).join("");
   const notes = (model.footnotes || []).filter(Boolean);
   const footnotes = notes.length ? extraSectionMarkup({ title: "Notes", count: notes.length, open: false, className: "damage-path-notes", body: notes.map((note) => `<div class="stat-sheet-row"><span class="stat-row-label">${note}</span></div>`).join("") }) : "";
-  return `<section class="damage-path-section" aria-label="${escapeHtml(model.ariaLabel || `${model.title} calculation`)}"><header class="stat-sheet-banner damage-path-summary"><h2>${escapeHtml(model.title)}${model.subtitle ? ` <small>${escapeHtml(model.subtitle)}</small>` : ""}</h2><div class="damage-path-hero"><span class="damage-path-hero-label">${escapeHtml(model.final.label)}</span><div class="damage-path-hero-figure">${heroValue(model.final, format, `${model.title}:${model.final.label}`)}</div>${model.final.note ? `<small class="damage-path-hero-note">${escapeHtml(model.final.note)}</small>` : ""}</div>${stageChainMarkup(model, format)}${windowsMarkup}${assumedMarkup}</header>${model.afterSummary || ""}${model.intro ? `<p class="damage-path-intro">${model.intro}</p>` : ""}<div class="damage-path-stages">${stages.map((stage, index) => stageMarkup(stage, index, { planner, format, names, open: openStages && stage.kind !== "info", connector: index ? connectorLabel(stage, model) : "" })).join("")}</div>${extras}${footnotes}</section>`;
+  return `<section class="damage-path-section" aria-label="${escapeHtml(model.ariaLabel || `${model.title} calculation`)}"><header class="stat-sheet-banner damage-path-summary"><h2>${escapeHtml(tParts(model.title))}${model.subtitle ? ` <small>${escapeHtml(tParts(model.subtitle))}</small>` : ""}</h2><div class="damage-path-hero"><span class="damage-path-hero-label">${escapeHtml(tParts(model.final.label))}</span><div class="damage-path-hero-figure">${heroValue(model.final, format, `${model.title}:${model.final.label}`)}</div>${model.final.note ? `<small class="damage-path-hero-note">${escapeHtml(model.final.note)}</small>` : ""}</div>${stageChainMarkup(model, format)}${windowsMarkup}${assumedMarkup}</header>${model.afterSummary || ""}${model.intro ? `<p class="damage-path-intro">${model.intro}</p>` : ""}<div class="damage-path-stages">${stages.map((stage, index) => stageMarkup(stage, index, { planner, format, names, open: openStages && stage.kind !== "info", connector: index ? connectorLabel(stage, model) : "" })).join("")}</div>${extras}${footnotes}</section>`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -470,7 +473,7 @@ export function multiReapingPathMarkup(window, { format, label = "20-second aver
 
 /** A path with nothing to show (no Reaping source, no hit model): the summary frame with the note. */
 export function emptyPathMarkup(model) {
-  return `<section class="damage-path-section" aria-label="${escapeHtml(model.ariaLabel || model.title)}"><header class="stat-sheet-banner damage-path-summary damage-path-summary-empty"><h2>${escapeHtml(model.title)}${model.subtitle ? ` <small>${escapeHtml(model.subtitle)}</small>` : ""}</h2><p class="damage-path-intro">${model.intro}</p></header></section>`;
+  return `<section class="damage-path-section" aria-label="${escapeHtml(model.ariaLabel || model.title)}"><header class="stat-sheet-banner damage-path-summary damage-path-summary-empty"><h2>${escapeHtml(tParts(model.title))}${model.subtitle ? ` <small>${escapeHtml(tParts(model.subtitle))}</small>` : ""}</h2><p class="damage-path-intro">${model.intro}</p></header></section>`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -538,7 +541,7 @@ export function illOmenCardMarkup(illOmen, { format = (n) => String(n) } = {}) {
     `Reap Purification ${illOmen.reapPurification?.active ? "active" : "inactive"}`
   ].join(" · ");
   const tiles = illOmen.tiles.map((tile) => `<div${tile.key === "elite" && illOmen.main?.applied ? ' class="emphasis"' : ""} data-ill-omen-tile="${escapeHtml(tile.key)}"><dt>${escapeHtml(tile.label)}</dt><dd>${escapeHtml(tile.value)}<small>${escapeHtml(tile.explanation)}</small></dd></div>`).join("");
-  return `<section class="damage-path-section ill-omen-card" aria-label="Ill Omen beyond the dummy" data-ill-omen-card><header class="stat-sheet-banner damage-path-summary"><h2>Ill Omen (beyond the dummy) <small>${escapeHtml(tag)}</small></h2><p class="damage-path-intro">${escapeHtml(subline)}</p><dl class="damage-path-windows">${tiles}</dl><p class="damage-path-footnote">Working: ${escapeHtml(illOmen.working)}</p></header></section>`;
+  return `<section class="damage-path-section ill-omen-card" aria-label="${t("Ill Omen beyond the dummy")}" data-ill-omen-card><header class="stat-sheet-banner damage-path-summary"><h2>Ill Omen (beyond the dummy) <small>${escapeHtml(tag)}</small></h2><p class="damage-path-intro">${escapeHtml(subline)}</p><dl class="damage-path-windows">${tiles}</dl><p class="damage-path-footnote">Working: ${escapeHtml(illOmen.working)}</p></header></section>`;
 }
 
 export function combinedPathMarkup(paths, { format, planner = null, names = {}, recountTotalDps = null, recountShares = [] } = {}) {

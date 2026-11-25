@@ -4304,7 +4304,7 @@ body.layout-tabs .config-reset-panel #reset-build:hover,body.layout-tabs .config
 body.layout-tabs .config-reset-panel #reset-build svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 
 /* Narrow widths: the sidebar stacks above the content; the header drops the season title. */
-@media(max-width:1400px){body.layout-tabs .site-header .season-heading{display:none!important}}
+@media(max-width:1540px){body.layout-tabs .site-header .season-heading{display:none!important}}
 /* Below 1280 px the tree list sits above the talent tree, so the tree keeps its full width beside the sidebar. */
 @media(max-width:1279px){
   body.layout-tabs.unified-planner main #talents-view:not([hidden]){grid-template-columns:minmax(0,1fr)!important}
@@ -5014,3 +5014,17 @@ body.unified-planner #equipment-view .gear-workbench .equipment-item.two-handed-
 body.unified-planner #equipment-view .gear-workbench .equipment-item.two-handed-stored{border-color:#6a5a3c}
 body.unified-planner.layout-tabs #overview-gear .equipment-item.two-handed-blocked{border-color:#3a4655;background:#0c1118}
 body.unified-planner.layout-tabs #overview-gear .equipment-item.two-handed-blocked b{width:100%;height:100%;border:0;background:transparent}
+
+/* Language selector (user request 2026-11-24; src/i18n-dom.js): the header's last button, the command-button style, a flag before the
+   short label; its menu is the Import ▾ header menu. The flags are filled SVG, not the header's stroked icons. */
+body .site-header .header-actions .command-button svg.language-flag,body.layout-tabs .site-header .header-menu>button svg.language-flag{width:18px;height:12px;flex:none;fill:none;stroke:none;border:1px solid rgba(255,230,166,.35);border-radius:2px;box-sizing:content-box;overflow:hidden}
+body .site-header .header-actions svg.language-flag path[stroke]{stroke:#fff}
+body.layout-tabs .header-menu.language-menu{min-width:170px}
+body.layout-tabs .site-header .header-menu>button.language-option{justify-content:flex-start}
+body.layout-tabs .site-header .header-menu>button.language-option .language-option-name{flex:1}
+body.layout-tabs .site-header .header-menu>button.language-option .language-check{width:14px;color:#f9ca65;font-weight:700;text-align:center}
+body.layout-tabs .site-header .header-menu>button.language-option.current{color:#fff1bd}
+/* Display language (2026-11-24): CSS-generated labels in Simplified Chinese (html lang set by src/i18n.js). */
+html[lang="zh-CN"] body.unified-planner .hero-identity:before{content:"英雄特性";letter-spacing:.08em}
+html[lang="zh-CN"] body.unified-planner .follower-identity:before{content:"追随者"}
+html[lang="zh-CN"] .talent-board-tabs:before{content:"天赋面板"}

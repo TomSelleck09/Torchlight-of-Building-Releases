@@ -92,10 +92,11 @@ const scaled = (path, key, fields, factor) => ({ ...path, key, ...fields, parts:
  * @param {Record<string, object>} p.paths every path so far (the Main Skill's final path and its step sub-paths included)
  * @param {object[]} p.actions the plain program's actions (the Main Skill's own one is queued behind the trigger)
  * @param {Map} p.layered the general layers' path and events of each hit (src/tick-layers.js finishTarget)
- * @returns {{ paths, actions, replaced: Map<string, object>, seriesKeys: string[], items: [{ key, mainKey, mainPath, netPath, usesPerCast, mainShare }],
+ * @param {Map} [p.handsSplit] src/tick-plain-skills.js compilePlainProgram's hands split of each cast skill's action
+ * @returns {{ paths, actions, replaced: Map<string, object | null> (null: the action leaves the loop), seriesKeys: string[], items: [{ key, mainKey, mainPath, netPath, usesPerCast, mainShare }],
  *   layers, assumptions } | null}
  */
-export function compileTriggerMains(planner, { hits, paths, actions, layered }) {
+export function compileTriggerMains(planner, { hits, paths, actions, layered, handsSplit = new Map() }) {
   const pairs = loopTriggers(planner, hits);
   if (!pairs.length) return null;
   const out = { paths: {}, actions: [], replaced: new Map(), seriesKeys: [], items: [], layers: [], assumptions: [] };
@@ -141,14 +142,33 @@ export function compileTriggerMains(planner, { hits, paths, actions, layered }) 
       ...(cumulative.length > 1 ? { pressEffects: cumulative.slice(0, -1).map((at) => ({ kind: "delay", seconds: at, effects: castEnd })) } : {}),
       effects: repeatEffects(castEnd, batch)
     });
-    out.replaced.set(mainAction.key, { ...mainAction, queue: triggerMainQueue(main.key), priority: 1 });
+    // Only the uses that take your hands queue behind the casts (2026-11-24; src/vendetta-model.js handsDps): the Main Skill's uses that need
+    // no player time (rate.handsFree: outside triggers on their own clocks) run as their own actions (src/tick-plain-skills.js hands split),
+    // and Banishment's Steep Strike casts keep the share its free casts launch plus the presses' share of the time the casts leave them
+    // (the presses run only in the manual time: (cycle − sequence) ÷ cycle). Without a hands split the whole action queues, as before.
+    const split = handsSplit.get(mainAction.key) || null;
+    out.replaced.set(mainAction.key, { ...(split?.hands ?? mainAction), queue: triggerMainQueue(main.key), priority: 1 });
+    const handsNotes = [];
+    if (split) {
+      Object.assign(out.paths, split.paths);
+      out.actions.push(...split.free);
+      if (split.free.length) handsNotes.push(`${split.free.length} stream${split.free.length > 1 ? "s" : ""} of ${main.name} uses that need no player time as their own action${split.free.length > 1 ? "s" : ""} (${split.free.map((action) => action.label).join("; ")})`);
+      if (split.steep) {
+        const manualShare = rate.cycleSeconds > 0 ? Math.max(0, rate.cycleSeconds - rate.sequenceSeconds) / rate.cycleSeconds : 0;
+        const scale = split.steep.freeShare + (1 - split.steep.freeShare) * manualShare;
+        if (scale < 1 - 1e-12) {
+          out.replaced.set(split.steep.key, scale > 1e-12 ? split.steep.at(scale) : null);
+          handsNotes.push(`Banishment's Steep Strike casts at ${round(scale * 100)}% of their rate (${round(split.steep.freeShare * 100)}% launched by the free casts, the rest ride the presses, which keep ${round(manualShare * 100)}% of the time)`);
+        }
+      }
+    }
     // Leisurely Stroll: the manual uses read −X% while Incisive is up (the planner's lostPerCycle holds it as the manual time's Incisive share).
     if (incisive?.penalty) for (const [key, path] of Object.entries(paths)) {
-      if (key !== main.key && path?.source !== main.key) continue;
+      if ((key !== main.key && path?.source !== main.key) || path?.handsFree) continue;
       out.paths[key] = { ...path, modifiers: [...(path.modifiers || []), { source: incisive.penalty.source, text: incisive.penalty.text, buff: "incisive", layer: "additional", liveKey: "incisive", percent: -incisive.penalty.percent, steadyAmount: 0 }] };
     }
     const manual = rate.cycleSeconds - rate.sequenceSeconds;
-    out.layers.push({ key: `triggerMain:${trigger.setupKey ?? trigger.key}`, label: `${trigger.name} triggers ${main.name}`, lines: [], events: `${rate.repeats > 1 ? `${rate.repeats} casts a sequence (the repeats at their steady times from the press)` : "one cast"} of ${round(rate.sequenceSeconds)} s at the Main Skill's live Attack Speed${cooldown > 0 ? `, ${round(cooldown)} s cooldown from the press` : ", no cooldown"}, ahead of ${main.name}'s own uses on one queue (the player's hands)${manual > 1e-9 ? `, which fill the ${round(manual)} s left of each cycle` : ", which never run"}; each cast end lands ${round(usesPerCast)} triggered ${main.name} uses on its layered path at ${round(combat.perTrigger / main.combat.perUse)} × its per-use damage${incisive ? ", after Incisive's gain" : ""}; ${round(mainShare * 100)}% of each to ${main.name}'s row, the rest to the net row (the planner's accounting)` });
+    out.layers.push({ key: `triggerMain:${trigger.setupKey ?? trigger.key}`, label: `${trigger.name} triggers ${main.name}`, lines: [], events: `${rate.repeats > 1 ? `${rate.repeats} casts a sequence (the repeats at their steady times from the press)` : "one cast"} of ${round(rate.sequenceSeconds)} s at the Main Skill's live Attack Speed${cooldown > 0 ? `, ${round(cooldown)} s cooldown from the press` : ", no cooldown"}, ahead of ${main.name}'s own uses on one queue (the player's hands)${manual > 1e-9 ? `, which fill the ${round(manual)} s left of each cycle` : ", which never run"}; each cast end lands ${round(usesPerCast)} triggered ${main.name} uses on its layered path at ${round(combat.perTrigger / main.combat.perUse)} × its per-use damage${incisive ? ", after Incisive's gain" : ""}; ${round(mainShare * 100)}% of each to ${main.name}'s row, the rest to the net row (the planner's accounting)${handsNotes.length ? `; ${handsNotes.join("; ")}` : ""}` });
     out.assumptions.push({ id: `tick:triggerMain:${trigger.setupKey ?? trigger.key}`, value: round(usesPerCast), text: `${trigger.name}: a loop action on the player's hands, ahead of ${main.name}'s own uses; each cast lands its triggered ${main.name} uses (${round(usesPerCast)} expected) on the Main Skill's layered path, so the clean dummy's ramp reaches them (open question tick-trigger-main-queue).` });
   }
   return out.actions.length ? out : null;

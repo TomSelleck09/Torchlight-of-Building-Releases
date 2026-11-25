@@ -132,7 +132,7 @@ const DEFINITIONS = [
     notes: [CONVERSION_NOTE("Frost Impact", "Cold"), "Frost Impact: the Freeze interplay (a Demolisher Charge on inflicting Freeze, Interval 3 s) needs a Freeze rate and is not modeled. The game description reads 50% Physical→Cold; the reference data's 100% is used."] },
   { name: "Berserking Blade", delivery: "attack-melee", weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to swords, axes, and cudgels") },
     components: slashStrike(171, 172),
-    notes: ["Berserking Blade: its buff stacks (on defeating an enemy or hitting an Elite; the dummy counts as an Elite) only raise Skill Area, so they have no DPS effect on one dummy."] },
+    notes: ["Berserking Blade: its buff stacks (on defeating an enemy or hitting an Elite; the dummy counts as an Elite) only raise Skill Area: no DPS effect on one dummy unless a Skill Area reader on the setup (Berserking Blade: Rampage, Ignition Point) reads them (src/support-conditional-batch4.js ownSkillAreaBuff)."] },
   { name: "Double Thrusts", delivery: "attack-melee", weaponScaling: { baseTypes: ["Physical"], restriction: restriction("Limited to duel wielding One-Handed Swords, Claws, and Daggers.") },
     components: [{ key: "thrusts", label: "Thrusts", groupId: 241, perUse: 2, ...text("game description (group 241): two successive hits per use") }],
     notes: ["Double Thrusts: a Shadow Strike skill — Shadow Quantity is 0 by default (game manual 1001010820); gear / support Shadow Quantity repeats both thrusts per Shadow (src/skill-hit-model.js shadowState). \"+30% additional Trauma Damage on the second thrust if the first inflicts Trauma\" is not applied; its +20% Trauma chance reaches the ailment model through the skill text."] },

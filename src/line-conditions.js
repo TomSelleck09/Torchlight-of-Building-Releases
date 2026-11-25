@@ -194,6 +194,13 @@ const LINE_RULES = [
   // target 4000560; condition-unread batch 3). The plain "damage" wording is read by src/build-mechanics.js (handledElsewhere) first.
   // ("… for you and your Minions against Cursed enemies" stays with its own rule below, which keeps the Cursed wording in the body.)
   [/^(?!.*for you and your Minions)(.+?) (?:against|to) Cursed enemies$/, (m) => ({ body: m[1], key: "cursed" })],
+  // Nether King's Divinity: Banishment's Bonus Effect Quagmire (config_modifier 151200601 = affix 276911968 [10]; not in the generated recipe
+  // table, read from the raw config_affix_effect rows 2026-11-24): trigger 1000031 on the Terra tag 6000370 (a hit, or a DoT's value being set:
+  // the Terra's own damage over time too), local 0 = GetBuffCfgIdCountByTag([Curse 5100301]) on the event's other unit (the target), then one
+  // attr 5719 mod 4 write of P1 × l0 on that damage (proven): +10% × the distinct curse records on the dummy as one additional factor, not
+  // (1.1)^n, and not scaled by Curse Effect. "+X% additional Terra Skill Damage" reaches a Terra's hits and its own damage over time
+  // (OWN_DOT_SKILL_TAGS, user decision 2026-10-31 C-2), so the Reaps that settle it; never an ailment (an ailment record drops the Terra tag).
+  [new RegExp(`^Terra Skills deal ${N}% additional damage to an enemy for every Curse Effect on (?:that|the) enemy$`, "i"), (m) => ({ body: `+${m[1].replace(/^\+/, "")}% additional Terra Skill Damage`, key: "cursesOnEnemy" })],
   [/^(.+?) (?:dealt )?to Nearby enemies$/, (m) => ({ body: m[1], key: "nearTarget" })],
   // Dual Kismet: Mighty Arrow's second line. The set's row 100350834 holds 340433984 "additional Attack Horizontal Projectile Damage dealt to nearby enemies": attr 5719 on the hit,
   // within 6 m (node 189), so it is your own damage and the Distant alternative drops it; the header's "taken by" is only the kismet's printed text (chunk 13).
@@ -434,6 +441,11 @@ const LINE_RULES = [
   [/^(.+?) if you have triggered (Shield|Energy Shield|Life) Regain in the last (\d+(?:\.\d+)?) ?s$/, (m) => ({ body: m[1], key: "regained", params: { seconds: num(m[3]), pool: /Life/.test(m[2]) ? "life" : "energyShield" } })],
   // Durations may be decimal after Judgment scaling ("+14% additional damage for 5.6s after using Mobility Skills", 2026-10-27).
   [/^(.+?) for \d+(?:\.\d+)? ?s after using Mobility Skills$/, (m) => ({ body: m[1], key: "mobility" })],
+  // Nether King's Divinity: Banishment's Bonus Effect Shadow Strike (affix 151352640 row 1: trigger 1000069 on [Mobility 6000010, Attack 6001090],
+  // node 306 mode 3, 4 s, count 1, attr 57191 mod 4 = P1 on the Shadow Strike tag 6001210; raw row 2026-11-24): the same Mobility best case, for
+  // an Attack Mobility skill only; its 4 s is a Mobility damage window (src/press-schedule.js mobilityNeeds), so the skill is pressed at least
+  // that often. Shadow Strike skills' hits only (an ailment record drops the tag).
+  [/^(.+?) for \d+(?:\.\d+)? ?s after casting an Attack Mobility Skill$/, (m) => ({ body: m[1], key: "mobility", params: { attack: true } })],
   // Dual Kismet: Sky Piercer (census #5, 2026-10-27): "+20% Attack Horizontal Projectile Speed and +15% additional Attack Horizontal
   // Projectile Damage within 5s after using a Mobility Skill": the Mobility best case (user rule 2026-10-14); projectile speed has no
   // DPS effect on the dummy, so only the damage part is a body.
@@ -806,6 +818,15 @@ function resolveKey(condition, state) {
   switch (key) {
     // ---- support keys (unchanged readings; src/support-effects.js) ----
     case "cursed": return (buffs ? buffs.holds("Cursed") : state.cursed) ? on("the dummy carries a Curse", { appliedValue: value }) : off("the dummy carries no Curse", { appliedValue: 0 });
+    // Quagmire (affix 276911968): GetBuffCfgIdCountByTag([5100301]) on the dummy, each curse record once: the unit buff set's curse entries
+    // (stage "curse", by name: the board's curse skills and the gear-triggered curses, past the curse limit too, each held as the curse model
+    // holds it), × that count as one write.
+    case "cursesOnEnemy": {
+      const names = buffs ? buffs.types("Cursed") : state.cursed ? [...new Set(state.curseSkillNames || [])] : [];
+      const count = names.length || (state.cursed && !buffs ? 1 : 0);
+      if (state.activeDamageTags && !state.activeDamageTags.has("Terra")) return off("no Terra Skill deals damage on the dummy");
+      return count > 0 ? on(`${count} curse record${count === 1 ? "" : "s"} on the dummy (${names.join(", ") || "a granted curse"}): × ${count} as one write (affix 276911968: P1 × GetBuffCfgIdCountByTag([Curse 5100301]) on the target; each curse held as the curse model holds it)`, { factor: count }) : off("the dummy carries no Curse (GetBuffCfgIdCountByTag([Curse 5100301]) = 0)");
+    }
     case "numbed": return has("Numbed") ? on(`the build inflicts Numbed; ${NUMBED_MAX_STACKS} stacks assumed (best case, stack count not modeled: provisional)`, { appliedValue: value + (condition.perStack || 0) * NUMBED_MAX_STACKS, provisional: true }) : off("the build inflicts no Numbed", { appliedValue: 0 });
     case "frozen": return has("Frozen") ? on("the dummy is Frozen", { appliedValue: value }) : off("the build does not Freeze the dummy (Freeze is not modeled)", { appliedValue: 0 });
     case "anyAilment": { const share = buffs ? buffs.share("Ailment") : groupShare([...ailments]); return (buffs ? buffs.count("Ailment") : state.enemyAilmentTypeCount || 0) > 0 && share > 0 ? groupOn(share, "an ailment on the dummy (enemy-ailment model)") : off("no ailment on the dummy"); }
@@ -1062,7 +1083,7 @@ function resolveKey(condition, state) {
     case "movedRecently": return state.movedRecently !== false ? on(`moved recently${params.meters ? ` (more than ${params.meters} m)` : ""}: best case, you reposition between attacks (user rule 2026-10-14); held even while standing still`) : off("moved recently is off (condition 'Moved recently')");
     // After using a Mobility Skill (user rule 2026-10-14: mobility skill use is constant when the build has one): active when a
     // Mobility skill is installed and enabled on the skill board, switched by the mobilitySkillUsed condition.
-    case "mobility": return !state.hasMobilitySkill ? off("no Mobility Skill on the skill board") : state.mobilitySkillUsed !== false ? on(`a Mobility Skill used recently: best case, ${state.mobilitySkillNames?.length ? state.mobilitySkillNames.join(", ") : "the build's Mobility Skill"} is used constantly (user rule 2026-10-14)`) : off("Mobility Skill used recently is off (condition 'Mobility Skill used recently')");
+    case "mobility": return !state.hasMobilitySkill ? off("no Mobility Skill on the skill board") : params.attack && Array.isArray(state.attackMobilitySkillNames) && !state.attackMobilitySkillNames.length ? off("no Attack Mobility Skill on the skill board") : params.attack && state.mobilitySkillUsed !== false ? on(`an Attack Mobility Skill cast recently: best case, ${state.attackMobilitySkillNames?.length ? state.attackMobilitySkillNames.join(", ") : "the build's Attack Mobility Skill"} is used constantly (user rule 2026-10-14; as often as this window needs, user decision 2026-11-23)`) : state.mobilitySkillUsed !== false ? on(`a Mobility Skill used recently: best case, ${state.mobilitySkillNames?.length ? state.mobilitySkillNames.join(", ") : "the build's Mobility Skill"} is used constantly (user rule 2026-10-14)`) : off("Mobility Skill used recently is off (condition 'Mobility Skill used recently')");
     case "regained": {
       const regain = state.regain;
       if (!regain) return off("Regain events not resolved (no combat state)");

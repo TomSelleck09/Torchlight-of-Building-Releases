@@ -1,4 +1,5 @@
 import { escapeHtml } from "./html.js";
+import { t } from "./i18n.js";
 import { extraSectionMarkup } from "./damage-path-views.js";
 import { openQuestionsFor } from "./open-questions.js";
 
@@ -10,12 +11,12 @@ import { openQuestionsFor } from "./open-questions.js";
 // (src/feedback-dialog.js, wired in src/app.js), which then opens the pre-filled GitHub issue form.
 // It sits in the row body, not its summary, so clicking it toggles neither the row nor the panel.
 
-const row = (entry) => `<details class="stat-sheet-row open-question" data-open-question="${escapeHtml(entry.id)}"><summary><span class="open-question-title">${escapeHtml(entry.title)}</span><b class="calc-coverage pending">${escapeHtml(entry.evidence)}</b></summary><div class="open-question-body"><p><strong>Question:</strong> ${escapeHtml(entry.question)}</p><p><strong>Planner now:</strong> ${escapeHtml(entry.current)}</p><p><strong>Alternatives:</strong></p><ul class="open-question-alternatives">${entry.alternatives.map((alt) => `<li>${escapeHtml(alt.reading)} — ${escapeHtml(alt.effect)}</li>`).join("")}</ul><p><strong>How to test:</strong> ${escapeHtml(entry.test)}</p><p class="open-question-source">Source: ${escapeHtml(entry.source)}</p><p class="open-question-submit-row"><button type="button" class="button button-secondary open-question-submit" data-submit-open-question="${escapeHtml(entry.id)}">Submit an answer</button></p></div></details>`;
+const row = (entry) => `<details class="stat-sheet-row open-question" data-open-question="${escapeHtml(entry.id)}"><summary><span class="open-question-title">${escapeHtml(entry.title)}</span><b class="calc-coverage pending">${escapeHtml(t(entry.evidence))}</b></summary><div class="open-question-body"><p><strong>${t("Question:")}</strong> ${escapeHtml(entry.question)}</p><p><strong>${t("Planner now:")}</strong> ${escapeHtml(entry.current)}</p><p><strong>${t("Alternatives:")}</strong></p><ul class="open-question-alternatives">${entry.alternatives.map((alt) => `<li>${escapeHtml(alt.reading)} — ${escapeHtml(alt.effect)}</li>`).join("")}</ul><p><strong>${t("How to test:")}</strong> ${escapeHtml(entry.test)}</p><p class="open-question-source">${t("Source:")} ${escapeHtml(entry.source)}</p><p class="open-question-submit-row"><button type="button" class="button button-secondary open-question-submit" data-submit-open-question="${escapeHtml(entry.id)}">${t("Submit an answer")}</button></p></div></details>`;
 
 /** Markup for the given entries; "" when there are none. */
 export function openQuestionsSectionMarkup(entries = []) {
   if (!entries.length) return "";
-  const intro = `<div class="open-questions-intro"><p>Interactions the planner isn't sure about for this build. In-game tests or corrections welcome.</p><button type="button" class="button button-secondary open-questions-copy" data-copy-open-questions>Copy questions</button><p class="open-questions-note">Answers are posted publicly on GitHub (free account needed). Include how you tested it.</p></div>`;
+  const intro = `<div class="open-questions-intro"><p>${t("Interactions the planner isn't sure about for this build. In-game tests or corrections welcome.")}</p><button type="button" class="button button-secondary open-questions-copy" data-copy-open-questions>${t("Copy questions")}</button><p class="open-questions-note">${t("Answers are posted publicly on GitHub (free account needed). Include how you tested it.")}</p></div>`;
   return extraSectionMarkup({ title: "Open questions", count: entries.length, open: true, className: "open-questions", attrs: "data-open-questions", body: `${intro}${entries.map(row).join("")}` });
 }
 

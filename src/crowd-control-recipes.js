@@ -62,6 +62,22 @@ const KNOWN_GATES = new Set([188, 184]);
 const clean = (text) => normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim();
 const cache = new Map();
 
+// Records the generated recipe table leaves out (config_modifier rows that no catalog line maps), hand-read from the raw config_affix_effect
+// rows (tools/inspect-tli-affix-effect.mjs), as the other Banishment Bonus Effects are (src/main-skill-retriggers.js, src/activation-medium-events.js).
+// Nether King's Divinity: Banishment's Bonus Effect Demolisher (config_modifier 151200101 = affixes 547348736 + 739519360 [10]; 2026-11-24):
+// 547348736 row 1 on trigger 1000074 (a use you cast) and row 2 on 1000060 (a triggered use), both on the Demolisher tag 6010010, node 301 buff
+// 230 (Paralysis) at level 1 for the record's default (duration -2: 4 s) on every enemy within 1500 units (15 m, condition 189), no chance
+// gate (proven). Read as one row on each cast of a Demolisher skill (event "cast", 1000069 with that tag: every instance raises it, and a use's
+// 1000074 or 1000060 comes with it; a Multistrike repeat or a channel step raises 1000074 again and only renews the held Paralysis, stack mode 5:
+// the equivalence is inferred).
+const RAW_RECORD_READINGS = Object.freeze([
+  { pattern: /^Inflicts Paralysis on (?:all )?enemies within 15 ?m when casting a Demolisher Skill$/i,
+    reading: Object.freeze({ id: 547348736, rows: Object.freeze([Object.freeze({ row: 0, event: "cast", trigger: 1000069, triggerTags: Object.freeze([6010010]), runner: "you", chancePercent: 100, cooldownSeconds: null,
+      types: Object.freeze([Object.freeze({ type: "Paralysis", buff: 230, durationSeconds: CROWD_CONTROL_DEFAULT_SECONDS, recordDefault: true })]), radiusMeters: 15, requiresBuffs: Object.freeze([]), requiresTargetStates: Object.freeze([]), unknown: Object.freeze([]) })]) }) }
+]);
+/** The hand-read reading of a line whose record is not in the generated recipe table (RAW_RECORD_READINGS), or null. */
+export const rawRecordCrowdControl = (text) => RAW_RECORD_READINGS.find((item) => item.pattern.test(clean(text)))?.reading ?? null;
+
 /**
  * The crowd control a modifier line's game recipe applies, or null.
  * @returns {null | { id: number, rows: { row: number, event: string|null, trigger: number|null, triggerTags: number[], chancePercent: number,
@@ -74,8 +90,8 @@ export function recipeCrowdControl(line) {
   const multiplier = Number(line.multiplier ?? 1) || 1;
   const key = `${line.origin}|${line.source}|${text}|${multiplier}`;
   if (cache.has(key)) return cache.get(key);
-  let out = null;
-  try {
+  let out = rawRecordCrowdControl(text);
+  if (!out) try {
     const resolved = interpretLine(text, { line, multiplier, origin: line.origin ?? null });
     out = crowdControlRows(resolved?.chosen, multiplier);
   } catch { out = null; }

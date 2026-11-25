@@ -226,7 +226,8 @@ const spiritEligible = (main, starfall) => {
  * @param {object[]} p.modifierTexts the build's lines (before the derived lines)
  * @param {object} p.requestedConditions the combat conditions (the best-case switches, prebuiltSelfBuffs)
  * @param {object|null} p.facts the hit pass's measured rates (null before it): { meleeCasts, channelStacks, skillUses, rangedUses,
- *   attackUses, attackCritUses, hitUses, mainUses, burstCritChance, attackIncreasedPercent, rageAttackSpeedPercent }
+ *   attackUses, attackCritUses, hitUses, mainUses, spiritMainUses (your own Main Skill uses without the press share: the Seething Spirit's
+ *   cadence), burstCritChance, attackIncreasedPercent, rageAttackSpeedPercent }
  * @param {object} p.inputs { main: { setupKey, name, tags }, characterLevel: { level, stored }, maxLife, maxEnergyShield,
  *   skillAreaPercent, attackSpeed (the weapon model's attackSpeed: Rampaging) }
  */
@@ -266,7 +267,7 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   const fact = (key) => Math.max(0, Number(facts?.[key]) || 0);
   const ratesAt = (level) => {
     const k = asFactor(level), attackExtra = fact("attackUses") * (k - 1);
-    return { melee: fact("meleeCasts") * k, stacks: fact("channelStacks") * k, ranged: fact("rangedUses") * k, attack: fact("attackUses") * k, attackCrit: fact("attackCritUses") * k, main: fact("mainUses") * k, skill: fact("skillUses") + attackExtra, hits: fact("hitUses") + attackExtra, attackSteps: fact("attackSteps") * k };
+    return { melee: fact("meleeCasts") * k, stacks: fact("channelStacks") * k, ranged: fact("rangedUses") * k, attack: fact("attackUses") * k, attackCrit: fact("attackCritUses") * k, main: fact("mainUses") * k, spiritMain: (facts?.spiritMainUses === undefined ? fact("mainUses") : fact("spiritMainUses")) * k, skill: fact("skillUses") + attackExtra, hits: fact("hitUses") + attackExtra, attackSteps: fact("attackSteps") * k };
   };
   const out = ratesAt(outLevel), inside = ratesAt(berserkLevel);
 
@@ -288,7 +289,9 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   const spiritSpeedFactor = speedLine ? Math.max(0, 1 - Number(speedLine.match[1]) / 100) : 1;
   const onslaughtSeconds = onslaught ? Number(onslaught.match[1]) : 0;
   const spiritPresence = !spiritSource || !eligible.ok ? 0 : spiritSource === "ritual" || !measured ? 1 : Math.min(1, onslaughtSeconds * inside.main);
-  const spiritUsesIn = spiritPresence > 0 && measured ? inside.main * spiritSpeedFactor * spiritPresence : 0;
+  // The Spirit's casts follow your full manual rate, not the press-shared one (3 T Berserking audit K2: its AI loops at its own Attack Speed); its
+  // presence still reads your own uses (the 2 s refresh, record 826807424 on 1000074).
+  const spiritUsesIn = spiritPresence > 0 && measured ? inside.spiritMain * spiritSpeedFactor * spiritPresence : 0;
 
   // ---- Burst (Anger): its triggers in Berserk (Righteous Fury's cost, Frenzy Furious's gain read them) ----
   const trigger = one("burstTrigger"), roar = one("roarTrigger");
@@ -428,8 +431,26 @@ export function rehanState({ heroId = "", modifierTexts = [], requestedCondition
   const tunnelLine = one("tunnelPenalty");
   const tunnel = tunnelLine ? { percent: Number(tunnelLine.match[1]), on: requestedConditions[TUNNEL_VISION_SWITCH] !== false, source: tunnelLine.line.source } : null;
 
-  const state = { heroId, anger, measured, facts: facts || null, inputs: { maxLife, maxEnergyShield, skillAreaPercent: skillArea, characterLevel: inputs.characterLevel || null, main: inputs.main || null },
-    rage, weights, burst, spirit, tunnel, burstHit: null, spiritHit: null,
+  // "+X% Skill Area while Berserk is active" (Seething Silhouette, record 14801477: attr 6201 mod 3 behind the Berserk state 4030001, no tag;
+  // proven): an increased Skill Area write the hit's Skill Area readers take (Rampage's node-114 rows, Ignition Point's threshold;
+  // src/support-conditional-batch4.js skillAreaState via src/planner.js combatSkillArea), at the share of the player's attacking time in
+  // Berserk (weights.player, the Rage bodies' player weighting; one pool for the skill's hits, the Spirit's included: inferred). 3 T Berserking
+  // audit G4, 2026-11-24.
+  const berserkShare = Math.max(0, Math.min(1, weights.player.in));
+  const combatSkillArea = rage.enters ? all(lines, "berserkArea").map(({ line, match }) => ({ source: line.source, value: round(Number(match[1]) * berserkShare), percent: Number(match[1]), share: round(berserkShare), text: `${line.clean} × ${pct(berserkShare)}% of the player's attacking time in Berserk (record 14801477)` })).filter((item) => item.value) : [];
+  // The Movement Speed parts the same way (line sweep 2026-11-24): "+X% Movement Speed while Berserk is active" (Seething Silhouette, record
+  // 101010237: attr 4 mod 3 behind the Berserk state 4030001; proven) at the Berserk share, and the Movement Speed half of "+X% additional
+  // damage and +Y% Movement Speed for every N Rage you have" (618976384: node 119 from Rage, field 24, into 41 mod 3; linear) at the Rage the
+  // player holds (the player weighting), as increased Movement Speed: src/planner.js adds them to the combat Movement Speed its readers take
+  // (the Mobility attacks' 75% share, Focus Pts per metre, the per-metre Barrier, Bladerunner's Mobility speed), as a held conditional line's.
+  const playerLevel = weights.player.out * rage.outLevel + weights.player.in * rage.berserkLevel;
+  const perRageMove = first(lines, "perRage");
+  const combatMovementSpeed = rage.enters ? [
+    ...all(lines, "berserkMove").map(({ line, match }) => ({ key: "berserkMove", source: line.source, value: round(Number(match[1]) * berserkShare), text: `${line.clean} × ${pct(berserkShare)}% of the player's time in Berserk (record 101010237)` })),
+    ...(perRageMove ? [{ key: "perRage", source: perRageMove.line.source, value: round(Number(perRageMove.match[2]) * playerLevel / Number(perRageMove.match[3])), text: `+${perRageMove.match[2]}% Movement Speed for every ${perRageMove.match[3]} Rage you have × ${round(playerLevel)} Rage held (record 618976384, linear)` }] : [])
+  ].filter((item) => item.value) : [];
+  const state = { heroId, anger, measured, facts: facts || null, inputs: { maxLife, maxEnergyShield, skillAreaPercent: skillArea, skillAreaReaders: Boolean(inputs.skillAreaReaders), movementSpeedReaders: Boolean(inputs.movementSpeedReaders), characterLevel: inputs.characterLevel || null, main: inputs.main || null },
+    rage, weights, burst, spirit, tunnel, burstHit: null, spiritHit: null, combatSkillArea, combatMovementSpeed,
     needsRates: Boolean(enters || trigger || roar || spiritSource) };
   state.bodiesSource = phaseSources(lines, state);
   state.averageBodies = rehanPhaseBodies(state, "average");
@@ -557,7 +578,7 @@ function withAssumptions(state) {
   if (rage.enters) assumptions.push({ id: "rehan:rage", value: rage.uptime, text: `Rehan – Rage / Berserk: Max Rage ${rage.maxRage} (game field 2300000); ${!rage.measured ? "Berserk held before the hit pass measures the rates" : `outside Berserk ${fmt(rage.outGain)} Rage/s${rage.gainedPercent ? ` (×${rage.G} Rage gained)` : ""} → fills in ${fmt(rage.fillSeconds)} s; in Berserk ${fmt(rage.disarmShare === 1 ? rage.netA : rage.netB)} Rage/s net${rage.spiritCostRate > 0 ? `, the Spirit's casts paying ${fmt(rage.spiritCostRate)} Rage/s` : ""} → lasts ${fmt(rage.berserkSeconds)} s; uptime ${pct(rage.uptime)}%`}; the per-Rage bonuses read ${rage.berserkLevel} Rage in Berserk${rage.doubled ? " (Max Rage × 2, game client and config_c 1640)" : ""} and ${rage.outLevel} outside (a linear fill); the 5 s / 20 s windows use the cycle average.` });
   if (burst && cadence) assumptions.push({ id: "rehan:burst", value: cadence.usesPerSecond, text: `Rehan – Burst (Q-H1, provisional): ${burst.blast ? "Burst Blast (game row 90003, 1166–1944 Spell Physical at 288%)" : "340% Weapon Damage (game row 90000, keyword)"}; ${cadence.usesPerSecond > 0 ? `${fmt(cadence.inBerserk)} per second in Berserk = ${cadence.measured ? `1 ÷ max(1 ÷ ${fmt(cadence.eventsPerSecond)} ${cadence.eventKind}/s, cooldown ${fmt(cadence.cooldownSeconds)} s)` : `1 ÷ cooldown ${fmt(cadence.cooldownSeconds)} s (before the hit pass measures the attack rate)`}${burst.roar ? ` + Furious Roar's ${fmt(cadence.roarRate)} on attack crits` : ""}, × ${pct(rage.uptime)}% uptime = ${fmt(cadence.usesPerSecond)}/s` : "no trigger on the dummy"}; "per 1 levels" reads the character level (${burst.perLevel?.level ?? "—"}).` });
   if (tunnel) assumptions.push({ id: "rehan:tunnelVision", value: tunnel.on, text: `Rehan – Tunnel Vision: ${tunnel.on ? `-${tunnel.percent}% additional damage on every cast but Burst (game record 277809984; hits, damage over time and their ailments, the ailments inferred); Burst's own ailments do not take it` : "switched off: the non-Burst skills keep their damage"}.` });
-  if (spirit) assumptions.push({ id: "rehan:spirit", value: spirit.active ? spirit.usesInBerserk : 0, text: `Rehan – Seething Spirit (provisional): ${!spirit.eligible ? spirit.reason : `casts ${spirit.mainName} at your use rate${spirit.speedFactor !== 1 ? ` × ${spirit.speedFactor}` : ""}${spirit.source === "ritual" ? " for the whole Berserk" : ` while you use it within every ${spirit.onslaughtSeconds} s in Berserk (${pct(spirit.presence)}%)`}, each a full use with the Berserk lines${spirit.additional.length ? ` and ${spirit.additional.map((line) => `${line.value >= 0 ? "+" : ""}${line.value}%`).join(", ")} additional` : ""}`}.` });
+  if (spirit) assumptions.push({ id: "rehan:spirit", value: spirit.active ? spirit.usesInBerserk : 0, text: `Rehan – Seething Spirit (provisional): ${!spirit.eligible ? spirit.reason : `casts ${spirit.mainName} at your use rate without the press share${spirit.speedFactor !== 1 ? ` × ${spirit.speedFactor}` : ""}${spirit.source === "ritual" ? " for the whole Berserk" : ` while you use it within every ${spirit.onslaughtSeconds} s in Berserk (${pct(spirit.presence)}%)`}, each a full use with the Berserk lines${spirit.additional.length ? ` and ${spirit.additional.map((line) => `${line.value >= 0 ? "+" : ""}${line.value}%`).join(", ")} additional` : ""}`}.` });
   if (rage.disarmShare > 0) assumptions.push({ id: "rehan:disarm", value: rage.disarmShare, text: `Rehan – Disarmed (Ritual of Offering): the player's Attack Skills pause for ${pct(rage.disarmShare)}% of each Berserk${rage.disarmSeconds !== Infinity ? ` (Rage Infusion: the first ${rage.disarmSeconds} s)` : ""}; their per-Rage bonuses read the attacking time only.` });
   return { ...state, switches, assumptions };
 }
@@ -654,14 +675,29 @@ function lineRead(key, text, state) {
     case "ritualSelfDamage":
       return rage.takenRate > EPS && rage.matters.taken ? L("In calc", `Hysteria: the self-damage generates ${fmt(rage.takenRate)} Rage/s in Berserk (provisional)`) : L("No DPS effect", rage.takenRate > EPS ? "self-damage: Berserk never ends without its Rage" : "self-damage (Hysteria would turn it into Rage)");
     // ---- Rage bonuses (time-averaged over the cycle) ----
-    case "perRage": return derived("perRage", "per Rage you have (the Movement Speed part has no DPS effect)");
+    case "perRage": {
+      // Its Movement Speed half joins the combat Movement Speed (combatMovementSpeed; line sweep 2026-11-24): it moves damage where a reader takes it.
+      const move = (state.combatMovementSpeed || []).find((entry) => entry.key === "perRage");
+      return derived("perRage", move && state.inputs?.movementSpeedReaders ? `per Rage you have; its Movement Speed half, +${round(move.value)}%, joins the combat Movement Speed (${move.text})` : "per Rage you have (the Movement Speed part reaches no reader here)");
+    }
     case "frenzyCrit": return derived("frenzyCrit", "per Rage you have");
     case "attackSpeedPerRage": return derived("attackSpeedPerRage", "per Rage you have");
     case "doubleDamage": return derived("doubleDamage", "per 5 Rage you have");
     case "berserkDamage": return derived("berserkDamage", "while Berserk is active");
     case "infusion": return derived("infusion", `Rage gained in the last ${INFUSION_RECENT_SECONDS} s: ${rage.infusionStacks.out} stacks outside Berserk, ${rage.infusionStacks.in} in it`);
-    case "berserkMove": return L("No DPS effect", "Movement Speed");
-    case "berserkArea": return L("No DPS effect", "Skill Area: the dummy stands within the area");
+    case "berserkMove": {
+      // Line sweep 2026-11-24: the combat Movement Speed at the Berserk share (record 101010237; src/planner.js heldMovement), read by the Mobility
+      // attacks' 75% share, Bladerunner's Mobility speed share and the per-metre readers: In calc with one on the build.
+      const item = (state.combatMovementSpeed || []).find((entry) => entry.key === "berserkMove" && entry.text.startsWith(text));
+      if (!item) return L("Inactive", cycle);
+      return state.inputs?.movementSpeedReaders ? L("In calc", `+${round(item.value)}% increased Movement Speed (${item.text}) in the combat Movement Speed its readers take (${cycle})`) : L("No DPS effect", "Movement Speed: no Movement Speed reader on the build");
+    }
+    case "berserkArea": {
+      // G4 (2026-11-24): the Skill Area readers (Rampage, Ignition Point) take it at the Berserk share; without one the dummy stands within the area.
+      const item = (state.combatSkillArea || []).find((entry) => entry.text.startsWith(text));
+      if (!state.inputs?.skillAreaReaders) return L("No DPS effect", "Skill Area: no Skill Area reader on the build (the dummy stands within the area)");
+      return item ? L("In calc", `+${round(item.value)}% increased Skill Area (${item.percent}% × ${pct(item.share)}% of the player's attacking time in Berserk) for the hit's Skill Area readers (${cycle})`) : L("Inactive", cycle);
+    }
     // ---- Burst ----
     case "burstTrigger": case "roarTrigger": case "blast":
       if (burstIdle) return L("Inactive", burstIdle);

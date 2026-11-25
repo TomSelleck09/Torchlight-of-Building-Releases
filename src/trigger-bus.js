@@ -348,6 +348,26 @@ function fitWeight(listener, event) {
 const fits = (listener, event) => fitWeight(listener, event) > 0;
 
 /**
+ * A use effect ({ kind: "use", event, units }) kept to some of its sources (rate.usesBySource keys), the shares renormalized over them; null when
+ * none of them is in it. src/tick-plain-skills.js places a Main Skill's Banishment-triggered casts as their own action: they raise the triggered
+ * variant (1000069, 1000060) and the skill's other uses the rest (3 T Berserking audit G1). A channel's creation stays with the other uses.
+ */
+export function useEffectForSources(effect, sources) {
+  const event = effect?.event;
+  if (!event?.variants) return effect;
+  const keep = new Set(sources);
+  const kept = event.variants.filter((variant) => keep.has(variant.source));
+  const total = kept.reduce((sum, variant) => sum + variant.share, 0);
+  if (!(total > 0)) return null;
+  const variants = kept.map((variant) => ({ ...variant, share: variant.share / total }));
+  const variantsByTrigger = {};
+  for (const variant of variants) for (const id of variant.triggers) (variantsByTrigger[id] ||= []).push(variant);
+  const triggers = (event.triggers || []).filter((id) => variantsByTrigger[id]);
+  const { creation, creationKey, ...rest } = effect;
+  return { ...(keep.has("triggered") ? rest : effect), event: { ...event, variants, variantsByTrigger, triggers, trigger: triggers[0] ?? null, triggeredShare: variants.filter((variant) => variant.source === "triggered").reduce((sum, variant) => sum + variant.share, 0) } };
+}
+
+/**
  * The bus for a planner result, or null in "layers" mode or with nothing to own.
  * @param {object} planner calculatePlanner's result (read only)
  * @param {object} [options] { mode: a TLI_TRIGGER_BUS value (default: the env / setTriggerBusMode), blessingSeconds: name => a Blessing's duration
@@ -787,6 +807,25 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
   }) : [];
   listeners.push(...cruelty);
 
+  // 14. A skill's own Skill Area buff (3 T Berserking, user request 2026-11-24: "make the Sweep stacks build from 0 in the windows too"; the
+  // 2026-11-02 rule: a buff gained only from the dummy starts at 0 at engagement). Berserking Blade's buff 10060 (subtype 1, stack mode 1: each
+  // layer its own 10 s, the oldest out at the cap; proven) gains a layer on 103010105 row 2 (1000033 of this skill against an Elite, once a frame
+  // on the dummy) and another on 947447 (the same on its Steep Strikes at 50%, once a frame), each through the accumulator as a Blessing gain.
+  // The readers (Rampage's two node-114 rows, the triggered casts' Skill Area factor) read the stacks held on the tick (src/tick-layers.js
+  // ownAreaStacksReaders). The steady path keeps the planner's held stacks (src/support-conditional-batch4.js ownSkillAreaBuff).
+  const ownArea = [];
+  if (all && ids.has(HIT_TRIGGER)) for (const [setupKey, effects] of Object.entries(planner?.supportEffects || {})) {
+    const own = (effects?.clauses || []).find((clause) => clause.active && clause.skillArea?.own)?.skillArea.own;
+    if (!own || !(own.cap > 0)) continue;
+    const buffKey = `ownArea:${setupKey}`;
+    for (const gain of own.gains) ownArea.push({
+      key: `ownArea:${setupKey}:${gain.recipe}:${gain.row}`, trigger: HIT_TRIGGER, holder: "you", kind: "ownStacks", name: `Buff ${own.buff} stacks`, source: `buff ${own.buff}`, text: `a layer of buff ${own.buff} on ${gain.steepOnly ? "a Steep Strike hit" : "a hit"} against an Elite (game affix ${gain.recipe} row ${gain.row})`, recipeId: gain.recipe, row: gain.row, setupKey,
+      tags: { thisSkill: true, crit: null, mine: [], notMine: [], othersFit: true, once: Boolean(gain.once) }, chance: clamp01(gain.chance), cooldownSeconds: null, seconds: own.seconds,
+      buffKey, accumulatorKey: `ownArea:${setupKey}:${gain.recipe}`, stacks: 1, maxStacks: own.cap, own: { ...own, setupKey, buffKey }
+    });
+  }
+  listeners.push(...ownArea);
+
   // 8. "if you have used a <tag> Skill recently" (step 3b; records 437971, 556993 and kin: node 306 mode 2 on 1000074 with the tag, a 4 s buff
   // refreshed by each use of yours that carries it). The planner holds the line while a skill you use yourself has the tag (src/line-conditions.js
   // usedSkillTag). On the loop: the window, held at engagement with prebuiltSelfBuffs (a use needs no target), refreshed by each fitting use, and its
@@ -1110,11 +1149,15 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
       // Section 12: the Fervor Rating from 0 on your hits.
       fervor: Boolean(fervor),
       // Section 13: an Aura's own stacks from 0 on your hits.
-      auraStacks: cruelty.map((listener) => listener.aura) },
+      auraStacks: cruelty.map((listener) => listener.aura),
+      // Section 14: a skill's own Skill Area buff from 0 on its hits.
+      ownAreaStacks: [...new Set(ownArea.map((listener) => listener.setupKey))] },
     /** The Fervor Rating listener (section 12) with its readers, or null; src/tick-layers.js puts the readers on the hits. */
     fervor: fervor ? { key: fervor.key, rating: fervor.rating, cap: fervor.cap, readers: fervor.readers, ...(fervor.granted ? { granted: fervor.granted } : {}) } : null,
     /** The Aura own-stack listeners (section 13): src/tick-layers.js reads their Aura's scaled lines at the stacks held. */
     auraStacks: cruelty.map((listener) => ({ aura: listener.aura, buffKey: listener.buffKey, perStackPercent: listener.perStackPercent, heldFactor: listener.heldFactor, maxStacks: listener.maxStacks, scaled: listener.scaled })),
+    /** A skill's own Skill Area buff (section 14), one per setup: src/tick-layers.js reads its readers at the stacks held. */
+    ownAreaStacks: [...new Map(ownArea.map((listener) => [listener.setupKey, listener.own])).values()],
     /** The Fervor Rating's reader on one DoT (section 12): one modifier (the attacker's own buff, fixed at each application), or null. */
     fervorDotCorrection(key) {
       const found = fervorDots.get(key);
@@ -1170,6 +1213,8 @@ export function compileTriggerBus(planner, { mode = undefined, blessingSeconds =
     useEffect: (hitKey, units = 1) => useEffectOf(useEventsFor(hitKey), units, hitKey),
     /** A DoT-only skill's cast (src/tick-plain-skills.js), or null. */
     dotUseEffect: (dot) => dot && dotOnly.includes(dot) ? useEffectOf(dotUseEventsFor(dot), 1, `dot:${dot.setupKey}`) : null,
+    /** A hit's use effect kept to its triggered source (`triggered` true) or to its other sources (src/tick-plain-skills.js: Banishment's triggered casts as their own action). */
+    useEffectBySource: (effect, triggered) => useEffectForSources(effect, triggered ? ["triggered"] : USE_SOURCES.filter((source) => source !== "triggered")),
     /** A Scorching Beam use (src/tick-ailments.js), or null. */
     beamUseEffect: () => useEffectOf(beamUseEvents, 1, "beam"),
     useEventFor,
@@ -1425,7 +1470,8 @@ export function createTriggerBusRuntime(compiled, { buffExpiryFrame, fixedInterv
           stat.expected += gain;
           continue;
         }
-        if (listener.kind === "blessing") {
+        // A skill's own Skill Area buff (section 14): the Blessing shape (each gain a layer on its own timer, the oldest out at the cap).
+        if (listener.kind === "blessing" || listener.kind === "ownStacks") {
           let expected;
           if (listener.tags.once) {
             // The flag: at most one gain per frame on the dummy, the first success of the frame's events (crit-gated: one determination per group).

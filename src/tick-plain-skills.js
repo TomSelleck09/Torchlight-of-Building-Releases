@@ -190,10 +190,11 @@ export function plainDot(planner, dot) {
  * @param {object} [ailmentProgram] src/tick-ailments.js: a skill DoT it holds lands through its dotEffect
  * @param {Map} [layered] the general layers' path and events of each hit (src/tick-layers.js finishTarget)
  * @param {object} [bus] the trigger bus (src/trigger-bus.js, W10 step 3b): a DoT-only skill's cast raises its use event (dotUseEffect); null on the layers
- * @returns {{ paths, actions, periodics, dots, layers, assumptions }}
+ * @returns {{ paths, actions, periodics, dots, layers, assumptions, handsSplit }} handsSplit: Map of a cast skill's action key to its hands split
+ *   ({ hands, free, steep }; see the cast branch), read by src/tick-trigger-main.js
  */
 export function compilePlainProgram(planner, hits, staticPaths, readings = {}, ailmentProgram = null, layered = new Map(), bus = null) {
-  const paths = {}, actions = [], periodics = [], dots = [], layers = [], assumptions = [];
+  const paths = {}, actions = [], periodics = [], dots = [], layers = [], assumptions = [], handsSplit = new Map();
   const skillDots = (planner.skillDots || []).filter((dot) => plainDot(planner, dot));
   const dotFor = (setupKey) => skillDots.filter((dot) => dot.setupKey === setupKey);
   const placedDots = new Set();
@@ -244,8 +245,55 @@ export function compilePlainProgram(planner, hits, staticPaths, readings = {}, a
       actions.push({ ...base, ...timing, effects: repeatEffects([...onUse, ...(onHit.length ? area.effects.map((effect) => withOnHit(effect, onHit)) : area.effects), ...after, ...dotEffects], batch) });
       assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: readings.areaTicks ?? "planner", text: `${hit.name}: the use lands a ${rate.terraDurationSeconds} s area. ${area.text} (open question tick-area-ticks).` });
     } else {
-      const { batch, ...timing } = useTiming(hit, speedKey);
-      actions.push({ ...base, ...timing, effects: repeatEffects([...onUse, strike, ...after, ...dotEffects], batch) });
+      // Banishment's Steep Strike trigger (rate.steepRetrigger, src/skill-hit-model.js; 3 T Berserking audit G1): its triggered casts are their own
+      // action, the first one Wait (0.2 s) after the skill's first use, each one triggered cast's damage (count = its per-use ÷ the path's), raising
+      // the triggered use's events (1000069, 1000060); the skill's other uses keep the rest of its damage and their own use events. The triggered
+      // casts keep a steady rate (the own casts' live Attack Speed does not move them on the loop; provisional).
+      const retrigger = kind === "cast" && rate.steepRetrigger?.usesPerSecond > 0 && rate.steepRetrigger.perUse > 0 && hit.combat?.perUse > 0 && rate.usesPerSecond > rate.steepRetrigger.usesPerSecond ? rate.steepRetrigger : null;
+      const own = retrigger ? { ...hit, rate: { ...rate, usesPerSecond: rate.usesPerSecond - retrigger.usesPerSecond } } : hit;
+      const { batch, ...timing } = useTiming(own, speedKey);
+      const ownCount = retrigger ? (hit.combat.dps - retrigger.usesPerSecond * retrigger.perUse) / (own.rate.usesPerSecond * hit.combat.perUse) : 1;
+      // A use effect is the bus's (src/trigger-bus.js useEffectBySource): the other uses raise its other sources, the triggered casts its triggered one.
+      const bySource = (effect, triggered) => effect.kind === "use" && bus?.useEffectBySource ? bus.useEffectBySource(effect, triggered) : effect;
+      const ownOnUse = retrigger ? onUse.map((effect) => bySource(effect, false)).filter(Boolean) : onUse;
+      const ownAction = { ...base, ...timing, effects: repeatEffects([...ownOnUse, retrigger ? { ...strike, count: ownCount } : strike, ...after, ...dotEffects], batch) };
+      actions.push(ownAction);
+      const triggeredOnUse = onUse.map((effect) => bySource(effect, true)).filter(Boolean);
+      // Banishment's triggered casts at `scale` of their rate (1 here; the hands split below scales them where the presses are queued).
+      const steepAction = (scale) => {
+        const every = 1 / (retrigger.usesPerSecond * scale), placed = usesPerPlacement(every), count = retrigger.perUse / hit.combat.perUse;
+        return { key: `${hit.key}:steepRetrigger`, label: `${hit.name}: Banishment's triggered casts`, actor: "player", useSeconds: every * placed, ...(Number.isFinite(retrigger.firstUseSeconds) ? { firstUseSeconds: retrigger.firstUseSeconds + (placed - 1) * every } : {}), ...timerField(readings), effects: repeatEffects([...triggeredOnUse, { ...strike, count }, ...after], placed) };
+      };
+      if (retrigger) {
+        actions.push(steepAction(1));
+        assumptions.push({ id: `tick:plain:${hit.setupKey}:steepRetrigger`, value: Math.round(retrigger.usesPerSecond * 1e4) / 1e4, text: `${hit.name}: Banishment's Steep Strike trigger's ${Math.round(retrigger.usesPerSecond * 1e4) / 1e4} casts/s as their own action, each ${Math.round(retrigger.perUse / hit.combat.perUse * 1e4) / 1e4} × the path's per-use damage, the first ${retrigger.waitSeconds} s after the skill's first use (game affix ${retrigger.recipe}; provisional).` });
+      }
+      // The hands split (2026-11-24; read by src/tick-trigger-main.js, unused elsewhere): where a trigger-main skill (Vendetta) holds the
+      // player's hands, only the uses that take them queue behind its casts. The uses that need no player time (rate.handsFree: outside
+      // triggers on their own clocks) are their own actions, each from its own first use (the closed-form windows' schedule; the skill's
+      // first use for one with none), raising the triggered use's events, on a path of their own on the skill's series (`handsFree`:
+      // Leisurely Stroll's manual penalty skips it; the caller merges `paths`). Banishment's Steep Strike casts are rebuilt at a rate the caller sets (steepAt).
+      const outside = (rate.handsFree?.parts || []).filter((part) => part.key === "outside" && part.usesPerSecond > 0);
+      if (outside.length || retrigger) {
+        let hands = ownAction;
+        const free = [], freePaths = {};
+        if (outside.length) {
+          const outsideRate = outside.reduce((total, part) => total + part.usesPerSecond, 0), outsideDps = outside.reduce((total, part) => total + part.usesPerSecond * part.perUse, 0);
+          const handsHit = { ...hit, rate: { ...rate, usesPerSecond: rate.usesPerSecond - (retrigger?.usesPerSecond || 0) - outsideRate } };
+          const { batch: handsBatch, ...handsTiming } = useTiming(handsHit, speedKey);
+          const handsCount = (hit.combat.dps - (retrigger ? retrigger.usesPerSecond * retrigger.perUse : 0) - outsideDps) / (handsHit.rate.usesPerSecond * hit.combat.perUse);
+          const handsOnUse = onUse.map((effect) => bySource(effect, false)).filter(Boolean);
+          hands = { ...base, ...handsTiming, effects: repeatEffects([...handsOnUse, Math.abs(handsCount - 1) > 1e-12 ? { ...strike, count: handsCount } : strike, ...after, ...dotEffects], handsBatch) };
+          const freeKey = `${hit.key}:handsFree`;
+          freePaths[freeKey] = { ...path, key: freeKey, source: path.source ?? path.key ?? hit.key, handsFree: true };
+          outside.forEach((part, index) => {
+            const every = 1 / part.usesPerSecond, placed = usesPerPlacement(every), count = part.perUse / hit.combat.perUse;
+            const first = Number.isFinite(part.firstUseSeconds) && part.firstUseSeconds >= 0 ? part.firstUseSeconds : Number.isFinite(rate.firstUseSeconds) && rate.firstUseSeconds >= 0 ? rate.firstUseSeconds : null;
+            free.push({ key: `${hit.key}:handsFree${index}`, label: `${hit.name}: ${part.source} (no player time)`, actor: "player", useSeconds: every * placed, ...(first !== null ? { firstUseSeconds: first + (placed - 1) * every } : {}), ...timerField(readings), effects: repeatEffects([...triggeredOnUse, { ...strike, path: freeKey, ...(Math.abs(count - 1) > 1e-12 ? { count } : {}) }, ...after, ...dotEffects], placed) });
+          });
+        }
+        handsSplit.set(base.key, { hands, free, paths: freePaths, steep: retrigger ? { key: `${hit.key}:steepRetrigger`, freeShare: rate.handsFree?.steepFreeShare ?? 0, at: steepAction } : null });
+      }
       assumptions.push({ id: `tick:plain:${hit.setupKey}`, value: kind, text: `${hit.name}: one use per ${Math.round(1e4 / rate.usesPerSecond) / 1e4} s, the hit landing as the use ends${speedKey ? ", its use time read at the press from the live Cast Speed" : ""}${batch > 1 ? `; faster than one use per frame, so ${batch} uses land together every ${batch} intervals` : ""}.` });
     }
   }
@@ -258,5 +306,5 @@ export function compilePlainProgram(planner, hits, staticPaths, readings = {}, a
     actions.push({ key: `${dot.key}:use`, label: `${dot.name} casts`, actor: "player", useSeconds: every * batch, ...first, ...timerField(readings), effects: repeatEffects(use ? [use, effect] : [effect], batch) });
   }
   for (const dot of placedDots) assumptions.push({ id: `tick:plain:${dot.key}`, value: dot.durationSeconds, text: `${dot.name}: ${Math.round(dot.combat.steadyDps / dot.combat.uptime * 100) / 100} DPS while active, ${dot.durationSeconds} s from each application, first settling on the next tick.` });
-  return { paths, actions, periodics, dots, layers, assumptions };
+  return { paths, actions, periodics, dots, layers, assumptions, handsSplit };
 }

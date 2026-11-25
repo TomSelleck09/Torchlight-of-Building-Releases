@@ -566,6 +566,8 @@ export function triggerBusLayer(ctx) {
     for (const line of lines) { withExtras(target, line); target.addModifier(line, { layer: line.layer === "increased" ? "increased" : "additional", steadyAmount: line.value, amount: (world) => line.value * factor(world) }); }
     if (lines.length) read.add(`${spec.aura}'s stacks on ${target.hit.name}`);
   }
+  // A skill's own Skill Area buff (section 14: Berserking Blade's buff 10060, from 0 on its hits).
+  for (const spec of bus.ownAreaStacks || []) ownAreaStacksReaders(ctx, spec, read);
   // The "used recently" windows (section 8) on every hit: each derived damage line at the share of the tick its window is held.
   for (const recent of bus.recentWindows || []) for (const target of ctx.targets) {
     const lines = target.claim("triggerBus", (line) => line.source === recent.source && line.layer !== "taken" && recent.bodies.includes(line.text));
@@ -639,6 +641,75 @@ function withExtras(target, line) {
   if (!components.every((part) => { const component = target.componentOf(part); return inList(component.additional, line) || inList(component.combatAdditional, line); })) return;
   for (const part of extras) part.base /= 1 + line.value / 100;
   delete line.types;
+}
+
+// A skill's own Skill Area buff on the loop (src/trigger-bus.js section 14; 3 T Berserking, user request 2026-11-24): its stacks s start at 0 and
+// build from the skill's hits. Its readers on the skill's hit parts, each from its pools (src/support-conditional-batch4.js skillAreaToSteep):
+// - a node-114 row on the increased Skill Area (Rampage row 1, 553331072): p × (the increased pool − per × held + per × s), the own buff's
+//   increased write (101010414: per = 2.5% a stack);
+// - a node-114 row on the combined additional Skill Area (Rampage row 2): p × (Π(1 + a) with each per-stack additional write (Sweep's
+//   217291792, 0.54% a stack) at s in place of its held value − 1);
+// - Banishment's triggered casts' Skill Area factor in their share line (src/skill-hit-model.js steepRetrigger): its +X% additional Skill Area
+//   on row 2 (3 T Berserking audit K3), (1 + p((1 + add(s))(1 + X) − 1)) ÷ (1 + p × add(s)) at that line's other terms.
+// Each line moves by its value at s less its value at the held stacks, so the held stacks give back the planner's line exactly.
+function ownAreaStacksReaders(ctx, own, read) {
+  const clauses = (ctx.planner.supportEffects?.[own.setupKey]?.clauses || []).filter((clause) => clause.active && clause.skillArea?.own && clause.component);
+  if (!clauses.length) return;
+  const held = own.stacks, cap = own.cap;
+  const stacksOf = (world) => Math.min(cap, world.buffs.get(own.buffKey)?.stacks || 0);
+  const ownAdd = (s) => (own.perStackAdditionalPercents || []).reduce((product, per) => product * (1 + per * s / 100), 1);
+  const near = (a, b) => Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b));
+  for (const target of ctx.targets.filter((item) => item.hit.setupKey === own.setupKey)) {
+    let any = false;
+    for (const clause of clauses) {
+      const area = clause.skillArea, p = area.sharePercent / 100;
+      const incAt = (s) => area.increasedPercent + own.perStackIncreasedPercent * (s - held);
+      const addAt = (s) => ((1 + area.additionalCombinedPercent / 100) / ownAdd(held) * ownAdd(s) - 1) * 100;
+      const rowOf = (line) => near(line.value, area.increasedRow ?? NaN) ? (s) => p * incAt(s) : near(line.value, area.additionalRow ?? NaN) ? (s) => p * addAt(s) : null;
+      const supportSource = `Support: ${clause.support}`;
+      const component = (part) => String(target.componentOf(part)?.componentKey ?? target.componentOf(part)?.key ?? "").split(/[+>:]/)[0];
+      const holders = (line) => target.parts.filter((part) => component(part) === clause.component && (target.componentOf(part)?.additional || []).some((item) => item.source === line.source && item.text === line.text && near(item.value, line.value))).map((part) => part.key);
+      // Rampage's rows: each line by its ledger value (the two rows share source and text).
+      for (const line of target.claim("triggerBus", (item) => item.layer === "additional" && item.source === supportSource && Boolean(rowOf(item)))) {
+        const row = rowOf(line), parts = holders(line);
+        delete line.types;
+        target.addModifier(line, { layer: "additional", ...(parts.length ? { parts } : {}), steadyAmount: line.value, amount: (world) => line.value + row(stacksOf(world)) - row(held) });
+        any = true;
+      }
+      // Banishment's triggered casts (their share of the uses at ×relative): the relative's Skill Area factor reads inc(s). Each part's relative
+      // also carries its triggered-skill lines (the relatives entry's triggeredFactor; 1 without them), matched by the part's own value.
+      const retrigger = target.hit.rate?.steepRetrigger;
+      if (retrigger?.share > 0 && retrigger.skillAreaPercent) {
+        const factors = [...new Set([...(retrigger.relatives || []).filter((item) => item.key === clause.component).map((item) => item.triggeredFactor ?? 1), ...(target.hit.components || []).filter((part) => String(part.key ?? "").split(/[+>:]/)[0] === clause.component && part.steepRetriggerTriggeredFactor).map((part) => part.steepRetriggerTriggeredFactor)])];
+        const handled = new Set();
+        for (const triggeredFactor of factors.length ? factors : [1]) {
+          const relativeAt = (s) => (1 + retrigger.additionalPercent / 100) * (1 + p * ((1 + addAt(s) / 100) * (1 + retrigger.skillAreaPercent / 100) - 1)) / Math.max(1e-9, 1 + p * addAt(s) / 100) / (retrigger.autoUsedFactor || 1) * triggeredFactor;
+          const valueAt = (s) => retrigger.share * (relativeAt(s) - 1) * 100;
+          const lines = target.claim("triggerBus", (item) => item.layer === "additional" && String(item.source).endsWith("Banishment: Steep Strike (triggered casts)") && near(item.value, valueAt(held)));
+          for (const line of lines) {
+            handled.add(line.text);
+            const parts = target.parts.filter((part) => component(part) === clause.component && (target.componentOf(part)?.additional || []).some((item) => item.source === line.source && item.text === line.text)).map((part) => part.key);
+            delete line.types;
+            target.addModifier(line, { layer: "additional", ...(parts.length ? { parts } : {}), steadyAmount: line.value, amount: (world) => line.value + valueAt(stacksOf(world)) - valueAt(held) });
+            any = true;
+          }
+          // A part whose line is not the hit's ledger line (the ledger lists the primary part's: an added-only part riding the strike has its own
+          // increased pool, so with a "+X% damage for Triggered Skills" line its own value): that line, taken out of the parts holding it.
+          for (const part of target.parts.filter((item) => component(item) === clause.component)) {
+            for (const item of (target.componentOf(part)?.additional || []).filter((entry) => String(entry.source).endsWith("Banishment: Steep Strike (triggered casts)") && !handled.has(entry.text) && near(entry.value, valueAt(held)))) {
+              handled.add(item.text);
+              const line = { layer: "additional", source: item.source, text: item.text, value: item.value };
+              const parts = target.parts.filter((other) => component(other) === clause.component && (target.componentOf(other)?.additional || []).some((entry) => entry.source === line.source && entry.text === line.text)).map((other) => other.key);
+              target.takeOut(line);
+              target.addModifier(line, { layer: "additional", parts, steadyAmount: line.value, amount: (world) => line.value + valueAt(stacksOf(world)) - valueAt(held) });
+              any = true;
+            }
+          }
+        }
+      }
+    }
+    if (any) read.add(`buff ${own.buff}'s stacks on ${target.hit.name} (from 0)`);
+  }
 }
 
 function fervorReaders(ctx, fervor, read) {

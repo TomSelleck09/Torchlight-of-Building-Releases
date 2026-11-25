@@ -1,4 +1,5 @@
 import { escapeHtml } from "./html.js";
+import { t, tParts } from "./i18n.js";
 import { additionalDamagePathSources } from "./damage-path-sources.js";
 import { findScorchingBeamSetup, scorchingBeamBaseHits, strippedBeamHitCoefficient } from "./scorching-beam-base-hit.js";
 import { calibratedBeamTargetCycle } from "./target-hit-mitigation.js";
@@ -256,11 +257,11 @@ const tabFigure = (model, format) => model.empty ? "" : (model.final.raw && type
 export function damagePathTabsMarkup(paths, active, format) {
   const groups = [...new Set(paths.map((path) => path.group))];
   const grouped = groups.length > 2 || (groups.length === 2 && !groups.includes("Build"));
-  const tab = (path) => `<button type="button" role="tab" id="damage-path-tab-${escapeHtml(path.value)}" aria-controls="damage-path-view-${escapeHtml(path.value)}" aria-selected="${path.value === active}" tabindex="${path.value === active ? 0 : -1}" data-damage-path-tab="${escapeHtml(path.value)}"${path.value === active ? ' class="active"' : ""}>${escapeHtml(path.label)}${tabFigure(path.model, format) ? `<small>${escapeHtml(tabFigure(path.model, format))}</small>` : ""}</button>`;
+  const tab = (path) => `<button type="button" role="tab" id="damage-path-tab-${escapeHtml(path.value)}" aria-controls="damage-path-view-${escapeHtml(path.value)}" aria-selected="${path.value === active}" tabindex="${path.value === active ? 0 : -1}" data-damage-path-tab="${escapeHtml(path.value)}"${path.value === active ? ' class="active"' : ""}>${escapeHtml(tParts(path.label))}${tabFigure(path.model, format) ? `<small>${escapeHtml(tabFigure(path.model, format))}</small>` : ""}</button>`;
   const tabs = grouped
     ? groups.map((group) => `<div class="damage-path-tab-group" role="presentation" data-group="${escapeHtml(group)}">${paths.filter((path) => path.group === group).map(tab).join("")}</div>`).join("")
     : paths.map(tab).join("");
-  return `<div class="damage-path-tabs stat-panel-tabs" role="tablist" aria-label="Damage paths">${tabs}</div>`;
+  return `<div class="damage-path-tabs stat-panel-tabs" role="tablist" aria-label="${t("Damage paths")}">${tabs}</div>`;
 }
 
 /**

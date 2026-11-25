@@ -1,6 +1,8 @@
 import { escapeHtml } from "./html.js";
 import { qolHelpButton } from "./qol-help.js";
 import { summarizeRecount, windowTotals, excludeRecountSources, excludedSteadyDps } from "./dummy-recount.js";
+import { chineseMagnitude, formatChineseShort, splitUnitWord, usesChineseUnits } from "./number-units.js";
+import { t, tParts } from "./i18n.js";
 
 // Recount panel and "How this is calculated" details for the stat sheet's main-skill card: the in-game
 // recount fields over a fixed 10 s span of the planner's 60 s dummy timeline (planner.dummyRecount).
@@ -18,6 +20,7 @@ const magnitudes = [[1e15, "Quadrillion"], [1e12, "Trillion"], [1e9, "Billion"],
 /** Magnitude word shown to the right of a large value (14,913,986,413,374 → "Trillion"); "" below a million. */
 export function formatRecountMagnitude(value) {
   if (!Number.isFinite(value)) return "";
+  if (usesChineseUnits()) return chineseMagnitude(value);
   const entry = magnitudes.find(([size]) => Math.abs(value) >= size);
   return entry ? entry[1] : "";
 }
@@ -30,6 +33,7 @@ const shortFormat = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, m
  */
 export function formatShortNumber(value) {
   if (!Number.isFinite(value)) return DASH;
+  if (usesChineseUnits()) return formatChineseShort(value);
   const index = shortUnits.findIndex(([size]) => Math.abs(value) >= size);
   if (index < 0) {
     const rounded = Math.round(value);
@@ -47,11 +51,10 @@ const expandedNumbers = new Set();
 const SHORT_HINT = "Click to show the full number";
 const FULL_HINT = "Click to shorten";
 
-const UNIT_WORD = /^(.*) (Thousand|Million|Billion|Trillion|Quadrillion)$/;
-/** Short text as HTML; with `unitClass`, a trailing unit word sits in its own span so it keeps that class's styling. */
+/** Short text as HTML; with `unitClass`, a trailing unit word (English or Chinese) sits in its own span so it keeps that class's styling. */
 function shortHtml(short, unitClass) {
-  const match = unitClass ? UNIT_WORD.exec(short) : null;
-  return match ? `${escapeHtml(match[1])} <span class="${escapeHtml(unitClass)}">${match[2]}</span>` : escapeHtml(short);
+  const match = unitClass ? splitUnitWord(short) : null;
+  return match ? `${escapeHtml(match.number)}${match.gap}<span class="${escapeHtml(unitClass)}">${match.unit}</span>` : escapeHtml(short);
 }
 
 /**
@@ -65,7 +68,7 @@ export function toggleNumberMarkup(id, value, { className = "", tag = "strong", 
   if (short === full || (!Number.isFinite(value) && shortText === undefined)) return `<${tag}${className ? ` class="${className}"` : ""}>${escapeHtml(full)}</${tag}>`;
   const expanded = expandedNumbers.has(id);
   const text = expanded ? full : short;
-  const hint = expanded ? FULL_HINT : SHORT_HINT;
+  const hint = t(expanded ? FULL_HINT : SHORT_HINT);
   return `<${tag} class="${className ? `${className} ` : ""}number-toggle" role="button" tabindex="0" data-number-toggle="${escapeHtml(id)}" data-short="${escapeHtml(short)}" data-full="${escapeHtml(full)}"${unitClass ? ` data-unit-class="${escapeHtml(unitClass)}"` : ""} aria-expanded="${expanded}" title="${hint}" aria-label="${escapeHtml(`${text}. ${hint}`)}">${expanded ? escapeHtml(full) : shortHtml(short, unitClass)}</${tag}>`;
 }
 
@@ -76,7 +79,7 @@ export function flipNumberToggle(element) {
   const expanded = !expandedNumbers.has(id);
   if (expanded) expandedNumbers.add(id); else expandedNumbers.delete(id);
   const text = expanded ? element.dataset.full : element.dataset.short;
-  const hint = expanded ? FULL_HINT : SHORT_HINT;
+  const hint = t(expanded ? FULL_HINT : SHORT_HINT);
   if (!expanded && element.dataset.unitClass) element.innerHTML = shortHtml(text, element.dataset.unitClass);
   else element.textContent = text;
   element.title = hint;
@@ -198,10 +201,10 @@ export function recountTilesMarkup(recount, { excluded = excludedSources, totalM
   const keep = totalModeledDps === undefined && lastCard?.recount === recount;
   lastCard = { recount, totalModeledDps: keep ? lastCard.totalModeledDps : totalModeledDps ?? null, totalModeledParts: keep ? lastCard.totalModeledParts : totalModeledParts };
   // Each value is truncated ("21.84 Trillion") and expands to the full integer on click (2026-10-13).
-  const row = (key, label, value, note = "", extraClass = "") => `<div class="dummy-recount-row${extraClass ? ` ${extraClass}` : ""}" data-recount-field="${key}"${note ? ` title="${escapeHtml(note)}"` : ""}><span class="dummy-recount-label">${escapeHtml(label)}</span>${toggleNumberMarkup(`recount:${key}`, value, { className: "dummy-recount-value" })}</div>`;
+  const row = (key, label, value, note = "", extraClass = "") => `<div class="dummy-recount-row${extraClass ? ` ${extraClass}` : ""}" data-recount-field="${key}"${note ? ` title="${escapeHtml(t(note))}"` : ""}><span class="dummy-recount-label">${escapeHtml(t(label))}</span>${toggleNumberMarkup(`recount:${key}`, value, { className: "dummy-recount-value" })}</div>`;
   const field = (item, extraClass) => row(item.key, item.label, item.value, item.note, extraClass);
   const [average, highest, last] = tiles;
-  return `<section class="dummy-recount-panel" aria-label="Training dummy recount"><header class="dummy-recount-head"><span class="dummy-recount-tab">Estimated damage (Level 85)</span>${qolHelpButton("recount")}<span class="dummy-recount-duration" data-recount-field="duration" title="Fixed ${RECOUNT_SPAN_SECONDS}-second dummy window">Duration <strong>${formatRecountDuration(RECOUNT_SPAN_SECONDS)}</strong> Seconds</span></header><div class="dummy-recount-body">${field(average, "dummy-recount-hero")}<div class="dummy-recount-pair">${field(highest)}${field(last)}</div></div>${recountCompositionMarkup(recount, { excluded })}</section>`;
+  return `<section class="dummy-recount-panel" aria-label="${t("Training dummy recount")}"><header class="dummy-recount-head"><span class="dummy-recount-tab">${t("Estimated damage (Level 85)")}</span>${qolHelpButton("recount")}<span class="dummy-recount-duration" data-recount-field="duration" title="${t("Fixed {seconds}-second dummy window", { seconds: RECOUNT_SPAN_SECONDS })}">${t("Duration")} <strong>${formatRecountDuration(RECOUNT_SPAN_SECONDS)}</strong> ${t("Seconds")}</span></header><div class="dummy-recount-body">${field(average, "dummy-recount-hero")}<div class="dummy-recount-pair">${field(highest)}${field(last)}</div></div>${recountCompositionMarkup(recount, { excluded })}</section>`;
 }
 
 /** Legend/bar colours by share rank (largest first), from the planner's existing accent palette. */
@@ -215,17 +218,17 @@ const MIX_COLORS = ["#e9a362", "#6fb7d2", "#c97c70", "#9c8ac6", "#7fc9a5", "#d9c
 export function recountCompositionMarkup(recount, { excluded = excludedSources } = {}) {
   const shares = recountSourceShares(recount, { excluded });
   if (!shares.length) return "";
-  const percent = (item) => item.excluded ? "off" : `${(item.share * 100).toFixed(1)}%`;
+  const percent = (item) => item.excluded ? t("off") : `${(item.share * 100).toFixed(1)}%`;
   // Colours follow the full-build rank, so a source keeps its colour while others are left out.
   const colored = shares.map((item, index) => ({ ...item, color: MIX_COLORS[index % MIX_COLORS.length] }));
   // Legend items and bar segments are toggle buttons; aria-pressed is "true" while the source is in the view.
-  const toggle = (item, prefix = "") => `role="button" tabindex="0" data-recount-source="${escapeHtml(item.key)}" aria-pressed="${!item.excluded}" title="${escapeHtml(prefix)}${item.excluded ? EXCLUDED_HINT : INCLUDED_HINT}"`;
-  const bar = colored.filter((item) => !item.excluded).map((item) => `<i style="--mix-color:${item.color};width:${(item.share * 100).toFixed(2)}%" ${toggle(item, `${item.label}: ${percent(item)}. `)} aria-label="${escapeHtml(`${item.label}: ${percent(item)}`)}"></i>`).join("");
-  const legend = colored.map((item) => `<li${item.excluded ? ' class="is-excluded"' : ""} style="--mix-color:${item.color}" ${toggle(item)}><span>${escapeHtml(item.label)}</span><b>${percent(item)}</b></li>`).join("");
-  const summary = colored.map((item) => `${item.label} ${percent(item)}`).join(", ");
+  const toggle = (item, prefix = "") => `role="button" tabindex="0" data-recount-source="${escapeHtml(item.key)}" aria-pressed="${!item.excluded}" title="${escapeHtml(prefix)}${t(item.excluded ? EXCLUDED_HINT : INCLUDED_HINT)}"`;
+  const bar = colored.filter((item) => !item.excluded).map((item) => `<i style="--mix-color:${item.color};width:${(item.share * 100).toFixed(2)}%" ${toggle(item, `${tParts(item.label)}: ${percent(item)}. `)} aria-label="${escapeHtml(`${tParts(item.label)}: ${percent(item)}`)}"></i>`).join("");
+  const legend = colored.map((item) => `<li${item.excluded ? ' class="is-excluded"' : ""} style="--mix-color:${item.color}" ${toggle(item)}><span>${escapeHtml(tParts(item.label))}</span><b>${percent(item)}</b></li>`).join("");
+  const summary = colored.map((item) => `${tParts(item.label)} ${percent(item)}`).join(", ");
   const shown = colored.filter((item) => !item.excluded).length;
-  const note = shown < colored.length ? `<p class="dummy-recount-mix-note">Showing ${shown} of ${colored.length} sources · <a href="#" data-recount-show-all>Show all</a></p>` : "";
-  return `<div class="dummy-recount-mix"><span class="dummy-recount-mix-title">Share by source over ${RECOUNT_SPAN_SECONDS} s</span><div class="dummy-recount-mix-bar" role="group" aria-label="${escapeHtml(summary)}">${bar}</div><ul class="dummy-recount-mix-legend">${legend}</ul>${note}</div>`;
+  const note = shown < colored.length ? `<p class="dummy-recount-mix-note">${t("Showing {shown} of {count} sources", { shown, count: colored.length })} · <a href="#" data-recount-show-all>${t("Show all")}</a></p>` : "";
+  return `<div class="dummy-recount-mix"><span class="dummy-recount-mix-title">${t("Share by source over {seconds} s", { seconds: RECOUNT_SPAN_SECONDS })}</span><div class="dummy-recount-mix-bar" role="group" aria-label="${escapeHtml(summary)}">${bar}</div><ul class="dummy-recount-mix-legend">${legend}</ul>${note}</div>`;
 }
 
 /**
@@ -267,8 +270,8 @@ export function recountTotalModeledDps(recount, totalDps, { excluded = excludedS
 export function recountDetailsMarkup(recount, { detailsOpen = false, excluded = excludedSources } = {}) {
   if (!recount?.timeline) return "";
   const shares = recountSourceShares(recount, { excluded });
-  const table = shares.length ? `<table class="dummy-recount-sources"><thead><tr><th scope="col">Source</th><th scope="col">DPS over ${RECOUNT_SPAN_SECONDS} s</th><th scope="col">Share</th></tr></thead><tbody>${shares.map((item) => `<tr><th scope="row">${escapeHtml(item.label)}</th><td>${item.excluded ? "off" : formatRecountInteger(item.dps)}</td><td>${item.excluded ? "off" : `${escapeHtml((item.share * 100).toFixed(1))}%`}</td></tr>`).join("")}</tbody></table>` : "";
+  const table = shares.length ? `<table class="dummy-recount-sources"><thead><tr><th scope="col">${t("Source")}</th><th scope="col">${t("DPS over {seconds} s", { seconds: RECOUNT_SPAN_SECONDS })}</th><th scope="col">${t("Share")}</th></tr></thead><tbody>${shares.map((item) => `<tr><th scope="row">${escapeHtml(tParts(item.label))}</th><td>${item.excluded ? t("off") : formatRecountInteger(item.dps)}</td><td>${item.excluded ? t("off") : `${escapeHtml((item.share * 100).toFixed(1))}%`}</td></tr>`).join("")}</tbody></table>` : "";
   const assumptions = (recount.assumptions || []).map((item) => item?.text).filter(Boolean);
   const list = assumptions.length ? `<ul class="dummy-recount-assumptions">${assumptions.map((text) => `<li>${escapeHtml(text)}</li>`).join("")}</ul>` : "";
-  return `<details class="dummy-recount-details"${detailsOpen ? " open" : ""}><summary>How this is calculated</summary>${table}${list}<p class="damage-bucket-footnote">Values are expected values; the in-game meter varies run to run.</p></details>`;
+  return `<details class="dummy-recount-details"${detailsOpen ? " open" : ""}><summary>${t("How this is calculated")}</summary>${table}${list}<p class="damage-bucket-footnote">${t("Values are expected values; the in-game meter varies run to run.")}</p></details>`;
 }

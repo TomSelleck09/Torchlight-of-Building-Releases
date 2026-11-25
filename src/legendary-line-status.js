@@ -3,7 +3,7 @@
 // readers decide). `engines` is src/line-coverage.js plannerEngines(planner) (null without a planner: the tooltip preview).
 import { enemyBuffSet } from "./unit-buff-set.js";
 import { GUARANTEED_CRIT_LINE, CRIT_NO_EXTRA_DAMAGE_LINE } from "./scorching-beam-critical.js";
-import { isMainRetriggerLine, HUNTERS_HAND_LINE } from "./main-skill-retriggers.js";
+import { isMainRetriggerLine, HUNTERS_HAND_LINE, SHADOW_STRIKE_TRIGGER_LINE } from "./main-skill-retriggers.js";
 import { parseChanceTriggerPair, EMPOWER_BUFF_SPECS } from "./empower-buffs.js";
 import { parseItemMainSkillLine } from "./item-main-skill-replacement.js";
 import { initialAfflictionLine, resolveInitialAffliction } from "./initial-affliction.js";
@@ -171,7 +171,8 @@ export function legendaryLineStatus(text, planner, engines) {
     if (!planner?.activation) return "In calc";
     return strayReturns().length || carinoReturns().length ? "In calc" : "Inactive";
   }
-  if (/^Attack Horizontal Projectiles always Penetrate$/i.test(line)) {
+  // Banishment's Projection grants the same label with no tag at 5 stacks (affix 270587072 row 3): "Horizontal Projectiles always Penetrate".
+  if (/^(?:Attack )?Horizontal Projectiles always Penetrate$/i.test(line)) {
     if (!planner?.activation) return "In calc";
     return strayReturns().some((hit) => hit.strayBirdReturn.alwaysPenetrate) || carinoReturns().some((setup) => setup.alwaysPenetrate) ? "In calc" : "Inactive";
   }
@@ -210,6 +211,9 @@ export function legendaryLineStatus(text, planner, engines) {
     // Inactive (no Attack Horizontal Projectile skill on the board, Barrier Burst, a channeled Main Skill; the Main Skill's notes
     // carry the reason). A lone copy is Inactive in src/pact-coverage.js.
     if (HUNTERS_HAND_LINE.test(line)) return (planner.skillHits || []).some((hit) => hit.modeled && (hit.notes || []).some((note) => /uses\/s by the player/.test(note) && !/trigger inactive/.test(note))) ? "In calc" : "Inactive";
+    // Banishment: Shadow Strike (affix 151352640): In calc where the Main Shadow Strike skill took its triggered uses, else Inactive (no Attack
+    // Mobility skill cast on the dummy, or the Main Skill is not a Shadow Strike skill).
+    if (SHADOW_STRIKE_TRIGGER_LINE.test(line)) return (planner.skillHits || []).some((hit) => hit.modeled && (hit.notes || []).some((note) => /Main Skill triggers \(.*Triggers the Main Shadow Strike Skill/.test(note))) ? "In calc" : "Inactive";
     if ((planner.skillHits || []).some((hit) => hit.modeled && (hit.notes || []).some((note) => /Main Skill triggers/.test(note)))) return "In calc";
     // A condition that does not hold (standing still, too few Max Blessing Stacks): Inactive. Otherwise the Main Skill's use model takes
     // no outside trigger (the beam, a channel, a Terra or rate model): Not modeled.

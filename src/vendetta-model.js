@@ -26,7 +26,9 @@ import { taggedCritLines } from "./scorching-beam-critical.js";
 //     -30% (affix 4604101) and the +5% per stack (4638813) as two additional writes, so they multiply (2026-10-31, was 0.7 + 5% × k).
 //     Then it waits for its 10 s cooldown, read as starting at the cast (provisional; cycle = max(sequence, cooldown)).
 // The figure reported is the net gain over plain attacking: triggered uses minus the Main Skill uses lost to the Vendetta cast time
-// (the Main Skill's own hit model already counts its full rate). Combo Main Skills: a trigger is read as one Combo Starter 1 hit.
+// (the Main Skill's own hit model already counts its full rate). Only the uses that take your hands are lost (2026-11-24): the presses and
+// what rides on them; the Main Skill's uses that need no player time (outside triggers, a Main Skill that is triggered itself;
+// src/skill-hit-model.js rate.handsFree) go on through the cast. Combo Main Skills: a trigger is read as one Combo Starter 1 hit.
 //
 // Erika – Vendetta's Sting (hero trait audit B5, 2026-10-19; re-read against the SS14 tables 2026-10-31, research/hero-erika-chunk1-
 // 2026-10-31.md; src/erika-traits.js vendettaStingState): the "+X% additional Attack Damage for skills triggered by Vendetta" lines
@@ -181,6 +183,16 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
     const triggerFactor = (1 + spec.trigger.additionalAttackDamagePercent / 100) * (1 + penaltyPercent / 100) * (1 + poolPercent / 100);
     const perTrigger = mainPerUse * triggerFactor;
     const mainDps = mainHit.combat.dps;
+    // The Main Skill damage a Vendetta cast displaces (2026-11-24): only its uses that take your hands, the presses and what rides on them
+    // (their Multistrike repeats, the Steep Strike casts of pressed casts). Uses that need no player time (src/skill-hit-model.js
+    // rate.handsFree: outside triggers on their own clocks such as Banishment's Shadow Strike, Hunter's Hand, the interval items, Miraculous
+    // Gain; a Main Skill with no use of yours, an Activation Medium's or a gear trigger's) go on while Vendetta casts, so they are not lost.
+    // Before, the whole combat.dps was lost over the cast time, which cancelled those triggers on a build with no manual time.
+    const handsFree = mainHit.rate?.handsFree?.dps > 0 ? mainHit.rate.handsFree : null;
+    const noHands = !(mainHit.rate?.playerUsesPerSecond > 0) && !mainHit.rate?.bombs;
+    const handsDps = noHands ? 0 : handsFree ? Math.max(0, mainDps - handsFree.dps) : mainDps;
+    if (noHands) notes.push(`${spec.name}: ${mainName} has no use of yours (an Activation Medium's or a gear trigger's uses take no player time), so ${spec.name}'s casts displace none of its damage.`);
+    else if (handsFree) notes.push(`${spec.name}: ${mainName}'s uses that need no player time (${handsFree.parts.map((part) => `${part.source}: ${round(part.usesPerSecond)}/s`).join("; ")}; ${round(handsFree.dps)} DPS) go on while it casts: only the ${round(handsDps)} DPS of its own uses is displaced.`);
     // Selena – Sing with the Tide's Bard Song (hero trait audit B13, provisional): in the Bard state the trigger skill channels Bard Song
     // and its bubble uses it once, every stacks per bubble × 0.8 s ÷ Attack Speed, in place of its own attack time (the Main Skill's
     // hit model applies the same cadence, so the time lost per cycle stays in step).
@@ -204,8 +216,8 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
     // Leisurely Stroll: the manual Main Skill's damage while Incisive is up takes -X% additional (the manual time's share).
     const manualIncisive = erika?.manualPenaltyPercent && erika?.incisive ? incisiveUptime({ cycleSeconds, repeatTimes, sequenceSeconds }, erika.incisive.durationSeconds, { manualOnly: true }) : 0;
     const manualSeconds = Math.max(0, cycleSeconds - sequenceSeconds);
-    const manualLossPerCycle = erika?.manualPenaltyPercent ? erika.manualPenaltyPercent / 100 * mainDps * manualSeconds * manualIncisive : 0;
-    const lostPerCycle = sequenceSeconds * mainDps + manualLossPerCycle;
+    const manualLossPerCycle = erika?.manualPenaltyPercent ? erika.manualPenaltyPercent / 100 * handsDps * manualSeconds * manualIncisive : 0;
+    const lostPerCycle = sequenceSeconds * handsDps + manualLossPerCycle;
     const netPerCycle = spec.trigger.repeats * perTrigger * usesPerCast - lostPerCycle;
     const dps = cycleSeconds > 0 ? netPerCycle / cycleSeconds : 0;
     // Windows: triggers complete at the end of each repeat's cast; Main Skill time is lost while a sequence runs.
@@ -218,15 +230,15 @@ export function calculateVendettaTriggers({ sources = [], setups = [], resolvedM
         lostSeconds += Math.max(0, Math.min(seconds, start + sequenceSeconds) - start);
         manual += Math.max(0, Math.min(seconds, start + cycleSeconds) - Math.min(seconds, start + sequenceSeconds));
       }
-      const manualLoss = erika?.manualPenaltyPercent ? erika.manualPenaltyPercent / 100 * mainDps * manual * manualIncisive : 0;
-      return (triggers * perTrigger * usesPerCast - lostSeconds * mainDps - manualLoss) / seconds;
+      const manualLoss = erika?.manualPenaltyPercent ? erika.manualPenaltyPercent / 100 * handsDps * manual * manualIncisive : 0;
+      return (triggers * perTrigger * usesPerCast - lostSeconds * handsDps - manualLoss) / seconds;
     };
     const cumulative = repeatTimes.reduce((list, value) => [...list, (list[list.length - 1] || 0) + value], []);
     notes.push(`${spec.name}: triggers ${mainName} ${spec.trigger.repeats > 1 ? `${spec.trigger.repeats} times per sequence` : "once per cast"} at +${spec.trigger.additionalAttackDamagePercent}% additional Attack Damage${penaltyPercent ? ` and ${mainName}'s ${penaltyPercent}% additional damage when triggered` : ""}${combo ? ` (a Combo skill: one trigger is read as one ${mainHit.components[0]?.label || "Combo Starter 1"} hit, provisional)` : ""}; its own cast (${round(useTime)} s${spec.trigger.repeats > 1 ? ` ÷ 0.7 … 2.15 = ${round(sequenceSeconds)} s per sequence` : ""}) replaces ${mainName} attacks, so the figure is the net gain over plain attacking (cycle ${round(cycleSeconds)} s = max(sequence, ${round(cooldown)} s cooldown${spec.trigger.repeats > 1 ? ", read as starting at the cast — provisional" : ""})).`);
     if (netPerCycle < 0) warnings.push(`${spec.name}: the net gain is negative (${round(netPerCycle)} per cycle): ${mainName}'s ordinary attacks out-damage its triggered use with this build.`);
     return {
       ...base, modeled: true, inactiveReason: null,
-      main: { name: mainName, setupKey: mainHit.setupKey, perUse: mainPerUse, dps: mainDps, combo, triggerPenaltyPercent: penaltyPercent },
+      main: { name: mainName, setupKey: mainHit.setupKey, perUse: mainPerUse, dps: mainDps, ...(handsDps !== mainDps ? { handsDps, handsFreeDps: mainDps - handsDps } : {}), combo, triggerPenaltyPercent: penaltyPercent },
       rate: { useTimeSeconds: spec.timing.useTime, effectiveUseTimeSeconds: useTime, speedFactor, ownSpeedFactor: ownSpeed, ownSpeedSources: ownSpeedLines, cooldownSeconds: spec.timing.cooldown, effectiveCooldownSeconds: cooldown, cooldownFactor, cooldownSources: cooldownLines, repeats: spec.trigger.repeats, repeatTimes, sequenceSeconds, cycleSeconds, triggersPerSecond: spec.trigger.repeats / cycleSeconds, firstTriggerSeconds: repeatTimes[0] ?? useTime, lastTriggerSeconds: cumulative[cumulative.length - 1] ?? useTime },
       erika: erika ? { poolPercent: round(poolPercent), pool, extraChance: round(extraChance), excessChance: round(excessChance), crit, hastened, phantomPerCast: round(phantomPerCast), phantomFactor, usesPerCast: round(usesPerCast), manualIncisive: round(manualIncisive), manualLossPerCycle, manualSeconds } : null,
       combat: { perTrigger, triggerFactor, lostPerCycle, netPerCycle, cycleSeconds, dps, fiveSecondAverageDps: windowDps(windows[0] ?? 5), twentySecondAverageDps: windowDps(windows[1] ?? 20) },

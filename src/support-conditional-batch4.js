@@ -19,6 +19,7 @@ import { enemyBuffSet, ownCombatHeld } from "./unit-buff-set.js";
 import { dummyTarget, explicitRadiusHolds, DISTANT_STANDING_METERS } from "./dummy-target.js";
 import { WEAPON_WORDS, RECENTLY_SECONDS } from "./line-conditions.js";
 import { allSkillEffectsSs13 } from "./data/skills/all-skill-effects-ss13.generated.js";
+import { AFFIX_RECIPES } from "./data/game/affix-recipes.generated.js";
 // Your Fervor Rating on your unit buff set (W9 step 2: a level), else the support state's field (TLI_BUFF_SET=off).
 const ownFervorRating = (state) => Number(ownCombatHeld(state)?.fervorRating ?? state?.fervorRating) || 0;
 
@@ -99,6 +100,10 @@ export const BATCH4_SUPPORT_RULES = [
   // Berserking Blade: Rampage (Noble; recipe 553331072: Skill Area increased (62011 mod 3) and additional (mod 4) × P1 / 100 → 57191
   // additional on the Steep Strike (5006010)).
   rule(new RegExp(`^${N}% of the bonuses and additional bonuses to Skill Area is also applied to the skill's additional Steep Strike Damage$`, "i"), (m) => ({ value: num(m[1]), condition: "skillAreaToSteep", component: "steep", recipe: 553331072 })),
+  // Berserking Blade: Sweep (Magnificent; recipe 217291792: row 1 attr 3442 (max buff stacks) +20 on [5100321 the skill's own buff, this
+  // skill]; row 2 attr 6201 mod 4 = GetBuffStack(10060) × P1: one additional Skill Area write). Read in skillAreaState (the cap and the
+  // per-stack line), so the Skill Area readers (Rampage, Ignition Point) take it; 3 T Berserking audit G3, 2026-11-24.
+  rule(new RegExp(`^Doubles the skills buff stack upper limit\\. Each buff grants ${N}% additional Skill Area for the skill$`, "i"), (m) => ({ value: num(m[1]), condition: "ownBuffSkillArea", recipe: 217291792 })),
   // Mind Control: Concentrate (Magnificent; recipe 169011504: field 2600291, per link below the maximum, read by the skill's script).
   rule(new RegExp(`^${N}% additional damage for this skill for every link less than maximum links$`, "i"), (m) => ({ value: num(m[1]), condition: "linksBelowMax", recipe: 169011504 })),
   // ---- Stats and resources ----
@@ -254,33 +259,101 @@ function projectileQuantityBonus(full, state) {
 // The skill's own Skill Area buff ("This skill X% Skill Area for each stack of buff … Stacks up to N time(s)", granted "when this skill
 // defeats an enemy or hits an Elite": Berserking Blade, buff 10060 / 101010414 on "this skill"): the dummy is an Elite, so the stacks are
 // held at their cap with own buffs built before engaging, else the 20 s window's average of a build from 0 at the hit rate (2026-11-05).
-function ownSkillAreaBuff(full, state, hitsRate) {
+// The own buff's config_char_buff record (scripts/buff-header-census.mjs --buffs 10060: "s_shalujuren", subtype 1 (instances, own timers),
+// cap 20, stack mode 1 (at the cap the oldest is replaced), 10 s, tags [5100310, 5100321]; proven): the base cap and the tags a cap raise
+// must name. A skill not listed keeps its text's cap and takes no raise.
+// `gains`: the rows that add a layer of it (raw affix catalog tools/bin/reverse-engineering/affix-catalog-2026-10-31.json; the generated recipe
+// table drops 103010105; proven): 103010105 row 2, 1000033 of this skill against an Elite (5001990), bTriggerOnceWithSameSourceEntity, node 301
+// one layer of buff 10060 at its record's duration (−2); 947447 row 1, the same with the Steep Strike tag 6001222 and node 188 at P1 (the skill
+// text's 50%: the stone's parameter is not read). Row 1 of 103010105 (on a kill, 1000010) is not on the dummy. `seconds`: the header's 10 s.
+const OWN_SKILL_AREA_BUFF_RECORDS = Object.freeze({ "Berserking Blade": Object.freeze({ buff: 10060, cap: 20, seconds: 10, tags: Object.freeze([5100310, 5100321]),
+  gains: Object.freeze([Object.freeze({ recipe: 103010105, row: 2, trigger: 1000033, once: true, chance: 1, steepOnly: false }),
+    Object.freeze({ recipe: 947447, row: 1, trigger: 1000033, once: true, chancePattern: /^The skill has a ([\d.]+)% chance to obtain an additional stack of buff upon hitting an Elite with Steep Strikes$/im, steepOnly: true })]) }) });
+// The loop's frame rate: a once-per-frame row gains at most one layer a frame on the dummy.
+const OWN_BUFF_FRAMES_PER_SECOND = 30;
+const THIS_SKILL_TAG = 5000002;
+// The game records of this setup's support clauses this module reads (each rule's `recipe`).
+function setupClauseRecipes(full) {
+  const ids = [];
+  for (const text of setupTexts(full)) for (const item of BATCH4_RULES) { const match = String(text).match(item.pattern); if (match) { const built = item.build(match); if (built.recipe) ids.push({ id: built.recipe, text, built }); break; } }
+  return ids;
+}
+// "+N max buff stacks" writes on the own buff (attr 3442 mod 1 with "this skill" and tags all on the buff's record: Sweep's 217291792 row 1
+// +20 on [5100321, 5000002]); the client reads attr 3442 on the holder with the buff's tags (the Focus Blessing cap reading,
+// src/affix-attributes.js). A numeric value only.
+function ownBuffCapRaises(full, record) {
+  if (!record) return [];
+  const out = [];
+  for (const { id, built } of setupClauseRecipes(full)) for (const row of AFFIX_RECIPES[id]?.r || []) for (const write of row.e || []) {
+    const mine = write.tg?.mine || [];
+    if (write.a !== 3442 || write.m !== 1 || !mine.includes(THIS_SKILL_TAG) || !mine.every((tag) => tag === THIS_SKILL_TAG || record.tags.includes(tag)) || !Number.isFinite(Number(write.v))) continue;
+    out.push({ recipe: id, value: Number(write.v), condition: built.condition });
+  }
+  return out;
+}
+// The own buff's gain rows at their chances (the Steep Strike row × the hit's Steep Strike share, null when not measured: read as 1).
+function ownBuffGains(record, text, steepShare) {
+  return (record?.gains || []).map((gain) => {
+    const raw = gain.chancePattern ? num(text.match(gain.chancePattern)?.[1]) / 100 : gain.chance;
+    const share = gain.steepOnly ? (Number.isFinite(steepShare) ? Math.max(0, Math.min(1, steepShare)) : 1) : 1;
+    return { recipe: gain.recipe, row: gain.row, trigger: gain.trigger, once: gain.once, chance: raw * share, steepOnly: gain.steepOnly };
+  }).filter((gain) => gain.chance > 0);
+}
+function ownSkillAreaBuff(full, state, hitsRate, steepShare = null) {
   const text = (allSkillEffectsSs13[full.skillName] || []).join("\n");
   const per = text.match(/^This skill ([\d.]+)% Skill Area for each stack of buff$/im);
-  const cap = text.match(/^Stacks up to (\d+) time\(s\)\.?$/im);
-  if (!per || !cap || !/Grant a stack of buff when this skill (?:defeats an enemy or )?hits an Elite/i.test(text)) return null;
-  const held = ownStacks(num(cap[1]), hitsRate, state.prebuiltSelfBuffs !== false);
-  return { value: round(num(per[1]) * held.stacks), text: `${full.skillName}'s own buff: ${num(per[1])}% × ${round(held.stacks)} stacks (the dummy is an Elite; ${held.text})` };
+  const textCap = text.match(/^Stacks up to (\d+) time\(s\)\.?$/im);
+  if (!per || !textCap || !/Grant a stack of buff when this skill (?:defeats an enemy or )?hits an Elite/i.test(text)) return null;
+  const record = OWN_SKILL_AREA_BUFF_RECORDS[full.skillName] || null;
+  const raises = ownBuffCapRaises(full, record);
+  const baseCap = record?.cap ?? num(textCap[1]);
+  const cap = baseCap + raises.reduce((sum, item) => sum + item.value, 0);
+  const gains = ownBuffGains(record, text, steepShare);
+  const seconds = record?.seconds ?? null;
+  let held = ownStacks(cap, hitsRate, state.prebuiltSelfBuffs !== false);
+  // The steady count (3 T Berserking, 2026-11-24): each gain is its own layer on its own timer, the oldest out at the cap (subtype 1, stack mode
+  // 1), so the held stacks are min(cap, gains in the last D s); each once-per-frame row gains on every frame with a landing hit of the skill,
+  // read as min(30, hits/s) frames a second (inferred: the hits spread over distinct frames).
+  const gainsPerSecond = hitsRate > 0 && gains.length ? Math.min(OWN_BUFF_FRAMES_PER_SECOND, hitsRate) * gains.reduce((sum, gain) => sum + gain.chance, 0) : null;
+  if (state.prebuiltSelfBuffs !== false && gainsPerSecond != null && seconds > 0 && gainsPerSecond * seconds < cap) held = { stacks: gainsPerSecond * seconds, text: `${round(gainsPerSecond)} layers/s × ${seconds} s, below the cap (each layer its own timer)` };
+  else if (gainsPerSecond != null && seconds > 0 && held.stacks === cap) held = { ...held, text: `${held.text}; ${round(gainsPerSecond)} layers/s × ${seconds} s holds the cap` };
+  const capText = raises.length ? `cap ${baseCap} (buff ${record.buff}) + ${raises.map((item) => `${item.value} (record ${item.recipe}, attr 3442)`).join(" + ")} = ${cap}` : `cap ${cap}`;
+  return { buff: record?.buff ?? null, cap, stacks: held.stacks, perStackPercent: num(per[1]), seconds, gains, gainsPerSecond, value: round(num(per[1]) * held.stacks), text: `${full.skillName}'s own buff: ${num(per[1])}% × ${round(held.stacks)} stacks (${capText}; the dummy is an Elite; ${held.text})` };
+}
+// Per-stack additional Skill Area on the own buff (Sweep's 217291792 row 2: attr 6201 mod 4 = GetBuffStack(buff) × P1, one write): P1 × the
+// held stacks, the record's GetBuffStack id matched to the own buff's record.
+function ownBuffAdditionalArea(full, own) {
+  if (!own?.buff) return [];
+  const out = [];
+  for (const { id, built } of setupClauseRecipes(full)) {
+    if (built.condition !== "ownBuffSkillArea") continue;
+    const reads = (AFFIX_RECIPES[id]?.r || []).some((row) => (row.e || []).some((write) => write.a === 6201 && write.m === 4 && new RegExp(`GetBuffStack\\(${own.buff}\\b`).test(String(write.v))));
+    if (reads) out.push({ recipe: id, perStack: built.value, value: round(built.value * own.stacks), text: `${built.value}% × ${round(own.stacks)} stacks of buff ${own.buff} (record ${id}, attr 6201 mod 4)` });
+  }
+  return out;
 }
 // The hit's Skill Area: the stat sheet's increased lines, the combat-only increased writes the sheet leaves out (`state.combatSkillArea`:
 // Fervor's added base effect, Baptism: Impassive), the skill's own buff and this skill's supports (increased); the supports' additional
 // lines. Node 114 reads the source on the hit's own query, so every write the Steep Strike query holds counts (records in
 // research/oq-rosa-build-2026-11-04.md §6; 2026-11-05).
-function skillAreaState(full, state, hitsRate = null) {
+function skillAreaState(full, state, hitsRate = null, steepShare = null) {
   const texts = setupTexts(full);
   const sheet = Number(state.skillAreaPercent) || 0;
   const supportIncreased = lineValue(texts, SUPPORT_AREA);
-  const own = ownSkillAreaBuff(full, state, hitsRate);
+  const own = ownSkillAreaBuff(full, state, hitsRate, steepShare);
   const combat = [...(state.combatSkillArea || []).filter((item) => item.value), ...(own?.value ? [own] : [])];
   const combatIncreased = combat.reduce((sum, item) => sum + item.value, 0);
   const additional = texts.flatMap((text) => { const match = String(text).match(SUPPORT_AREA_ADDITIONAL); return match ? [num(match[1])] : []; });
+  // The own buff's per-stack additional Skill Area (Sweep, 3 T Berserking audit G3): its own write, so its own factor.
+  const ownAdditional = ownBuffAdditionalArea(full, own);
+  for (const item of ownAdditional) additional.push(item.value);
   // The build's additional Skill Area (the stat sheet's combined additional factor, src/planner.js skillAreaAdditionalFactor; F4, 2026-11-22).
   const buildAdditional = Number(state.skillAreaAdditionalFactor) || 1;
   if (buildAdditional !== 1) additional.push((buildAdditional - 1) * 100);
   const increased = sheet + supportIncreased + combatIncreased;
   const additionalProduct = additional.reduce((product, value) => product * (1 + value / 100), 1);
   const total = ((1 + increased / 100) * additionalProduct - 1) * 100;
-  return { sheet, supportIncreased, combat, combatIncreased, increased, additional, additionalSum: additional.reduce((a, b) => a + b, 0), additionalCombined: (additionalProduct - 1) * 100, total };
+  return { sheet, supportIncreased, combat, combatIncreased, increased, additional, own, ownAdditional, additionalSum: additional.reduce((a, b) => a + b, 0), additionalCombined: (additionalProduct - 1) * 100, total };
 }
 const combatAreaText = (area) => area.combat.length ? ` + combat ${area.combat.map((item) => `${round(item.value)}% (${item.text || item.source})`).join(" + ")}` : "";
 // Own-buff stacks: at their cap with own buffs built before engaging; else the 20 s window's average of a linear build from 0 at
@@ -325,6 +398,8 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
   const facts = state.critHitsBySetup?.get?.(setupKey) || null;
   const usesRate = facts && Number.isFinite(facts.usesPerSecond) ? facts.usesPerSecond : null;
   const hitsRate = facts && Number.isFinite(facts.hitsPerSecond) ? facts.hitsPerSecond : null;
+  // The setup's Steep Strike share (src/planner.js hitRateFacts.bySetup: the hit's steepStrike.share), for the own buff's Steep Strike gain row.
+  const steepShare = facts && Number.isFinite(facts.steepShare) ? facts.steepShare : null;
   const prebuilt = state.prebuiltSelfBuffs !== false;
   const recipe = clause.recipe ? `game recipe ${clause.recipe}` : "game recipe";
   if (clause.component && hits && !hasComponent(full, clause.component)) return off(`${full.skillName || "the supported skill"} has no modeled "${clause.component}" hit group`);
@@ -420,18 +495,35 @@ export function resolveBatch4Condition(clause, full, siblings = [], setupKey = n
       return quantity.total > 0 ? apply(clause.value * quantity.total, `+${quantity.total} Projectile Quantity (this skill's supports ${quantity.own}, the build's lines ${quantity.build}; the skill's own "+N" text is not counted, as the Hound's Fangs reading): +${clause.value}% × ${quantity.total} (${recipe}; provisional)`, { provisional: true }) : off("no Projectile Quantity bonus on the skill or the build");
     }
     case "skillAreaAtLeast": {
-      const area = skillAreaState(full, state, hitsRate);
+      const area = skillAreaState(full, state, hitsRate, steepShare);
       const text = `Skill Area bonus ${round(area.total)}% ((1 + ${round(area.increased)}% increased: stat sheet ${round(area.sheet)}% + this skill's supports ${round(area.supportIncreased)}%${combatAreaText(area)})${area.additional.length ? ` × ${area.additional.map((value) => `(1 + ${value}%)`).join(" × ")}` : ""} − 1)`;
       return area.total >= clause.threshold ? apply(clause.value, `${text} ≥ ${clause.threshold}% (${recipe}; build-wide additional Skill Area lines are not read: provisional)`, { provisional: true }) : off(`${text} < ${clause.threshold}%`);
+    }
+    case "ownBuffSkillArea": {
+      // Sweep (record 217291792): the own buff's cap raise and its per-stack additional Skill Area, read by skillAreaState for the setup's
+      // Skill Area readers (Rampage's node-114 rows, Ignition Point's threshold); with none on the setup the Skill Area moves no damage.
+      const own = ownSkillAreaBuff(full, state, hitsRate, steepShare);
+      if (!own) return off(`${full.skillName || "the supported skill"} has no own Skill Area buff`);
+      const extra = ownBuffAdditionalArea(full, own);
+      const text = `${own.text}; ${extra.map((item) => `+${item.value}% additional Skill Area (${item.text})`).join(", ") || "no per-stack line read"} (${recipe})`;
+      const readers = setupClauseRecipes(full).filter((item) => ["skillAreaToSteep", "skillAreaAtLeast"].includes(item.built.condition));
+      if (!readers.length) return { active: true, appliedValue: 0, neutral: true, conditionText: `${text}: no Skill Area reader on this setup (Rampage, Ignition Point), so the Skill Area moves no damage` };
+      return on(`${text}, read by ${readers.map((item) => item.built.condition === "skillAreaToSteep" ? "Rampage's Skill Area rows" : "Ignition Point's threshold").join(" and ")}`);
     }
     case "skillAreaToSteep": {
       // Two node-114 rows (recipe 553331072): row 1 reads Σ increased Skill Area (fromMod 3), row 2 the combined additional (fromMod 4,
       // Π(1 + a) − 1); each writes its own additional factor (toMod 4) on the Steep Strike's hits: (1 + p × increased)(1 + p × additional).
-      const area = skillAreaState(full, state, hitsRate);
+      const area = skillAreaState(full, state, hitsRate, steepShare);
       const p = clause.value / 100, rows = [p * area.increased, p * area.additionalCombined].filter((value) => value > 0);
       if (!rows.length) return off("no Skill Area bonus on the skill or the build");
-      const text = `${clause.value}% × ${round(area.increased)}% increased Skill Area (stat sheet ${round(area.sheet)}% + this skill's supports ${round(area.supportIncreased)}%${combatAreaText(area)}) = +${round(p * area.increased)}%${area.additionalCombined > 0 ? `, and ${clause.value}% × ${round(area.additionalCombined)}% additional = +${round(p * area.additionalCombined)}% (a second factor)` : ""} on the Steep Strike's hits (${recipe}; provisional)`;
-      return on(text, { componentParts: rows.map((value) => ({ component: clause.component, value: round(value) })), provisional: true });
+      const text = `${clause.value}% × ${round(area.increased)}% increased Skill Area (stat sheet ${round(area.sheet)}% + this skill's supports ${round(area.supportIncreased)}%${combatAreaText(area)}) = +${round(p * area.increased)}%${area.additionalCombined > 0 ? `, and ${clause.value}% × ${round(area.additionalCombined)}% additional${area.ownAdditional?.length ? ` (${area.ownAdditional.map((item) => item.text).join(", ")})` : ""} = +${round(p * area.additionalCombined)}% (a second factor)` : ""} on the Steep Strike's hits (${recipe}; provisional)`;
+      // `skillArea`: the pools this reading read, so a cast with its own Skill Area write (Banishment's Steep Strike trigger, +40% additional on
+      // the triggered cast, Rampage's second row: src/skill-hit-model.js; 3 T audit K3) can read the row again with it.
+      return on(text, { componentParts: rows.map((value) => ({ component: clause.component, value: round(value) })), provisional: true, skillArea: { sharePercent: clause.value, increasedPercent: area.increased, additionalCombinedPercent: area.additionalCombined,
+        // The rows' ledger values (`increasedRow`, `additionalRow`: the two lines share source and text) and the skill's own buff in the pools, so the
+        // tick loop can read them at the stacks held on each tick (src/tick-layers.js ownAreaStacksReaders; 3 T Berserking, 2026-11-24).
+        increasedRow: p * area.increased > 0 ? round(p * area.increased) : null, additionalRow: p * area.additionalCombined > 0 ? round(p * area.additionalCombined) : null,
+        ...(area.own?.buff && area.own.gains?.length ? { own: { buff: area.own.buff, cap: area.own.cap, stacks: area.own.stacks, seconds: area.own.seconds, perStackIncreasedPercent: area.own.perStackPercent, perStackAdditionalPercents: (area.ownAdditional || []).map((item) => item.perStack), gains: area.own.gains } } : {}) } });
     }
     case "linksBelowMax": {
       const stacks = additionalChannelStacks(full, state);

@@ -1,4 +1,5 @@
 import { escapeHtml } from "./html.js";
+import { displayGameLine, t } from "./i18n.js";
 
 // TOWER Sequence picker options for the shared searchable dropdown (src/app.js openSearchableSelect). The catalog has no
 // sequence names, so the first effect line is the option's name; any further effect lines are its description, and the slot
@@ -14,11 +15,11 @@ export function towerSequenceOptionParts(entry) {
 }
 
 export function towerSequenceOptionMarkup(entries, selectedId = "") {
-  return `<option value="">None</option>${["Intermediate", "Advanced"].map((grade) => `<optgroup label="${grade} Sequences">${entries
+  return `<option value="">${escapeHtml(t("None"))}</option>${["Intermediate", "Advanced"].map((grade) => `<optgroup label="${escapeHtml(t(`${grade} Sequences`))}">${entries
     .filter((entry) => entry.grade === grade)
     .map((entry) => {
       const { name, description, slots } = towerSequenceOptionParts(entry);
-      return `<option value="${entry.id}"${description ? ` data-option-description="${escapeHtml(description)}"` : ""}${slots ? ` data-option-meta="${escapeHtml(slots)}"` : ""} ${entry.id === selectedId ? "selected" : ""}>${escapeHtml(name)}</option>`;
+      return `<option value="${entry.id}"${description ? ` data-option-description="${escapeHtml(displayGameLine("affix", description))}"` : ""}${slots ? ` data-option-meta="${escapeHtml(slots)}"` : ""} ${entry.id === selectedId ? "selected" : ""}>${escapeHtml(displayGameLine("affix", name))}</option>`;
     })
     .join("")}</optgroup>`).join("")}`;
 }
