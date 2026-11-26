@@ -25,3 +25,27 @@ export function maxChanneledStacksLine(line) {
 export function buildMaxChanneledStacks(modifierTexts = []) {
   return modifierTexts.reduce((total, line) => { const read = maxChanneledStacksLine(line); return total + (read?.active ? read.value * (line.multiplier ?? 1) : 0); }, 0);
 }
+
+// The hit model's number reader (src/skill-hit-model.js `number`): a typographic minus reads as "-".
+const number = (value) => Number(String(value).replace("−", "-"));
+
+// Channeled-skill lines the shared classifier does not parse (the same templates src/build-mechanics.js reads for
+// the Scorching Beam channel): increased damage for Channeled Skills, per-additional-max-stack damage, and the
+// max-stack lines themselves. Returns null for anything else.
+const CHANNEL_INCREASED = /^\+(\d+(?:\.\d+)?)% damage for Channeled Skills$/i;
+const CHANNEL_PER_STACK_INCREASED = /^\+(\d+(?:\.\d+)?)% damage for every \+1 additional Max Channeled Stack\(s\)$/i;
+const CHANNEL_PER_STACK_ADDITIONAL = /^\+(\d+(?:\.\d+)?)% additional damage for every \+(\d+) additional Max Channeled Stack\(s\)$/i;
+const CHANNEL_MAX_STACKS = /^\+(\d+) (?:to )?Max Channeled Stacks?$/i;
+export function classifyChannelLine(text) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  let match = clean.match(CHANNEL_INCREASED);
+  if (match) return { kind: "increased", value: number(match[1]) };
+  match = clean.match(CHANNEL_PER_STACK_INCREASED);
+  if (match) return { kind: "perStackIncreased", value: number(match[1]), per: 1 };
+  match = clean.match(CHANNEL_PER_STACK_ADDITIONAL);
+  if (match) return { kind: "perStackAdditional", value: number(match[1]), per: number(match[2]) };
+  match = clean.match(CHANNEL_MAX_STACKS);
+  if (match) return { kind: "maxStacks", value: number(match[1]) };
+  return null;
+}
+

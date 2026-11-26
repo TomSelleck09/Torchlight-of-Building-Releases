@@ -33,7 +33,8 @@ import { applyBatch5ProfileEdits } from "./support-hit-count-batch5.js";
 import { applyBatch6SentryEdits } from "./minion-sentry-batch6.js";
 import { applyFocusSpeed } from "./focus-speed.js";
 import { reboundState } from "./ice-lances-rebound.js";
-import { maxChanneledStacksLine } from "./channeled-stack-lines.js";
+import { maxChanneledStacksLine, classifyChannelLine } from "./channeled-stack-lines.js";
+import { intakeMode, createLineIntake, shadowCall, shadowPerStackFacts, shadowPartQueries, selectPerStackRecords, selectTriggeredItems } from "./line-intake.js";
 import { SPELL_BURST_USE_GAIN, spellBurstUseGainLines, spellBurstRefillWalk } from "./spell-burst-refill.js";
 import { landingEvents, oncePerFrameWalk, onceGateFrames, spellBurstExtraCastSpacing, useSchedule } from "./once-per-frame.js";
 import { mergeRotationTurns } from "./rotating-buffs.js";
@@ -333,26 +334,6 @@ export function supportLayers(setup, { dealtTypes, skillTags, profile, speedType
   return { additional, increased, critOnlyAdditional, added, castSpeed, castFrequency, critRating, conversion, addedAs, cooldown, unmodeled, notes, maxStacks, triggers, castSpeedShare, manualPenalty, triggeredAdditional, effects };
 }
 
-// Channeled-skill lines the shared classifier does not parse (the same templates src/build-mechanics.js reads for
-// the Scorching Beam channel): increased damage for Channeled Skills, per-additional-max-stack damage, and the
-// max-stack lines themselves. Returns null for anything else.
-const CHANNEL_INCREASED = /^\+(\d+(?:\.\d+)?)% damage for Channeled Skills$/i;
-const CHANNEL_PER_STACK_INCREASED = /^\+(\d+(?:\.\d+)?)% damage for every \+1 additional Max Channeled Stack\(s\)$/i;
-const CHANNEL_PER_STACK_ADDITIONAL = /^\+(\d+(?:\.\d+)?)% additional damage for every \+(\d+) additional Max Channeled Stack\(s\)$/i;
-const CHANNEL_MAX_STACKS = /^\+(\d+) (?:to )?Max Channeled Stacks?$/i;
-function classifyChannelLine(text) {
-  const clean = String(text || "").replace(/\s+/g, " ").trim();
-  let match = clean.match(CHANNEL_INCREASED);
-  if (match) return { kind: "increased", value: number(match[1]) };
-  match = clean.match(CHANNEL_PER_STACK_INCREASED);
-  if (match) return { kind: "perStackIncreased", value: number(match[1]), per: 1 };
-  match = clean.match(CHANNEL_PER_STACK_ADDITIONAL);
-  if (match) return { kind: "perStackAdditional", value: number(match[1]), per: number(match[2]) };
-  match = clean.match(CHANNEL_MAX_STACKS);
-  if (match) return { kind: "maxStacks", value: number(match[1]) };
-  return null;
-}
-
 // Sentry Cast Frequency lines (sentry batch, 2026-10-12). Manual rule 1001011724: "The speed at which Sentries use skills is
 // controlled by Cast Frequency and not Attack or Cast Speed. It is calculated in the same way as Attack and Cast Speed."
 // Plain lines ("+X% Sentry Skill cast frequency", "+X% additional Sentry Skill Cast Frequency") are read; conditional
@@ -638,7 +619,7 @@ export function movementFocusProfile(profile, moveSpeed) {
   return { ...profile, focus: { ...profile.focus, pointsPerSecond }, useModel: { ...profile.useModel, usesPerSecond, firstUseSeconds: pointsPerSecond > 0 ? perUse / pointsPerSecond : Infinity, note } };
 }
 
-export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null, projectileHits = null, isMainSkill = null, spellBurstUseStreams = null, deteriorationShared = null, attackSpeedToChargePool = null, steepStrikeTrigger = null, steepTriggerOtherCasts = null } = {}) {
+export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luckyDamageRolls = 1, luckyState = null, deterioration = null, setup, profile, modifierTexts = [], castSpeed = { factor: 1, sources: [] }, attackSpeed = null, weapon = null, crit = {}, auraEntries = [], aim = null, intelligenceAdditionalPercent = 0, intelligenceSource = null, mainStatPoints = null, target = {}, targetCursed = false, targetCurseCount = 0, enemyAilments = null, extraTaken = [], windows = [5, 20], nearTarget = true, multistrikeEffects = null, extraCritOnly = [], movedRecently = true, multistrikeEventsPerSecond = null, heroEffects = null, triggeredSkillAdditional = [], tangleSkill = false, extraTriggeredUses = null, takenConversion = null, frameSnap = false, damageToLife = null, burstChargeTrigger = null, recipeState = null, boardSkillNames = null, movementSpeedPercent = 0, moveSpeed = null, projectileQuantityFixed = false, tagSpeedLines = [], attributePool = null, measuredDealtTypes = null, spellTagOnAttack = false, rotation = null, projectileHits = null, isMainSkill = null, spellBurstUseStreams = null, deteriorationShared = null, attackSpeedToChargePool = null, steepStrikeTrigger = null, steepTriggerOtherCasts = null, lineIntake = null } = {}) {
   // A Focus skill that gains its Focus Pts per metre moved (Thunder Focus) at the player's movement speed (user decision 2026-11-10).
   profile = movementFocusProfile(profile, moveSpeed);
   // The Main Skill is the planner's Main Skill (isMainSkill, from src/planner.js resolvedMain; 2026-11-15): every active-slot skill of a
@@ -716,7 +697,7 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // The tagged attribute pool (W9 step 3; src/attribute-pool-hit.js), TLI_POOL_HIT=pool: the lines' hit readings, the supports' damage,
   // crit, cooldown and penetration lines and the typed taken lines go in as writes; each part reads them by its query (the skill's tags,
   // Hit, the setup's id) and its types. `attributePool`: the planner's build pool (record writes, conversion records), or none.
-  const hitPool = hitPoolMode() === "pool" ? new HitPool({ parent: attributePool, skillId: setup?.setupKey ?? setup?.instanceId ?? profile.name ?? null, scopeTags, skillTags }) : null;
+  const hitPool = hitPoolMode() === "pool" ? new HitPool({ parent: attributePool, skillId: setup?.setupKey ?? setup?.instanceId ?? profile.name ?? null, scopeTags, skillTags, mainSkill }) : null;
   if (hitPool) hitPool.addCritRating(supports.critRating);
   // Conversion records the traced pool reads at this hit (TLI_POOL_CONVERSIONS=traced): their lines' legacy readings (a derived line, the
   // Projectile Speed converter below) are dropped. Their sources here: the setup's "+X% Projectile Speed for the supported skill" clauses
@@ -785,23 +766,49 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // (src/recipe-hit-layers.js hitLineFromFacts, in classifyHitLine's shape); the text reading stays where the recipe cannot place the
   // line (planner-made lines, hero-trait lines, runtime-scaled writes). TLI_HIT_PATH=text (TLI_SPEED_PATH=text for the Cooldown
   // Recovery Speed lines) restores the text readers.
-  const readRecipe = anyHitRecipeMode() ? hitRecipeReader(modifierTexts) : null;
-  for (const line of modifierTexts.flatMap((item) => { const parts = splitHitLineText(item.text); return parts.length > 1 ? parts.map((text) => ({ ...item, text, compoundText: item.text })) : [item]; })) {
+  // The line intake (src/line-intake.js, TLI_POOL_INTAKE): "call" this loop reads each part itself; "shadow" (slice 1b) the pass's
+  // intake (or a local one of this call's list) reads every part beside the legacy reading, which still drives everything, and each reading
+  // is compared (a difference goes to lineIntakeShadowReport()); "pass" (slice 2a; the default since slice 6) each part's channel readings and `parsed` come from the
+  // intake (memoised per pass), read with this call's state and this call's resolved-into set (its own list, the hero extras included).
+  // The part objects, the ledger entries and the pool writes are still made per call, in the same order (scripts/hit-pool-trace.mjs).
+  const lineIntakeMode = intakeMode();
+  const callIntake = lineIntakeMode === "call" ? null : lineIntake ?? createLineIntake({ lines: modifierTexts });
+  const intakeCallState = callIntake ? { targetCursed, enemyAilments, recipeState, resolvedInto: callIntake.resolvedIntoSet(modifierTexts) } : null;
+  const passRead = lineIntakeMode === "pass" ? callIntake.readerFor(intakeCallState) : null;
+  const readRecipe = !passRead && anyHitRecipeMode() ? hitRecipeReader(modifierTexts) : null;
+  const shadow = lineIntakeMode === "shadow" ? shadowCall(callIntake, intakeCallState, setup?.setupKey ?? profile?.name ?? null) : null;
+  // A compound part's original line and index (the intake's memo key).
+  const partOrigin = passRead ? new Map() : null;
+  for (const line of modifierTexts.flatMap((item) => { const parts = splitHitLineText(item.text); return parts.length > 1 ? parts.map((text, index) => { const part = { ...item, text, compoundText: item.text }; shadow?.register(part, item, index); partOrigin?.set(part, [item, index]); return part; }) : [item]; })) {
     // Traced pool: a line resolved from a conversion line (its per-stat value) is read through the conversion record instead.
     if (tracedLines.size && line.derivedFrom && tracedLines.has(lineKeyOf(line.source, line.derivedFrom))) continue;
+    const intakeRead = passRead ? passRead(...(partOrigin.get(line) ?? [line, 0])) : null;
+    const shadowRead = shadow ? shadow.begin(line) : null;
+    if (shadowRead) shadow.check(shadowRead, line, "partText", line.text);
     // The ring's "+N Max Channeled Stacks when equipped in the left / right Ring slot" counts from that slot only (2026-11-12,
     // src/channeled-stack-lines.js; the plain wording is classifyChannelLine's).
-    const ringStacks = channel ? maxChanneledStacksLine(line) : null;
+    const ringStacks = channel ? (intakeRead ? intakeRead.channel.ringStacks : maxChanneledStacksLine(line)) : null;
+    if (shadowRead && channel) shadow.check(shadowRead, line, "ringStacks", ringStacks);
     if (ringStacks?.ringSlot) { if (ringStacks.active) channelLines.push({ kind: "maxStacks", value: ringStacks.value * (line.multiplier ?? 1), source: line.source, text: line.text, origin: line.origin }); continue; }
-    const channelParsed = channel ? classifyChannelLine(line.text) : null;
-    if (channelParsed) { channelLines.push({ ...channelParsed, source: line.source, text: line.text, origin: line.origin, value: channelParsed.value * (line.multiplier ?? 1) }); continue; }
+    const channelParsed = channel ? (intakeRead ? intakeRead.channel.channelParsed : classifyChannelLine(line.text)) : null;
+    if (shadowRead && channel) shadow.check(shadowRead, line, "channelParsed", channelParsed);
+    if (channelParsed) { channelLines.push({ ...channelParsed, source: line.source, text: line.text, ...(line.compoundText ? { compoundText: line.compoundText } : {}), origin: line.origin, value: channelParsed.value * (line.multiplier ?? 1) }); continue; }
     // A skill with no channel: the per-additional-max-stack lines still apply (records 328531744 / 996307264: node 114 from field 20060502
     // with no tag, so any skill's damage; 2026-11-20, 15 T Split Shot audit G4). "+X% damage for Channeled Skills" stays a channel line.
-    const stackParsed = channel ? null : classifyChannelLine(line.text);
-    if (stackParsed && (stackParsed.kind === "perStackIncreased" || stackParsed.kind === "perStackAdditional")) { channelLines.push({ ...stackParsed, source: line.source, text: line.text, origin: line.origin, value: stackParsed.value * (line.multiplier ?? 1) }); continue; }
-    const textParsed = classifyHitLine(line.text, { targetCursed, enemyAilments });
-    const recipeParsed = readRecipe ? hitLineFromFacts(readRecipe(line), textParsed, recipeState) : undefined;
-    const parsed = pickHitReading(textParsed, recipeParsed);
+    const stackParsed = channel ? null : intakeRead ? intakeRead.channel.stackParsed : classifyChannelLine(line.text);
+    if (shadowRead && !channel) shadow.check(shadowRead, line, "stackParsed", stackParsed);
+    if (stackParsed && (stackParsed.kind === "perStackIncreased" || stackParsed.kind === "perStackAdditional")) { channelLines.push({ ...stackParsed, source: line.source, text: line.text, ...(line.compoundText ? { compoundText: line.compoundText } : {}), origin: line.origin, value: stackParsed.value * (line.multiplier ?? 1) }); continue; }
+    const textParsed = intakeRead ? intakeRead.textParsed : classifyHitLine(line.text, { targetCursed, enemyAilments });
+    const recipeFacts = intakeRead ? intakeRead.recipeFacts : readRecipe ? readRecipe(line) : undefined;
+    const recipeParsed = intakeRead ? intakeRead.recipeParsed : readRecipe ? hitLineFromFacts(recipeFacts, textParsed, recipeState) : undefined;
+    const parsed = intakeRead ? intakeRead.parsed : pickHitReading(textParsed, recipeParsed);
+    if (shadowRead) {
+      shadow.check(shadowRead, line, "textParsed", textParsed);
+      shadow.check(shadowRead, line, "recipeFacts", recipeFacts);
+      shadow.check(shadowRead, line, "recipeParsed", recipeParsed);
+      shadow.check(shadowRead, line, "parsed", parsed);
+      shadow.check(shadowRead, line, "sourceKind", !parsed ? null : parsed.recipe ? "recipe" : (line.lineEffect || ["derived", "follower", "buff"].includes(line.origin)) ? "model" : "text");
+    }
     if (!parsed) continue;
     const scaled = (value) => value * (line.multiplier ?? 1);
     const entry = { source: line.source, text: line.text, origin: line.origin, ...(parsed.recipe ? { recipe: parsed.recipe } : {}), ...(line.rotation ? { rotation: line.rotation } : {}) };
@@ -849,6 +856,11 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   const weaponAdditional = attackProfile && weapon ? weapon.additional.map((line) => ({ ...line, category: "Additional damage" })) : [];
   const weaponIncreased = attackProfile && weapon ? weapon.increased.map((line) => ({ ...line, category: "Increased damage" })) : [];
 
+  // Slice 4c (TLI_POOL_INTAKE=pass; src/line-intake.js selectPerStackRecords): the per-stack entries' selection and values from the held
+  // per-stack records the hit query admits (field 2006050, slice 4a's fact), matched one to one to this call's per-stack lines; the entries
+  // keep their place, text and rounding. null (call mode, no pool, or a selection that is not today's) keeps today's reading.
+  const perStackPick = (additionalMaxStacks) => (lineIntakeMode === "pass" && hitPool ? selectPerStackRecords({ hitPool, modifierTexts, channelLines, additionalMaxStacks }) : null);
+  const perStackValue = (pick, line, today) => (pick ? pick.get(line) : today);
   // Channel stacks (channel skills): base max from the Split struct + supports + build lines; the channel is held at
   // max stacks (own buffs pre-built), so per-stack cadences read the full count. The skill's own and the build's
   // per-additional-max-stack lines scale with the stacks above the base.
@@ -858,9 +870,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const sources = [...supports.maxStacks, ...channelLines.filter((line) => line.kind === "maxStacks").map((line) => ({ source: line.source, text: line.text, value: line.value }))];
     const maxStacks = base + sum(sources);
     const additionalMaxStacks = Math.max(0, maxStacks - base);
+    const pick = perStackPick(additionalMaxStacks);
     const increased = channelLines.filter((line) => line.kind === "increased").map((line) => ({ source: line.source, text: line.text, origin: line.origin, value: line.value, category: "Increased damage" }));
-    increased.push(...channelLines.filter((line) => line.kind === "perStackIncreased").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: line.value * additionalMaxStacks, category: "Increased damage" })));
-    const additional = channelLines.filter((line) => line.kind === "perStackAdditional").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: line.value * additionalMaxStacks / line.per, category: "Additional damage" }));
+    increased.push(...channelLines.filter((line) => line.kind === "perStackIncreased").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: perStackValue(pick, line, line.value * additionalMaxStacks), category: "Increased damage" })));
+    const additional = channelLines.filter((line) => line.kind === "perStackAdditional").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: perStackValue(pick, line, line.value * additionalMaxStacks / line.per), category: "Additional damage" }));
     const own = profile.channel?.perAdditionalMaxStackAdditionalPercent;
     if (own) additional.push({ source: `${profile.name}: additional Max Channeled Stacks`, text: `+${own}% additional damage for every +1 additional Max Channeled Stack(s) (${additionalMaxStacks} additional; skill text)`, origin: "skill", value: own * additionalMaxStacks, category: "Additional damage" });
     return { baseMaxStacks: base, baseMaxSource: profile.channel?.baseMaxSource || null, maxStacks, additionalMaxStacks, fullStacks: maxStacks, sources, increased, additional: additional.filter((line) => line.value !== 0) };
@@ -872,10 +885,14 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     if (channel || !channelLines.length) return null;
     const sources = [...supports.maxStacks, ...modifierTexts.map((line) => { const read = maxChanneledStacksLine(line); return read?.active ? { source: line.source, text: line.text, value: read.value * (line.multiplier ?? 1) } : null; }).filter(Boolean)];
     const additionalMaxStacks = Math.max(0, sum(sources));
-    const increased = channelLines.filter((line) => line.kind === "perStackIncreased").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: line.value * additionalMaxStacks, category: "Increased damage" }));
-    const additional = channelLines.filter((line) => line.kind === "perStackAdditional").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: line.value * additionalMaxStacks / line.per, category: "Additional damage" }));
+    const pick = perStackPick(additionalMaxStacks);
+    const increased = channelLines.filter((line) => line.kind === "perStackIncreased").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: perStackValue(pick, line, line.value * additionalMaxStacks), category: "Increased damage" }));
+    const additional = channelLines.filter((line) => line.kind === "perStackAdditional").map((line) => ({ source: line.source, text: `${line.text} (${additionalMaxStacks} additional)`, origin: line.origin, value: perStackValue(pick, line, line.value * additionalMaxStacks / line.per), category: "Additional damage" }));
     return { additionalMaxStacks, sources, increased: increased.filter((line) => line.value !== 0), additional: additional.filter((line) => line.value !== 0) };
   })();
+  // Slice 4a shadow (TLI_POOL_INTAKE=shadow; src/line-intake.js shadowPerStackFacts): the held per-stack records evaluated with this call's
+  // stacks above the base as a fact, against the entries above. A side channel: nothing here reads it.
+  if (shadow && hitPool) shadowPerStackFacts({ hitPool, modifierTexts, channelLines, additionalMaxStacks: channelState?.additionalMaxStacks ?? stackLineState?.additionalMaxStacks ?? 0, label: setup?.setupKey ?? profile?.name ?? null });
 
   // Use rate (before the components: tick intervals scale with cast speed). Attack skills (speed type "attack-speed")
   // use the weapon model's attacks-per-second factor, the supports' "Attack and Cast Speed" lines and the skill's own
@@ -1086,6 +1103,10 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
   // One projectile at a time (Whirlwind Blade): a new one fires only after the last was recalled, so its life is part of every cycle.
   const heldProjectileSeconds = profile.heldProjectile?.seconds || 0;
   const triggerStepSeconds = triggered ? Math.max(triggerInterval, effectiveCooldown, terra?.durationSeconds || 0, heldProjectileSeconds) : null;
+  // Slice 4c (TLI_POOL_INTAKE=pass; src/line-intake.js selectTriggeredItems): the increased items of the triggered-skill lines are the writes
+  // only this call's Triggered part query admits (slice 4b), rounded as today; their push points below are unchanged (never read through
+  // the Triggered query, so nothing is counted twice). Call mode, no pool, or a selection that is not today's keeps today's items.
+  if (lineIntakeMode === "pass" && hitPool) triggeredSkillAdditional = selectTriggeredItems({ hitPool, items: triggeredSkillAdditional });
   // "+X% damage for Triggered Skills" (census #15) rides with the triggered-skill lines as an increased item (src/combat-states.js).
   function pushTriggered(...lines) { for (const line of lines) (line.increased ? supports.increased : supports.additional).push(line); }
   if (triggered) {
@@ -2868,6 +2889,9 @@ export function calculateSkillHit({ fervor = null, prebuiltSelfBuffs = true, luc
     const top = projectileVolleys.reduce((best, volley) => volley.count > best.count ? volley : best);
     return { fired: top.count, auto: top.override ? top.autoReached : top.reached, landed: top.reached, override: landedOverride, applied: Boolean(top.override), reach: top.reach, canHitSame: true };
   })() : extraProjectiles > 0 && !falloffFactor && skillTags.has("Projectile") ? { fired: 1 + extraProjectiles, auto: 1, landed: 1, override: null, applied: false, canHitSame: false } : null;
+  // Slice 4b shadow (TLI_POOL_INTAKE=shadow; src/line-intake.js shadowPartQueries): the Triggered and Main part queries against the plain
+  // hit query on this call's pool. A side channel: nothing here reads them.
+  if (shadow && hitPool) shadowPartQueries({ hitPool, triggeredSkillAdditional, mainSkill, label: setup?.setupKey ?? profile?.name ?? null });
   if (projectileLanding?.applied) notes.push(`${profile.name}: ${projectileLanding.landed} of ${projectileLanding.fired} projectiles hit the dummy (set on the Config tab${landedOverride > projectileLanding.fired ? `: saved ${landedOverride}, ${projectileLanding.fired} fired` : ""}; best case ${projectileLanding.auto}).`);
   return {
     key, name: profile.name, setupKey: setup?.setupKey, profile, skillHit: true, damageType: profile.damageType, dealtTypes,

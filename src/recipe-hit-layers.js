@@ -272,14 +272,23 @@ function compoundPart(facts, partText) {
  * (`derivedFrom`, src/line-effects.js) kept on their text reading (the derived line carries them; the rule of §9).
  */
 export function hitRecipeReader(modifierTexts = []) {
-  const resolvedInto = new Set(modifierTexts.filter((line) => line?.derivedFrom).map((line) => `${line.source}|${squash(line.derivedFrom)}`));
-  return (line) => {
-    if (!line) return { status: "fallback", reason: "no line", facts: [] };
-    // One part of a compound "Min …, and Max …" line (src/skill-hit-lines.js splitHitLineText): the whole line's recipe, its part's write.
-    const facts = line.compoundText ? compoundPart(recipeHitFacts({ ...line, text: line.compoundText }), line.text) : recipeHitFacts(line);
-    if (facts.status !== "fallback" && resolvedInto.has(`${line.source}|${squash(line.text)}`)) return { ...facts, status: "fallback", reason: "resolved into a derived line (src/line-effects.js)", facts: [] };
-    return facts;
-  };
+  const resolvedInto = resolvedIntoKeys(modifierTexts);
+  return (line) => hitRecipePartFacts(line, resolvedInto);
+}
+/** The keys of the lines a list resolved into derived lines (`derivedFrom`, src/line-effects.js): hitRecipeReader's set. */
+export const resolvedIntoKeys = (modifierTexts = []) => new Set(modifierTexts.filter((line) => line?.derivedFrom).map((line) => `${line.source}|${squash(line.derivedFrom)}`));
+/** One line part's key in that set. */
+export const resolvedIntoKey = (line) => `${line.source}|${squash(line.text)}`;
+/**
+ * One line part's recipe facts, hitRecipeReader's reading: `resolvedInto` whether the call's list resolved the part into a derived line,
+ * a boolean or the list's resolvedIntoKeys set (looked up only for a placed reading, as before).
+ */
+export function hitRecipePartFacts(line, resolvedInto = false) {
+  if (!line) return { status: "fallback", reason: "no line", facts: [] };
+  // One part of a compound "Min …, and Max …" line (src/skill-hit-lines.js splitHitLineText): the whole line's recipe, its part's write.
+  const facts = line.compoundText ? compoundPart(recipeHitFacts({ ...line, text: line.compoundText }), line.text) : recipeHitFacts(line);
+  if (facts.status !== "fallback" && (resolvedInto instanceof Set ? resolvedInto.has(resolvedIntoKey(line)) : resolvedInto)) return { ...facts, status: "fallback", reason: "resolved into a derived line (src/line-effects.js)", facts: [] };
+  return facts;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------

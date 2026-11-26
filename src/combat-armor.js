@@ -25,6 +25,8 @@ import { playerBuffSet } from "./unit-buff-set.js";
 
 const round = (value, digits = 4) => Math.round(value * 10 ** digits) / 10 ** digits;
 const PER_BLESSING_ARMOR = /^\+?(\d+(?:\.\d+)?)% (additional )?Armor per stack of (Tenacity|Focus|Agility) Blessing owned$/i;
+// The conditional lines this module reads itself (a pool built from the line resolver's held bodies leaves them out: src/planner.js).
+export const combatArmorReadsLine = (text) => { const clean = normalizePercentageText(String(text ?? "")).replace(/\s+/g, " ").trim(); return PER_BLESSING_ARMOR.test(clean) || SHELTER.test(clean); };
 const SHELTER = /^\+?(\d+(?:\.\d+)?)% additional Defense per stack of Tenacity Blessing when the number of Tenacity Blessing stacks equals the number of Focus Blessing stacks$/i;
 
 /**

@@ -9,7 +9,7 @@ import { parseBlessingModifier } from "./blessing-model.js";
 import { classifyMinionLine } from "./minion-damage-model.js";
 import { splitCondition, resolveLineCondition } from "./line-conditions.js";
 import { matchTalentTextClause } from "./talent-text-effects.js";
-import { resolveCombatStates, readByCombatStates, deteriorationFrom } from "./combat-states.js";
+import { resolveCombatStates, readByCombatStates, deteriorationFrom, infiltrationEffectPercent, BUFF_VALUES } from "./combat-states.js";
 import { resolveHeroModules, heroModuleFor, heroModuleRevivedLine } from "./hero-trait-modules.js";
 import { resolveOrigins, readsOriginLine } from "./origin-of-spirit-magus.js";
 import { resolveFollowerEffects } from "./follower-model.js";
@@ -31,6 +31,9 @@ import { classifyTaggedCritLine } from "./scorching-beam-critical.js";
 const NUMBER = /^([+-]?\d+(?:\.\d+)?)%/;
 const SPEED = /^([+-]?\d+(?:\.\d+)?)% (additional )?(Attack and Cast Speed|Cast Speed|Attack Speed)$/i;
 const MECHANICS_TARGET = /^\+(\d+(?:\.\d+)?)% (additional )?damage (?:against (?:(\w+) enemies|enemies affected by Ailments)|(?:against|to) (Elites|Bosses))$/i;
+// Lich (4,3) "+10% Movement Speed while Blur is active" (record 101010157): the line resolver's (src/line-conditions.js key blurActive).
+// The defence bodies gated on Blur the same way (records 101010221, 427747424, 884419904: Evasion and Defense; reach census follow-up 2026-11-25).
+const BLUR_MOVEMENT_SPEED = /^[+-]?\d+(?:\.\d+)?% Movement Speed while Blur is active$|^(?:When Dexterity is greater than Strength, )?[+-]?\d+(?:\.\d+)? Evasion while Blur is active\.?$|^While Blur is active, [+-]?\d+(?:\.\d+)?% Defense$/i;
 
 export function handledElsewhere(text) {
   // Focus / Combo Damage Enhancement: summed by resolveDamageEnhancement below.
@@ -43,14 +46,15 @@ export function handledElsewhere(text) {
   if (classifyDamageLine(text) || classifyHitLine(text) || classifyWeaponAttackLine(text) || (parseBlessingModifier(text) && parseBlessingModifier(text).kind !== "lineEffect")) return true;
   if (MECHANICS_TARGET.test(text)) return true;
   // Keys of the shared talent / slate table (e.g. "+2% Fire Penetration against Ignited enemies") and damage-taken lines
-  // (own defence: src/low-resource-model.js, src/effective-hp.js; enemy debuffs: curse and support models).
-  if (matchTalentTextClause(text, "talent") || matchTalentTextClause(text, "slate")) return true;
+  // (own defence: src/low-resource-model.js, src/effective-hp.js; enemy debuffs: curse and support models). The table's "Movement Speed while
+  // Blur is active" key (talent display only, no reader) is the line resolver's (key blurActive, record 101010157; reach census 2026-11-25).
+  if (!BLUR_MOVEMENT_SPEED.test(text) && (matchTalentTextClause(text, "talent") || matchTalentTextClause(text, "slate"))) return true;
   // (Impending's stacking enemy debuff is read by src/combat-states.js since the residual batch, checked above.)
   // (Haze's standing-still row ends on your own damage taken: its condition rule reads the damage part, src/line-conditions.js.)
   if (/damage taken/i.test(text) && !/^Every [\d.]+ s, .+ for enemies within \d+ m\.|^When Ignite is inflicted, Ignite spreads|Attack Horizontal Projectile Damage taken by nearby enemies$|^While standing still, .+ dealt by attacks\. [+-]?[\d.]+% additional damage taken$/i.test(text)) return true;
-  // Blur lines belong to src/blur-effects.js, except Stab In The Back's Blur consumption (resolved here as not modeled) and Chain behind
-  // the Curtain's Affliction Effect (chunk 12, key blurRatingPoints).
-  if (/\bBlur\b/i.test(text) && !/^While Blur is active, loses Blur after casting a Main Skill|Affliction Effect for every 1 Blur Rating$|^Adds [\d.]+ - [\d.]+ \w+ Damage to Attacks and Spells while Blur is active$/i.test(text)) return true;
+  // Blur lines belong to src/blur-effects.js, except Stab In The Back's Blur consumption (resolved here as not modeled), Chain behind
+  // the Curtain's Affliction Effect (chunk 12, key blurRatingPoints) and a Movement Speed body gated on Blur (record 101010157, key blurActive).
+  if (/\bBlur\b/i.test(text) && !BLUR_MOVEMENT_SPEED.test(text) && !/^While Blur is active, loses Blur after casting a Main Skill|Affliction Effect for every 1 Blur Rating$|^Adds [\d.]+ - [\d.]+ \w+ Damage to Attacks and Spells while Blur is active$/i.test(text)) return true;
   // (Only the pact "Affliction … at Full Life" lines belong to the planner's Full Life model; other "at Full Life" lines
   // resolve here with the fullLife key: gear-pact batch chunk 2.)
   // The crit model reads "For every 1% Fire Resistance, +X% Critical Strike Damage, up to +Y%" (src/scorching-beam-critical.js
@@ -230,7 +234,13 @@ export function resolveLineEffects(modifierTexts = [], state = null) {
   derived.push(...hero.derived);
   // Follower (2026-10-15; src/follower-model.js): the modeled Tartarus Skill buffs as derived lines, each behind its best-case
   // switch (listed with the timed effects in src/planner.js bestCaseAssumptions); `follower` keeps every line's reading.
-  const follower = resolveFollowerEffects(state?.follower || null, state || {});
+  // Each held Infiltration's own value H, its caster's Effect in it (buff 3441 / 3451 / 3461's GetEffectScale: the caster's attr 3401): 13 × (1 + your
+  // "+X% <Type> Infiltration Effect") for yours, 13 for one only the follower keeps, as src/combat-states.js derives the held line. Medium
+  // Penetration lifts it (src/follower-model.js; reach census fourth follow-ups, 2026-11-25). On the beam path the beam's own Fire Infiltration
+  // is not among the types.
+  const heldTypes = (combat.debuffs?.infiltration || []).filter((type) => !(type === "Fire" && state?.beamActive)), followerOnly = new Set(combat.debuffs?.followerInfiltration || []);
+  const infiltrationHeldPercent = heldTypes.length ? Object.fromEntries(heldTypes.map((type) => [type, BUFF_VALUES.infiltration * (1 + (followerOnly.has(type) ? 0 : infiltrationEffectPercent(modifierTexts, type, { heroId: state?.heroId ?? null })) / 100)])) : null;
+  const follower = resolveFollowerEffects(state?.follower || null, state || {}, { infiltrationHeldPercent });
   combat.timedEffects.push(...follower.timedEffects);
   // The follower's debuffs on the dummy join its unit buff set (W8 step 2; entries only, their readers read the derived lines).
   if (state?.enemyBuffs instanceof UnitBuffSet) putFollowerDebuffs(state.enemyBuffs, follower.timedEffects);

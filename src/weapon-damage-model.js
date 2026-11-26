@@ -238,7 +238,8 @@ const WEAPON_SPEED_FIXED = /^Weapon Attack Speed is fixed at (\d+(?:\.\d+)?)$/i;
 const OFF_HAND_NO_ATTACK =/^Off-Hand Weapons do not participate in Attacks while Dual Wielding$/i;
 // Twinblade Onslaught (Erika – Vendetta's Sting; hero trait audit B2, 2026-10-19): "No additional Attack Speed bonus is granted
 // while Dual Wielding. Instead, +X% additional Attack Damage". Read as the Dual Wielding status's +10% additional Attack Speed
-// being dropped (its sibling line drops the status's Attack Block Chance); "+X% Attack Speed while Dual Wielding" lines from
+// being dropped (record 493575840: node 625 mode 2 puts the status, buff 352, on its empty variant 352_2, so its +30% Attack Block Chance
+// goes too, src/block-model.js; the sibling line 2743005 writes no block); "+X% Attack Speed while Dual Wielding" lines from
 // other sources still apply (provisional, open question erika-twinblade-dual-wield-speed). The +X% additional Attack Damage is
 // resolved by src/line-conditions.js (key dualWielding). Not a classifyWeaponAttackLine kind, so the line resolver keeps it.
 export const NO_DUAL_WIELD_SPEED = /^No additional Attack Speed bonus is granted while Dual Wielding ?\. Instead, [+-]?\d+(?:\.\d+)?% additional Attack Damage$/i;

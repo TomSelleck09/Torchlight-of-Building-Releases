@@ -21,6 +21,7 @@ import { damageTypeRestriction, restrictionLine } from "./damage-type-restrictio
 import { hitPathMode, hitRecipeReader, hitLineFromFacts } from "./recipe-hit-layers.js";
 import { lineHeard } from "./trigger-rows.js";
 import { focusBuffRecordLines, focusBuffId, readsFocusBuffRecord } from "./focus-buffs.js";
+import { intakeMode, createLineIntake, reportLateShadow, noteLateFallback } from "./line-intake.js";
 
 // Build-wide mechanics that every damage path shares: support bonuses for the
 // main skill, channeled-stack scaling, curses triggered by gear, Torment, Focus
@@ -108,12 +109,19 @@ function focusBuffSyntheticLines({ buffs, effectPercent }) {
   // Flame Focus's buff (either form): its base Ignite and Ignite chance as the Scorching Beam Ignite ledger's build-wide entries
   // (src/theoretical-sources.js), which every Ignite applier starts from (src/ailment-applications.js igniteGlobalChanceSources and the
   // ledger's base). Before W6c these were hand-kept (base 2, chance 10 / 15 scaled by Aura Effect).
+  // Its typed additional damage too (reach census gap 3, 2026-11-25): Flame Focus's 6779909 is attr 5107 Fire Damage mod 4 "p0 scale *" with no
+  // tag on the holder, so it reaches every Fire damage of yours, Ignite included, as a gear "+X% additional Fire Damage" does (the ledger's
+  // "Equipment: additional Fire"). The derived line reached the skill hits only: the Ignite ledger skips derived lines and the generic Ignite
+  // reads no typed line beside it (src/ailment-model.js skipTypedDamage). A Fire / Elemental one joins the ledger's additional list (Trauma
+  // and Wilt leave its Fire text out, src/ailment-shared.js); a Physical / Erosion one stays with Trauma / Wilt's typed reading.
   const ignite = { base: [], chance: [] };
   for (const line of lines) {
     let match = line.text.match(/^Adds ([\d.]+) - ([\d.]+) Base Ignite Damage$/i);
     if (match) { ignite.base.push({ source: line.source, text: line.text, min: number(match[1]), max: number(match[2]) }); continue; }
     match = line.text.match(/^\+([\d.]+)% chance to Ignite targets$/i);
-    if (match) ignite.chance.push({ source: line.source, text: line.text, value: number(match[1]) });
+    if (match) { ignite.chance.push({ source: line.source, text: line.text, value: number(match[1]) }); continue; }
+    match = line.text.match(/^\+([\d.]+)% additional (?:Fire|Elemental) Damage$/i);
+    if (match) (ignite.additional ||= []).push({ source: line.source, text: line.text, value: number(match[1]), category: "Additional damage" });
   }
   return { lines, notes, ignite };
 }
@@ -622,6 +630,21 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
   // Ignite base and chance also reach the Ignite ledger (`ignite.focusBuff` below).
   synthetic.push(...focusLines.lines);
   notes.push(...focusLines.notes);
+  igniteAdditional.push(...(focusLines.ignite.additional || []));
+  // The Scorching Beam's hits take a Focus buff's typed additional damage too (reach census follow-up, 2026-11-25). Every Focus buff's typed
+  // write is one node 101, mod 4 "p0 GetEffectScale ×", with no tag on the holder (Flame 6779909 attr 5107 Fire, Thunder 919705 attr 5108
+  // Lightning, Ice 869686 attr 5109 Cold, Corrosion 319376192 attr 5402 Erosion, Acuteness 200000399 attr 5002 Physical), so it reaches every
+  // damage of yours of its type: the beam's Fire packets for Fire, the beam's added-damage part of the type for the others (its `types`,
+  // src/scorching-beam-hit.js). The derived line is planner-made, so the beam ledger's recipe placement never adds it (src/recipe-hit-aggregates.js
+  // patchBeamHitLedger: a fallback line keeps this entry); the skill hits read the derived line itself, not this list.
+  if (activeNames.has("Scorching Beam")) {
+    for (const line of focusLines.lines) {
+      const match = String(line.text).match(/^\+([\d.]+)% additional (Physical|Fire|Cold|Lightning|Erosion) Damage$/i);
+      if (!match) continue;
+      const type = match[2][0].toUpperCase() + match[2].slice(1).toLowerCase();
+      hit.push({ source: line.source, bucket: "additional", percent: number(match[1]), text: line.text, types: [type] });
+    }
+  }
 
   // Fortitude (Warrior Legendary Medium / Pedigree of Gods node) is only gained by using a Melee
   // Skill; with no active Melee skill the line does nothing. With one it stays unmodeled.
@@ -923,21 +946,131 @@ export function collectBuildMechanics({ main, setups = [], activeNames = new Set
  * Plain "+X% additional damage" (Gladiator's Roar, recipe 654286; Modularization: Sever, 11991501), "+X% Elemental Damage" (Empowered
  * Element, 446081152), and `resistanceTypes` (Corrosion Focus: Infection's enemy Resistance, 762108224, read as an equal Penetration).
  */
-export function addLateDamageTakenLine(mechanics, line, activeNames) {
+// The late adapters (unification step 1, slices 3a / 3b, 2026-11-25; research/attribute-pool-unification-design-2026-11-24.md): under
+// TLI_POOL_INTAKE=pass addLateDamageTakenLine and addLateMechanicsLine take a line's reading from the pass's line intake (src/line-intake.js,
+// `{ intake }`; a local intake of the line when none is given) instead of reading the text themselves. Phase a: each accepts exactly what its
+// legacy regex accepts on the raw text (the regex stays the acceptance test: sign, spacing, wording); the value and the bucket come from
+// the intake's reading of the same shape, and where the intake does not read the line that way (it is case-sensitive, the regexes are not)
+// the regex's own number is used and counted (lineIntakeShadowCounts().lateFallback: 0 on every fixture). So the pushes, their order and
+// their values are the legacy ones (tests/late-adapters.test.js: call against pass on every late call of the fingerprint states and on edge
+// texts). A shape the intake reads as damage that the guard rejects gives no push (phase b).
+// "pass" is the default (slice 6); "call" runs the legacy body; "shadow" runs both, uses the legacy one and reports any difference (lineIntakeShadowReport()).
+// The planner-made late lines have no game record, so the recipe reading falls back to the text; classifyHitLine ignores the state here.
+export const LATE_READING_STATE = Object.freeze({ targetCursed: false, enemyAilments: null, recipeState: null, resolvedInto: false });
+const LATE_TAKEN_SHAPE = /^([+-]\d+(?:\.\d+)?)% (?:additional )?damage taken$/i;
+/** The intake's reading of a late line (one part), or null for a compound line or no reading. */
+function lateIntakeReading(line, intake) {
+  const reading = (intake ?? createLineIntake({ lines: [line] })).read(line, LATE_READING_STATE);
+  return reading.parts.length === 1 ? reading.parts[0].parsed : null;
+}
+const lateUnscoped = (parsed) => parsed.scope?.damageTypes == null && parsed.scope?.skillTags == null && !parsed.scope?.hitOnly && parsed.condition == null;
+/** Pass mode: the late damage-taken line's value (0: no push). Any layer: the legacy shape counts "+X% damage taken" as additional too. */
+function lateTakenPassValue(line, intake) {
+  const match = String(line.text).match(LATE_TAKEN_SHAPE);
+  if (!match) return 0;
+  const parsed = lateIntakeReading(line, intake);
+  if (parsed?.kind === "taken" && lateUnscoped(parsed)) return number(parsed.value) * (line.multiplier ?? 1);
+  noteLateFallback();
+  return number(match[1]) * (line.multiplier ?? 1);
+}
+const lateTakenPushes = (value, activeNames) => (value ? [["taken", value], ...(activeNames?.has?.("Scorching Beam") ? [["hit", value]] : [])] : []);
+
+export function addLateDamageTakenLine(mechanics, line, activeNames, { intake = null } = {}) {
   // An enemy debuff on all damage pushed after the last collection (Deepened Curse's `allDamageTaken` line, src/planner.js; 2026-11-12; Path of
   // Flames: Spontaneous Combustion's, 2026-11-13, src/support-chunk8.js chunk8EnemyLines; `takenCondition` names its condition):
   // the Ignite ledger's damage-taken bucket (Paralysis's), which the generic Ignite, Trauma, Wilt and skill-DoT layers read
   // (src/ailment-shared.js `taken`), and so their Reaps; the beam's hits too. One additional factor per line, like Paralysis.
-  const value = number(String(line.text).match(/^([+-]\d+(?:\.\d+)?)% (?:additional )?damage taken$/i)?.[1] || 0) * (line.multiplier ?? 1);
+  const mode = intakeMode();
+  const value = mode === "pass" ? lateTakenPassValue(line, intake) : number(String(line.text).match(/^([+-]\d+(?:\.\d+)?)% (?:additional )?damage taken$/i)?.[1] || 0) * (line.multiplier ?? 1);
+  if (mode === "shadow") reportLateShadow({ label: "late taken", line, field: "lateTaken", legacy: lateTakenPushes(value, activeNames), intake: lateTakenPushes(lateTakenPassValue(line, intake), activeNames) });
   if (!value) return;
   mechanics.ignite.combatTaken.push({ source: line.source, text: line.text, value, category: "Additional damage taken", condition: line.takenCondition ?? "target cursed by the supported skill for its delay or more" });
   if (activeNames?.has?.("Scorching Beam")) mechanics.hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)` });
 }
 
-export function addLateMechanicsLine(mechanics, line) {
+/**
+ * A support's typed enemy debuff pushed after the last collection (src/planner.js, `supportEffects.targetTaken`; reach census follow-up,
+ * 2026-11-25). The skill hits and a skill's own DoT of the type read the derived line from the modifier list; the Ignite reads no typed line
+ * beside its ledger (the beam's ledger, and the generic Ignite's `skipTypedDamage`), so it read neither of these. By the records:
+ * - Flame Jet: Scorched Earth (Magnificent), affix 14406085: attr 3401 mod 4 on the tag 5100331 of buff 10212, which holds 101010552 [1]:
+ *   attr 5120 mod 4 "p0 GetEffectScale ×" with no tag, Fire Infiltration's own write. Every Fire damage the dummy takes, so the Ignite
+ *   ledger's damage-taken list (the beam's and the generic Ignite) and the beam's Fire hits, as a Fire debuff from the collect does.
+ * - Burning Shot: Ignition (Noble), affix 729697600: a node 306 buff on the target writing attr 5720 mod 4 with the Ignite state 5100003 on
+ *   the attacker's side: Ignite damage only, so the Ignite ledger's damage-taken list and never a hit.
+ * Another type (Wilting Beam: Dispirit's Erosion) is left to the typed readers. Trauma, Wilt and skill DoTs leave a Fire / Ignite line out of
+ * this list (src/ailment-shared.js `isFireOnlyLedgerLine`, src/skill-dot-model.js `keepForSkillDot`), so nothing counts it twice.
+ */
+export function addLateTypedTakenLine(mechanics, line, activeNames) {
+  const match = String(line?.text ?? "").match(/^\+(\d+(?:\.\d+)?)% additional (Fire|Ignite) Damage taken$/i);
+  const value = match ? number(match[1]) * (line?.multiplier ?? 1) : 0;
+  if (!value) return null;
+  const fire = match[2].toLowerCase() === "fire";
+  const entry = { source: line.source, text: line.text, value, category: "Additional damage taken", condition: `the supported skill's ${fire ? "Fire" : "Ignite"} debuff on the dummy (uptime 1, provisional)` };
+  mechanics.ignite.combatTaken.push(entry);
+  if (fire && activeNames?.has?.("Scorching Beam")) mechanics.hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)`, types: ["Fire"] });
+  return entry;
+}
+
+/**
+ * An Infiltration's Effect share pushed after the last collection (Weakness Infiltration, record 326961760: its 1000031 row adds a buff on the
+ * dummy writing attr 3410 mod 3 on the Infiltration tag 5200086, the holder's Effect received, and node 622 refreshes the Infiltration buffs;
+ * src/support-chunk8.js chunk8EnemyLines `infiltrationShare`). The Infiltration's own write (Fire 3441: affix 101010552, attr 5120 mod 4
+ * "p0 GetEffectScale ×", no tag) takes the holder's 3410 in its GetEffectScale, so the share reaches every damage the held Infiltration line
+ * reaches: beside that line on the Ignite ledger's damage-taken list (which the generic Ignite reads; reach census gap 4, 2026-11-25). Without
+ * a held line there nothing is added, but for the beam path's own Fire Infiltration (`beamFireInfiltration`, below).
+ */
+export function addLateInfiltrationShare(mechanics, line, { beamFireInfiltration = false } = {}) {
+  const type = line?.infiltrationShare;
+  const value = number(String(line?.text ?? "").match(/^\+(\d+(?:\.\d+)?)% additional (\w+) Damage taken$/i)?.[1] || 0) * (line?.multiplier ?? 1);
+  if (!type || !value) return null;
+  // A share beside one named line (the follower's part-time Infiltration, `infiltrationShareBeside`: src/support-chunk8.js; reach census
+  // follow-up, 2026-11-25), else beside the held line of its type.
+  const beside = line?.infiltrationShareBeside;
+  const held = (mechanics.ignite.combatTaken || []).find((entry) => beside ? entry.source === beside : String(entry.source || "").startsWith(`${type} Infiltration`) && new RegExp(`^\\+[\\d.]+% additional ${type} Damage taken$`, "i").test(String(entry.text || "")));
+  // The Scorching Beam path's Fire Infiltration (talent Warlord (5,2) / its slate copy, record 885067264: buff 3441 on the dummy) is its own
+  // ledger entry, not on this list: the share joins the Ignite's damage-taken list and the beam's Fire hits beside it (reach census follow-up,
+  // 2026-11-25; `beamFireInfiltration`: src/planner.js, while the beam path holds it).
+  const beamHeld = !held && !beside && type === "Fire" && beamFireInfiltration;
+  if (!held && !beamHeld) return null;
+  const entry = { source: line.source, text: line.text, value, category: "Additional damage taken", condition: `${type} Infiltration on the dummy (its Effect raised; beside ${held ? held.source : "the Scorching Beam path's Fire Infiltration"})` };
+  mechanics.ignite.combatTaken.push(entry);
+  if (beamHeld) mechanics.hit.push({ source: line.source, bucket: "additional", percent: value, text: `${line.text} (enemy debuff)`, types: ["Fire"] });
+  return entry;
+}
+
+// Pass mode of addLateMechanicsLine (slice 3b): the legacy regexes decide (the leading "+X%" and its rounding, then the bucket by the two
+// shapes; `resistanceTypes` triggers the penetration whatever the text); the value comes from the intake's reading when it reads the same
+// shape: "+X% additional damage" as damage / additional, untyped, untagged, not hit-only, no condition; "+X% Elemental Damage" as
+// damage / increased on exactly Fire, Cold and Lightning, untagged; a `resistanceTypes` line as penetration on those types. Otherwise the
+// regex number (a counted fallback). A line with no bucket and no resistanceTypes pushes nothing in either mode, so it is not read.
+const ELEMENTAL_TYPES = ["Cold", "Fire", "Lightning"];
+const typeNames = (types) => (types == null ? null : [...(types instanceof Set || Array.isArray(types) ? types : Object.keys(types))].map(String).sort());
+const sameTypes = (types, expected) => { const names = typeNames(types); return Boolean(names) && names.length === expected.length && names.every((name, index) => name === [...expected].sort()[index]); };
+const lateRounded = (number, line) => Math.round(number * (line.multiplier ?? 1) * 10000) / 10000;
+function lateMechanicsLegacy(line) {
   const value = Math.round((Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0) * (line.multiplier ?? 1) * 10000) / 10000;
-  if (!value) return;
   const bucket = /^\+[\d.]+% additional damage$/i.test(line.text) ? "additional" : /^\+[\d.]+% Elemental Damage$/i.test(line.text) ? "increased" : null;
+  return { value, bucket };
+}
+function lateMechanicsPass(line, intake) {
+  const { value: legacyValue, bucket } = lateMechanicsLegacy(line);
+  const types = line.resistanceTypes || [];
+  if (!legacyValue || (!bucket && !types.length)) return { value: legacyValue, bucket };
+  const parsed = lateIntakeReading(line, intake);
+  const scope = parsed?.scope;
+  const confirms = bucket === "additional" ? parsed?.kind === "damage" && parsed.layer === "additional" && lateUnscoped(parsed)
+    : bucket === "increased" ? parsed?.kind === "damage" && parsed.layer === "increased" && sameTypes(scope?.damageTypes, ELEMENTAL_TYPES) && scope?.skillTags == null && !scope?.hitOnly && parsed.condition == null
+      : parsed?.kind === "penetration" && sameTypes(parsed.damageTypes, types);
+  if (!confirms || !Number.isFinite(Number(parsed.value))) { noteLateFallback(); return { value: legacyValue, bucket }; }
+  return { value: lateRounded(Number(parsed.value), line), bucket };
+}
+const lateMechanicsPushes = ({ value, bucket }, line) => (value ? [...(bucket ? [["bucket", bucket, value]] : []), ...(line.resistanceTypes || []).map((type) => ["penetration", type, value])] : []);
+
+export function addLateMechanicsLine(mechanics, line, { intake = null } = {}) {
+  const mode = intakeMode();
+  const { value, bucket } = mode === "pass" ? lateMechanicsPass(line, intake) : lateMechanicsLegacy(line);
+  if (mode === "shadow") reportLateShadow({ label: "late mechanics", line, field: "lateMechanics", legacy: lateMechanicsPushes({ value, bucket }, line), intake: lateMechanicsPushes(lateMechanicsPass(line, intake), line) });
+  if (!value) return;
   if (bucket) {
     mechanics.hit.push({ source: line.source, bucket, percent: value, text: line.text });
     mechanics.ignite[bucket].push({ source: line.source, text: line.text, value, category: bucket === "additional" ? "Additional damage" : "Increased damage" });
@@ -954,6 +1087,64 @@ export function addLateMechanicsLine(mechanics, line) {
     penetration.firePercent = Math.round((penetration.firePercent + value) * 10000) / 10000;
     mechanics.ignite.penetration.push({ ...entry, category: "Fire penetration" });
   }
+}
+
+// "+X% Fire Penetration against Ignited enemies" (talent record 101010706, gear copy 391400: one node 101, attr 5104 Fire Penetration mod 1,
+// no tag on your side, the target state Ignited 4000130 on the second list): every Fire damage of yours while the dummy is Ignited, the
+// Scorching Beam's hits too (reach census 2026-11-24, gap 1). Off the beam path src/combat-states.js derives it for your skill hits and
+// DoTs; on it the beam's Ignite ledger reads its own copies (src/theoretical-sources.js "Talents vs Ignited enemies"), and the beam's hit
+// penetration (the beam hits and their typed parts, `penetration.sources` / `firePercent`) takes it here, at the dummy's Ignited share (its
+// unit buff set: the beam's own Ignite holds it whole, another unit's at its share). Not the Ignite ledger's list (no double count).
+const IGNITED_FIRE_PENETRATION = /^\+(\d+(?:\.\d+)?)% Fire Penetration against Ignited enemies$/i;
+export function addIgnitedBeamHitPenetration(mechanics, modifierTexts = [], ignitedShare = 0) {
+  const share = Math.min(1, Math.max(0, Number(ignitedShare) || 0));
+  const penetration = mechanics?.penetration;
+  if (!(share > 0) || !penetration) return [];
+  const added = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived") continue;
+    const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(IGNITED_FIRE_PENETRATION);
+    if (!match) continue;
+    const value = Math.round(Number(match[1]) * (line.multiplier ?? 1) * share * 10000) / 10000;
+    if (!value) continue;
+    const entry = { source: line.source, text: line.text, value, condition: "target Ignited", ...(share < 1 ? { note: `the dummy is Ignited ${Math.round(share * 10000) / 100}% of the time (time-averaged)` } : {}) };
+    penetration.sources.push(entry);
+    penetration.firePercent = Math.round((penetration.firePercent + value) * 10000) / 10000;
+    added.push(entry);
+  }
+  return added;
+}
+
+/**
+ * The same lines on your other Fire damage while the Scorching Beam is on the board (reach census follow-up 2, 2026-11-25). The records
+ * (101010706 / 391400: attr 5104 mod 1, `mine` empty, the target Ignited 4000130 on the second list) reach every Fire damage of yours while
+ * the dummy is Ignited; src/combat-states.js derives the line off the beam path only (on it, its derived line would reach the beam's hit and
+ * Ignite lists through the next collect, which read their own copies: addIgnitedBeamHitPenetration above, the Ignite ledger's talent keys and
+ * the 391400 settle). This runs after the last collect and after the beam's Ignite joins the unit buff set, at the same Ignited share:
+ * - each value joins `penetration.byType.Fire`, which only src/ailment-shared.js reads: a Fire skill DoT, and the generic Ignite (a skill other
+ *   than the beam inflicting it while the beam does not); the beam's hit (`sources` / `firePercent`) and Ignite (`ignite.penetration`) lists
+ *   are left alone;
+ * - the returned lines, in the combat pass's derived shape ("+X% Fire Penetration", origin "buff"), are for the skill hits' modifier list;
+ *   `exceptSetupKey` (the beam's setup) marks them as the other skills' copy, as Ice Bond's Euphoria for the skill that grants it.
+ */
+export function ignitedFirePenetrationOtherLines(mechanics, modifierTexts = [], ignitedShare = 0, { exceptSetupKey = null } = {}) {
+  const share = Math.min(1, Math.max(0, Number(ignitedShare) || 0));
+  const penetration = mechanics?.penetration;
+  if (!(share > 0) || !penetration) return [];
+  const lines = [];
+  for (const line of modifierTexts) {
+    if (line.origin === "derived") continue;
+    const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(IGNITED_FIRE_PENETRATION);
+    if (!match) continue;
+    const value = Math.round(Number(match[1]) * (line.multiplier ?? 1) * share * 10000) / 10000;
+    if (!value) continue;
+    const text = `+${value}% Fire Penetration`;
+    const conditionText = share < 1 ? `the dummy is Ignited ${Math.round(share * 10000) / 100}% of the time (time-averaged)` : "the dummy is Ignited (the Scorching Beam's Ignite keeps it Ignited)";
+    (penetration.byType.Fire ||= []).push({ source: line.source, text, value, category: "Fire penetration", condition: "target Ignited" });
+    // `ignitedFullValue`: the value while the dummy is Ignited (the tick engine reads the share on the loop: src/tick-layers.js ignitedPenetrationLayer).
+    lines.push({ text, source: line.source, origin: "buff", multiplier: 1, derivedFrom: line.source, ...(exceptSetupKey ? { exceptSetupKey } : {}), ignitedFullValue: Math.round(Number(match[1]) * (line.multiplier ?? 1) * 10000) / 10000, lineEffect: { conditional: true, key: "combatState", conditionText, provisional: true } });
+  }
+  return lines;
 }
 
 // Base and chance lines that apply only to the main skill: "… to this skill" / "for this skill"

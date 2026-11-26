@@ -56,6 +56,8 @@ export const GENERAL_LAYERS = Object.freeze([
   { key: "trueFlame", label: "True Flame Immolation's Blessing cycle" },
   { key: "othersIgnite", label: "Another unit's Ignite (the not-Ignited chance)" },
   { key: "afflictionFire", label: "True Flame and Magmaskull's Affliction hit lines" },
+  { key: "ignitedPenetration", label: "Fire Penetration against Ignited enemies (your Fire skills; on the beam path the other skills)" },
+  { key: "ignitedInfiltration", label: "Fire Infiltration from your Fire damage to the Ignited dummy (record 885067264: the beam path's copy on your other Fire skills, or the copy off the beam path)" },
   { key: "incisive", label: "Incisive (Vendetta's casts)" },
   { key: "timed", label: "Timed effects (the recount's series)" }
 ]);
@@ -113,7 +115,7 @@ export function createLayerContext(planner, options) {
       // Cooldown Recovery Speed, build-wide: (1 + Σ increased) × Π additional, split so a live layer can be taken out of either side.
       cooldown: { increasedPercent: sumValues(cooldownLines.filter((line) => line.kind !== "additional")), additionalFactor: cooldownLines.filter((line) => line.kind === "additional").reduce((factor, line) => factor * (1 + line.value / 100), 1), modifiers: [] }
     },
-    actions: [], triggers: [], periodics: [], collectors: [], initialBuffs: [], followerEvents: new Map(), followerCastEvents: new Map(),
+    actions: [], triggers: [], periodics: [], collectors: [], initialBuffs: [], followerEvents: new Map(), followerCastEvents: new Map(), samplers: [],
     paths: {}, report: new Map(), assumptions: [], once: new Set(),
     // The trigger bus (src/trigger-bus.js, W10): null on the layers. Its listeners replace the layers' event-driven holds they own.
     bus: options.bus ?? null
@@ -1302,8 +1304,141 @@ export function afflictionFireLayer(ctx) {
   ctx.reported("afflictionFire").events = [counts.trueFlame ? `True Flame: its value × the rating now ÷ ${Math.round(heldRating * 1000) / 1000} × the dummy Ignited by anyone (${ignitedBy})` : "", counts.magmaskull ? "Magmaskull: in full while the dummy has Affliction" : ""].filter(Boolean).join("; ") + "; from a clean dummy (open question tick-affliction-fire-hit-live)";
 }
 
+// "+X% Fire Penetration against Ignited enemies" (records 101010706 / 391400: attr 5104 mod 1, `mine` empty, the target in state Ignited 4000130) on
+// your other Fire skills on the Scorching Beam path (src/build-mechanics.js ignitedFirePenetrationOtherLines, 6fd090e; listed as
+// planner.ignitedFirePenetration): the planner holds it at the steady Ignited share from the first hit; the windows and the recount start on a
+// clean dummy, so here it reads the dummy's Ignite on the loop (reach census follow-up, 2026-11-25). A hit's resistance step takes out the held
+// share and adds back the full value × the probability the dummy is Ignited by anyone now: your Ignite's held probability, the follower's Ignite
+// (othersIgniteLayer's buff; one whose skill is not on the loop held, as the planner holds it), your Minions' share (static). A Fire skill DoT's
+// ledger copy is the same write read at the DoT record's build (R4's reading: fixed at each application; src/tick-ailments.js). The generic
+// Ignite's copy stays held (an Ignite record ticks only on an Ignited target: the beam Ignite's reading, 372ccfd). Sustained unchanged.
+// Off the beam path the combat pass's copy (src/combat-states.js, the same records; planner.ignitedFirePenetration from its `ignitedFullValue`)
+// is read the same way (reach census third follow-ups, 2026-11-25).
+export function ignitedOnLoop(ctx) {
+  const { planner } = ctx, others = ctx.othersIgnite || null, set = enemyBuffSet(planner?.mechanics?.enemyAilments);
+  const followerShare = set ? set.share("Ignite", { by: ["follower"] }) : 0;
+  const minionShare = Math.max(0, Math.min(1, Number(others?.minionShare ?? (set ? set.share("Ignite", { by: ["minion"] }) : 0)) || 0));
+  // The follower's Ignite: its buff on the loop when othersIgniteLayer placed it, else held at the planner's share.
+  const followerHeld = others?.buff ? (world) => (world.buffs.get(others.buff)?.stacks || 0) > 0 ? 1 : 0 : () => (others?.followerUnplaced?.length ? 1 : followerShare);
+  const ownHeld = (world) => { const run = world.ailmentRuns?.get("ignite"); return Math.max(0, Math.min(1, run?.store?.held ?? run?.chain?.held ?? 0)); };
+  return (world) => 1 - (1 - ownHeld(world)) * (1 - followerHeld(world)) * (1 - minionShare);
+}
+export function ignitedPenetrationLayer(ctx) {
+  if (!ctx.isLive("ignitedPenetration") || !ctx.first("ignitedPenetration")) return;
+  const gate = ctx.planner.ignitedFirePenetration;
+  if (!gate?.lines?.length || !(gate.share > 0)) return;
+  const ignited = ignitedOnLoop(ctx);
+  let count = 0;
+  for (const target of ctx.targets) {
+    for (const line of gate.lines) {
+      const holders = target.parts.filter((part) => inList(target.componentOf(part)?.penetration, line));
+      if (!holders.length) continue;
+      for (const part of holders) {
+        const component = target.componentOf(part), net = part.netResistancePercent ?? component.resistancePercent - component.penetrationPercent;
+        part.base *= (100 - net - line.value) / (100 - net);
+        part.netResistancePercent = net + line.value;
+      }
+      target.modifiers.push({ source: line.source, text: line.text, layer: "penetration", liveKey: "ignitedPenetration", amount: (world) => line.full * ignited(world), parts: holders.map((part) => part.key), steadyAmount: line.value });
+      ctx.reported("ignitedPenetration").lines.push({ layer: "penetration", source: line.source, text: line.text, value: line.value });
+      count += 1;
+    }
+  }
+  // The DoT copies (src/tick-ailments.js dotIgnitedPenetration) read the same gate.
+  ctx.ignitedPenetration = { lines: gate.lines, ignited };
+  const dots = (ctx.planner.skillDots || []).filter((dot) => gate.lines.some((line) => inList(dot.shared?.ledger?.penetration, line))).length;
+  if (!count && !dots) return;
+  ctx.reported("ignitedPenetration").events = `${[count ? `${count} hit line(s)` : "", dots ? `${dots} skill DoT(s), fixed at each application` : ""].filter(Boolean).join(", ")}: the full value × the dummy Ignited by anyone now (your Ignite's held probability${ctx.othersIgnite?.buff ? ", the follower's Ignite buff" : ""}), from a clean dummy; the steady figure keeps the ${Math.round(gate.share * 1000) / 10}% share`;
+}
+
+// Buff 3441 (Fire Infiltration) on the loop (reach census fourth follow-ups, 2026-11-25). Header: subtype 1, key mode 1 (one instance whoever
+// casts it), cap 1, stack mode 1 (a new application replaces the held one: a fresh 10 s), duration 10 s at every level, no duration or effect
+// scale attributes, tags [5200074, 5200086] (no 5100310: Skill Effect Duration does not reach it). Record 885067264 applies it on each of your
+// Fire damage events (1000030, once a frame per target) while the dummy is Ignited, so it is held until 10 s after the last such event. Read here
+// as the probability the dummy has been Ignited at some frame of the last 10 s, with your Fire damage on each frame it was (inferred: your own
+// Ignite's ticks are Fire damage events of yours; with only another unit's Ignite your hits may land less often):
+//   - your own Ignite: held now, plus the run's mass whose Ignite ended within the window and has not been re-Ignited. Each frame the mass the
+//     run's timer expires enters a ring by its lapse frame; each fresh application (the run's `freshHeld`, drawn from the absent mass, this
+//     frame's expiries included) thins every entry by the same fraction, as the attempt's chance does not depend on when the Ignite lapsed
+//     (exact in expectation for the run's rule after each frame's sample; a read inside a frame approximates that frame's own attempts);
+//   - the follower's Ignite: its loop buff (othersIgniteLayer) held within the window, else as ignitedOnLoop reads it;
+//   - your Minions' share: static (no time structure), as ignitedOnLoop.
+// The window: an Ignite lapsing on frame e was last held on frame e − 1, whose Fire damage put the 10 s (300 frames) buff then, held through
+// frame e + 298. The sample runs after each frame's stages (the engine's samplers); a read inside frame g adds what lapsed on g itself.
+export const INFILTRATION_HOLD_FRAMES = 10 * 30;
+export function infiltrationTimer(ctx) {
+  const others = ctx.othersIgnite || null, set = enemyBuffSet(ctx.planner?.mechanics?.enemyAilments);
+  const followerShare = set ? set.share("Ignite", { by: ["follower"] }) : 0;
+  const minionShare = Math.max(0, Math.min(1, Number(others?.minionShare ?? (set ? set.share("Ignite", { by: ["minion"] }) : 0)) || 0));
+  // Ages 1 … 299 frames since the Ignite was last held: the expiries of the last 299 frames.
+  const span = INFILTRATION_HOLD_FRAMES - 1;
+  const runOf = (world) => { const run = world.ailmentRuns?.get("ignite"); return run?.store ?? run?.chain ?? null; };
+  const heldOf = (run) => Math.max(0, Math.min(1, run?.held ?? 0));
+  const states = new WeakMap();
+  const stateOf = (world) => { let state = states.get(world); if (!state) states.set(world, state = { ring: new Float64Array(span), head: 0, sum: 0, held: 0, frame: 0, followerFrame: -Infinity }); return state; };
+  const followerBuff = (world) => others?.buff ? (world.buffs.get(others.buff)?.stacks || 0) > 0 : false;
+  const sample = (world) => {
+    const state = stateOf(world), run = runOf(world), held = heldOf(run);
+    const fresh = run && run.freshFrame === world.frame ? Math.max(0, run.freshHeld || 0) : 0;
+    // The run expires its timers before this frame's attempts (the DoT pass), so the fresh mass is drawn from the absent mass with this frame's
+    // expiries in it: every entry, the new one too, thins by fresh ÷ (absent before + expired).
+    const expired = Math.max(0, state.held + fresh - held), absent = 1 - state.held + expired;
+    const thin = absent > 1e-15 ? Math.max(0, 1 - fresh / absent) : 1;
+    state.head = (state.head + 1) % span;
+    state.ring[state.head] = expired;
+    if (thin < 1) for (let index = 0; index < span; index += 1) state.ring[index] *= thin;
+    let sum = 0;
+    for (let index = 0; index < span; index += 1) sum += state.ring[index];
+    state.sum = sum;
+    state.held = held;
+    state.frame = world.frame;
+    if (followerBuff(world)) state.followerFrame = world.frame;
+  };
+  const own = (world) => {
+    const state = states.get(world), now = heldOf(runOf(world));
+    if (!state) return now;
+    if (state.frame === world.frame) return Math.min(1, now + state.sum);
+    // Inside a frame not sampled yet (the hits and DoT ticks read here): the entries one frame older, the oldest out, and the mass that lapsed
+    // on this frame (held at the last sample, not now) still hold; a fresh application on it thins them as the sample will (approximate within
+    // the frame: its attempts are still running).
+    const oldest = state.ring[(state.head + 1) % span], absent = 1 - state.held, thin = absent > 1e-15 ? Math.max(0, Math.min(1, (1 - now) / absent)) : 1;
+    return Math.min(1, Math.max(now, state.held) + Math.max(0, state.sum - oldest) * thin);
+  };
+  const follower = (world) => {
+    if (others?.buff) { if (followerBuff(world)) return 1; const state = states.get(world); return state && world.frame - state.followerFrame <= INFILTRATION_HOLD_FRAMES - 1 ? 1 : 0; }
+    return others?.followerUnplaced?.length ? 1 : followerShare;
+  };
+  const held = (world) => 1 - (1 - own(world)) * (1 - follower(world)) * (1 - minionShare);
+  return { sample, held };
+}
+
+// The Scorching Beam path's Fire Infiltration on your other Fire skills (reach census third follow-ups, 2026-11-25): Warlord (5,2) / its slate copy,
+// record 885067264, trigger 1000030 on your Fire damage to a target in state Ignited 4000130, node 301 puts buff 3441 on the dummy (8a35130: a
+// derived "+X% additional Fire Damage taken" line for the other skills, listed as planner.ignitedFireInfiltration with Weakness Infiltration's
+// share lines that lift it, 326961760's holder 3410). The planner holds it from the first hit; on the loop the dummy starts clean, so its lines
+// read the probability the dummy is Ignited now (ignitedOnLoop), on hits and on a Fire skill DoT's ticks (an enemy-side write: read at the tick,
+// not fixed at the application; src/tick-ailments.js dotIgnitedInfiltration). Buff 3441 lasts 10 s past the hit that put it, so after an Ignite
+// lapses it outlives the Ignite: since the fourth follow-ups (2026-11-25) the lines read buff 3441's own 10 s past the last Fire damage event to
+// the Ignited dummy (infiltrationTimer).
+// Off the beam path the combat pass's copy from the same record (src/combat-states.js `ignitedInfiltrationFull`, where it alone holds Fire
+// Infiltration; planner.ignitedFireInfiltration `offBeam`) is read the same way, at its full value (reach census fourth follow-ups, 2026-11-25).
+export function ignitedInfiltrationLayer(ctx) {
+  if (!ctx.isLive("ignitedInfiltration") || !ctx.first("ignitedInfiltration")) return;
+  const gate = ctx.planner.ignitedFireInfiltration;
+  if (!gate?.lines?.length) return;
+  const timer = infiltrationTimer(ctx), ignited = timer.held;
+  ctx.samplers.push(timer.sample);
+  const match = (line) => gate.lines.some((entry) => entry.source === line.source && entry.text === line.text);
+  let count = 0;
+  const fullOf = (line) => { const entry = gate.lines.find((item) => item.source === line.source && item.text === line.text); return Number.isFinite(entry?.full) ? entry.full : line.value; };
+  for (const target of ctx.targets) for (const line of target.claim("ignitedInfiltration", match)) { const full = fullOf(line); target.addModifier(line, { amount: (world) => full * ignited(world), steadyAmount: line.value }); count += 1; }
+  ctx.ignitedInfiltration = { lines: gate.lines, ignited };
+  const dots = (ctx.planner.skillDots || []).filter((dot) => (dot.ledger?.taken || []).some(match)).length;
+  if (!count && !dots) return;
+  ctx.reported("ignitedInfiltration").events = `${[count ? `${count} hit line(s)` : "", dots ? `${dots} skill DoT(s), read at each tick` : ""].filter(Boolean).join(", ")}${gate.offBeam ? ": the Ignited dummy's Fire Infiltration off the beam path" : ": the beam path's Fire Infiltration"} (and the share lifting it) × buff 3441 held: the dummy Ignited by anyone within its 10 s, your Fire damage each frame it was, from a clean dummy`;
+}
+
 /** The general builders in their order; the Youga program interleaves its own among them (src/tick-youga-layers.js). */
-export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, theaGodsBoonLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, incisiveLayer, othersIgniteLayer, afflictionFireLayer, timedLayer, followerProgram]);
+export const GENERAL_ORDER = Object.freeze([aimLayer, swiftBoltLayer, spellAggressionLayer, periodicBurstLayer, blessingLayer, theaGodsBoonLayer, triggerBusLayer, trueFlameLayer, tidewellLayer, paralysisLayer, frailLayer, frostbiteLayer, numbedLayer, curseLayer, ailmentTypeLayer, markLayer, penetrationLayer, incisiveLayer, othersIgniteLayer, afflictionFireLayer, ignitedPenetrationLayer, ignitedInfiltrationLayer, timedLayer, followerProgram]);
 
 /** What stays held on purpose on any build, with why. */
 export function generalHeldLayers(ctx) {

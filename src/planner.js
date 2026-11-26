@@ -12,7 +12,7 @@ import { resourceConsumption, resourceUseFacts, RESOURCE_CONSUMED_LINE, attackLi
 import { settleLifeBalance, lifeBalanceRegainFromBuild, lifeLossStreams, notFullRegenerationPercent } from "./life-balance.js";
 import { resolvePactLimits } from "./pact-limits.js";
 import { calculateLowResourceDefenses } from "./low-resource-model.js";
-import { calculateResistances } from "./resistance-model.js";
+import { calculateResistances, addCombatResistanceSources } from "./resistance-model.js";
 import { calculateCurseLimit, isCurseSkill, CURSE_TOGGLES, curseBarOrder, curseSlotSummary } from "./curse-limit.js";
 import { curseEffects } from "./curse-model.js";
 import { calculateBlessings, blessingBaseEffects } from "./blessing-model.js";
@@ -29,7 +29,7 @@ import { guardBarrierSources, barrierGainRate, barrierShieldValue, barrierBurstC
 import { aegisOfFireAssumption, aegisOfFireState } from "./aegis-of-fire.js";
 import { blockWithAegisOfFire } from "./block-model.js";
 import { MAX_BLOCK_CHANCE_PERCENT } from "./game-attribute-defaults.js";
-import { combatArmor } from "./combat-armor.js";
+import { combatArmor, combatArmorReadsLine } from "./combat-armor.js";
 import { heldWeaponBuffLines } from "./held-weapon-buffs.js";
 import { calculateBlock } from "./block-model.js";
 import { collectBlurSources } from "./blur-sources.js";
@@ -50,6 +50,8 @@ import { applyIgnitePatch, computeIgnitePatch, ignitePatchSummary, ignitePathMod
 import { calculateMultiSourceReaping, collectAllReapingSources, collectReapingModifiers } from "./reaping-model.js";
 import { approachingNightfall, nightfallSteadyCycle } from "./approaching-nightfall.js";
 import { addLateDamageTakenLine, addLateMechanicsLine, collectBuildMechanics, collectFocusBuffs } from "./build-mechanics.js";
+// A separate import: scripts/plumbing-hook.mjs anchors on the line above exactly.
+import { addIgnitedBeamHitPenetration, addLateInfiltrationShare, addLateTypedTakenLine, ignitedFirePenetrationOtherLines } from "./build-mechanics.js";
 import { resolveSingWithTheTide } from "./selena-tide.js";
 import { auraGainedEffects, auraCastSpeedLines, auraGainedEffectLines, auraAttackSpeedLines } from "./aura-gained-effects.js";
 import { windStalkerState, resolveWindStalker, windStalkerMoonMark } from "./erika-wind-stalker.js";
@@ -102,7 +104,7 @@ import { resolveLineEffects, resettleLineEffects } from "./line-effects.js";
 import { staticHeldStatLines, STATIC_HELD_KEYS } from "./static-held-stats.js";
 import { conditionalAuraEffect } from "./conditional-aura-effect.js";
 import { atFullLife, atFullMana, LOW_LIFE_BELOW_PERCENT, FULL_MANA_AT_LEAST_PERCENT, splitCondition } from "./line-conditions.js";
-import { luckyCritChance, mirroredShadeTerraChargeLines, crowdControlChanceRatesNeeded, CROWD_CONTROL_COUNTER_TEXT, ownerFrostbiteField, damageTypeGroups } from "./combat-states.js";
+import { luckyCritChance, mirroredShadeTerraChargeLines, crowdControlChanceRatesNeeded, CROWD_CONTROL_COUNTER_TEXT, ownerFrostbiteField, damageTypeGroups, infiltrationEffectPercent } from "./combat-states.js";
 import { minionFrostbiteNeeded, resolveMinionFrostbite } from "./minion-frostbite.js";
 import { buildWideAilmentBlock } from "./ailment-blocks.js";
 import { minionAilmentRatesNeeded, resolveMinionAilmentTypes } from "./minion-ailment-types.js";
@@ -144,6 +146,7 @@ import { scorchingBeamCritical, critLineReading } from "./scorching-beam-critica
 import { critRecipeAdjuster, scopedAttackSpeedAdjuster, speedRecipeAdjuster } from "./recipe-hit-aggregates.js";
 import { hitPoolMode, poolConversionMode } from "./attribute-pool-hit.js";
 import { buildAttributePool } from "./attribute-pool-build.js";
+import { createLineIntake, intakeMode, reportStepShadow, noteStepFinding, noteSwitch } from "./line-intake.js";
 import { scorchingBeamAddedDamage, beamAddedTypedParts, beamFlatAdded } from "./scorching-beam-added-damage.js";
 import { trinityState } from "./trinity.js";
 import { combineBeamAndIgnite, estimateBardBeamDelivery, estimateFiveSecondOpening, estimateNeutralBeamDelivery, simulateFiveSecondVariation, sustainedBeamDps } from "./scorching-beam-delivery.js";
@@ -554,6 +557,10 @@ function seethingSpiritUses(rehan, resource) {
 
 // The one Max Energy Shield pool, rebuilt after the line resolver (G3d): kept off the state object, which the planner result carries.
 const ENERGY_SHIELD_POOL_REBUILD = new WeakMap();
+// The combat Armor and Evasion pools again with the held conditional bodies no engine reads (src/character-stats.js heldConditionalPoolExtra):
+// "+N Evasion while Blur is active" (records 101010221 / 427747424) and "While Blur is active, +X% Defense" (884419904) at Blur's held share
+// (reach census follow-up, 2026-11-25). Null when the line resolver holds none.
+const DEFENSE_POOL_REBUILD = new WeakMap();
 // An active Aura's own Evasion (Nimbleness / Precise: Nimbleness: "+X Evasion" and "+X% additional Evasion", already at its Aura Effect) in
 // the combat Evasion pool, as Precise: Steadfast's Armor reaches the combat Armor and the Effective HP view reads both (indirect-stat
 // remediation F8, 2026-11-22).
@@ -929,6 +936,19 @@ function buildLineConditionState({ state, requestedConditions, conditions, lowRe
     dormantEntanglement: Boolean(tangles?.dormant?.present)
   };
   ENERGY_SHIELD_POOL_REBUILD.set(lineState, maxEnergyShieldPoolWith);
+  DEFENSE_POOL_REBUILD.set(lineState, (lineEffects) => {
+    // The per-Blessing-stack Armor lines and Prophecy of Shelter are src/combat-armor.js's own readers (already in armorInCombat).
+    const held = (key) => heldConditionalPoolExtra(lineEffects, key, { skipKeys: STATIC_HELD_KEYS, skipEntry: (entry) => combatArmorReadsLine(entry.text) });
+    const armorHeld = held("armor"), evasionHeld = held("evasion");
+    const any = (item) => item.flat.length + item.increased.length + item.additional.length > 0;
+    if (!any(armorHeld) && !any(evasionHeld)) return null;
+    const auraEvasion = auraEvasionExtra(aura?.entries || [], activeNames);
+    const evasion = any(evasionHeld) ? resourcePool(statTotals, "evasion", baseEvasion(characterLevelForPools), { defense: true, extra: { flat: [...auraEvasion.flat, ...evasionHeld.flat], increased: evasionHeld.increased, additional: [...auraEvasion.additional, ...evasionHeld.additional] } }).value : null;
+    if (!any(armorHeld)) return { evasion, armor: null };
+    const flat = [...armorInCombat.flat, ...armorHeld.flat], increased = [...armorInCombat.increased, ...armorHeld.increased], additional = [...armorInCombat.additional, ...armorHeld.additional];
+    const value = resourcePool(statTotals, "armor", 0, { defense: true, extra: { flat, increased, additional } }).value;
+    return { evasion, armor: { ...armorInCombat, value, flat, increased, additional, sources: [...flat, ...increased, ...additional] } };
+  });
   return lineState;
 }
 
@@ -1462,6 +1482,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   };
   const pact = calculatePactCandidate(pacts, state.pacts, snapshots[0]);
   const modifierTexts = collectModifierTexts({ equipment, disabledSlots: state.disabledEquipmentSlots, talents: levelSources.talents, slates: levelSources.slates, talentState: state.talents, pactState: state.pacts, heroMemories });
+  // The pass's line intake (src/line-intake.js, unification step 1 slice 1b): read by the generic hits under TLI_POOL_INTAKE=pass (slice
+  // 2a; shadow compares it with their own reading) and by the late adapters (addLateDamageTakenLine / addLateMechanicsLine, slices 3a / 3b);
+  // pass is the default since slice 6 (TLI_POOL_INTAKE=call never reads it). It keeps the list itself (lines pushed below are read on demand) and compiles nothing here.
+  const lineIntake = createLineIntake({ lines: modifierTexts });
   // Shielded (buff 353, held while a Shield is in the off-hand: "+15% Defense", "-5% additional Movement Speed"; src/held-weapon-buffs.js,
   // 2026-11-09): your own buff, town and combat (the 25 T panel's Armor Bonus hover lists it under Buff).
   modifierTexts.push(...heldWeaponBuffLines(equipment, state.disabledEquipmentSlots || []));
@@ -1733,6 +1757,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     return main ? setups.indexOf(main) : null;
   })();
   const allocation = allocateSkillEnergy(setups, energy.available, { priorityIndex: energyPriorityIndex });
+  // GetCostValue (record 759880384, Indifference: GetMaxMin(0, (GetCostValue(1) − GetCostValue(0)) ÷ p0 × p1, p2)) as a fact of the pass's
+  // intake (unification step 1, slice 4a, shadow: nothing reads it): 1 the board's Energy, 0 the allocated Energy (which index is which is
+  // inferred from the record: the remaining Energy is their difference).
+  lineIntake.facts.provide("GetCostValue", (index) => (index === 1 ? allocation.availableEnergy : index === 0 ? allocation.knownAllocated : NaN));
   // Lich's Dirge (Pantheon's Elegy; legendary audit batch 1, 2026-10-22): "+2% Aura Effect for each non-Exclusive Support Skill
   // equipped" counts the enabled supports on the enabled skill-board setups whose catalog entry is not Exclusive (exclusiveFor).
   const nonExclusiveSupports = setups.filter((setup) => setup.enabled !== false).flatMap((setup) => (setup.supports || []).filter((support) => support?.name && support.enabled !== false && !catalogSupportsByName.get(support.name)?.exclusiveFor)).length;
@@ -2544,7 +2572,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const motoRates = lineConditionState.heroId === "moto-order-calling" && modifierTexts.some((line) => line?.origin !== "derived" && /additional Overload Effect on hit/i.test(String(line?.text ?? "")));
   // The follower's Numbed alone holds 1 stack (src/combat-states.js followerNumbedOnly): it reads your Lightning hits per second.
   const revivedNumbedRates = modifierTexts.some((line) => line?.origin !== "derived" && /Lightning Damage is dealt, inflicts \d+ stack\(s\) of Numbed|^The Follower inflicts Numbed on the dummy$/i.test(String(line?.text ?? "")));
-  const firstPassFacts = modifierTexts.some((line) => isDerivedLevelLine(line.text) || /Affliction Effect for every 1 Blur Rating$|Damage to Attacks and Spells while Blur is active$|^[+-][\d.]+% Crowd Control Effects? and \+[\d.]+% additional Ailment Damage while Blur is active$/i.test(String(line.text ?? "").trim()));
+  const firstPassFacts = modifierTexts.some((line) => isDerivedLevelLine(line.text) || /Affliction Effect for every 1 Blur Rating$|Damage to Attacks and Spells while Blur is active$|^[+-][\d.]+% Crowd Control Effects? and \+[\d.]+% additional Ailment Damage while Blur is active$|^[+-]?[\d.]+% Movement Speed while Blur is active$|^(?:When Dexterity is greater than Strength, )?[+-]?[\d.]+ Evasion while Blur is active\.?$|^While Blur is active, [+-]?[\d.]+% Defense$/i.test(String(line.text ?? "").trim()));
   // (Daze's Crowd Control Effect, src/combat-states.js crowdControlEffectBlur, reads the held Blur too: 2026-11-15.)
   // The hit pass also measures the damage types each modeled hit really deals (`dealtTypes`, read on the second pass by every
   // "deals <Type> Damage" reader: 2026-11-05), so any build with a modeled skill hit runs it.
@@ -2629,6 +2657,13 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     heldMovement.sources.push({ source: item.source, text: item.text, value: item.value, hero: true });
     heldMovement.percent = Math.round((heldMovement.percent + item.value) * 1000) / 1000;
   }
+  // An Empower buff's part-time Movement Speed (src/empower-buffs.js kind "movement": Burst of Anger's own Attack Aggression, buff 3411's
+  // 200000402 [10], at the Euphoria's uptime, beside its damage and speed halves; reach census follow-up, 2026-11-25): no derived line, so it
+  // joins the held combat figure here, increased Movement Speed.
+  for (const entry of empowerEarly.entries || []) for (const line of entry.active && !entry.superseded ? (entry.lines || []).filter((item) => item.kind === "movement" && item.average) : []) {
+    heldMovement.sources.push({ source: `${entry.skill}: ${line.label || "Euphoria"}`, text: `${line.text} (${line.scope}, at the buff's uptime)`, value: line.average, empower: true });
+    heldMovement.percent = Math.round((heldMovement.percent + line.average) * 1000) / 1000;
+  }
   lineConditionState.movementSpeedSheetPercent = lineConditionState.movementSpeedPercent || 0;
   lineConditionState.movementSpeedConditional = heldMovement;
   if (heldMovement.percent) lineConditionState.movementSpeedPercent = (lineConditionState.movementSpeedPercent || 0) + heldMovement.percent;
@@ -2638,6 +2673,16 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // The player's movement speed from the combat Movement Speed (user decision 2026-11-10): the per-metre readers from here on (the ring's
   // movement Barrier, Hunting Tempo, Thunder Focus). Carino's Deflection and Sage's Tumbleweed Seed, read above, keep the stat sheet's speed.
   lineConditionState.playerMoveSpeed = playerMoveSpeed({ increasedPercent: lineConditionState.movementSpeedPercent || 0, additionalFactor: (lineConditionState.movementSpeedAdditionalFactor || 1) * (heldMovement.additionalFactor || 1) });
+  // Held combat resistance lines (reach census gap 2026-11-25; src/resistance-model.js addCombatResistanceSources): an Elixir Effect's
+  // resistance line (Tenacity Dew's "+4% Max Elemental Resistance", buff 11410 affix 200000008, at the combat Elixir Skill Effect and uptime)
+  // and every other held conditional body that is a resistance line join planner.resistances, as the held Movement Speed joins the combat
+  // Movement Speed above: the derived conditional lines (a body a reader takes) and the resolver's held bodies with no reader. The readers
+  // after this point take them (the level lines' resistance facts, Effective HP); the readers before the resolver (Double Rainbow's totals,
+  // World Within) keep calculateResistances's figures.
+  addCombatResistanceSources(resistances, [
+    ...(lineEffects.derived || []).filter((line) => line?.lineEffect?.conditional).map((line) => ({ source: line.source, text: line.text })),
+    ...(lineEffects.lines || []).filter((entry) => entry.active && !entry.ownSkillOnly).flatMap((entry) => (entry.bodies || []).filter((body) => body.derivedText && !body.readers?.length).map((body) => ({ source: `${entry.source} (${entry.text})`, text: body.derivedText })))
+  ]);
   // Held conditional Max Energy Shield (10 T claim audit G3d, 2026-11-09, user-approved best case): "+16% additional Max Energy Shield
   // while moving" (Long Night Sorcerer's Boots) holds under the Movement group's moving, no engine reads the body, so it joins the one
   // Max Energy Shield pool (src/effective-hp.js energyShieldPoolExtra) for the readers from here on (Barrier Burst's Shield).
@@ -2645,6 +2690,19 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     const rebuild = ENERGY_SHIELD_POOL_REBUILD.get(lineConditionState);
     const held = heldConditionalPoolExtra(lineEffects, "maxEnergyShield", { skipKeys: STATIC_HELD_KEYS });
     if (rebuild && lineConditionState.stats && (held.flat.length || held.increased.length || held.additional.length)) lineConditionState.stats.maxEnergyShield = rebuild(lineEffects);
+  }
+  // Held conditional Armor and Evasion (reach census follow-up, 2026-11-25): "+N Evasion while Blur is active" (records 101010221 / 427747424:
+  // attr 4002 mod 1 on Blur's state 4000060) and "While Blur is active, +X% Defense" (884419904: attrs 4001 / 4002 / 1601 mod 3) at Blur's held
+  // share join the combat Evasion and Armor (their Max Energy Shield part joins above), and the readers of those settle again.
+  {
+    const defense = lineConditionState.stats ? DEFENSE_POOL_REBUILD.get(lineConditionState)?.(lineEffects) : null;
+    if (defense) {
+      if (defense.evasion !== null) { lineConditionState.stats.evasion = defense.evasion; lineConditionState.evadeChance = evadeChance(defense.evasion, EHP_DEFAULTS.enemyLevel); }
+      if (defense.armor) { lineConditionState.stats.armor = defense.armor.value; lineConditionState.combatArmor = defense.armor; putArmorBuffs(lineConditionState.playerBuffs, defense.armor); }
+      let changed = false;
+      for (const key of ["perArmor", "armorAtLeast", "perEvasion", "evadedRecently"]) changed = resettleLineEffects(lineEffects, key, lineConditionState, modifierTexts) || changed;
+      if (changed) mechanics = collectMechanics();
+    }
   }
   // The Empower / Warcry buff lines settled again once the line effects' derived lines are in (2026-10-27): a trait-derived "+X%
   // Empower Skill Effect" (Sage's Pungent Stimulant Salt) joins only now, after the early pass resolved the buff lines. Changed
@@ -2705,7 +2763,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
       const source = `${setup.name}: ${line.support} (curse on the dummy for ${line.delaySeconds} s or more)`;
       const takenLine = { text: `+${line.value}% additional damage taken`, source, origin: "derived", multiplier: 1, allDamageTaken: true };
       modifierTexts.push(takenLine);
-      addLateDamageTakenLine(mechanics, takenLine, activeNames);
+      addLateDamageTakenLine(mechanics, takenLine, activeNames, { intake: lineIntake });
       (lineEffects.combat.timedEffects ||= []).push({ id: `curseTaken:${setup.setupKey}:${line.support}`, label: source, source, text: line.text, target: "enemy", toggle: false, enabled: true, active: true, provisional: false,
         parts: [{ type: null, reach: "all", percent: line.value, schedule: { kind: "steps", points: [[0, 0], [line.delaySeconds, 1]], sustained: 1 } }] });
     }
@@ -2790,6 +2848,11 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   if (illWill) for (const [type, base] of Object.entries(illWillBase)) damageCombat[`target${type}ResistancePercent`] = illWillResistance(illWill, type, base);
   // Talent nodes (captured or text, src/talent-text-effects.js) and slate copies of Warlord [5,2] inflict Fire Infiltration.
   if (!talent.setup.panels.some((panel) => panel.allocatedNodes.some((node) => node.rank > 0 && node.effects?.inflictsFireInfiltrationAgainstIgnited)) && !(talentSlate.candidateSlate?.inflictsFireInfiltrationAgainstIgnited > 0)) conditions.fireInfiltration = false;
+  // That Fire Infiltration's value (buff 3441: affix 101010552 [13], attr 5120 mod 4 "p0 GetEffectScale ×"; GetEffectScale = the caster's attr 3401
+  // on the buff's tags × the holder's 3410, SS14 client 0x141d22dd0): 13 × (1 + the caster's "+X% Fire Infiltration Effect", 88778344, mod 3), the
+  // value the combat pass gives a held Fire Infiltration off the beam path (src/combat-states.js infiltrationEffectPercent). The beam's hits and
+  // Ignite read it (src/scorching-beam-hit.js, src/theoretical-sources.js; reach census follow-up, 2026-11-25: both read a plain 13).
+  damageCombat.fireInfiltrationPercent = Math.round(13 * (1 + infiltrationEffectPercent(modifierTexts, "Fire", { heroId: lineConditionState.heroId }) / 100) * 10000) / 10000;
   // Aim charges and uptime are derived from the build (aim-model.js); an explicit
   // aimCharges or a non-sentinel aimUptimePercent in the state is a manual override.
   // "Triggers Lv. 30 Aim while standing still. Interval: 1 s" (gear affix batch D, 2026-10-22; src/item-triggered-skills.js): with no
@@ -2845,6 +2908,47 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // copy, the per-type count); identical figures on all 17 fixtures (the beam builds' model already lists Ignite).
   if (canIgnite) mechanics.enemyAilments.set.add({ name: "Ignite", source: "Scorching Beam", reason: "the beam's Ignite ledger (src/theoretical-sources.js)", stage: "beam" });
   const beamIgnites = enemyBuffSet(mechanics.enemyAilments)?.holds("Ignite", { stage: "beam" }) ?? canIgnite;
+  // "+X% Fire Penetration against Ignited enemies" (records 101010706 / 391400: no tag on your side, the target Ignited) on the beam's hits
+  // while the dummy is Ignited (src/build-mechanics.js addIgnitedBeamHitPenetration; reach census gap 1). Before the beam's typed parts and
+  // hit read `mechanics.penetration`.
+  // Your other Fire damage takes it too, at the same share (reach census follow-up 2, 2026-11-25; src/build-mechanics.js
+  // ignitedFirePenetrationOtherLines): a Fire skill DoT and the generic Ignite through `penetration.byType.Fire`, the skill hits through the
+  // derived lines (off the beam path src/combat-states.js derives them).
+  let ignitedFirePenetration = null, ignitedFireInfiltration = null;
+  if (activeNames.has("Scorching Beam")) {
+    const ignitedShare = enemyBuffSet(mechanics.enemyAilments)?.share("Ignite") ?? (beamIgnites ? 1 : 0);
+    addIgnitedBeamHitPenetration(mechanics, modifierTexts, ignitedShare);
+    const beamSetup = resolvedMain?.name === "Scorching Beam" ? resolvedMain : setups.find((setup) => setup.name === "Scorching Beam" && setup.enabled !== false);
+    const ignitedLines = ignitedFirePenetrationOtherLines(mechanics, modifierTexts, ignitedShare, { exceptSetupKey: beamSetup?.setupKey ?? null });
+    modifierTexts.push(...ignitedLines);
+    // The tick engine reads them on the loop from a clean dummy (src/tick-layers.js ignitedPenetrationLayer; reach census follow-up, 2026-11-25).
+    if (ignitedLines.length) ignitedFirePenetration = { share: ignitedShare, lines: ignitedLines.map((line) => ({ source: line.source, text: line.text, value: Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0, full: line.ignitedFullValue })) };
+    // The beam path's Fire Infiltration (Warlord (5,2) / its slate copy, record 885067264: trigger 1000030 on your Fire damage, tag 5001130, to a
+    // target in state 4000130 Ignited; node 301 puts buff 3441 on the dummy) is a debuff on the dummy: 101010552 has no tag, so every Fire damage
+    // of yours takes it, not only the beam's (reach census follow-up, 2026-11-25). conditions.fireInfiltration holds it (the beam Ignites and
+    // deals Fire); the beam's hits and Ignite keep their own entry, so this copy is the other skills' (`exceptSetupKey`), for their Fire hits
+    // and Fire skill DoTs through the typed readers. Pushed after the last collect, as the penetration copy above.
+    if (conditions.fireInfiltration) {
+      const infiltrationLine = { text: `+${damageCombat.fireInfiltrationPercent}% additional Fire Damage taken`, source: "Fire Infiltration (keyword 10000103) on the Ignited dummy (the Scorching Beam path)", origin: "derived", multiplier: 1, ...(beamSetup?.setupKey ? { exceptSetupKey: beamSetup.setupKey } : {}), lineEffect: { conditional: true, key: "combatState", conditionText: "the beam's Ignite keeps the dummy Ignited and the beam deals Fire Damage (game affix 885067264; provisional)", provisional: true } };
+      modifierTexts.push(infiltrationLine);
+      // The tick engine reads it on the loop from a clean dummy, at the probability the dummy is Ignited now (src/tick-layers.js
+      // ignitedInfiltrationLayer; reach census third follow-ups, 2026-11-25); Weakness Infiltration's share lines lifting it join below. Not where
+      // another producer holds Fire Infiltration on the dummy whatever the Ignite (Penetrating, a follower's: on the beam path src/combat-states.js
+      // folds it into this copy), so the line stays held there.
+      const otherFireInfiltration = (enemyBuffSet(lineConditionState)?.types({ tag: 5200086 }, { stage: "debuff" }) ?? [...(lineEffects.combat?.debuffs?.infiltration || [])]).includes("Fire");
+      if (!otherFireInfiltration) ignitedFireInfiltration = { lines: [{ source: infiltrationLine.source, text: infiltrationLine.text, value: damageCombat.fireInfiltrationPercent }] };
+    }
+  } else {
+    // Off the beam path the combat pass derives the same records' copy (src/combat-states.js, `ignitedFullValue`), held at the steady Ignited share
+    // from t = 0; the tick engine reads it on the loop from a clean dummy as on the beam path (reach census third follow-ups, 2026-11-25).
+    const offBeam = (lineEffects.derived || []).filter((line) => Number.isFinite(line.ignitedFullValue));
+    if (offBeam.length) ignitedFirePenetration = { share: Math.max(...offBeam.map((line) => Number(line.ignitedShare) || 0)), lines: offBeam.map((line) => ({ source: line.source, text: line.text, value: Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0, full: line.ignitedFullValue })) };
+    // The combat pass's Fire Infiltration from the same Ignited producer (885067264), where it alone holds it (`ignitedInfiltrationFull`): on the
+    // loop too it waits for the dummy's Ignite and buff 3441's 10 s (reach census fourth follow-ups, 2026-11-25); Weakness Infiltration's share
+    // lines lifting it join below (`offBeam`).
+    const offBeamInfiltration = (lineEffects.derived || []).filter((line) => Number.isFinite(line.ignitedInfiltrationFull));
+    if (offBeamInfiltration.length) ignitedFireInfiltration = { offBeam: true, lines: offBeamInfiltration.map((line) => ({ source: line.source, text: line.text, value: Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0, full: line.ignitedInfiltrationFull })) };
+  }
   // Other damaging ailments (Trauma, Wilt) can also carry Affliction.
   const otherAilmentBase = ["trauma", "wilt"].some((key) => hasAilmentBase(key, modifierTexts));
   // Cataclysm on a hit skill that inflicts Ignite / Trauma / Wilt (game recipe 599597: the supported skill's damage-over-time
@@ -3109,15 +3213,43 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // active setup whose own damage is modeled carries it. Uptime 1 (provisional; the debuff refreshes while the skill hits).
   const damagingSetupKeys = new Set(damageSources.filter((source) => source.status === "modeled").map((source) => source.setupKey));
   const lateResistanceLines = [];
+  const beamFireInfiltration = Boolean(conditions.fireInfiltration && activeNames.has("Scorching Beam"));
   for (const setup of setups.filter((item) => item.enabled !== false && activeNames.has(item.name) && damagingSetupKeys.has(item.setupKey))) {
-    for (const line of setup.supportEffects?.targetTaken || []) modifierTexts.push({ text: `+${line.value}% additional ${line.typed} Damage taken`, source: `${setup.name}: ${line.support} (enemy debuff; uptime 1, provisional)`, origin: "derived", multiplier: 1 });
+    // A Fire / Ignite one also joins the Ignite ledger's damage-taken list (and a Fire one the beam's hits), which the collect never saw: Flame
+    // Jet: Scorched Earth's buff 10212 (101010552, untagged Fire damage taken), Burning Shot: Ignition's Ignite damage taken (729697600; reach
+    // census follow-up 4, 2026-11-25; src/build-mechanics.js addLateTypedTakenLine).
+    for (const line of setup.supportEffects?.targetTaken || []) {
+      const takenLine = { text: `+${line.value}% additional ${line.typed} Damage taken`, source: `${setup.name}: ${line.support} (enemy debuff; uptime 1, provisional)`, origin: "derived", multiplier: 1 };
+      modifierTexts.push(takenLine);
+      addLateTypedTakenLine(mechanics, takenLine, activeNames);
+    }
     // Chunk 8 (src/support-chunk8.js): Target Projection's Enhanced Mark and Corrosion Focus: Infection, debuffs the skill's hits hold on the dummy.
-    const enemyLines = chunk8EnemyLines(setup, { modifierTexts, nearTarget: conditions.nearTarget !== false, usesPerSecond: hitRateFacts?.bySetup?.get?.(setup.setupKey)?.usesPerSecond ?? null, infiltrationTypes: enemyBuffSet(lineConditionState)?.types({ tag: 5200086 }, { stage: "debuff" }) ?? [...(lineEffects.combat?.debuffs?.infiltration || [])] });
+    // The beam path's own Fire Infiltration (conditions.fireInfiltration, record 885067264) is a held one too: Weakness Infiltration's holder 3410
+    // lifts it (reach census follow-up, 2026-11-25), beside the beam's entry and the other skills' copy above.
+    const heldInfiltrationTypes = enemyBuffSet(lineConditionState)?.types({ tag: 5200086 }, { stage: "debuff" }) ?? [...(lineEffects.combat?.debuffs?.infiltration || [])];
+    const enemyLines = chunk8EnemyLines(setup, { modifierTexts, nearTarget: conditions.nearTarget !== false, usesPerSecond: hitRateFacts?.bySetup?.get?.(setup.setupKey)?.usesPerSecond ?? null, infiltrationTypes: beamFireInfiltration && !heldInfiltrationTypes.includes("Fire") ? [...heldInfiltrationTypes, "Fire"] : heldInfiltrationTypes,
+      // The caster's Infiltration Effect, read as the combat pass reads it for the held line (reach census follow-up 3): yours, or 0 for an
+      // Infiltration only the follower keeps (its caster's own Effect; reach census follow-up, 2026-11-25).
+      // On the beam path the beam's own Fire Infiltration is yours (conditions.fireInfiltration), whatever the follower also keeps.
+      infiltrationEffectPercent: (type) => !(type === "Fire" && beamFireInfiltration) && (lineEffects.combat?.debuffs?.followerInfiltration || []).includes(type) ? 0 : infiltrationEffectPercent(modifierTexts, type, { heroId: lineConditionState.heroId }),
+      // The follower's part-time Infiltrations (High Voltage, Blazing Meteor: src/follower-model.js `followerInfiltration`), lifted by the
+      // holder's 3410 too.
+      followerInfiltration: (lineEffects.derived || []).filter((line) => line.followerInfiltration).map((line) => ({ type: line.followerInfiltration, value: Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0, source: line.source })),
+      // Medium Penetration's Infiltration Effect taken (the follower's, record 1033360261) on each type: its factor, which the share's 3410 sums
+      // with (reach census third follow-ups, 2026-11-25).
+      infiltrationEffectTakenFactor: (type) => (lineEffects.derived || []).filter((line) => line.followerInfiltrationEffectTaken && new RegExp(`^\\+[\\d.]+% additional ${type} Damage taken$`, "i").test(String(line.text))).reduce((factor, line) => factor * (1 + (Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0) / 100), 1) });
     modifierTexts.push(...enemyLines);
+    // A Fire share lifting only the beam path's Fire Infiltration (no other held Fire Infiltration under it) waits for the dummy's Ignite on the
+    // loop with it (src/tick-layers.js ignitedInfiltrationLayer; reach census third follow-ups, 2026-11-25).
+    // Off the beam path the Ignited producer's Fire Infiltration is in the held types; the combat pass marked it the only Fire holder (`offBeam`).
+    if (ignitedFireInfiltration && (ignitedFireInfiltration.offBeam || !heldInfiltrationTypes.includes("Fire"))) for (const line of enemyLines.filter((item) => item.infiltrationShare === "Fire" && !item.infiltrationShareBeside)) ignitedFireInfiltration.lines.push({ source: line.source, text: line.text, value: Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0 });
     lateResistanceLines.push(...enemyLines.filter((line) => line.resistanceTypes));
     // An untagged enemy damage-taken debuff (Path of Flames: Spontaneous Combustion, buff 10155: attr 5720 mod 4, no tag; 8 T Thornfield audit G3,
     // 2026-11-13) lands after the last mechanics pass: the DoT / ailment damage-taken bucket and the beam's hits take it here, as Deepened Curse's.
-    for (const line of enemyLines.filter((item) => item.allDamageTaken)) addLateDamageTakenLine(mechanics, line, activeNames);
+    for (const line of enemyLines.filter((item) => item.allDamageTaken)) addLateDamageTakenLine(mechanics, line, activeNames, { intake: lineIntake });
+    // An Infiltration's Effect share (Weakness Infiltration, record 326961760: the holder's 3410 on the Infiltration tag) reaches the Ignite
+    // beside its held Infiltration line (reach census gap 4, 2026-11-25; src/build-mechanics.js addLateInfiltrationShare).
+    for (const line of enemyLines.filter((item) => item.infiltrationShare)) addLateInfiltrationShare(mechanics, line, { beamFireInfiltration });
   }
   // Thornfield: Sacrifice's stacks on the clean dummy (8 T Thornfield audit G2, 2026-11-13; src/support-conditional-batch4.js sacrificeStacks):
   // the self-damage stacks need no event on the dummy (your Terra's True Damage), so with own buffs built before engaging they are held at
@@ -3179,15 +3311,36 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   const batch6Build = batch6BuildLines({ setups, activeNames, originEffectFactor: originEffectFactor(modifierTexts).factor, minionCountFor: (setup) => { const key = inferDamageProfile(setup)?.minionKey; return key && MINION_PROFILES[key] ? minionCountOut(MINION_PROFILES[key], setup.effectiveLevel ?? 20, modifierTexts, { troopMaxMinions: (requestedConditions.troopMaxMinions ?? requestedConditions.moduleMaxMinions) !== false, halveTroops: Boolean(troopHalvingSource({ setups, activeNames })) }) : 0; } });
   modifierTexts.push(...batch6Build.lines);
   // These lines land after the last mechanics pass: the ledgers that read the collected object take them here.
-  for (const line of [...lateResistanceLines, ...supportBuffs.lines, ...batch6Build.lines]) addLateMechanicsLine(mechanics, line);
+  for (const line of [...lateResistanceLines, ...supportBuffs.lines, ...batch6Build.lines]) addLateMechanicsLine(mechanics, line, { intake: lineIntake });
   // Indifference's player half (2 T Whirlwind audit G2, user-approved 2026-11-22): record 759880384's untagged attr 5719 mod 4 write (clamp(0,
   // remaining Energy ÷ 5, 50), linear) is your additional damage, so it reaches every path the write reaches. The beam's hit ledger and the
   // Ignite ledger (and the ailments built on it) already read it from the core lines (src/scorching-beam-hit.js, src/theoretical-sources.js),
   // so it joins the build lines the skill hits and skill DoTs read and not the mechanics' beam / Ignite buckets (addLateMechanicsLine). The
   // Minion half is the Minion model's (indifferenceMinion below). The remaining Energy is the board's (src/engine.js allocateSkillEnergy).
   {
-    const value = coreTalents.lines.find((line) => line.source === "Indifference")?.value || 0;
+    const coreValue = coreTalents.lines.find((line) => line.source === "Indifference")?.value || 0;
+    // Slice 4c (TLI_POOL_INTAKE=pass): the value is the record's untagged runtime write (GetCostValue, the provider above), evaluated with
+    // the pass's facts, where the intake sees exactly one such write and the core model is active; it is pushed only where the core model
+    // pushes it today, at the same place and with the same text and flag. Otherwise (a belt blend's "[Indifference] …" grant, which binds no
+    // record: build-10t-iris2-erosion-magus; several copies; a value that is not ===) the core model's value is kept (counted as a fallback).
+    const value = (() => {
+      if (!coreValue || intakeMode() !== "pass") return coreValue;
+      const player = lineIntake.dynamic.filter((item) => item.affixId === 759880384 && item.unit === "player" && !item.tags);
+      const intake = coreNames.has("Indifference") && player.length === 1 ? lineIntake.dynamicValue(player[0]).value : null;
+      if (intake !== coreValue) { noteSwitch("indifferenceFallback"); return coreValue; }
+      noteSwitch("indifferencePool");
+      return intake;
+    })();
     if (value) modifierTexts.push({ text: `+${value}% additional damage`, source: "Indifference core (+1% additional damage per 5 remaining Energy, up to +50%; game record 759880384, its untagged write)", origin: "derived", multiplier: 1, indifference: true });
+    // Slice 4a shadow (TLI_POOL_INTAKE=shadow): each of the record's runtime-valued writes, evaluated with the pass's facts, against the core
+    // model's value (src/core-talent-model.js; 0 when it pushes no line). A side channel (lineIntakeShadowReport), never the result.
+    if (intakeMode() === "shadow") {
+      const writes = lineIntake.dynamic.filter((item) => item.affixId === 759880384);
+      for (const write of writes) reportStepShadow("facts", { label: "Indifference", line: write.line, field: `indifference:${write.tags ? "minion" : "player"}`, legacy: value, intake: lineIntake.dynamicValue(write).value, nonEmpty: true });
+      // The core model's value with no record write in the pass list (a core the intake does not see), or more than one copy's pair.
+      // A finding, listed apart (lineIntakeShadowFindings): the value comparison above holds only where the intake sees the record.
+      if ((coreNames.has("Indifference") ? 2 : 0) !== writes.length) noteStepFinding("facts", { label: "Indifference", field: "indifference:writes", detail: { coreActive: coreNames.has("Indifference"), writes: writes.length, lines: modifierTexts.filter((line) => /remaining Energy/i.test(String(line?.text ?? "")) && !line.indifference).map((line) => ({ source: line.source, origin: line.origin, text: line.text })) } });
+    }
   }
   // Census item #2 typed bodies on the Scorching Beam main (Blazing Scorch's Fire part): its Fire hits and Ignite.
   for (const line of (resolvedMain?.name === "Scorching Beam" ? resolvedMain.supportEffects?.conditionalAdditional || [] : []).filter((item) => item.active && item.typedParts && ["In calc", "Provisional"].includes(item.status))) {
@@ -3253,7 +3406,10 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     sealedLifeAndMana: aura.entries.some((entry) => entry.reservation?.resource === "life") && aura.entries.some((entry) => entry.reservation?.resource === "mana"),
     // The ailment types on the dummy (wiring audit gap 2, 2026-11-03): the one enemy-ailment list (src/enemy-ailments.js), your own types at 1 and
     // those only your Minions keep at their uptime, so a non-beam skill's own Ignite counts too (it was left out: only the beam's did).
-    enemyAilmentTypes: Math.max(1, enemyBuffSet(mechanics.enemyAilments)?.count() ?? mechanics.enemyAilments.count)
+    enemyAilmentTypes: Math.max(1, enemyBuffSet(mechanics.enemyAilments)?.count() ?? mechanics.enemyAilments.count),
+    // The beam's Ignite: its record ticks only on an Ignited target, so a write gated on the target Ignited (the gear copy 391400 of "+X% Fire
+    // Penetration against Ignited enemies"; reach census gap 2) holds for it. Off the beam path the line is src/combat-states.js's derived one.
+    targetIgnited: Boolean(activeNames.has("Scorching Beam") && beamIgnites)
   };
   theoretical = compileFinal();
   // Blessings and Blur can change Affliction per second or Reap recovery: re-derive once with the final ledger.
@@ -3296,7 +3452,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // with its own ledger (src/scorching-beam-hit.js typed) and dummy mitigation below. Added damage reaches Ignite's base only through a node-381 line (igniteBaseSettle).
   const beamAddedDamage = scorchingBeamAddedDamage({ main, equipment, slates: slate.setup, equippedSlateIds: equipped, talents: talent.setup, pacts: state.pacts, stats: lineConditionState.stats });
   const beamTypedAdded = activeNames.has("Scorching Beam") ? beamAddedTypedParts(beamAddedDamage, { conversions: [...(main?.supportEffects?.conversion || []), ...passiveSupportLines(modifierTexts).conversion], noConversion: Boolean(trinityState(modifierTexts)?.noConversion) }) : [];
-  const hitModifiers = scorchingBeamHitModifiers({ modifierTexts, beamActive: activeNames.has("Scorching Beam"), typedScopes: beamTypedAdded.map((part) => ({ key: part.key, types: part.chain })), recipeState: { targetCursed, sealedLifeAndMana: aura.entries.some((entry) => entry.reservation?.resource === "life") && aura.entries.some((entry) => entry.reservation?.resource === "mana") }, extraSources: mechanics.hit, intelligenceAdjustment: mechanics.intelligence, blurEffects, curses, blessings, aim, block, coreTalents, enemyOnTideDamageTakenPercent, tideEffectFactor, waveAriaPercent, idyllPerStackPercent, heroMemories, main, talentSlate, equipment, pact, aura, heroId: state.hero.selectedHeroId, conditions, idyllStacks: damageCombat.idyllStacks });
+  const hitModifiers = scorchingBeamHitModifiers({ modifierTexts, beamActive: activeNames.has("Scorching Beam"), typedScopes: beamTypedAdded.map((part) => ({ key: part.key, types: part.chain })), recipeState: { targetCursed, sealedLifeAndMana: aura.entries.some((entry) => entry.reservation?.resource === "life") && aura.entries.some((entry) => entry.reservation?.resource === "mana") }, extraSources: mechanics.hit, intelligenceAdjustment: mechanics.intelligence, blurEffects, curses, blessings, aim, block, coreTalents, enemyOnTideDamageTakenPercent, tideEffectFactor, waveAriaPercent, idyllPerStackPercent, heroMemories, main, talentSlate, equipment, pact, aura, heroId: state.hero.selectedHeroId, conditions, idyllStacks: damageCombat.idyllStacks, fireInfiltrationPercent: damageCombat.fireInfiltrationPercent });
   const levelFactor = main.effectiveLevel >= 20 ? skillLevelDamageMultiplier(main.effectiveLevel) / skillLevelDamageMultiplier(20) : 1;
   // The beam's strikes count only while its setup is on the board and counted (activeNames, the test every beam reader uses): an absent or
   // disabled beam keeps its echoed cast rate but adds no crit events to the ailments' recent-crit readers (ailmentCrit below) and no strikes to
@@ -3692,7 +3848,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // W9 step 3 (src/attribute-pool-build.js): with TLI_POOL_HIT=pool the build's attribute pool (record writes, held buffs, stat totals,
   // conversion records) under every generic skill hit's pool; built once per pass, none on the ledger path.
   let attributePool;
-  const attributePoolFor = () => (attributePool ??= hitPoolMode() === "pool" ? buildAttributePool({ modifierTexts, playerBuffs, stats: lineConditionState.stats, conversions: poolConversionMode(), movementSpeedPercent: lineConditionState.movementSpeedPercent }) : null);
+  const attributePoolFor = () => (attributePool ??= hitPoolMode() === "pool" ? buildAttributePool({ modifierTexts, playerBuffs, stats: lineConditionState.stats, conversions: poolConversionMode(), movementSpeedPercent: lineConditionState.movementSpeedPercent, seal: true }) : null);
   // The extra inputs each hit source was last computed with (the hero, Erika and Carino passes below), so the hit pass's Spell Burst refill
   // (15 T Chain Lightning audit G1) can compute a hit again with them.
   // Every computation of a source merges the extras it was last computed with (G1 of the 6 T Corrosive Throw audit, 2026-11-20: Stray Bird's
@@ -3759,6 +3915,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     // Recipe gates the state settles on generic skill hits (Lich (6,3) both-sealed +10%; F6 2026-10-27, as the beam ledger at recipeState).
     common.recipeState = { targetCursed, sealedLifeAndMana: aura.entries.some((entry) => entry.reservation?.resource === "life") && aura.entries.some((entry) => entry.reservation?.resource === "mana") };
     common.attributePool = attributePoolFor();
+    common.lineIntake = lineIntake;
     common.extraCritOnly = markState.critOnlyLine ? [markState.critOnlyLine] : [];
     // Youga – The Ultimate One's first-pass effects (src/youga-ultimate-one.js yougaPreEffects: the Spell Burst rules and the
     // Clockwork Core lines that need no hit rate); the settled effects arrive through `extra` (resolveYougaUltimateOne).
@@ -4529,9 +4686,12 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
   // The dummy starts clean: its hits meet the 30% setting until the first success, then the Scorch / Ignited resistance
   // (Sun's Embrace alone: the Ignited state is one stack's worth; with Fire's Allure the change follows the Scorch stacks).
   const ignitedHitChange = canIgnite && ignitedResistance.applies && ignitedResistance.hitPercent !== ignitedResistance.unmultipliedPercent;
+  // "+X% Fire Penetration against Ignited enemies" on the hits (src/build-mechanics.js addIgnitedBeamHitPenetration; records 101010706 / 391400:
+  // the target Ignited) holds only once the beam's Ignite has landed: the clean dummy's opening resistance leaves it out (reach census gap 1).
+  const ignitedHitPenetrationPercent = canIgnite ? (mechanics.penetration?.sources || []).filter((line) => line.condition === "target Ignited").reduce((sum, line) => sum + (Number(line.value) || 0), 0) : 0;
   const beamScorch = (firesAllure.active && firesAllure.resistanceReductionPercent > 0) || ignitedHitChange ? {
     active: true,
-    baseResistancePercent: state.combat.targetFireResistancePercent - hitPenetrationPercent,
+    baseResistancePercent: state.combat.targetFireResistancePercent - (hitPenetrationPercent - ignitedHitPenetrationPercent),
     activeResistancePercent: ignitedResistance.hitPercent - hitPenetrationPercent,
     applicationChancePercent: theoretical.totals.applicationChancePercent,
     durationSeconds: theoretical.totals.igniteDurationSeconds,
@@ -5631,7 +5791,7 @@ function calculatePlannerOnce(input, conditionOverrides = {}, { skipVariation = 
     ...(mechanics.curses.active || []).filter((curse) => curse.cast && (curseTakenEffect(curse.name) || ["Entangled Pain", "Scorch"].includes(curse.name))).map((curse) => itemTriggeredEntry("curse", curse.name, curse, curse, isFixedLevelTriggerLine(curse)))
   ];
   const { effectivePacts: _effectivePacts, ...pactLimitsSummary } = pactLimits;
-  const result = { ...(offHandBlock?.stored ? { offHandBlocked: { mainHand: offHandBlock.mainHand.name, stored: offHandBlock.stored.name, reason: `${offHandBlock.stored.name} kept in Weapon 2 but not counted: Weapon 1 (${offHandBlock.mainHand.name}) is two-handed` } } : {}), ...(skillHitDebuffs.entries.length ? { skillHitDebuffs: skillHitDebuffs.entries } : {}), ...(heartOfTheStorm ? { heartOfTheStorm: (({ lines, ...rest }) => ({ ...rest, lines: lines.map((line) => line.text) }))(heartOfTheStorm) } : {}), ...((() => { const readers = [...(heartOfTheStorm?.readsDistance ? ["Heart of the Storm"] : []), ...(lineConditionState.carino?.returning?.readsDistance && lineConditionState.carino.returning.on ? ["Evil Ouroboros"] : [])]; return readers.length ? { standingDistanceReaders: readers } : {}; })()), pressRotation: pressRotationState ? { assumptions: pressRotationState.assumptions, bySetup: Object.fromEntries(pressRotationState.bySetup) } : null, state, playerBuffs, playerMoveSpeed: lineConditionState.playerMoveSpeed || null, prophecyOfRevelation, minionAilmentTypes, ...(minionFrostbite ? { minionFrostbite: (({ schedules, types, ...rest }) => rest)(minionFrostbite) } : {}), beamTypedTypes: [...new Set(beamTypedAdded.flatMap((part) => part.chain))], levelFacts: hitRateFacts?.levelFacts || null,pactLimits: pactLimitsSummary, moduleProtocols: moduleProtocols.modules, coreCopies: { active: Object.fromEntries([...coreCopies.active].map(([name, copy]) => [name, { kind: copy.kind, source: copy.source, label: copy.label }])), duplicates: coreCopies.duplicates.map(({ name, kind, source, activeFrom, affix, lines, slot, slateId }) => ({ name, kind, source, activeFrom, affix: affix ?? null, lines: lines ?? null, slot: slot ?? null, slateId: slateId ?? null })) }, damageTypeRestriction, enemyDebuffCores, weaponToSpells, critNumbedBuffs, periodicBurst, hitRateFacts, modifierTexts, lineEffects, follower: lineEffects.follower, mechanics: mechanicsSummary, supportEffects, afflictionRating, initialAffliction, cataclysmAilments: cataclysmAilments.setups, afflictionFireHits: { state: afflictionFireState, bySetup: Object.fromEntries(skillHits.filter((hit) => hit.setupKey).map((hit) => { const setup = setups.find((item) => item.setupKey === hit.setupKey); return [hit.setupKey, setup ? afflictionFireHitLines(afflictionFireState, { ownAdditionalPercent: cataclysmEffectPercent(setup), label: setup.name }).entries : []]; })) }, ailments, igniteAppliers, igniteAttemptsPerSecond, skillDots, skillHits, triggerSkills, minions, minionCores: { commanderGambit, spiritMagiLimit, darkGate: lineConditionState.darkGate, bond: { canObtain: minionBond.canObtain, maxStacks: minionBond.maxStacks, intervalSeconds: minionBond.intervalSeconds, prebuilt: minionBond.prebuilt, any: minionBond.any, lineCounts: Object.fromEntries(Object.entries(minionBond.sources).map(([key, list]) => [key, list.length])) }, summonCastSpeed: minionSummonCast, overlyModified, isomorphicArms: isomorphicArms ? { weapon: isomorphicArms.weapon, read: isomorphicArms.read || [], unread: isomorphicArms.unread, lines: isomorphicArms.lines.length, reason: isomorphicArms.reason } : null, comradeship: comradeship ? { belt: comradeship.belt, read: comradeship.read, unread: comradeship.unread, lines: comradeship.lines.length, reason: comradeship.reason } : null, command: minionCommand ? { perSecond: minionCommand.perSecond, returnPerSecond: minionCommand.returnPerSecond, returnPerPoint: minionCommand.returnPerPoint, full: minionCommand.full, points: minionCommand.points, value: minionCommand.value, sources: minionCommand.sources.map((item) => item.source), gated: minionCommand.gated || [] } : null }, weaponAttack, damageSources, mainSkill: resolvedMain, timedDotLayers, fullLife, damagePaths, dummyRecount, firesAllure, lowResources, resistances, curseLimit, resolvedSlates: slate.setup.slates, netherKingAuthority: slate.setup.netherKingAuthority || null, blessings, aim, block, barrierSources, blurSources, blurEffects, effectiveTargetFireResistancePercent: damageCombat.targetFireResistancePercent, coreTalents, murmursTideEffectPercent, seaFoamNocturne, tideEffectFactor, singWithTheTide, danceOfTheDeep, windStalker, yougaUltimateOne: yougaPlainState(yougaUltimateOne), mark, pureHeart, activationMediumTerra, cycleResist, illOmen, tangles, miraculousGain, igniteIllOmen, windRhythmTerra: Object.fromEntries([...windRhythmTerra].filter(([, value]) => value)), dotTriggers: Object.fromEntries([...dotTriggers].filter(([, value]) => value)), empowerEffects, defensiveBuffs, heroMemories, support, townSupportPrediction, talentSlate, equipment, pact, activation, aura, igniteLimit, igniteRecipe: ignitePatchSummary(ignitePatch), skillLevelFactor, sourceDamageMultiplier, theoretical, directHit, beamCastRate, beamCritical, beamAddedDamage, nativeHitCycle, bardDelivery, beamDelivery, combatProjection, recountFiveSeconds, recountOpening, recountVariation, configured, conditions, ...(auraAllies.derived && safetyInNumbersActive ? { auraAllies } : {}), ...(itemTriggeredSkills.length ? { itemTriggeredSkills } : {}), warnings: [...new Set(warnings)] };
+  const result = { ...(offHandBlock?.stored ? { offHandBlocked: { mainHand: offHandBlock.mainHand.name, stored: offHandBlock.stored.name, reason: `${offHandBlock.stored.name} kept in Weapon 2 but not counted: Weapon 1 (${offHandBlock.mainHand.name}) is two-handed` } } : {}), ...(skillHitDebuffs.entries.length ? { skillHitDebuffs: skillHitDebuffs.entries } : {}), ...(heartOfTheStorm ? { heartOfTheStorm: (({ lines, ...rest }) => ({ ...rest, lines: lines.map((line) => line.text) }))(heartOfTheStorm) } : {}), ...((() => { const readers = [...(heartOfTheStorm?.readsDistance ? ["Heart of the Storm"] : []), ...(lineConditionState.carino?.returning?.readsDistance && lineConditionState.carino.returning.on ? ["Evil Ouroboros"] : [])]; return readers.length ? { standingDistanceReaders: readers } : {}; })()), pressRotation: pressRotationState ? { assumptions: pressRotationState.assumptions, bySetup: Object.fromEntries(pressRotationState.bySetup) } : null, state, playerBuffs, playerMoveSpeed: lineConditionState.playerMoveSpeed || null, prophecyOfRevelation, minionAilmentTypes, ...(minionFrostbite ? { minionFrostbite: (({ schedules, types, ...rest }) => rest)(minionFrostbite) } : {}), beamTypedTypes: [...new Set(beamTypedAdded.flatMap((part) => part.chain))], levelFacts: hitRateFacts?.levelFacts || null,pactLimits: pactLimitsSummary, moduleProtocols: moduleProtocols.modules, coreCopies: { active: Object.fromEntries([...coreCopies.active].map(([name, copy]) => [name, { kind: copy.kind, source: copy.source, label: copy.label }])), duplicates: coreCopies.duplicates.map(({ name, kind, source, activeFrom, affix, lines, slot, slateId }) => ({ name, kind, source, activeFrom, affix: affix ?? null, lines: lines ?? null, slot: slot ?? null, slateId: slateId ?? null })) }, damageTypeRestriction, enemyDebuffCores, weaponToSpells, critNumbedBuffs, periodicBurst, hitRateFacts, modifierTexts, lineEffects, follower: lineEffects.follower, mechanics: mechanicsSummary, supportEffects, afflictionRating, initialAffliction, cataclysmAilments: cataclysmAilments.setups, afflictionFireHits: { state: afflictionFireState, bySetup: Object.fromEntries(skillHits.filter((hit) => hit.setupKey).map((hit) => { const setup = setups.find((item) => item.setupKey === hit.setupKey); return [hit.setupKey, setup ? afflictionFireHitLines(afflictionFireState, { ownAdditionalPercent: cataclysmEffectPercent(setup), label: setup.name }).entries : []]; })) }, ailments, igniteAppliers, igniteAttemptsPerSecond, skillDots, skillHits, triggerSkills, minions, minionCores: { commanderGambit, spiritMagiLimit, darkGate: lineConditionState.darkGate, bond: { canObtain: minionBond.canObtain, maxStacks: minionBond.maxStacks, intervalSeconds: minionBond.intervalSeconds, prebuilt: minionBond.prebuilt, any: minionBond.any, lineCounts: Object.fromEntries(Object.entries(minionBond.sources).map(([key, list]) => [key, list.length])) }, summonCastSpeed: minionSummonCast, overlyModified, isomorphicArms: isomorphicArms ? { weapon: isomorphicArms.weapon, read: isomorphicArms.read || [], unread: isomorphicArms.unread, lines: isomorphicArms.lines.length, reason: isomorphicArms.reason } : null, comradeship: comradeship ? { belt: comradeship.belt, read: comradeship.read, unread: comradeship.unread, lines: comradeship.lines.length, reason: comradeship.reason } : null, command: minionCommand ? { perSecond: minionCommand.perSecond, returnPerSecond: minionCommand.returnPerSecond, returnPerPoint: minionCommand.returnPerPoint, full: minionCommand.full, points: minionCommand.points, value: minionCommand.value, sources: minionCommand.sources.map((item) => item.source), gated: minionCommand.gated || [] } : null }, weaponAttack, damageSources, mainSkill: resolvedMain, timedDotLayers, fullLife, damagePaths, dummyRecount, firesAllure, lowResources, resistances, curseLimit, resolvedSlates: slate.setup.slates, netherKingAuthority: slate.setup.netherKingAuthority || null, blessings, aim, block, barrierSources, blurSources, blurEffects, effectiveTargetFireResistancePercent: damageCombat.targetFireResistancePercent, coreTalents, murmursTideEffectPercent, seaFoamNocturne, tideEffectFactor, singWithTheTide, danceOfTheDeep, windStalker, yougaUltimateOne: yougaPlainState(yougaUltimateOne), mark, pureHeart, activationMediumTerra, cycleResist, illOmen, tangles, miraculousGain, igniteIllOmen, windRhythmTerra: Object.fromEntries([...windRhythmTerra].filter(([, value]) => value)), dotTriggers: Object.fromEntries([...dotTriggers].filter(([, value]) => value)), empowerEffects, defensiveBuffs, heroMemories, support, townSupportPrediction, talentSlate, equipment, pact, activation, aura, igniteLimit, igniteRecipe: ignitePatchSummary(ignitePatch), skillLevelFactor, sourceDamageMultiplier, theoretical, directHit, beamCastRate, beamCritical, beamAddedDamage, nativeHitCycle, bardDelivery, beamDelivery, combatProjection, recountFiveSeconds, recountOpening, recountVariation, configured, conditions, ...(auraAllies.derived && safetyInNumbersActive ? { auraAllies } : {}), ...(itemTriggeredSkills.length ? { itemTriggeredSkills } : {}), ...(ignitedFirePenetration ? { ignitedFirePenetration } : {}), ...(ignitedFireInfiltration ? { ignitedFireInfiltration } : {}), warnings: [...new Set(warnings)] };
   // A comparison pass (deferDisplayTail, final pass only): the display-only tail runs later, on the winner only, from this pass's own
   // values (nothing it reads is reassigned after this point), and gives the planner a full pass would have returned: the two tail
   // fields in their places, and a tail warning where the full pass lists it (after the other recount estimates' warnings).

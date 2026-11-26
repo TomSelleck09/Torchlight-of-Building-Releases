@@ -23,6 +23,7 @@ import { ATTRIBUTE_DEFINITIONS } from "./data/game/attribute-definitions.generat
 import { createPanelEvaluator, evaluateFormula } from "./attribute-formula.js";
 import { characterStatTotals } from "./character-stats.js";
 import { MAX_RESISTANCE_DEFAULT_PERCENT } from "./game-attribute-defaults.js";
+import { townResistanceEntries } from "./resistance-model.js";
 import { maxSpellBurstTotal } from "./max-spell-burst.js";
 
 export const TAGS = Object.freeze({ SPELL: 6001100, ATTACK: 6001090, HIT: 6001060, DOT: 6001170, MINION: 6000340, DOT_STATE: 5100309, AILMENT_STATE: 5100001, IGNITE_STATE: 5100003, TRAUMA_STATE: 5100006, WILT_STATE: 5100007 });
@@ -169,7 +170,11 @@ export function panelInputs(planner) {
   // (user-stated 2026-10-27, Dreamweaver): left out of the panel figure only.
   const pactMainPenetration = (context.hit?.primary?.penetration || []).filter((line) => line.origin === "pact" && !/ node$/.test(String(line.source || "")));
   for (const line of pactMainPenetration) excluded.push({ source: line.source, text: line.text, reason: "pact spirit main-effect Penetration: hidden from the in-game panel, applies in combat (user-stated 2026-10-27)" });
-  const hitPenetration = context.hit?.primary ? { [context.hit.primary.type]: context.hit.primary.penetrationPercent - pactMainPenetration.reduce((total, line) => total + (Number(line.value) || 0), 0) } : context.beam ? { Fire: planner.directHit?.penetrationPercent ?? 0 } : context.dot ? { [context.dot.damageType]: context.dot.shared?.penetrationPercent ?? context.dot.steps?.penetrationPercent ?? 0 } : {};
+  // The beam's "+X% Fire Penetration against Ignited enemies" (records 101010706 / 391400, the target state Ignited on the second list;
+  // src/build-mechanics.js addIgnitedBeamHitPenetration): no target in town, so it is off the panel figure.
+  const beamIgnitedPenetration = context.beam ? (planner.directHit?.penetrationSources || []).filter((line) => line.condition === "target Ignited") : [];
+  for (const line of beamIgnitedPenetration) excluded.push({ source: line.source, text: line.text, reason: "Fire Penetration against Ignited enemies: needs an Ignited target, none in town (records 101010706 / 391400)" });
+  const hitPenetration = context.hit?.primary ? { [context.hit.primary.type]: context.hit.primary.penetrationPercent - pactMainPenetration.reduce((total, line) => total + (Number(line.value) || 0), 0) } : context.beam ? { Fire: (planner.directHit?.penetrationPercent ?? 0) - beamIgnitedPenetration.reduce((total, line) => total + (Number(line.value) || 0), 0) } : context.dot ? { [context.dot.damageType]: context.dot.shared?.penetrationPercent ?? context.dot.steps?.penetrationPercent ?? 0 } : {};
   for (const type of ["Fire", "Lightning", "Cold", "Erosion"]) set(`A${PENETRATION[type]}`, finite(hitPenetration[type]) ?? 0, hitPenetration[type] != null ? `main skill ledger: ${type} penetration` : `no ${type} penetration on the main skill's ledger`);
   set("F2006247", context.hit?.primary?.armourPenetrationPercent ?? 0, context.hit?.primary ? "main skill hit: armour penetration" : "no armour penetration line");
 
@@ -331,8 +336,8 @@ export function panelInputs(planner) {
     if (!Number.isFinite(recoveryPercent)) { set("A6009X", 1 + stat("reapingRecoverySpeed").increased / 100, "character-stats.js reapingRecoverySpeed (no Reaping model)"); set("A6009E", stat("reapingRecoverySpeed").additional, "character-stats.js reapingRecoverySpeed additional"); }
   }
 
-  // ---- Resistances ----
-  for (const entry of planner.resistances?.entries || []) {
+  // ---- Resistances ---- (the town panel's: the combat-held sources, an Elixir Effect's among them, left out)
+  for (const entry of townResistanceEntries(planner.resistances)) {
     set(`A${RESISTANCE[entry.element]}`, entry.total, `resistances: ${entry.element} total (Elemental lines folded in)`);
     set(`A${MAX_RESISTANCE[entry.element]}`, attributeDefault(MAX_RESISTANCE[entry.element]) + ((entry.uncappedMaximum ?? entry.maximum) - MAX_RESISTANCE_DEFAULT_PERCENT), `config_attributes ${MAX_RESISTANCE[entry.element]} default ${attributeDefault(MAX_RESISTANCE[entry.element])} + the planner's Max ${entry.element} Resistance lines`);
   }
@@ -384,9 +389,9 @@ export function plannerPanelValue(planner, id, context = mainSkillContext(planne
   const crit = context.crit;
   const none = (reason) => ({ value: null, reason });
   const val = (value, path) => (Number.isFinite(value) ? { value, path } : none(`planner exposes no ${path}`));
-  const res = RES_ROW[id] && planner.resistances?.entries?.find((entry) => entry.element === RES_ROW[id]);
+  const res = RES_ROW[id] && townResistanceEntries(planner.resistances).find((entry) => entry.element === RES_ROW[id]);
   if (res) return val(res.effective, `resistances.${res.element}.effective`);
-  const max = MAX_ROW[id] && planner.resistances?.entries?.find((entry) => entry.element === MAX_ROW[id]);
+  const max = MAX_ROW[id] && townResistanceEntries(planner.resistances).find((entry) => entry.element === MAX_ROW[id]);
   if (max) return val(max.maximum, `resistances.${max.element}.maximum`);
   const hit = context.hit, rate = hit?.rate, shared = planner.ailments?.trauma?.shared ?? planner.ailments?.wilt?.shared ?? context.dot?.shared;
   // A rating whose increased sum is below -100% (Keep It Up's -25% per stack at 8 stacks: the 2026-11-05 shared build) or whose flat lines are

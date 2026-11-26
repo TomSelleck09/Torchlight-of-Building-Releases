@@ -27,7 +27,7 @@ export function textDamageTypes(text) {
 
 // Source-side hit modifiers. This ledger is independent of any recorded town
 // spell-DPS value; unrecognized affixes stay outside the estimate.
-export function scorchingBeamHitModifiers({ modifierTexts = null, beamActive = true, recipeState = {}, typedScopes = [], blurEffects, blessings = { damageSources: [] }, aim, curses = { scorchDamagePercent: 45 }, block = { damageSources: [] }, coreTalents = { lines: [] }, enemyOnTideDamageTakenPercent = 20, tideEffectFactor = 1, waveAriaPercent = 16, idyllPerStackPercent = 1.6, heroMemories = { lines: [] }, main, talentSlate, equipment, pact, aura, heroId, conditions = {}, idyllStacks = 15, extraSources = [], intelligenceAdjustment = { extraFlat: 0, percent: 0 } } = {}) {
+export function scorchingBeamHitModifiers({ modifierTexts = null, beamActive = true, recipeState = {}, typedScopes = [], blurEffects, blessings = { damageSources: [] }, aim, curses = { scorchDamagePercent: 45 }, block = { damageSources: [] }, coreTalents = { lines: [] }, enemyOnTideDamageTakenPercent = 20, tideEffectFactor = 1, waveAriaPercent = 16, idyllPerStackPercent = 1.6, heroMemories = { lines: [] }, main, talentSlate, equipment, pact, aura, heroId, conditions = {}, idyllStacks = 15, extraSources = [], intelligenceAdjustment = { extraFlat: 0, percent: 0 }, fireInfiltrationPercent = 13 } = {}) {
   const talent = talentSlate?.candidateTalent || {};
   const slate = talentSlate?.candidateSlate || {};
   const gear = equipment?.candidate || {};
@@ -103,7 +103,8 @@ export function scorchingBeamHitModifiers({ modifierTexts = null, beamActive = t
   }
   if (conditions.aim && aim?.active) add("Aim with linked supports", "additional", aim.averageDamagePercent);
   if (conditions.scorch) add("Scorch", "additional", curses.scorchDamagePercent, FIRE);
-  if (conditions.fireInfiltration) add("Fire Infiltration", "additional", 13, FIRE);
+  // Fire Infiltration (buff 3441: 101010552 [13] × GetEffectScale): the caster's Fire Infiltration Effect in `fireInfiltrationPercent` (src/planner.js).
+  if (conditions.fireInfiltration) add("Fire Infiltration", "additional", fireInfiltrationPercent, FIRE);
   // Min / Max Damage lines keep the line they came from (`lineText`; the coverage badges match it).
   for (const line of extraSources) { const types = line.types ? { types: line.types } : {};
     if (line.lineText && Number.isFinite(line.percent) && line.percent !== 0) ledger.push({ source: line.source, bucket: line.bucket, percent: line.percent, lineText: line.lineText, ...types });

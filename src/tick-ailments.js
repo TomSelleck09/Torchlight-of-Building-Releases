@@ -108,6 +108,33 @@ export function dotPenetrationStacks(planner, key, stacking) {
   return { entries: held, netResistancePercent: max?.active ? weighted(max) : (Number(shared.targetResistancePercent) || 0) - (Number(shared.penetrationPercent) || 0) };
 }
 
+// "+X% Fire Penetration against Ignited enemies" on a Fire skill DoT on the Scorching Beam path (src/tick-layers.js ignitedPenetrationLayer;
+// reach census follow-up, 2026-11-25): the DoT ledger's copy (planner.ignitedFirePenetration, its penetration list) read at the DoT record's build
+// (R4's reading), so fixed at each application at the probability the dummy is Ignited then. The generic Ignite's copy stays held (an Ignite
+// record ticks only on an Ignited target).
+function dotIgnitedPenetration(planner, key, gate) {
+  if (!gate?.lines?.length || key === "ignite") return null;
+  const dot = (planner.skillDots || []).find((item) => item.key === key);
+  const shared = dot?.shared;
+  if (!shared) return null;
+  const lines = shared.ledger?.penetration || [];
+  const held = gate.lines.filter((entry) => lines.some((line) => line.source === entry.source && (line.text === undefined || line.text === entry.text)));
+  if (!held.length) return null;
+  const max = shared.maxAfflictionResistance;
+  const weighted = (layer) => (Number(layer.resistancePercent) || 0) - (Number(layer.penetrationPercent) || 0) + (Number(layer.steadyFraction) || 0) * (Number(layer.reductionPercent) || 0);
+  return { entries: held, ignited: gate.ignited, netResistancePercent: max?.active ? weighted(max) : (Number(shared.targetResistancePercent) || 0) - (Number(shared.penetrationPercent) || 0) };
+}
+
+// The Scorching Beam path's Fire Infiltration on a Fire skill DoT of yours (src/tick-layers.js ignitedInfiltrationLayer; reach census third
+// follow-ups, 2026-11-25): the DoT ledger's taken copies (planner.ignitedFireInfiltration: the debuff and Weakness Infiltration's share lifting it).
+// An enemy-side write (buff 3441 on the dummy), so read at each tick at the probability the dummy is Ignited now, not fixed at the application.
+function dotIgnitedInfiltration(planner, key, gate) {
+  if (!gate?.lines?.length || key === "ignite") return null;
+  const dot = (planner.skillDots || []).find((item) => item.key === key);
+  const held = (dot?.ledger?.taken || []).filter((line) => gate.lines.some((entry) => entry.source === line.source && entry.text === line.text)).map((line) => { const entry = gate.lines.find((item) => item.source === line.source && item.text === line.text), value = Number(line.value) || 0; return { source: line.source, text: line.text, value, full: Number.isFinite(entry?.full) && entry.value > 0 ? value * entry.full / entry.value : value }; }).filter((line) => line.value);
+  return held.length ? { entries: held, ignited: gate.ignited } : null;
+}
+
 // R4 (research/remediation-held-buffs-2026-11-21.md, 2026-11-22): a DoT ledger's lines gated on a dummy state a layer drives on the loop
 // (src/tick-layers.js dotStateGates: Frozen / Frostbitten on the frostbite buff, Cursed on the curse, Marked, an ailment state), each an additional
 // factor of the DoT's held value. The DoT record reads them at its build (SS14 client 0x141d48bc0 -> 0x141f89510 reads attr 5719 with the record's
@@ -129,7 +156,7 @@ function dotStateLines(planner, key, gates) {
   return out;
 }
 
-function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null, penetration = null, stateLines = []) {
+function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null, penetration = null, stateLines = [], ignitedPenetration = null, ignitedInfiltration = null) {
   const simulated = inputs.options?.afflictionModel === "simulated";
   const { configuredRating = 0, perPoint = 0 } = ailment.affliction || {};
   const live = simulated && perPoint > 0;
@@ -168,6 +195,20 @@ function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null,
     net += entry.value;
     modifiers.push({ source: entry.source, text: `${entry.text} (up to ${entry.stacks} stacks, from 0 on your Elemental hits, fixed at each application)`, buff: entry.buff, perStack: true, layer: "penetration", liveKey: "penetrationStacks", percent: entry.value / entry.stacks, steadyAmount: entry.value, attacker: true });
   }
+  // Fire Penetration against Ignited enemies (src/tick-layers.js ignitedPenetrationLayer): out of the held value at its steady share, back as the
+  // full value × the dummy Ignited at the application, the attacker's own write, fixed for the record.
+  if (ignitedPenetration?.entries?.length && net === undefined) net = ignitedPenetration.netResistancePercent;
+  for (const entry of ignitedPenetration?.entries || []) {
+    penetrationBase *= (100 - net - entry.value) / (100 - net);
+    net += entry.value;
+    modifiers.push({ source: entry.source, text: `${entry.text} (against Ignited enemies: the dummy Ignited at each application, fixed for the record)`, amount: (world) => entry.full * ignitedPenetration.ignited(world), layer: "penetration", liveKey: "ignitedPenetration", steadyAmount: entry.value, attacker: true });
+  }
+  // The beam path's Fire Infiltration (an enemy-side debuff): out of the held value, back at each tick × the dummy Ignited now.
+  let infiltrationBase = 1;
+  for (const entry of ignitedInfiltration?.entries || []) {
+    infiltrationBase *= 1 + entry.value / 100;
+    modifiers.push({ source: entry.source, text: `${entry.text} (the beam path's Fire Infiltration: the dummy Ignited now, read at each tick)`, amount: (world) => entry.full * ignitedInfiltration.ignited(world), layer: "additional", liveKey: "ignitedInfiltration", steadyAmount: entry.value });
+  }
   // Lines gated on a dummy state (R4): out of the held value, back as the attacker's additional damage while the state's buff is held at the
   // DoT's application, fixed for the record's life.
   let stateBase = 1;
@@ -179,7 +220,7 @@ function dotPath(inputs, ailment, type, timedLayers, blessings = [], bus = null,
   }
   return {
     label: ailment.name, kind: "dot",
-    parts: [{ key: "dot", type, base: ailment.damagePerBase / (live ? 1 + configuredRating * perPoint : 1) / heldBlessing * penetrationBase / stateBase, increasedPercent: 0, additionalFactor: 1, ...(penetration ? { netResistancePercent: net } : {}) }],
+    parts: [{ key: "dot", type, base: ailment.damagePerBase / (live ? 1 + configuredRating * perPoint : 1) / heldBlessing * penetrationBase / stateBase / infiltrationBase, increasedPercent: 0, additionalFactor: 1, ...(penetration || ignitedPenetration?.entries?.length ? { netResistancePercent: net } : {}) }],
     modifiers,
     working: { damagePerBase: ailment.damagePerBase, duration: ailment.duration, stacking: ailment.stacking, chance: ailment.chance, notActiveChance: ailment.notActiveChance, affliction: ailment.affliction || null, maxAffliction: max || null }
   };
@@ -285,7 +326,7 @@ function heldStoreSpec(planner, ailment, streams, weights, aimBuff) {
   };
 }
 
-function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null, bus = null, othersIgnite = null, penetrationStacks = [], stateGates = [] } = {}) {
+function compileAilment(planner, ailment, type, timedLayers, inputs, targetBlessings = [], { heldStrength = "dropped", aimBuff = null, bus = null, othersIgnite = null, penetrationStacks = [], stateGates = [], ignitedGate = null, infiltrationGate = null } = {}) {
   const streams = streamsOf(planner, ailment, othersIgnite), independent = ailment.stacking === "independent";
   // On the loop when its hit gains landed on a hit or Reaps can build it (with no Reap on the loop src/tick-ledger.js holds it full, the planner's value).
   const blessings = targetBlessings.filter((item) => item.hitPlaced || (item.gains?.reap && inputs.reaping?.length)).map((item) => ({ ...item, percent: targetBlessingPercent(planner, ailment.key, item) }));
@@ -294,8 +335,9 @@ function compileAilment(planner, ailment, type, timedLayers, inputs, targetBless
   // A Terra's area layers (src/area-dot-layers.js, S1): each layer carries one layer's value; the area effect (dotEffect) places them on its checks.
   const penetration = dotPenetrationStacks(planner, ailment.key, penetrationStacks);
   const stateLines = dotStateLines(planner, ailment.key, stateGates);
-  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.areaLayers ? ailment.areaLayers.layerValue : ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus, penetration, stateLines) };
-  const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings, bus, penetration, stateLines);
+  const ignitedPenetration = dotIgnitedPenetration(planner, ailment.key, ignitedGate), ignitedInfiltration = dotIgnitedInfiltration(planner, ailment.key, infiltrationGate);
+  if (independent) return { spec: { ...shared, stacking: "independent", limit: ailment.limit, value: ailment.areaLayers ? ailment.areaLayers.layerValue : ailment.averageApplication }, streams, path: dotPath(inputs, ailment, type, timedLayers, blessings, bus, penetration, stateLines, ignitedPenetration, ignitedInfiltration) };
+  const path = ailment.silent ? null : dotPath(inputs, ailment, type, timedLayers, blessings, bus, penetration, stateLines, ignitedPenetration, ignitedInfiltration);
   const weights = heldStrength === "refresh" ? null : heldWeights(planner, ailment, streams);
   if (weights) {
     const { store, variant } = heldStoreSpec(planner, ailment, streams, weights, aimBuff);
@@ -399,7 +441,7 @@ function hitsIn(item, series) {
  * @returns {{ paths, ailments, affliction, actions, periodics, dotEffect, attach, layers, assumptions, held }} `attach` puts each stream on its
  *   skill's hits and returns what lands on the loop, Reaps included; `dotEffect` is the application effect of a skill DoT
  */
-export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null, bus = null, othersIgnite = null, penetrationStacks = [], stateGates = [] } = {}) {
+export function compileAilmentProgram(planner, readings = {}, timerFields = {}, { aimBuff = null, bus = null, othersIgnite = null, penetrationStacks = [], stateGates = [], ignitedGate = null, infiltrationGate = null } = {}) {
   const inputs = planner?.dummyRecount?.inputs;
   if (!inputs) return null;
   const simulated = inputs.options?.afflictionModel === "simulated";
@@ -408,7 +450,7 @@ export function compileAilmentProgram(planner, readings = {}, timerFields = {}, 
   // state's entry in the record's query inferred, as R4's).
   stateGates = simulated ? [...stateGates, { liveKey: "affliction", maxAffliction: true, pattern: /\bagainst enem(?:y|ies) with Max Affliction\b/i }] : stateGates;
   const timedLayers = (inputs.timedDotLayers || []).map((layer, index) => ({ ...layer, buff: `timedDot:${index}` }));
-  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff, bus, othersIgnite, penetrationStacks, stateGates }) }]));
+  const compiled = new Map((inputs.ailments || []).map((ailment) => [ailment.key, { ailment, ...compileAilment(planner, ailment, planner.ailments?.[ailment.key]?.damageType ?? AILMENT_TYPE[ailment.key] ?? null, timedLayers, inputs, readings.targetBlessings || [], { heldStrength: readings.heldStrength, aimBuff, bus, othersIgnite, penetrationStacks, stateGates, ignitedGate, infiltrationGate }) }]));
   const removers = (inputs.reaping || []).filter((source) => source.trigger === "full Affliction").map((source) => ({ key: source.key, label: source.source, baseSeconds: source.timing?.baseSeconds ?? source.recoverySeconds ?? 0, speedFactor: source.timing?.speedFactor ?? 1, removedPercent: Math.max(0, Math.min(100, source.afflictionRemovedPercent ?? 100)), settle: readings.reapSettle ?? "lastDot" }));
   // Magmaskull's first infliction (src/initial-affliction.js): only where the rating builds from 0 (a configured rating holds from the start).
   const initial = simulated && Number.isFinite(inputs.initialAffliction?.value) ? inputs.initialAffliction.value : undefined;

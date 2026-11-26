@@ -128,13 +128,23 @@ export class AttributePool {
     this.index = new Map();
     this.conversionIndex = new Map();
     this.count = 0;
+    this.sealed = false;
   }
 
   /** A child pool: sees this pool's writes first, then its own (a per-call layer over a shared base). */
   extend(options = {}) { return new AttributePool({ parent: this, ...options }); }
 
+  /**
+   * Seal this pool (unification step 1, slice 5a): after it, `add` and `addConversion` on it throw; a child from `extend()` stays
+   * writable and still reads this pool's writes first. The stored writes are not frozen (the census assigns `lineKey` / `allyHeld` on
+   * them, the Bard retag `requirement`). Returns the pool.
+   */
+  seal() { this.sealed = true; return this; }
+  assertWritable(what) { if (this.sealed) throw new Error(`AttributePool is sealed: ${what} on a sealed pool (write to a child from extend())`); }
+
   /** Add one write; returns the stored write. */
   add(write) {
+    this.assertWritable("add");
     const stored = {
       ...write,
       // The value as given (a reader's NaN stays NaN, as in the list it replaces).
@@ -161,6 +171,7 @@ export class AttributePool {
    * sourceUnit (node 126: the owner), sourceLayers, skillId, source, entry, legacy (how today's paths read the line) }.
    */
   addConversion(record) {
+    this.assertWritable("addConversion");
     const stored = { ...record, unit: record.unit ?? "player", requirement: normalizeRequirement(record.toTags ?? null, record), fromValue: Number(record.fromValue) || 1, toLower: Number(record.toLower) || 0, seq: nextSeq() };
     if (!this.conversionIndex.has(stored.unit)) this.conversionIndex.set(stored.unit, new Map());
     const byAttr = this.conversionIndex.get(stored.unit);

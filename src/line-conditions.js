@@ -1,7 +1,7 @@
 import { dummyTarget, dummyTargetWord, explicitRadiusHolds, KEYWORD_RADII_METERS, DISTANT_STANDING_METERS, distantMetersOf } from "./dummy-target.js";
 import { BOSS_ENEMY_COUNT, bossCountedRecordFor } from "./boss-enemy-count.js";
 import { ailmentStateNames } from "./enemy-ailments.js";
-import { BY_YOU, atLeastShare, auraTagCount, empowerTagShares, enemyBuffSet, playerBuffSet, ownCombatHeld } from "./unit-buff-set.js";
+import { BY_YOU, atLeastShare, auraTagCount, empowerTagShares, enemyBuffSet, playerBuffSet, ownCombatHeld, ownBlurHeldShare } from "./unit-buff-set.js";
 import { CONSUMED_COMBO_POINTS, COMBO_POINTS_PER_STARTER } from "./combo-points.js";
 import { regainsIn } from "./regain-model.js";
 import { WORLD_WITHIN_LINE, worldWithinChances } from "./world-within.js";
@@ -485,6 +485,9 @@ const LINE_RULES = [
   // Void Sea's "for every Minion you have" (key perMinion).
   [/^(.+?) for each Minion\. Stacks up to (\d+) time\(s\)$/, (m) => ({ body: m[1], key: "perMinion", params: { cap: num(m[2]) } })],
   [new RegExp(`^(.+?) when (${STAT_WORDS}) is no less than (${STAT_WORDS})$`), (m) => ({ body: m[1], key: "statCompare", params: { stat: m[2].toLowerCase(), other: m[3].toLowerCase() } })],
+  // Record 427747424 (both gates: Dexterity > Strength, then Blur's state 4000060; reach census follow-up, 2026-11-25): key blurActive with the
+  // stat gate, ahead of the plain stat comparison below.
+  [new RegExp(`^When Dexterity is greater than Strength, (${N} Evasion) while Blur is active\\.?$`), (m) => ({ body: m[1], key: "blurActive", params: { dexterityAboveStrength: true } })],
   // Confusion Elemental Belt (legendary audit batch 6; game affix 581835: node 300 compares the two attributes, operator 1 = greater
   // than): "When Strength is greater than Dexterity, gains …".
   [new RegExp(`^When (${STAT_WORDS}) is greater than (${STAT_WORDS}), (.+)$`), (m) => ({ body: m[3], key: "statCompare", params: { stat: m[1].toLowerCase(), other: m[2].toLowerCase(), strict: true } })],
@@ -619,6 +622,17 @@ const LINE_RULES = [
   // Chaotic Ending (game record 200000073: added Lightning on the Attack and Spell tags, gated on Blur's state 4000060): the added range while
   // Blur is held; the range is not scaled by the held share, Stab In The Back's share reaches it through `blurHeld`.
   [/^(Adds [\d.]+ - [\d.]+ \w+ Damage to Attacks and Spells) while Blur is active$/, (m) => ({ body: m[1], key: "blurRatingPoints", params: { held: true } })],
+  // Lich (4,3) "+10% Movement Speed while Blur is active" (game record 101010157: attr 4 mod 3 = p0, its own state Blur 4000060 on the tag
+  // list, no GetEffectScale, so Blur Effect does not scale it): increased Movement Speed at Blur's held share, a held conditional body the
+  // combat Movement Speed takes (src/character-stats.js conditionalMovementSpeed; reach census gap 2026-11-25).
+  [new RegExp(`^(${N}% Movement Speed) while Blur is active$`), (m) => ({ body: m[1], key: "blurActive" })],
+  // The defence bodies gated on Blur's state the same way (reach census follow-up, 2026-11-25): "+N Evasion while Blur is active" (record
+  // 101010221: attr 4002 mod 1 = p0 on [4000060]), "When Dexterity is greater than Strength, +N Evasion while Blur is active." (427747424: the
+  // same write behind gate 300, GetRoundInt(attr 2 Dexterity) > GetRoundInt(attr 1 Strength), operator 1) and "While Blur is active, +X%
+  // Defense" (884419904: attrs 4001 / 4002 / 1601 mod 3 = p0 × GetEffectScale on [4000060], Armor, Evasion and Max Energy Shield increased).
+  // Held bodies with no reader: the combat Armor, Evasion and Max Energy Shield pools take them at Blur's held share (src/planner.js).
+  [new RegExp(`^(${N} Evasion) while Blur is active$`), (m) => ({ body: m[1], key: "blurActive" })],
+  [new RegExp(`^While Blur is active, (${N}% Defense)$`), (m) => ({ body: m[1], key: "blurActive" })],
   // Cursed Flame (game record 960539: on inflicting Ignite, buff 35091 for 10 s on enemies within 6 m; the buff holds affix 13000015,
   // attr 5720 additional on the Ignite tag, its 10 × 4 by GetEffectScale): the dummy takes it standing close (Distance group).
   [new RegExp(`^When Ignite is inflicted, Ignite spreads and \\+?${N}% additional Ignite Damage taken by Nearby enemies$`), (m) => ({ body: `+${num(m[1])}% additional Ignite Damage`, key: "nearTarget" })],
@@ -1548,6 +1562,17 @@ function resolveKey(condition, state) {
       if (rate == null) return off("Lightning hits per second are measured on the planner's hit pass (not measured in this context)");
       const stacks = Math.min(params.stacks, rate * params.seconds);
       return stacks > 0 ? on(`${round(rate)} Lightning hits/s × ${params.seconds} s ("recently") = ${round(rate * params.seconds)}${rate * params.seconds > params.stacks ? `, capped at ${params.stacks}` : ""} Numbed inflictions, one factor per stack (provisional: every Lightning hit reads as one)`, { power: stacks, provisional: true }) : off("no Lightning hit keeps inflicting Numbed");
+    }
+    case "blurActive": {
+      // The share of the time Blur is held (its entry × Stab In The Back's held share): the body at that share, time-averaged.
+      const share = ownBlurHeldShare(state);
+      // 427747424's gate 300: GetRoundInt(Dexterity) > GetRoundInt(Strength) (attrs 2 and 1, operator 1).
+      if (params?.dexterityAboveStrength) {
+        const dexterity = Math.round(Number(state.stats?.dexterity) || 0), strength = Math.round(Number(state.stats?.strength) || 0);
+        if (!(dexterity > strength)) return off(`Dexterity ${dexterity} is not greater than Strength ${strength} (game record 427747424, gate 300)`);
+      }
+      if (!(share > 0)) return off("Blur is not active");
+      return share < 1 ? on(`Blur held ${round(share * 100)}% of the time (Stab In The Back ends it at each Main Skill cast; game state 4000060)`, { factor: share, timeShare: true }) : on("Blur is held (game state 4000060)");
     }
     case "blurRatingPoints": {
       const blurHeld = ownBlur(state);

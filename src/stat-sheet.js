@@ -10,6 +10,7 @@ import { statSheetPanelModel, statSheetPanelMarkup } from "./stat-sheet-panel.js
 import { elixirPanelLines } from "./elixir-model.js";
 import { statLineStatus } from "./stat-sheet-line-status.js";
 import { MAX_RESISTANCE_HARD_CAP_PERCENT } from "./game-attribute-defaults.js";
+import { townResistanceEntries } from "./resistance-model.js";
 import { sustainedBeamDps } from "./scorching-beam-delivery.js";
 import { displayGameText, t, tParts } from "./i18n.js";
 const number = (value) => Number.isFinite(value) ? value : null;
@@ -33,7 +34,9 @@ export function statSheetSkillOptions(planner) {
 // The resistance rows with the Elixir buffs of the stat totals (the character panel's state; display only, planner.resistances keeps the
 // calculation's values). The uncapped total is the larger of the two sums: a build's module / buff lines are in the totals only.
 export function panelResistanceEntries(planner, statTotals, panelLines = []) {
-  const entries = planner.resistances?.entries || [];
+  // The combat-held sources (an Elixir Effect at the combat Elixir Skill Effect, the held conditional lines: src/resistance-model.js
+  // addCombatResistanceSources) are not the town panel's: left out here; the panel's own Elixir lines are added below.
+  const entries = townResistanceEntries(planner.resistances);
   if (!panelLines.length) return entries;
   const elixirSum = (key) => (statTotals.byKey[key]?.sources || []).filter((item) => item.origin === "elixir").reduce((sum, item) => sum + item.value, 0);
   return entries.map((entry) => {

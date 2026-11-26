@@ -158,7 +158,10 @@ export const EMPOWER_BUFF_SPECS = Object.freeze({
   "Burst of Anger": spec(6, "skill text: Lasts for 6s", (level, ctx) => ({ lines: [
     { kind: "damage", value: skillBuffValue("Burst of Anger", 984527104, level), text: (v) => `+${v}% additional Attack Damage`, reach: "hit", scope: "Attack skills' hits" },
     ...(!ctx.hasAttackAggression ? [{ kind: "damage", value: 5, empower: false, text: (v) => `+${v}% additional Attack Damage`, reach: "hit", label: "Attack Aggression", scope: "Attack Aggression (game keyword 10000100: +5% additional Attack Damage)" },
-      { kind: "speed", value: 5, empower: false, text: (v) => `+${v}% additional Attack Speed`, label: "Attack Aggression", scope: "Attack Aggression (game keyword 10000100: +5% additional Attack Speed)" }] : [])
+      { kind: "speed", value: 5, empower: false, text: (v) => `+${v}% additional Attack Speed`, label: "Attack Aggression", scope: "Attack Aggression (game keyword 10000100: +5% additional Attack Speed)" },
+      // Its buff record (config_char_buff 3411) also holds 200000402 [10]: +10% Movement Speed (attr 4 mod 3), at the same uptime. Kind
+      // "movement": no derived line; src/planner.js adds it to the combat Movement Speed (reach census follow-up, 2026-11-25).
+      { kind: "movement", value: 10, empower: false, text: (v) => `+${v}% Movement Speed`, label: "Attack Aggression", scope: "Attack Aggression (buff 3411, affix 200000402: +10% Movement Speed)" }] : [])
   ], notes: [ctx.hasAttackAggression ? "its Attack Aggression: the build already holds Attack Aggression" : null, "+100% chance to refresh Duration on defeat: Not on dummy", "Physique (field 2010019) is the body's size: No DPS effect"].filter(Boolean) }),
   { refresh: { id: 299204, label: "+10% chance to refresh the skill's Duration upon hitting an Elite (the dummy is a Boss, so an Elite)" } }),
   "Fixate": spec(6, "skill text: Lasts 6s", (level) => ({ lines: [
@@ -227,7 +230,7 @@ export function parseChanceTriggerPair(text) {
   return match ? { chancePercent: Number(match[1]), level: Number(match[2]), names: [match[3].trim(), match[4].trim()], cooldownSeconds: Number(match[5]) } : null;
 }
 
-const MODELED_KINDS = new Set(["damage", "speed", "tagSpeed", "minion", "mark", "numbed", "lucky", "growth", "command"]);
+const MODELED_KINDS = new Set(["damage", "speed", "tagSpeed", "minion", "mark", "numbed", "lucky", "growth", "command", "movement"]);
 // A buff with no timer (Mana Boil) is held from its first cast: a duration past any cadence, so its uptime is 1.
 const HELD_SECONDS = 3600;
 

@@ -961,6 +961,11 @@ function buildEffect(type, e, params, opts, multiplier, base, notes) {
 
 const resourceName = (id) => { const row = gameName("resource", id); return row ? (row[1] ?? row[0]) : String(id); };
 
+/** The raw recipe of an affix from the loaded table (read-only: the per-pass intake's runtime-valued writes, src/line-intake.js). */
+export const affixRecipe = (id) => data().AFFIX_RECIPES[id] ?? null;
+/** Every raw recipe of the loaded table, by id (read-only: tests and audits). */
+export const affixRecipeTable = () => data().AFFIX_RECIPES;
+
 /** Interpret an affix by id from the loaded table. */
 export function interpretAffix(id, values = {}, options = {}) {
   return interpretRecipe(data().AFFIX_RECIPES[id], values, { ...options, id });

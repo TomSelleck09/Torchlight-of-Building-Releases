@@ -138,7 +138,7 @@ export function chunk8BuildLines({ setups = [], activeNames = new Set() } = {}) 
 }
 
 /** Modifier lines of the debuffs a modeled setup's hits hold on the dummy (src/planner.js, beside the supports' `targetTaken`). */
-export function chunk8EnemyLines(setup, { modifierTexts = [], nearTarget = true, usesPerSecond = null, infiltrationTypes = [] } = {}) {
+export function chunk8EnemyLines(setup, { modifierTexts = [], nearTarget = true, usesPerSecond = null, infiltrationTypes = [], infiltrationEffectPercent = () => 0, followerInfiltration = [], infiltrationEffectTakenFactor = () => 1 } = {}) {
   const lines = [];
   for (const clause of setup?.supportEffects?.clauses || []) {
     // Spontaneous Combustion's buff 10155 (affix 47822504: attr 5720 mod 4 with no tag, so all damage taken by the dummy): `allDamageTaken`, so src/planner.js
@@ -150,11 +150,34 @@ export function chunk8EnemyLines(setup, { modifierTexts = [], nearTarget = true,
       const stacks = usesPerSecond == null ? clause.cap : Math.min(clause.cap, usesPerSecond * 4);
       if (stacks > 0) lines.push({ text: `+${clause.value}% Mark Effect`, source: `${setup.name}: ${clause.support} (${round(stacks)} stacks, one per use, 4 s each)`, origin: "derived", multiplier: stacks });
     }
-    // Weakness Infiltration: the Infiltration the build holds takes +X% effect. Written as the factor that lifts each held "+13% … Damage taken" line.
+    // Weakness Infiltration: the Infiltration the build holds takes +X% effect. Written as the factor that lifts each held "+H% … Damage taken" line.
+    // The Infiltration's write (Fire 3441: 101010552, attr 5120 mod 4 "p0 GetEffectScale ×") reads GetEffectScale = the caster's attr 3401 (its
+    // "+E% <Type> Infiltration Effect" lines, increased) × the holder's attr 3410 (this clause's +X%, record 326961760, increased on the
+    // Infiltration tag 5200086): 13 × (1 + E)(1 + X) in all, held H = 13 × (1 + E) (src/combat-states.js). The share is H × X ÷ (100 + H)
+    // (reach census follow-up 3, 2026-11-25: it read 13 for H, the caster's Effect left out).
+    // The follower's Medium Penetration (record 1033360261) writes the same holder's attr 34101 mod 3 on the tag 5200086, so its +M% × uptime and
+    // this clause's +X% are one sum in 3410: the Infiltration's factor 1 + H × (1 + M·u + X) (GetAttr: Σ increased). Its line already lifts the
+    // held one to (1 + H/100) × m (m its factor), so the share adds H × X on top of that product, H × X ÷ ((100 + H) × m), not a second
+    // multiplier on H (reach census third follow-ups, 2026-11-25). The product is 1 + H(1 + M·u + X);
+    // Medium Penetration's own line reads the same H (its record casts no Infiltration, so the held one keeps its caster's E; reach census fourth
+    // follow-ups, 2026-11-25), so the product is exactly 1 + H(1 + M·u + X) at any E.
     if (clause.family === "conditionalAdditional" && clause.condition === "infiltrationTaken" && clause.active) {
       for (const type of infiltrationTypes) {
-        const lifted = INFILTRATION_PERCENT * clause.value / 100;
-        lines.push({ text: `+${round(lifted / (1 + INFILTRATION_PERCENT / 100))}% additional ${type} Damage taken`, source: `${setup.name}: ${clause.support} (${type} Infiltration ${INFILTRATION_PERCENT}% × +${clause.value}% effect, on top of its held line)`, origin: "derived", multiplier: 1 });
+        const effect = Number(infiltrationEffectPercent(type)) || 0;
+        const held = INFILTRATION_PERCENT * (1 + effect / 100);
+        const lifted = held * clause.value / 100;
+        const taken = Math.max(1e-9, Number(infiltrationEffectTakenFactor(type)) || 1);
+        // `infiltrationShare`: the share reaches wherever its held Infiltration line does (src/build-mechanics.js addLateInfiltrationShare).
+        lines.push({ text: `+${round(lifted / ((1 + held / 100) * taken))}% additional ${type} Damage taken`, source: `${setup.name}: ${clause.support} (${type} Infiltration ${INFILTRATION_PERCENT}%${effect ? ` × (1 + ${round(effect)}% Infiltration Effect)` : ""} × +${clause.value}% effect, on top of its held line${taken > 1 ? " and Medium Penetration's, summed in the holder's Effect" : ""})`, origin: "derived", multiplier: 1, infiltrationShare: type });
+      }
+      // The holder's 3410 lifts every Infiltration on the dummy whoever cast it (record 326961760 writes the dummy's received Effect on the tag
+      // 5200086; GetEffectScale = the caster's 3401 × the holder's 3410), so a part-time Infiltration the follower keeps up (High Voltage's
+      // Lightning, Blazing Meteor's Fire: src/follower-model.js, a time-averaged value v with the follower's own Effect in it) is lifted too:
+      // 1 + v(1 + X) over 1 + v, so +v × X ÷ (100 + v) beside that line (reach census follow-up, 2026-11-25). A type held all the time is the
+      // loop above; the share line names its follower line (`infiltrationShareBeside`).
+      for (const item of followerInfiltration) {
+        if (!(item.value > 0) || infiltrationTypes.includes(item.type)) continue;
+        lines.push({ text: `+${round(item.value * clause.value / (100 + item.value))}% additional ${item.type} Damage taken`, source: `${setup.name}: ${clause.support} (the follower's ${item.type} Infiltration, +${round(item.value)}% time-averaged, × +${clause.value}% effect, on top of its line)`, origin: "derived", multiplier: 1, infiltrationShare: item.type, infiltrationShareBeside: item.source });
       }
     }
     if (clause.family === "censusDetail" && clause.kind === "enhancedMark" && ["In calc", "Provisional"].includes(clause.status)) {

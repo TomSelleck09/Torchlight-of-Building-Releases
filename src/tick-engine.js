@@ -483,6 +483,7 @@ function createWorld(spec, frames, trace) {
     delayed: new Map(), delayedDamage: new Map(), dots: new Map(), areas: new Map(), streams: new Map(),
     ailmentSpecs: new Map((spec.ailments || []).map((item) => [item.key, item])),
     ailmentRuns: new Map((spec.ailments || []).map((item) => [item.key, newAilmentRun(item)])),
+    samplers: spec.samplers || [],
     ailmentTicks: new Map((spec.ailments || []).map((item) => [item.key, { activeTicks: 0, baseTicks: 0 }])),
     affliction: newAffliction(spec.affliction),
     // The origins (labels) the follower's and the Minions' actions fire their effects under: their DoT records are other attackers' entries on
@@ -1455,6 +1456,9 @@ const STAGES = {
   state(world) {
     for (const collector of world.collectors.values()) collectorPrune(collector, world.frame);
     if (world.bus) world.bus.sample(world);
+    // A layer's own per-frame state (src/tick-layers.js: buff 3441's timer past a lapsing Ignite, reach census fourth follow-ups): read after this
+    // frame's stages, each keeping its state by world.
+    for (const sampler of world.samplers) sampler(world);
     for (const [key, buff] of world.buffs) {
       const held = world.buffTicks.get(key) || { ticks: 0, stackTicks: 0, peak: 0 };
       held.ticks += 1;

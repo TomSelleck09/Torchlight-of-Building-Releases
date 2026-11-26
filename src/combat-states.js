@@ -13,18 +13,14 @@ import { LUCKY_DAMAGE_PATTERNS, readLuckyDamage, luckyRollAverage, luckyCritChan
 import { STORM_COMMAND_LINE, resolveStormCommand } from "./storm-command.js";
 import { sageOwnedLine } from "./sage-traits.js";
 import { lineTriggerRows } from "./trigger-rows.js";
-import { BY_YOU, BY_YOU_OR_FOLLOWER, UnitBuffSet, buffRecordOf, enemyBuffSet, playerBuffSet } from "./unit-buff-set.js";
+import { BY_YOU, BY_YOU_OR_FOLLOWER, UnitBuffSet, buffRecordOf, enemyBuffSet, playerBuffSet, ownBlurHeldShare } from "./unit-buff-set.js";
 import { DEFLECTION_SOURCES } from "./carino-traits.js";
 import { ELIXIR_PROGRESS_LINE, ELIXIR_EFFECT_LINE, ELIXIR_ADDITIONAL_EFFECT_LINE, TAILORED_REMEDY_LINE, ELIXIR_DURATION_LINE, RESTORATION_KEPT_LINE, MIRACULOUS_GAIN_LINE, resolveElixirs, elixirSetupText, miraculousGainState } from "./elixir-model.js";
 
 // Your Blessings from your unit buff set (W9 step 2: the early Blessing pass, src/planner.js), else the state's fields (TLI_BUFF_SET=off).
 const ownBlessingStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingStacks() : state.blessingStacks; };
-// The share of the time Blur is held on you (W9 step 2's Blur entry; Stab In The Back's held share), 0 without Blur.
-const ownBlurShare = (state) => {
-  const own = playerBuffSet(state);
-  if (own?.staged("blur")) { const entry = own.entryOf("Blur", { stage: "blur" }); return entry && entry.share > 0 ? entry.share * (entry.heldShare ?? 1) : 0; }
-  return state.blurHeld ? (state.blurHeld.heldShare ?? 1) : 0;
-};
+// The share of the time Blur is held on you (W9 step 2's Blur entry; Stab In The Back's held share), 0 without Blur (src/unit-buff-set.js).
+const ownBlurShare = (state) => ownBlurHeldShare(state);
 const ownBlessingMaxStacks = (state) => { const own = playerBuffSet(state); return own?.staged("blessing") ? own.blessingMaxStacks() : state.blessingMaxStacks; };
 
 // Buffs, enemy debuffs and the damage side of non-damaging ailments (research/talent-batch-2026-10-12.md §10 chunk 3).
@@ -54,8 +50,12 @@ const ownBlessingMaxStacks = (state) => { const own = playerBuffSet(state); retu
 // dummy are applied at their steady state. Readings nobody has checked in game are `provisional` and listed.
 
 export const BUFF_VALUES = Object.freeze({
-  attackAggression: { percent: 5, source: "Attack Aggression (game keyword 10000100)" },
+  // `movementSpeedPercent`: the buff record's third affix (config_char_buff 3411 row 0: 200000402 [10], attr 4 mod 3 "rpn:p0 scale *",
+  // no tag), +10% increased Movement Speed × the Aggression Effect; the keyword text names only the Attack Speed and Damage halves.
+  attackAggression: { percent: 5, movementSpeedPercent: 10, source: "Attack Aggression (game keyword 10000100)" },
   spellAggression: { percent: 7, source: "Spell Aggression (game keyword 10000101)" },
+  // Hasten's record (config_char_buff 3471 row 0: 634601920 [8], "+P1% additional Attack, Cast, and Movement Speed") writes the same value on
+  // attr 4 / 6001 / 6002 mod 4 × GetEffectScale: one additional factor on each, Movement Speed included.
   hasten: { percent: 8, source: "Hasten (game keyword 10000106)" },
   // Ash (reference data keyword 10147): +30% additional Fire Damage.
   ash: 30,
@@ -479,6 +479,23 @@ export function readByCombatStates(text) {
   return Object.values(PATTERNS).some((pattern) => pattern.test(text)) || Boolean(recipeCrowdControl({ text, origin: null, source: "" }));
 }
 
+/**
+ * The caster's increased Effect of one Infiltration type, in percent: Σ "+X% <Type> Infiltration Effect" (Fire 88778344, Cold 20386364,
+ * Lightning 934904064: attr 3401 mod 3 on that Infiltration's tag 5200074 / 5200075 / 5200076). An Infiltration's write (Fire 3441: 101010552,
+ * attr 5120 mod 4 "p0 GetEffectScale ×") reads GetEffectScale = the caster's 3401 for the buff's tags × the holder's 3410 (SS14 client 0x141d22dd0;
+ * src/skill-hit-debuffs.js). The lines this module reads (not derived, not a resolved line, not one the Sage module owns), so
+ * src/support-chunk8.js (Weakness Infiltration's share on the holder's 3410) reads the same caster Effect as the held line here.
+ */
+export function infiltrationEffectPercent(modifierTexts = [], type, { heroId = null } = {}) {
+  const values = [];
+  for (const line of modifierTexts) {
+    if (!line || line.origin === "derived" || line.lineEffect || sageOwnedLine(heroId, line)) continue;
+    const match = normalizePercentageText(String(line.text ?? "")).replace(/\s+/g, " ").trim().match(PATTERNS.infiltrationEffect);
+    if (match && match[2].toLowerCase() === String(type).toLowerCase()) values.push(num(match[1]) * (line.multiplier ?? 1));
+  }
+  return sum(values);
+}
+
 /** The Frostbite Rating the build inflicts (10 base + "+N to Max Frostbite Rating", capped at 120, or at a "can exceed its
  * upper limit, up to N" line's N; provisional reading). */
 export function inflictedFrostbiteRating(modifierTexts = [], { typeGroups = 0 } = {}) {
@@ -757,6 +774,11 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const held = aggressionShare < 1 ? `Attack Aggression held at Max Feline Stimulant stacks ${round(aggressionShare * 100)}% of the time` : "Attack Aggression held";
     derive(`+${value}% additional Attack Damage`, BUFF_VALUES.attackAggression.source, held);
     derive(`+${value}% additional Attack Speed`, BUFF_VALUES.attackAggression.source, held);
+    // Buff 3411's Movement Speed write (affix 200000402 [10], increased, × GetEffectScale: the Aggression Effect), at the same share: a
+    // combat Movement Speed body (src/character-stats.js conditionalMovementSpeed reads the derived conditional lines; reach census gap
+    // 2026-11-25). The town sheet leaves derived lines out.
+    const movement = round(BUFF_VALUES.attackAggression.movementSpeedPercent * (1 + aggressionEffect("attack") / 100) * aggressionShare);
+    derive(`+${movement}% Movement Speed`, BUFF_VALUES.attackAggression.source, `${held} (buff 3411, affix 200000402)`);
   }
   // "Gains Spell Aggression when casting a Spell Skill" (residual batch A-3): held while the build casts a Spell on the dummy.
   const spellAggressionLines = [...find(PATTERNS.spellAggressionGain), ...find(PATTERNS.spellAggressionOnCast).filter(() => state.castsSpell ?? state.dealsSpellDamage), ...(hasFervor ? fervorAggressionLines : [])];
@@ -800,6 +822,10 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     const value = round(BUFF_VALUES.hasten.percent * (1 + hastenEffect / 100));
     derive(`+${value}% additional Attack Speed`, BUFF_VALUES.hasten.source, "Hasten held");
     derive(`+${value}% additional Cast Speed`, BUFF_VALUES.hasten.source, "Hasten held");
+    // Its Movement Speed write (affix 634601920, attr 4 mod 4): an additional factor on the player's movement speed (src/character-stats.js
+    // conditionalMovementSpeed `additionalFactor`, src/planner.js playerMoveSpeed), not the increased sum the Mobility attacks' 75% share reads
+    // (record 811059904, node 114 fromMod 3). Reach census gap 2026-11-25.
+    derive(`+${value}% additional Movement Speed`, BUFF_VALUES.hasten.source, "Hasten held (buff 3471, affix 634601920)");
   }
   // "Minions have Hasten": the buff's own value on the Minions (the player's "Hasten Effect" lines scale the player's Hasten only;
   // provisional), read by src/minion-damage-model.js as Minion Attack and Cast Speed. "Gains Hasten when Minions land a Critical Strike" is the same buff on
@@ -1061,6 +1087,15 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
     if (type) debuffs.infiltration.add(type); else debuffs.frail = true;
     entry(line, true, `the follower keeps ${type ? `${type} Infiltration` : "Frail"} on the dummy while its skill hits it (uptime 1, provisional)`, { provisional: true, enemyDebuff: true, bodies: [type ? `+${BUFF_VALUES.infiltration}% additional ${type} Damage taken` : `+${BUFF_VALUES.frail}% additional Spell Damage taken`] });
   }
+  // The Infiltrations the follower casts (its markers above; reach census follow-up, 2026-11-25): an Infiltration's value reads its caster's own
+  // Effect (buff 3441's GetEffectScale: the caster's attr 3401 × the holder's 3410), so your "+X% <Type> Infiltration Effect" does not scale one
+  // only the follower keeps. Every producer below is yours: it marks its types (`ownInfiltrationAdds`).
+  const followerInfiltration = new Set(debuffs.infiltration), ownInfiltrationAdds = new Set();
+  // `otherFireAdds`: Fire Infiltration from a producer of yours other than the Ignited one (885067264, below), so the tick engine knows whether that
+  // one alone holds it (reach census fourth follow-ups, 2026-11-25).
+  let otherFireAdds = 0, addingIgnitedFire = false;
+  { const add = debuffs.infiltration.add.bind(debuffs.infiltration); debuffs.infiltration.add = (type) => { ownInfiltrationAdds.add(type); if (type === "Fire" && !addingIgnitedFire) otherFireAdds += 1; return add(type); }; }
+  const followerOnlyInfiltration = (type) => followerInfiltration.has(type) && !ownInfiltrationAdds.has(type);
   if (debuffs.frail) passSet.add({ name: "Frail", inflictedBy: debuffs.frailOwn ? "you" : "follower", stage: "debuff", source: "Frail (keyword 10000102)" });
   const frailHeld = buffs ? passSet.holds("Frail") : debuffs.frail, frailOwn = buffs ? passSet.holds("Frail", { by: BY_YOU }) : debuffs.frailOwn;
   // Frail Effect (batch 7): scales the Frail you inflict; a Frail only the follower keeps is its own (as the follower's Paralysis is not
@@ -1335,16 +1370,21 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // every Fire hit and Fire DoT of yours: the Infiltration as Fire Infiltration on the dummy, the penetration as a plain line × the share.
   const ignitedShare = buffs ? buffs.share("Ignite") : (state.enemyAilments || []).includes("Ignite") ? Math.min(1, Math.max(0, Number(state.enemyAilmentUptime?.Ignite ?? 1))) : 0;
   const dealsFireOwn = state.ownDamage !== false && (state.dealtDamageTypes || dealt).has("Fire");
-  let fireInfiltrationIgnitedShare = 0;
+  let fireInfiltrationIgnitedShare = 0, ignitedFireHeld = false;
   for (const line of state.beamActive ? [] : find(PATTERNS.fireInfiltrationIgnited)) {
     const active = !state.beamActive && ignitedShare > 0 && dealsFireOwn;
-    if (active && ignitedShare >= 1) debuffs.infiltration.add("Fire"); else if (active) fireInfiltrationIgnitedShare = Math.max(fireInfiltrationIgnitedShare, ignitedShare);
+    if (active && ignitedShare >= 1) { addingIgnitedFire = true; debuffs.infiltration.add("Fire"); addingIgnitedFire = false; ignitedFireHeld = true; } else if (active) fireInfiltrationIgnitedShare = Math.max(fireInfiltrationIgnitedShare, ignitedShare);
     entry(line, active, state.beamActive ? "the Scorching Beam path reads it in its own ledgers (the beam's Ignite keeps the dummy Ignited)" : !(ignitedShare > 0) ? "the dummy is not Ignited" : !dealsFireOwn ? "the build deals no Fire Damage of its own" : `the dummy is Ignited${ignitedShare < 1 ? ` ${round(ignitedShare * 100)}% of the time (by your Minions)` : ""} and the build deals Fire Damage: Fire Infiltration on the dummy (game affix 885067264; provisional)`, { provisional: true, enemyDebuff: true });
   }
   for (const line of state.beamActive ? [] : find(PATTERNS.firePenetrationIgnited)) {
     const value = num(line.clean.match(PATTERNS.firePenetrationIgnited)[1]) * (line.multiplier ?? 1);
     const active = !state.beamActive && ignitedShare > 0 && dealsFireOwn;
-    if (active) derive(`+${round(value * ignitedShare)}% Fire Penetration`, line.source, `the dummy is Ignited${ignitedShare < 1 ? ` ${round(ignitedShare * 100)}% of the time (by your Minions; time-averaged)` : ""}`, true);
+    if (active) {
+      derive(`+${round(value * ignitedShare)}% Fire Penetration`, line.source, `the dummy is Ignited${ignitedShare < 1 ? ` ${round(ignitedShare * 100)}% of the time (by your Minions; time-averaged)` : ""}`, true);
+      // `ignitedFullValue` / `ignitedShare`: the tick engine reads the share on the loop from a clean dummy (src/planner.js
+      // planner.ignitedFirePenetration, src/tick-layers.js ignitedPenetrationLayer; reach census third follow-ups, 2026-11-25).
+      Object.assign(derived[derived.length - 1], { ignitedFullValue: round(value), ignitedShare });
+    }
     entry(line, active, state.beamActive ? "the Scorching Beam path reads it in its own ledgers (the beam's Ignite keeps the dummy Ignited)" : !(ignitedShare > 0) ? "the dummy is not Ignited" : !dealsFireOwn ? "the build deals no Fire Damage of its own" : `the dummy is Ignited${ignitedShare < 1 ? ` ${round(ignitedShare * 100)}% of the time (by your Minions)` : ""}: +${round(value * ignitedShare)}% Fire Penetration on your Fire damage (game affix 391400; provisional)`, { provisional: true, bodies: [`+${round(value * ignitedShare)}% Fire Penetration`] });
   }
   for (const line of find(PATTERNS.penetrating)) {
@@ -1367,17 +1407,30 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // Fire Infiltration on the beam / Ignite path stays the existing condition (src/scorching-beam-hit.js, theoretical-sources).
   // Infiltration Effect (residual batch A-3): scales that type's +13% (keyword value × (1 + Σ effect)). The beam / Ignite
   // path's own Fire Infiltration (src/scorching-beam-hit.js) does not read it.
-  const infiltrationEffect = (type) => sum(find(PATTERNS.infiltrationEffect).filter((line) => line.clean.match(PATTERNS.infiltrationEffect)[2].toLowerCase() === type.toLowerCase()).map((line) => num(line.clean.match(PATTERNS.infiltrationEffect)[1]) * (line.multiplier ?? 1)));
+  const infiltrationEffect = (type) => infiltrationEffectPercent(modifierTexts, type, { heroId: state.heroId });
+  // The beam path's Fire Infiltration (Warlord (5,2), record 885067264; src/planner.js conditions.fireInfiltration) reads it since the reach census
+  // follow-up of 2026-11-25: 13 × (1 + Effect) on the beam's hits and Ignite (damageCombat.fireInfiltrationPercent) and the other skills' copy.
+  const beamFireSource = state.beamActive && find(PATTERNS.fireInfiltrationIgnited).length > 0;
   for (const line of find(PATTERNS.infiltrationEffect)) {
     const type = line.clean.match(PATTERNS.infiltrationEffect)[2];
     const word = type[0].toUpperCase() + type.slice(1).toLowerCase();
     const beamFire = word === "Fire" && state.beamActive;
-    const held = infiltrationHeld(word) && !beamFire;
-    entry(line, held, held ? `scales the ${word} Infiltration on the dummy` : beamFire ? "the beam path's Fire Infiltration does not read Infiltration Effect" : `no ${word} Infiltration source`, beamFire ? { status: "Not modeled" } : {});
+    const followerOnly = !beamFire && infiltrationHeld(word) && followerOnlyInfiltration(word);
+    const held = beamFire ? beamFireSource : infiltrationHeld(word) && !followerOnly;
+    entry(line, held, held ? (beamFire ? "scales the beam path's Fire Infiltration (13% × (1 + Effect), game buff 3441's GetEffectScale; held while the beam's Ignite keeps the dummy Ignited)" : `scales the ${word} Infiltration on the dummy`) : beamFire ? "no Fire Infiltration source on the beam path (Warlord (5,2) or its slate copy)" : followerOnly ? `the ${word} Infiltration on the dummy is the follower's: its caster's own Effect scales it, not yours (game buff GetEffectScale: the caster's attr 3401)` : `no ${word} Infiltration source`);
   }
-  for (const type of infiltrationTypes) if (!(type === "Fire" && state.beamActive)) derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect(type) / 100))}% additional ${type} Damage taken`, `${type} Infiltration (keyword ${type === "Fire" ? "10000103" : type === "Cold" ? "10000104" : "10000105"})`, `${type} Infiltration on the dummy`, true);
+  for (const type of infiltrationTypes) if (!(type === "Fire" && state.beamActive)) derive(`+${round(BUFF_VALUES.infiltration * (1 + (followerOnlyInfiltration(type) ? 0 : infiltrationEffect(type)) / 100))}% additional ${type} Damage taken`, `${type} Infiltration (keyword ${type === "Fire" ? "10000103" : type === "Cold" ? "10000104" : "10000105"})`, `${type} Infiltration on the dummy`, true);
+  // The Fire Infiltration line when the Ignited producer (885067264) alone holds it (no other producer of yours, not the follower's): the tick engine
+  // gates it on buff 3441's own 10 s past each of your Fire damage events to the Ignited dummy, from a clean dummy (`ignitedInfiltrationFull`, its
+  // full value; src/planner.js planner.ignitedFireInfiltration, src/tick-layers.js ignitedInfiltrationLayer; reach census fourth follow-ups,
+  // 2026-11-25). Sustained unchanged.
+  const ignitedFireSole = ignitedFireHeld && otherFireAdds === 0 && !followerInfiltration.has("Fire");
+  if (ignitedFireSole) { const line = derived.findLast((item) => item.source === "Fire Infiltration (keyword 10000103)"); if (line) line.ignitedInfiltrationFull = Number(String(line.text).match(/^\+([\d.]+)%/)?.[1]) || 0; }
   // Fire Infiltration on an Ignited dummy only your Minions keep Ignited part of the time (above): its time-averaged value.
-  if (fireInfiltrationIgnitedShare > 0 && !infiltrationHeld("Fire")) derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect("Fire") / 100) * fireInfiltrationIgnitedShare)}% additional Fire Damage taken`, "Fire Infiltration (keyword 10000103) on the Ignited dummy", `the dummy is Ignited ${round(fireInfiltrationIgnitedShare * 100)}% of the time by your Minions (time-averaged; provisional)`, true);
+  if (fireInfiltrationIgnitedShare > 0 && !infiltrationHeld("Fire")) {
+    derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect("Fire") / 100) * fireInfiltrationIgnitedShare)}% additional Fire Damage taken`, "Fire Infiltration (keyword 10000103) on the Ignited dummy", `the dummy is Ignited ${round(fireInfiltrationIgnitedShare * 100)}% of the time by your Minions (time-averaged; provisional)`, true);
+    derived[derived.length - 1].ignitedInfiltrationFull = round(BUFF_VALUES.infiltration * (1 + infiltrationEffect("Fire") / 100));
+  }
   if (rosaInfiltration && rosaInfiltration.uptime < 1 - 1e-9 && !infiltrationHeld(rosaInfiltration.type) && !(rosaInfiltration.type === "Fire" && state.beamActive)) {
     derive(`+${round(BUFF_VALUES.infiltration * (1 + infiltrationEffect(rosaInfiltration.type) / 100) * rosaInfiltration.uptime)}% additional ${rosaInfiltration.type} Damage taken`, `${rosaInfiltration.type} Infiltration (Mercury Baptism)`, `Mercury Baptism's ${rosaInfiltration.type} Infiltration for the Realm's ${round(rosaInfiltration.uptime * 100)}% (provisional)`, true);
   }
@@ -2519,7 +2572,7 @@ function resolveCombatStatesOnce(modifierTexts = [], state = {}) {
   // The Infiltrations' inflicters, settled from the pass's entries (a follower affix's is the follower's).
   const ownInfiltration = new Set(ownInfiltrationTypes(entries));
   for (const hold of passSet.list) if (/ Infiltration$/.test(hold.name)) hold.inflictedBy = ownInfiltration.has(hold.label) ? "you" : "follower";
-  return withDummyHolds({ supportCrowdControl: supportCrowdControlStatus, crowdControl: [...ccSchedules.keys()], ownCrowdControl: [...ccSchedules.keys()].filter((type) => ownCcTypes.has(type)), crowdControlShares: Object.fromEntries([...ccSchedules].map(([type, schedule]) => [type, round(Math.min(1, sustainedLevel(schedule)))])), crowdControlReaders, ailmentReaders, centralize, regain, warcry: stormCommand, elixir: elixirs, numbedRevived: revivedNumbed, entries,derived, buffs: { fervorRating, fervorLive, fervorEffectPercent: fervorEffect, fervorAttackAilment, fervorSkillArea, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, attackAggressionEffectPercent: hasAttackAggression ? aggressionEffect("attack") : 0, spellAggressionEffectPercent: hasSpellAggression ? aggressionEffect("spell") + perCastEffect : 0, hasHasten, hasProfane, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration], ownInfiltration: ownInfiltrationTypes(entries) }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis, deemedRerun }, passSet.list, Object.fromEntries(ccForeignBy), { crowdControl: Object.fromEntries([...ccSchedules.keys()].map((type) => [type, { schedule: ccSchedules.get(type), scripted: ccScripted.get(type) ?? null, recipe: ccRecipeHolds.get(type) || [] }])), counters: busCounters, intimidated: busIntimidated, paralysis: busParalysis,
+  return withDummyHolds({ supportCrowdControl: supportCrowdControlStatus, crowdControl: [...ccSchedules.keys()], ownCrowdControl: [...ccSchedules.keys()].filter((type) => ownCcTypes.has(type)), crowdControlShares: Object.fromEntries([...ccSchedules].map(([type, schedule]) => [type, round(Math.min(1, sustainedLevel(schedule)))])), crowdControlReaders, ailmentReaders, centralize, regain, warcry: stormCommand, elixir: elixirs, numbedRevived: revivedNumbed, entries,derived, buffs: { fervorRating, fervorLive, fervorEffectPercent: fervorEffect, fervorAttackAilment, fervorSkillArea, triggeredSkillAdditional, hasAttackAggression, hasSpellAggression, attackAggressionEffectPercent: hasAttackAggression ? aggressionEffect("attack") : 0, spellAggressionEffectPercent: hasSpellAggression ? aggressionEffect("spell") + perCastEffect : 0, hasHasten, hasProfane, fortitudeStacks }, debuffs: { ...debuffs, infiltration: [...debuffs.infiltration], ownInfiltration: ownInfiltrationTypes(entries), followerInfiltration: [...debuffs.infiltration].filter(followerOnlyInfiltration) }, lucky, enemyDebuffCores: { selfDelusion, juggernaut, openWounds, escalatingAffliction }, iceCage, timedEffects, chanceParalysis, deemedRerun }, passSet.list, Object.fromEntries(ccForeignBy), { crowdControl: Object.fromEntries([...ccSchedules.keys()].map((type) => [type, { schedule: ccSchedules.get(type), scripted: ccScripted.get(type) ?? null, recipe: ccRecipeHolds.get(type) || [] }])), counters: busCounters, intimidated: busIntimidated, paralysis: busParalysis,
     // First Flake of Strange Snow's deemed rating (W10 step 2): the types it counted, its per-type value and cap, and the rating it gave.
     deemedFrostbite: deemedFrostbite ? { ...deemedFrostbite, types: [...deemedFrostbite.types], rating: debuffs.frostbiteRating } : null });
 }

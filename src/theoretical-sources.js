@@ -368,7 +368,9 @@ export function compileScorchingBeamIgniteSources({ curses: resolvedCurses = nul
     tideActive && entry("Tide effect", 15 * tideEffectFactor, "Additional damage", "SS13 buff 82304; stored status map"),
     tideActive && active("onTheTide") && active("waveAria") && entry("Wave Aria", waveAriaPercent * tideEffectFactor, "Additional damage", "SS13 buff 82304; target Tide state"),
     tideActive && active("idyll") && entry(`Idyll of the Tide (${idyllStacks} stacks)`, idyllStacks * idyllPerStackPercent * tideEffectFactor, "Additional damage", "SS13 buff 82304; movement stacks"),
-    active("fireInfiltration") && entry("Fire Infiltration", 13, "Additional damage", "Reference data"),
+    // Fire Infiltration (buff 3441: 101010552 [13], attr 5120 mod 4 "p0 GetEffectScale ×"): 13 × the caster's Fire Infiltration Effect (attr 3401
+    // mod 3, src/combat-states.js infiltrationEffectPercent), the planner's `combat.fireInfiltrationPercent` (reach census follow-up, 2026-11-25).
+    active("fireInfiltration") && entry("Fire Infiltration", Number.isFinite(combat?.fireInfiltrationPercent) ? combat.fireInfiltrationPercent : 13, "Additional damage", "Reference data"),
     heroId === "selena-sing-with-the-tide" && active("onTheTide") && entry("Enemy On the Tide", enemyOnTideDamageTakenPercent, "Additional damage taken", "SS13 target attribute 5720"),
     active("entangledPain") && entry("Entangled Pain", curses.entangledPainDamagePercent, "Additional damage taken", "selected skill level"),
     active("scorch") && entry("Scorch", curses.scorchDamagePercent, "Additional damage taken", "selected skill level"),

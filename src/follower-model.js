@@ -972,7 +972,7 @@ export const FOLLOWER_BUFFS = [
     pattern: /^Inflicts Fire Infiltration when this skill hits, and \+(\d+(?:\.\d+)?)% Fire Infiltration Effect$/i,
     // Game affix 1033360328: gains buff 3441 (Fire Infiltration) on hit and attr 3401 (status effect) mod 3 on its tag 5200074.
     recipe: { 1: { concept: "statusEffect", bucket: "increased" } },
-    derive: (match, ctx) => { const value = round(13 * (1 + Number(match[1]) / 100)); return { periodic: periodicTimed(ctxEntry(ctx), null, value, { heldAfterFirst: true }), text: `+${value}% additional Fire Damage taken`, origin: "derived", summary: `Fire Infiltration 13% × (1 + ${match[1]}% effect) = +${value}% additional Fire Damage taken, ${cadenceText(ctxEntry(ctx))}` }; },
+    derive: (match, ctx) => { const value = round(13 * (1 + Number(match[1]) / 100)); return { periodic: periodicTimed(ctxEntry(ctx), null, value, { heldAfterFirst: true }), text: `+${value}% additional Fire Damage taken`, origin: "derived", infiltration: "Fire", summary: `Fire Infiltration 13% × (1 + ${match[1]}% effect) = +${value}% additional Fire Damage taken, ${cadenceText(ctxEntry(ctx))}` }; },
     reason: "best case: the follower keeps hitting the dummy, so Fire Infiltration is held (its keyword names no duration: provisional)"
   },
   {
@@ -1626,7 +1626,7 @@ const hasState = (list, name) => (list instanceof Set ? [...list] : list || []).
 // `onDummy`: whether the dummy carries an ailment (the set, or the enemy-ailment list with TLI_BUFF_SET=off).
 const onDummy = (ctx, name) => enemyBuffSet(ctx?.state)?.holds(name) ?? (ctx?.state?.enemyAilments || []).includes(name);
 const minionAilmentShare = (ctx, name) => { const buffs = enemyBuffSet(ctx?.state); return buffs ? (buffs.holds(name) ? buffs.share(name) : 1) : Number(ctx?.state?.enemyAilmentUptime?.[name] ?? 1); };
-export const FOLLOWER_KEYWORD_VALUES = Object.freeze({ hasten: 8, profane: 7, attackAggression: 5, spellAggression: 7, infiltration: 13, frail: 15, barbarianIntimidation: { percent: 15, seconds: 5, buff: 11900 } });
+export const FOLLOWER_KEYWORD_VALUES = Object.freeze({ hasten: 8, profane: 7, attackAggression: 5, attackAggressionMovementSpeed: 10, spellAggression: 7, infiltration: 13, frail: 15, barbarianIntimidation: { percent: 15, seconds: 5, buff: 11900 } });
 const DUMMY_ARMOUR_DR = 0.5; // src/target-hit-mitigation.js level85DummyDefenses.armourPercent (Physical; non-Physical 60% of it)
 const armourDr = (scale) => scale > 0 ? scale / (0.9 * scale + 1 / DUMMY_ARMOUR_DR - 0.9) : 0;
 
@@ -1769,9 +1769,18 @@ export const AFFIX_EFFECTS = [
       if (!dealsDamage(ctx)) return { inactive: NO_DAMAGE };
       const types = enemyBuffSet(ctx?.state)?.types({ tag: 5200086 }, { stage: "debuff" }) ?? [...(ctx?.state?.enemyDebuffs?.infiltration || [])];
       if (!types.length) return { inactive: "no Infiltration on the dummy" };
-      const uptime = hitUptime(Number(match[2]), ctx), base = FOLLOWER_KEYWORD_VALUES.infiltration;
-      const value = round(((1 + base * (1 + Number(match[1]) * uptime / 100) / 100) / (1 + base / 100) - 1) * 100);
-      return { text: `+${value}% additional ${types[0]} Damage taken`, texts: types.slice(1).map((type) => ({ text: `+${value}% additional ${type} Damage taken`, origin: "derived" })), origin: "derived", summary: `${types.join(", ")} Infiltration on the dummy: ${base}% × (1 + ${match[1]}% × ${round(uptime * 100)}% uptime) over its ${base}% = +${value}% additional damage taken of each type (${cadenceText(cadenceOf(ctx))}; your own Infiltration Effect lines are not folded in: provisional)` };
+      // Record 1033360261 casts no Infiltration: node 306 on the dummy (filter 101) writes the holder's attr 34101 mod 3 on the Infiltration tag
+      // 5200086, so it lifts each held Infiltration's GetEffectScale = its caster's attr 3401 × this 3410. The held value H of each type keeps its
+      // own caster's Effect: 13 × (1 + your "+X% <Type> Infiltration Effect") for yours, 13 for one only the follower keeps (its caster has no
+      // Effect lines); src/line-effects.js `infiltrationHeldPercent` (reach census fourth follow-ups, 2026-11-25: it read 13 for every type).
+      const uptime = hitUptime(Number(match[2]), ctx), keyword = FOLLOWER_KEYWORD_VALUES.infiltration;
+      const baseOf = (type) => { const held = Number(ctx?.infiltrationHeldPercent?.[type]); return Number.isFinite(held) && held > 0 ? held : keyword; };
+      const valueOf = (type) => { const base = baseOf(type); return round(((1 + base * (1 + Number(match[1]) * uptime / 100) / 100) / (1 + base / 100) - 1) * 100); };
+      const value = valueOf(types[0]), base = baseOf(types[0]);
+      // `infiltrationEffectTaken`: its write (record 1033360261: node 306 on the dummy, attr 34101 mod 3 on the Infiltration tag 5200086) and
+      // Weakness Infiltration's (326961760, the same write) sum in the holder's 3410, so the share reads this line (src/support-chunk8.js; reach
+      // census third follow-ups, 2026-11-25).
+      return { infiltrationEffectTaken: true, text: `+${value}% additional ${types[0]} Damage taken`, texts: types.slice(1).map((type) => ({ text: `+${valueOf(type)}% additional ${type} Damage taken`, origin: "derived" })), origin: "derived", summary: `${types.map((type) => `${type} Infiltration on the dummy: ${round(baseOf(type))}% × (1 + ${match[1]}% × ${round(uptime * 100)}% uptime) over its ${round(baseOf(type))}% = +${valueOf(type)}%`).join("; ")} additional damage taken (${cadenceText(cadenceOf(ctx))}; each held value keeps its own caster's Infiltration Effect: provisional)` };
     },
     reason: "best case: the follower's skill keeps hitting the dummy while it carries an Infiltration" },
   // High Voltage on a skill that does not always crit (2026-11-18; research/follower-crit-chance-2026-11-18.md): affix 1033360273, trigger 1000030
@@ -1796,7 +1805,7 @@ export const AFFIX_EFFECTS = [
       const schedule = sources.length === 1 ? sources[0].schedule : { kind: "union", schedules: sources.map((source) => source.schedule) };
       const each = sources.map((source) => `${source.entry.skill.shortName || source.entry.name}: ${critChanceText(source)} → 1 − (1 − ${round(source.chance)})^(${round(source.rate)} × ${FOLLOWER_INFILTRATION_SECONDS} s) = ${round(source.uptime * 100)}%`).join("; ");
       const summary = `Lightning Infiltration (buff 3461: +${percent}% additional Lightning Damage taken, ${FOLLOWER_INFILTRATION_SECONDS} s) on each crit of the follower's ${each}${sources.length > 1 ? `; together ${round(uptime * 100)}%` : ""} uptime, +${value}% time-averaged (from its first cast in the windows)`;
-      return { text: `+${value}% additional Lightning Damage taken`, origin: "derived", parts: uptime < 1 ? [{ type: "Lightning", reach: "all", percent, schedule }] : [], summary,
+      return { text: `+${value}% additional Lightning Damage taken`, origin: "derived", infiltration: "Lightning", parts: uptime < 1 ? [{ type: "Lightning", reach: "all", percent, schedule }] : [], summary,
         reason: `the follower's crits with this skill at its 5% crit chance (Critical Strike Rating ${FOLLOWER_CRIT_RATING}, one check per cast): ${round(uptime * 100)}% uptime, +${value}% additional Lightning Damage taken on average (provisional: open question follower-crit-chance)` };
     },
     reason: "the follower's own crits with this skill (provisional: its 5% crit chance, open question follower-crit-chance)" },
@@ -1831,8 +1840,10 @@ export const AFFIX_EFFECTS = [
       const uptime = uptimeFor(Number(match[1]), ctx);
       if (!(uptime > 0)) return { inactive: "the follower never casts it" };
       if (heldBuffs(ctx?.state)?.hasHasten) return { inactive: "you already hold Hasten all the time (one Hasten whoever grants it)" };
-      const [attack, cast] = timedBody(FOLLOWER_KEYWORD_VALUES.hasten, uptime, [(v) => `+${v}% additional Attack Speed`, (v) => `+${v}% additional Cast Speed`]);
-      return { text: attack, texts: [{ text: cast, origin: "buff" }], origin: "buff", summary: `Hasten (+${FOLLOWER_KEYWORD_VALUES.hasten}% additional Attack and Cast Speed, keyword 10000106) for ${match[1]} s per cast, ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime, time-averaged (your Hasten Effect lines are not folded in: provisional)` };
+      // Hasten's record (config_char_buff 3471: 634601920 [8], attr 4 / 6001 / 6002 mod 4) writes Movement Speed beside the two speeds, an
+      // additional factor on your movement speed (reach census follow-up, 2026-11-25; the held copy: src/combat-states.js).
+      const [attack, cast, movement] = timedBody(FOLLOWER_KEYWORD_VALUES.hasten, uptime, [(v) => `+${v}% additional Attack Speed`, (v) => `+${v}% additional Cast Speed`, (v) => `+${v}% additional Movement Speed`]);
+      return { text: attack, texts: [{ text: cast, origin: "buff" }, { text: movement, origin: "buff" }], origin: "buff", summary: `Hasten (+${FOLLOWER_KEYWORD_VALUES.hasten}% additional Attack, Cast and Movement Speed, keyword 10000106, buff 3471) for ${match[1]} s per cast, ${cadenceText(cadenceOf(ctx))}: ${round(uptime * 100)}% uptime, time-averaged (your Hasten Effect lines are not folded in: provisional)` };
     },
     reason: "best case: the follower casts the skill at its cadence and you are its ally" },
   { id: "followerAffixEvilMight", label: "Evil Might: Profane", target: "self", needsNear: true, engine: "all",
@@ -1875,7 +1886,10 @@ export const AFFIX_EFFECTS = [
       if (heldBuffs(ctx?.state)?.hasAttackAggression) return { inactive: "you already hold Attack Aggression all the time" };
       const uptime = Math.min(1, Number(match[1]) * rate);
       const [damage, speed] = timedBody(FOLLOWER_KEYWORD_VALUES.attackAggression, uptime, [(v) => `+${v}% additional Attack Damage`, (v) => `+${v}% additional Attack Speed`]);
-      return { text: damage, texts: [{ text: speed, origin: "buff" }], origin: "buff", summary: `Attack Aggression (+${FOLLOWER_KEYWORD_VALUES.attackAggression}% additional Attack Damage and Speed, keyword 10000100) for ${match[1]} s per ${match[2]} Steep Strikes: ${round(steepShareOf(entry.skill) * 100)}% of ${round(entry.castsPerSecond)} casts/s launch one → ${round(uptime * 100)}% uptime, time-averaged` };
+      // Attack Aggression's record (config_char_buff 3411) also holds 200000402 [10]: +10% Movement Speed (attr 4 mod 3), at the same uptime (reach
+      // census follow-up, 2026-11-25; the held copy: src/combat-states.js).
+      const [movement] = timedBody(FOLLOWER_KEYWORD_VALUES.attackAggressionMovementSpeed, uptime, [(v) => `+${v}% Movement Speed`]);
+      return { text: damage, texts: [{ text: speed, origin: "buff" }, { text: movement, origin: "buff" }], origin: "buff", summary: `Attack Aggression (+${FOLLOWER_KEYWORD_VALUES.attackAggression}% additional Attack Damage and Speed, +${FOLLOWER_KEYWORD_VALUES.attackAggressionMovementSpeed}% Movement Speed, keyword 10000100, buff 3411) for ${match[1]} s per ${match[2]} Steep Strikes: ${round(steepShareOf(entry.skill) * 100)}% of ${round(entry.castsPerSecond)} casts/s launch one → ${round(uptime * 100)}% uptime, time-averaged` };
     },
     reason: "best case: you stand next to the follower, which keeps slashing the dummy" }
 ];
@@ -2278,7 +2292,9 @@ function applyAffixEffect(result, reading, base, { selection, near, on }) {
   // `parts`: a timed effect for the 5 s / 20 s windows and the loop (High Voltage's chance schedule); none on the other readings.
   result.timedEffects.push({ ...timed, active, reason, summary: derived.summary, parts: active ? derived.parts || periodicPartsOf(derived, `${base.source}: ${effect.label}`) : [] });
   if (!active) return;
-  for (const item of texts) result.derived.push({ text: item.text, source: `${base.source}: ${effect.label}`, origin: item.origin, multiplier: 1, derivedFrom: base.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) } });
+  // `followerInfiltration`: an Infiltration the follower casts itself (High Voltage's Lightning, Blazing Meteor's Fire; its own caster Effect in the
+  // value), which the holder's 3410 lifts too (Weakness Infiltration, src/support-chunk8.js; reach census follow-up, 2026-11-25).
+  for (const item of texts) result.derived.push({ text: item.text, source: `${base.source}: ${effect.label}`, origin: item.origin, multiplier: 1, derivedFrom: base.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) }, ...(derived.infiltration && item.text === derived.text ? { followerInfiltration: derived.infiltration } : {}), ...(derived.infiltrationEffectTaken ? { followerInfiltrationEffectTaken: true } : {}) });
   for (const item of derived.armour || []) result.armourShreds.push({ ...item, source: base.source });
   for (const item of derived.blessingLines || []) result.blessingLines.push(item);
   if (derived.afflictionClear) result.afflictionClears.push({ ...derived.afflictionClear, source: `${base.source}: ${effect.label}` });
@@ -2291,9 +2307,11 @@ const ruleFor = (line, follower) => FOLLOWER_LINE_RULES.find((item) => (item.rea
  * The follower's modeled buffs and the reading of every line (src/line-effects.js).
  * @param {object|null} selection followerSelection(state)
  * @param {object} state the line-condition state (requestedConditions, nearTarget, enemyAilments)
+ * @param {object} [options] infiltrationHeldPercent: each held Infiltration's value with its caster's Effect (src/line-effects.js), for Medium
+ *   Penetration
  * @returns {{ selection, lines, derived, timedEffects, buffs, cadence }}
  */
-export function resolveFollowerEffects(selection, state = {}) {
+export function resolveFollowerEffects(selection, state = {}, { infiltrationHeldPercent = null } = {}) {
   // `recipe`: the follower numbers read from game recipes (research §16): the mode, and per reading the text's and the recipe's number
   // (under `unread`, which the badge walker skips: diagnostics, not contributions).
   const result = { selection, lines: [], derived: [], timedEffects: [], buffs: [], cadence: [], armourShreds: [], blessingLines: [], afflictionClears: [], recipe: { mode: followerPathMode(), unread: { readings: [] } } };
@@ -2309,7 +2327,7 @@ export function resolveFollowerEffects(selection, state = {}) {
   for (const line of followerLines(selection)) {
     const text = clean(line.text);
     if (line.kind === "affix") {
-      const reading = readAffixLine(line, { selection, cadence, state, reaps: reapList });
+      const reading = readAffixLine(line, { selection, cadence, state, reaps: reapList, ...(infiltrationHeldPercent ? { infiltrationHeldPercent } : {}) });
       const base = { text: line.text, source: line.source, skill: line.skill.name, affix: line.affix.id };
       if (reading.effect) { applyAffixEffect(result, reading, base, { selection, near, on: conditionOn(reading.effect.id) }); continue; }
       if (!reading.buff && FORTIFY_LINE.test(text) && state.armorReaderLive) {
@@ -2362,7 +2380,7 @@ export function resolveFollowerEffects(selection, state = {}) {
       if (active && derived.illWill) result.illWill = { ...derived.illWill, source: line.source };
       // Listed in the Config tab's best-case assumptions as "<label> (<follower> follower)" (src/planner.js bestCaseAssumptions).
       result.timedEffects.push({ id: buff.id, label: buff.label, source: `${selection.follower.displayName} follower`, target: buff.target, toggle: true, enabled: on, active, reason, summary: derived.summary, parts: active ? derived.parts || periodicPartsOf(derived, `${line.source}: ${buff.label}`) : [] });
-      if (active) for (const item of texts) result.derived.push({ text: item.text, source: `${line.source}: ${buff.label}`, origin: item.origin, multiplier: 1, derivedFrom: line.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) }, ...(derived.reapWindow && item.text === derived.text ? { followerReapWindow: derived.reapWindow } : {}) });
+      if (active) for (const item of texts) result.derived.push({ text: item.text, source: `${line.source}: ${buff.label}`, origin: item.origin, multiplier: 1, derivedFrom: line.text, lineEffect: { conditional: true, key: "follower", conditionText: reason, provisional: true, ...followerTimeShare(derived, item) }, ...(derived.reapWindow && item.text === derived.text ? { followerReapWindow: derived.reapWindow } : {}), ...(derived.infiltration && item.text === derived.text ? { followerInfiltration: derived.infiltration } : {}) });
       continue;
     }
     const marker = markerFor(line);

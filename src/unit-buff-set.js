@@ -623,6 +623,17 @@ export function putBarrier(set, held, sources = []) {
   return set.markStaged("barrier");
 }
 
+/**
+ * The share of the time Blur is held on you: the Blur entry's share × its held share (Stab In The Back ends Blur at each Main Skill cast:
+ * src/consumption-procs.js blurHeldShare), else the state's `blurHeld` (TLI_BUFF_SET=off), 0 without Blur. Read by the lines gated on Blur's
+ * state 4000060 (Daze's Crowd Control Effect, src/combat-states.js; "+X% Movement Speed while Blur is active", src/line-conditions.js).
+ */
+export function ownBlurHeldShare(holder) {
+  const own = playerBuffSet(holder);
+  if (own?.staged("blur")) { const entry = own.entryOf("Blur", { stage: "blur" }); return entry && entry.share > 0 ? entry.share * (entry.heldShare ?? 1) : 0; }
+  return holder?.blurHeld ? (holder.blurHeld.heldShare ?? 1) : 0;
+}
+
 /** Blur (buff 220) at its held Rating (`rating`, already × its held share where the producer settles one) and Blur Effect, stage "blur". */
 export function putBlur(set, blur) {
   if (!(set instanceof UnitBuffSet)) return set;

@@ -9,6 +9,7 @@ import { heroTraitKeywordPlainLines } from "./inline-keywords.js";
 import { chooseStatReading, gameStatInfo } from "./recipe-stat-layers.js";
 import { statDataMode } from "./game-skill-data.js";
 import { NO_ENERGY_SHIELD_COMPENSATION } from "./sealed-mana-compensation.js";
+import { townResistanceEntries } from "./resistance-model.js";
 
 // Character stat totals: every plain "+X stat" line the build carries, summed by stat and
 // bucket whether or not it changes dummy damage. Input is the planner's own flattened
@@ -440,19 +441,22 @@ export function conditionalMovementSpeed(lineEffects) {
  * src/effective-hp.js pool's `extra` (10 T claim audit G3d, 2026-11-09: the boots' "+16% additional Max Energy Shield while moving").
  * @returns {{ flat: object[], increased: object[], additional: object[] }}
  */
-export function heldConditionalPoolExtra(lineEffects, statKey, { skipTownHeld = false, modifierTexts = [], skipKeys = null } = {}) {
+export function heldConditionalPoolExtra(lineEffects, statKey, { skipTownHeld = false, modifierTexts = [], skipKeys = null, skipEntry = null } = {}) {
   const out = { flat: [], increased: [], additional: [] };
   // A pool built on characterStatTotals(planner) already holds the town-held entries (heldConditionalStatLines): skip them there.
   const townHeld = (entry) => { const town = TOWN_HELD_CONDITIONS[entry?.condition]; return Boolean(town && entry.active && town(entry, modifierTexts)); };
+  // "+X% Defense" is one increased write on Armor, Evasion and Max Energy Shield (attrs 4001 / 4002 / 1601 mod 3: record 884419904, Shielded's
+  // 599444), as the pools read the stat sheet's Defense (src/effective-hp.js pool `defense`; reach census follow-up, 2026-11-25).
+  const defensePool = ["armor", "evasion", "maxEnergyShield"].includes(statKey);
   const add = (source, text, contributions) => {
     for (const item of contributions) {
-      if (item.stat !== statKey || !Number.isFinite(item.value) || !item.value) continue;
+      if ((item.stat !== statKey && !(defensePool && item.stat === "defense" && item.bucket === "increased")) || !Number.isFinite(item.value) || !item.value) continue;
       const bucket = item.bucket === "additional" ? "additional" : item.bucket === "increased" ? "increased" : item.bucket === "flat" ? "flat" : null;
       if (bucket) out[bucket].push({ source, text, value: item.value });
     }
   };
   // `skipKeys`: conditions whose bodies a pool already holds (src/static-held-stats.js STATIC_HELD_KEYS, folded before the resolver; F1).
-  for (const entry of lineEffects?.lines || []) { if ((skipTownHeld && townHeld(entry)) || skipKeys?.has(entry?.condition)) continue; for (const { item, contributions } of heldEntryBodies(entry)) if (!item.readers?.length) add(entry.source, `${item.derivedText} (${entry.text})`, contributions); }
+  for (const entry of lineEffects?.lines || []) { if ((skipTownHeld && townHeld(entry)) || skipKeys?.has(entry?.condition) || skipEntry?.(entry)) continue; for (const { item, contributions } of heldEntryBodies(entry)) if (!item.readers?.length) add(entry.source, `${item.derivedText} (${entry.text})`, contributions); }
   for (const line of lineEffects?.derived || []) if (line?.lineEffect?.conditional) add(line.source, line.text, parseCharacterStatClause(line.text));
   return out;
 }
@@ -583,7 +587,7 @@ function finalize(total, planner) {
     total.value = round(total.increased + total.flat);
     total.formula = total.additional !== 1 ? "sum of % lines; additional lines multiply separately" : "sum of % lines";
     const element = total.key.match(/^(fire|cold|lightning|erosion)Resistance$/)?.[1];
-    const entry = element && planner?.resistances?.entries?.find((item) => item.element.toLowerCase() === element);
+    const entry = element && townResistanceEntries(planner?.resistances).find((item) => item.element.toLowerCase() === element);
     if (entry) { total.capped = entry.effective; total.maximum = entry.maximum; }
     return;
   }

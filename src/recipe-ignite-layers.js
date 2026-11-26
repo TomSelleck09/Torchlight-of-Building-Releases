@@ -94,10 +94,15 @@ const KIND_LIST = Object.fromEntries(Object.entries(IGNITE_LISTS).flatMap(([list
 // the Ignite limit, the per-ailment-type power …). A line carrying one keeps its whole text reading in the Ignite ledger.
 const KEEPS_TEXT = new Set(["chanceToDamage", "stackLimit", "critOnlyAdditional", "perRecentCritAdditional", "perCritDamageAdditional", "doubleChance", "baseAdditional", "flatBase", "enemyResistance", "traumaReapingDuration"]);
 // Recipe conditions the planner's own state settles for a line the text ledger never read (the same state the Trauma / Wilt layers
-// use in src/ailment-shared.js): target Cursed (combat), both Sealed Mana and Life (town).
+// use in src/ailment-shared.js): target Cursed (combat), both Sealed Mana and Life (town), and the target Ignited on a Fire penetration
+// write (reach census gap 2, 2026-11-25: the gear copy 391400 of "+X% Fire Penetration against Ignited enemies", attr 5104 mod 1 with the
+// target state 4000130 on the second list; the talent / slate copies are this list's own aggregates). An Ignite record ticking means its
+// target is Ignited, so the beam's Ignite meets the condition whenever it deals damage; the planner sets `targetIgnited` only while the beam
+// Ignites (off the beam path src/combat-states.js already derives the line into the Ignite's penetration).
 function settledCondition(entry) {
   const texts = entry.conditions || [];
   if (texts.length === 1 && texts[0] === "target Cursed") return { need: "targetCursed", list: "combat" };
+  if (texts.length === 1 && texts[0] === "target Ignited" && entry.layer === "firePenetration") return { need: "targetIgnited", list: "penetration" };
   if (texts.length === 2 && texts.some((text) => /GetStatReserve\(1001\)/.test(text)) && texts.some((text) => /GetStatReserve\(1301\)/.test(text))) return { need: "sealedLifeAndMana", list: "additional" };
   return null;
 }

@@ -81,6 +81,8 @@ export function readAttrs(table, types) {
 /** A planner skill tag name as a pool tag: its game id (SKILL_TAG_IDS) or a planner key. */
 export const tagKey = (name) => SKILL_TAG_IDS[name] ?? `tag:${name}`;
 const WEAPON_ATTACK_FLAG = "flag:weaponAttack";
+/** The Trigger skill tag (6000080): a triggered use's part query (slice 4b). */
+export const TRIGGER_TAG = SKILL_TAG_IDS.Trigger ?? 6000080;
 /** A hit reading's scope as a requirement: its skill tags all required (and Hit when hit-only); no scope reaches nothing (legacy). */
 export function scopeRequirement(scope) {
   if (!scope) return false;
@@ -93,25 +95,127 @@ let groupCounter = 0;
 const nextGroup = () => `g${++groupCounter}`;
 
 // ---------------------------------------------------------------------------------------------------------------------------
+// One line's hit reading as write templates (pure; slice 1a of the unification step 1 brief). `HitPool.addCompiled` adds them with
+// `addReading`'s side effects in its order; items and writes are made fresh on every call (the Bard retag mutates them).
+const NOT_HANDLED = Object.freeze({ handled: false, item: null, groups: [], lineDamage: false, addedAttr: null });
+// A group of writes added together (one #grouped call: a shared group id when it holds more than one write).
+function typedGroup(table, damageTypes, base) {
+  const attrs = writeAttrs(table, damageTypes);
+  // A reading with an empty type set reaches no part (src/skill-hit-lines.js scopeApplies): one never-admitted write keeps its entry listed.
+  if (!attrs.length) return { grouped: true, writes: [{ ...base, attr: table.all ?? `${table.name}:all`, requirement: false }] };
+  return { grouped: true, writes: attrs.map((attr) => ({ ...base, attr })) };
+}
+// One stored write as an order-trace event (the trace keeps its own copy: a later retag replaces the requirement, never this record).
+const traceEvent = (stored) => ({ kind: "add", unit: stored.unit, attr: stored.attr, mod: stored.mod, value: stored.value, upper: stored.upper, requirement: JSON.stringify(stored.requirement), layer: stored.layer, group: stored.group, sourceKind: stored.source?.kind ?? null, entrySource: stored.entry?.source ?? stored.source?.line ?? null, entryText: stored.entry?.text ?? null });
+// One write added on its own (a plain pool.add, no group).
+const single = (write) => ({ grouped: false, writes: [write] });
+
+/**
+ * One line's hit reading (the line loop of calculateSkillHit) as write templates: { handled, item, groups: [{ grouped, writes }],
+ * lineDamage, addedAttr }. `handled` is false for a reading the pool does not hold (the caller keeps it: an unspecified added line's
+ * warning); `item` the ledger entry; `groups` in add order (a grouped group shares one group id when it holds more than one write);
+ * `lineDamage` whether the item joins HitPool.lineDamage (the Bard retag list); `addedAttr` the added-damage attribute (HitPool.addedAttrs).
+ */
+export function hitReadingWrites(parsed, line, entry, scaled) {
+  const source = { kind: parsed.recipe ? "line" : "text", origin: line.origin ?? null, affixId: parsed.recipe?.affixId ?? null, line: line.text };
+  const unit = "player";
+  switch (parsed.kind) {
+    case "damage": {
+      const item = { ...entry, value: scaled(parsed.value), layer: parsed.layer, scope: parsed.scope, condition: parsed.condition, category: parsed.layer === "increased" ? "Increased damage" : "Additional damage" };
+      // A rotating buff's line keeps its rotation (src/rotating-buffs.js): the pool adds a rotation's lines one read admits into one term.
+      return { handled: true, item, groups: [typedGroup(HIT_ATTRS.damage, parsed.scope?.damageTypes ?? null, { unit, mod: modOfLayer(parsed.layer), value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item, derivedFrom: line.derivedFrom ?? null, ...(line.rotation ? { rotation: line.rotation } : {}) })], lineDamage: true, addedAttr: null };
+    }
+    case "maxDamage": case "minDamage": {
+      const item = { ...entry, value: scaled(parsed.value), scope: parsed.scope, category: parsed.kind === "maxDamage" ? "Additional Max Damage" : "Additional Min Damage" };
+      return { handled: true, item, groups: [typedGroup(parsed.kind === "maxDamage" ? HIT_ATTRS.max : HIT_ATTRS.min, parsed.scope?.damageTypes ?? null, { unit, mod: 4, value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item })], lineDamage: false, addedAttr: null };
+    }
+    case "taken": {
+      // Enemy damage taken: a write on the dummy (a recipe write on the enemy, the planner's derived curse lines, a typed positive line);
+      // an untyped or negative one on gear is your own defence (written on you, not read by a hit).
+      const enemy = parsed.enemy || line.origin === "derived" || (parsed.value > 0 && parsed.scope.damageTypes);
+      const item = { ...entry, value: scaled(parsed.value), layer: parsed.layer, scope: parsed.scope, category: parsed.layer === "additional" ? "Additional damage taken" : "Increased damage taken" };
+      return { handled: true, item, groups: [typedGroup(HIT_ATTRS.taken, parsed.scope?.damageTypes ?? null, { unit: enemy ? "dummy" : "player", mod: modOfLayer(parsed.layer), value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item })], lineDamage: false, addedAttr: null };
+    }
+    case "penetration": {
+      const item = { ...entry, value: scaled(parsed.value), damageTypes: parsed.damageTypes, category: "Penetration" };
+      return { handled: true, item, groups: [{ grouped: true, writes: [...parsed.damageTypes].map((type) => ({ unit, attr: attrOf(HIT_ATTRS.penetration, type), mod: 1, value: item.value, requirement: null, source, entry: item })) }], lineDamage: false, addedAttr: null };
+    }
+    case "armourPenetration": {
+      const item = { ...entry, value: scaled(parsed.value), category: "Armor DMG Mitigation Penetration" };
+      return { handled: true, item, groups: [single({ unit, attr: ARMOUR_PENETRATION, mod: 1, value: item.value, requirement: parsed.skillTags ? [{ mine: [...parsed.skillTags].map(tagKey) }] : null, source, entry: item })], lineDamage: false, addedAttr: null };
+    }
+    case "added": {
+      if (parsed.to === "unspecified") return NOT_HANDLED;
+      const item = { ...entry, type: parsed.type, min: scaled(parsed.min), max: scaled(parsed.max) };
+      // The write's own tags (W9 step 4): the recipe's writes (one per skill tag; "any" an untagged write, e.g. 101010147 "Adds X - Y
+      // Lightning Damage to Attacks and Spells", which reaches every skill), else the wording's ("to Spells" Spell; "to Attacks and
+      // Spells" one Attack and one Spell write, as 200000042; "to Attacks" Attack). Each write is its own record, so a skill carrying
+      // both tags takes both (the GetAttr sum). A weapon attack takes its Attack and untagged lines from the weapon model
+      // (src/weapon-damage-model.js addedToAttacks), so those writes exclude it (the flag) and a line is never added twice; its Spell
+      // write is not read by the weapon model and stays admitted for an attack that also carries the Spell tag.
+      const wording = squashText(line.compoundText ?? line.text);
+      const targets = parsed.addedTo?.length ? parsed.addedTo
+        : parsed.to === "spells" ? ((parsed.alsoAttacks ?? /\bAttacks\b/i.test(line.text)) ? ["Attack", "Spell"] : ["Spell"])
+        : /\bto (?:your )?Attacks$/i.test(wording) ? ["Attack"] : [];
+      const attr = attrOf(HIT_ATTRS.damage, parsed.type);
+      const requirementOf = (target) => (target === "any" ? [{ notMine: [WEAPON_ATTACK_FLAG] }]
+        : target.split("+").includes("Attack") ? [{ mine: target.split("+").map(tagKey), notMine: [WEAPON_ATTACK_FLAG] }]
+        : [{ mine: target.split("+").map(tagKey) }]);
+      // A reading with no target (a text wording that names none) keeps one never-admitted write, so its entry stays listed.
+      if (!targets.length) return { handled: true, item, groups: [single({ unit, attr, mod: 2, value: item.min, upper: item.max, requirement: false, source, entry: item })], lineDamage: false, addedAttr: attr };
+      return { handled: true, item, groups: [{ grouped: false, writes: targets.map((target, index) => ({ unit, attr, mod: 2, value: item.min, upper: item.max, requirement: requirementOf(target), source, entry: index ? { ...item, repeatOf: item.text } : item })) }], lineDamage: false, addedAttr: attr };
+    }
+    case "cooldownRecovery": {
+      const item = { ...entry, value: scaled(parsed.value), additional: parsed.additional };
+      return { handled: true, item, groups: [single({ unit, attr: COOLDOWN_RECOVERY, mod: parsed.additional ? 4 : 3, value: item.value, requirement: null, source, entry: item })], lineDamage: false, addedAttr: null };
+    }
+    case "castSpeed": {
+      // Held, not read here: the hit's Cast Speed is the planner's cast-rate ledger (src/scorching-beam-cast-rate.js).
+      return { handled: true, item: null, groups: [single({ unit, attr: CAST_SPEED, mod: parsed.additional ? 4 : 3, value: scaled(parsed.value), requirement: null, source, layer: "record" })], lineDamage: false, addedAttr: null };
+    }
+    default: return NOT_HANDLED;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
 /**
  * One generic skill hit's pool (src/skill-hit-model.js). `parent`: the build's record pool (conversion records, record-layer writes),
  * or null. `skillId`: the setup's key (the "this skill" tag of its own writes and of its queries).
  */
 export class HitPool {
-  constructor({ parent = null, skillId = null, scopeTags = new Set(), skillTags = new Set(), conversions = null } = {}) {
+  constructor({ parent = null, skillId = null, scopeTags = new Set(), skillTags = new Set(), conversions = null, mainSkill = false } = {}) {
     this.pool = parent ? parent.extend(conversions ? { conversions } : {}) : new AttributePool({ conversions: conversions ?? poolConversionMode() });
     this.skillId = skillId;
+    this.mainSkill = Boolean(mainSkill);
     this.scopeTags = scopeTags;
     this.skillTags = skillTags;
     this.lineDamage = [];
     this.addedAttrs = new Set();
     this.queries = new Map();
+    // The order trace (scripts/hit-pool-trace.mjs, slice 2a): with globalThis.__hitPoolTrace an array, this hit's construction and every
+    // write its pool adds (and every Bard Song retag) are recorded there. Off (the global unset), nothing is wrapped.
+    const trace = Array.isArray(globalThis.__hitPoolTrace) ? globalThis.__hitPoolTrace : null;
+    if (trace) {
+      trace.push({ kind: "call", skillId });
+      const add = this.pool.add.bind(this.pool);
+      this.pool.add = (write) => { const stored = add(write); trace.push(traceEvent(stored)); return stored; };
+      this.trace = trace;
+    }
   }
 
-  /** The query of a hit: the skill's line-scope tags (skill tags, support tag changes, borrowed tags), Hit, the setup's id. */
-  hitQuery() {
-    if (!this.queries.has("hit")) this.queries.set("hit", makeQuery({ mine: [...[...this.scopeTags].map(tagKey), POOL_TAG.hit], skillId: this.skillId }));
-    return this.queries.get("hit");
+  /**
+   * The query of a hit: the skill's line-scope tags (skill tags, support tag changes, borrowed tags), Hit, the setup's id. Part tags
+   * (unification step 1, slice 4b; built and compared in shadow, never read yet): `triggered` adds the Trigger tag 6000080 (a triggered
+   * use: "+X% damage for Triggered Skills", record 101010633, attr 5719 mod 3 on [6000080]); `main` adds the Main Skill tag 6020000, only
+   * on the planner's Main Skill (`mainSkill`, src/skill-hit-model.js isMainSkill), else the plain query. Each variant is cached by its key;
+   * the plain query keeps its "hit" key and object.
+   */
+  hitQuery(parts) {
+    if (parts === undefined) { let query = this.queries.get("hit"); if (!query) this.queries.set("hit", (query = makeQuery({ mine: [...[...this.scopeTags].map(tagKey), POOL_TAG.hit], skillId: this.skillId }))); return query; }
+    const triggered = Boolean(parts?.triggered), withMain = Boolean(parts?.main && this.mainSkill);
+    const key = triggered || withMain ? `hit|${triggered ? "t" : ""}${withMain ? "m" : ""}` : "hit";
+    if (!this.queries.has(key)) this.queries.set(key, makeQuery({ mine: [...[...this.scopeTags].map(tagKey), POOL_TAG.hit, ...(triggered ? [TRIGGER_TAG] : []), ...(withMain ? [POOL_TAG.mainSkill] : [])], skillId: this.skillId }));
+    return this.queries.get(key);
   }
   critQuery() {
     if (!this.queries.has("crit")) this.queries.set("crit", makeQuery({ mine: [...[...this.scopeTags].map(tagKey), POOL_TAG.hit, POOL_TAG.crit], skillId: this.skillId }));
@@ -138,79 +242,37 @@ export class HitPool {
     return this.#grouped(attrs.map((attr) => ({ ...base, attr })));
   }
 
+  /** Add one line's compiled reading (hitReadingWrites) with addReading's side effects, in its order; returns its `handled`. */
+  addCompiled(template) {
+    if (!template.handled) return false;
+    if (template.addedAttr !== null) this.addedAttrs.add(template.addedAttr);
+    let damageWrites = null;
+    for (const { grouped, writes } of template.groups) {
+      let stored;
+      if (grouped) { const group = writes.length > 1 ? nextGroup() : null; stored = writes.map((write) => this.pool.add({ ...write, group })); }
+      else stored = writes.map((write) => this.pool.add(write));
+      damageWrites ??= stored;
+    }
+    if (template.lineDamage) this.lineDamage.push({ item: template.item, writes: damageWrites });
+    return true;
+  }
+
   /**
    * One line's hit reading (the line loop of calculateSkillHit). `entry` is the line's ledger base ({ source, text, origin, recipe? });
    * returns false for a reading the pool does not hold (the caller keeps it: an unspecified added line's warning).
    */
-  addReading(parsed, line, entry, scaled) {
-    const source = { kind: parsed.recipe ? "line" : "text", origin: line.origin ?? null, affixId: parsed.recipe?.affixId ?? null, line: line.text };
-    const unit = "player";
-    switch (parsed.kind) {
-      case "damage": {
-        const item = { ...entry, value: scaled(parsed.value), layer: parsed.layer, scope: parsed.scope, condition: parsed.condition, category: parsed.layer === "increased" ? "Increased damage" : "Additional damage" };
-        // A rotating buff's line keeps its rotation (src/rotating-buffs.js): the pool adds a rotation's lines one read admits into one term.
-        const writes = this.#typed(HIT_ATTRS.damage, parsed.scope?.damageTypes ?? null, { unit, mod: modOfLayer(parsed.layer), value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item, derivedFrom: line.derivedFrom ?? null, ...(line.rotation ? { rotation: line.rotation } : {}) });
-        this.lineDamage.push({ item, writes });
-        return true;
-      }
-      case "maxDamage": case "minDamage": {
-        const item = { ...entry, value: scaled(parsed.value), scope: parsed.scope, category: parsed.kind === "maxDamage" ? "Additional Max Damage" : "Additional Min Damage" };
-        this.#typed(parsed.kind === "maxDamage" ? HIT_ATTRS.max : HIT_ATTRS.min, parsed.scope?.damageTypes ?? null, { unit, mod: 4, value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item });
-        return true;
-      }
-      case "taken": {
-        // Enemy damage taken: a write on the dummy (a recipe write on the enemy, the planner's derived curse lines, a typed positive line);
-        // an untyped or negative one on gear is your own defence (written on you, not read by a hit).
-        const enemy = parsed.enemy || line.origin === "derived" || (parsed.value > 0 && parsed.scope.damageTypes);
-        const item = { ...entry, value: scaled(parsed.value), layer: parsed.layer, scope: parsed.scope, category: parsed.layer === "additional" ? "Additional damage taken" : "Increased damage taken" };
-        this.#typed(HIT_ATTRS.taken, parsed.scope?.damageTypes ?? null, { unit: enemy ? "dummy" : "player", mod: modOfLayer(parsed.layer), value: item.value, requirement: scopeRequirement(parsed.scope), source, entry: item });
-        return true;
-      }
-      case "penetration": {
-        const item = { ...entry, value: scaled(parsed.value), damageTypes: parsed.damageTypes, category: "Penetration" };
-        this.#grouped([...parsed.damageTypes].map((type) => ({ unit, attr: attrOf(HIT_ATTRS.penetration, type), mod: 1, value: item.value, requirement: null, source, entry: item })));
-        return true;
-      }
-      case "armourPenetration": {
-        const item = { ...entry, value: scaled(parsed.value), category: "Armor DMG Mitigation Penetration" };
-        this.pool.add({ unit, attr: ARMOUR_PENETRATION, mod: 1, value: item.value, requirement: parsed.skillTags ? [{ mine: [...parsed.skillTags].map(tagKey) }] : null, source, entry: item });
-        return true;
-      }
-      case "added": {
-        if (parsed.to === "unspecified") return false;
-        const item = { ...entry, type: parsed.type, min: scaled(parsed.min), max: scaled(parsed.max) };
-        // The write's own tags (W9 step 4): the recipe's writes (one per skill tag; "any" an untagged write, e.g. 101010147 "Adds X - Y
-        // Lightning Damage to Attacks and Spells", which reaches every skill), else the wording's ("to Spells" Spell; "to Attacks and
-        // Spells" one Attack and one Spell write, as 200000042; "to Attacks" Attack). Each write is its own record, so a skill carrying
-        // both tags takes both (the GetAttr sum). A weapon attack takes its Attack and untagged lines from the weapon model
-        // (src/weapon-damage-model.js addedToAttacks), so those writes exclude it (the flag) and a line is never added twice; its Spell
-        // write is not read by the weapon model and stays admitted for an attack that also carries the Spell tag.
-        const wording = squashText(line.compoundText ?? line.text);
-        const targets = parsed.addedTo?.length ? parsed.addedTo
-          : parsed.to === "spells" ? ((parsed.alsoAttacks ?? /\bAttacks\b/i.test(line.text)) ? ["Attack", "Spell"] : ["Spell"])
-          : /\bto (?:your )?Attacks$/i.test(wording) ? ["Attack"] : [];
-        const attr = attrOf(HIT_ATTRS.damage, parsed.type);
-        this.addedAttrs.add(attr);
-        const requirementOf = (target) => (target === "any" ? [{ notMine: [WEAPON_ATTACK_FLAG] }]
-          : target.split("+").includes("Attack") ? [{ mine: target.split("+").map(tagKey), notMine: [WEAPON_ATTACK_FLAG] }]
-          : [{ mine: target.split("+").map(tagKey) }]);
-        // A reading with no target (a text wording that names none) keeps one never-admitted write, so its entry stays listed.
-        if (!targets.length) { this.pool.add({ unit, attr, mod: 2, value: item.min, upper: item.max, requirement: false, source, entry: item }); return true; }
-        targets.forEach((target, index) => this.pool.add({ unit, attr, mod: 2, value: item.min, upper: item.max, requirement: requirementOf(target), source, entry: index ? { ...item, repeatOf: item.text } : item }));
-        return true;
-      }
-      case "cooldownRecovery": {
-        const item = { ...entry, value: scaled(parsed.value), additional: parsed.additional };
-        this.pool.add({ unit, attr: COOLDOWN_RECOVERY, mod: parsed.additional ? 4 : 3, value: item.value, requirement: null, source, entry: item });
-        return true;
-      }
-      case "castSpeed": {
-        // Held, not read here: the hit's Cast Speed is the planner's cast-rate ledger (src/scorching-beam-cast-rate.js).
-        this.pool.add({ unit, attr: CAST_SPEED, mod: parsed.additional ? 4 : 3, value: scaled(parsed.value), requirement: null, source, layer: "record" });
-        return true;
-      }
-      default: return false;
-    }
+  addReading(parsed, line, entry, scaled) { return this.addCompiled(hitReadingWrites(parsed, line, entry, scaled)); }
+
+  /**
+   * A throwaway child of this hit's pool holding call facts as stat-layer writes "for this skill" (slice 4a, shadow): { attr: value }, e.g.
+   * { "field:2006050": additionalMaxStacks } (the per-stack records' source, node 114 from field 20060502 fromMod 1). This hit's own pool
+   * is never written; a conversion record evaluated on the child reads the fact. With no setup id the write is untagged (a "this skill"
+   * requirement would admit no query).
+   */
+  factChild(facts = {}) {
+    const child = this.pool.extend();
+    for (const [attr, value] of Object.entries(facts)) child.add({ unit: "player", attr, mod: 1, value, layer: "stat", requirement: this.skillId != null ? [{ mine: [POOL_TAG.thisSkill] }] : null, skillId: this.skillId, source: { kind: "stat", key: attr, fact: true } });
+    return child;
   }
 
   /** A record-layer write (not read by the hit's own queries; a conversion's source reads it). */
@@ -288,6 +350,7 @@ export class HitPool {
     const found = this.lineDamage.find((entry) => entry.item === item);
     if (!found) return;
     for (const write of found.writes) write.requirement = normalizeRequirement(scopeRequirement(item.scope));
+    this.trace?.push({ kind: "retag", index: this.lineDamage.indexOf(found), requirement: JSON.stringify(found.writes.map((write) => write.requirement)) });
   }
   /** The damage line entries in line order (the hit model's former `damageLines`). */
   lineDamageItems() { return this.lineDamage.map((entry) => entry.item); }
